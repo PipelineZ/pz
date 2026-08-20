@@ -217,11 +217,16 @@ public static class PzMcpServer
                     Name = "pz_init_project",
                     Description = "Scaffold a new pz project into this server's own project directory, and " +
                         "list the files written. template (default \"minimal\", same as `pz init`): the " +
-                        "built-in template id to scaffold. \"minimal\" -- project.yml + connections.yml + " +
-                        "README + .gitignore, ready to author against. \"sample\" -- a runnable four-pipeline " +
-                        "demo over local CSVs; pick this only when the user asked to see a worked example, " +
-                        "since its demo pipelines compile and would run. Refuses if the directory already " +
-                        "exists and is not empty.",
+                        "built-in template id to scaffold. Pick \"minimal\" unless the user actually asked " +
+                        "to see a worked example -- every other template's pipelines compile and would run. " +
+                        "\"minimal\" -- project.yml + connections.yml + README + .gitignore, ready to author " +
+                        "against; nothing to run yet. \"sample\" -- runnable four-pipeline demo over local " +
+                        "CSVs; runs offline. \"incremental\" -- watermark-bounded reads over local CSVs; runs " +
+                        "offline, and running it twice lands nothing the second time. \"http\" -- GitHub REST " +
+                        "API to a parquet delta log; needs internet, no credentials. \"sqlserver\" -- " +
+                        "incremental merge with data-quality checks; needs a live SQL Server -- do not pick " +
+                        "this unless the user has one reachable. Refuses if the directory already exists and " +
+                        "is not empty.",
                 }),
         };
 

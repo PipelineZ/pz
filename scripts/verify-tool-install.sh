@@ -100,6 +100,13 @@ if [[ -d "${MINIMAL_DIR}/pipelines" || -d "${MINIMAL_DIR}/data" ]]; then
   echo "FAIL: default pz init scaffolded sample content; expected the minimal project" >&2
   exit 1
 fi
+# A dotfile dropped by the glob, the embed, or NuGet packaging fails silently -- the scaffold still
+# succeeds, just without the file. This is the only check that runs against a genuinely packed and
+# installed binary, which is exactly where that failure would first appear.
+if [[ ! -f "${MINIMAL_DIR}/README.md" || ! -f "${MINIMAL_DIR}/.gitignore" ]]; then
+  echo "FAIL: expected README.md and .gitignore after pz init" >&2
+  exit 1
+fi
 echo "init OK: ${MINIMAL_DIR} holds the minimal project (project.yml + connections.yml)"
 echo
 
@@ -114,6 +121,20 @@ if [[ ! -f "${INIT_DIR}/project.yml" ]]; then
   exit 1
 fi
 echo "init OK: ${INIT_DIR}/project.yml exists"
+echo
+
+echo "-- pz init --list-templates smoke (offline) --"
+LIST_OUT="$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy "${PZ}" init --list-templates)" || {
+  echo "FAIL: pz init --list-templates exited non-zero" >&2
+  exit 1
+}
+for id in minimal sample incremental http sqlserver; do
+  if ! grep -q "${id}" <<<"${LIST_OUT}"; then
+    echo "FAIL: --list-templates output does not name '${id}'" >&2
+    exit 1
+  fi
+done
+echo "list OK: all five templates named"
 echo
 
 echo "-- cd smoke && pz run --all (offline) --"
