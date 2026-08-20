@@ -203,7 +203,7 @@ Declare incrementality **either** in YAML (`sync: { mode: incremental }`) **or**
 `sink()`'s `strategy` is `replace` (default), `append`, or `merge` (needs `keys: [...]`). An
 incremental source feeding an `append` sink is **at-least-once** by construction (a re-run or
 retry can re-deliver a slice) — pz refuses that pairing at compile time unless you say so
-explicitly with `duplicates: 'accept'`. From `samples/http-api/pipelines/issues_log.sql`:
+explicitly with `duplicates: 'accept'`. From `templates/http/pipelines/issues_log.sql`:
 
 ```sql
 -- Incremental extraction paired with an append sink is at-least-once ... pz refuses this

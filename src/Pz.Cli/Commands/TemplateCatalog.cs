@@ -48,6 +48,11 @@ internal static class TemplateCatalog
             TemplateRunnability.Offline,
             "  cd {0} && pz run orders_enriched\n" +
             "  (this template ships two independent flows; `pz run --all` runs both)"),
+        new("http",
+            "GitHub REST API to a parquet delta log: pagination, a crawl guard, a typed contract",
+            TemplateRunnability.NeedsNetwork,
+            "  cd {0} && pz run --all\n" +
+            "  (reads the public GitHub API -- needs internet, no credentials)"),
     ];
 
     public static TemplateInfo? Find(string id) =>
