@@ -5,17 +5,17 @@ using Pz.Core.Templating;
 namespace Pz.Core.Tests.Loading;
 
 /// <summary>Offline compile guard (tiers 1-2: load + compile only, no DuckDB, no network) for
-/// `samples/http-api/` -- the runnable showcase for the builtin http connector (GitHub issues ->
-/// parquet delta log). Mirrors <see cref="MssqlMartSampleCompileTests"/>, the pattern authority
-/// for locating and compiling a real `samples/` tree in this suite. Deliberately passes NO env
-/// vars: the sample ships with its `auth:` line commented out precisely so it loads (and runs,
-/// rate-limited) with zero setup -- this test is what keeps that promise from rotting.</summary>
-public sealed class HttpApiSampleCompileTests
+/// `templates/http/` -- the shipped `http` template (GitHub issues -> parquet delta log). Mirrors
+/// <see cref="MssqlMartSampleCompileTests"/>, the pattern authority for locating and compiling a
+/// real project tree in this suite. Deliberately passes NO env vars: the template ships with its
+/// `auth:` line commented out precisely so it loads (and runs, rate-limited) with zero setup --
+/// this test is what keeps that promise from rotting.</summary>
+public sealed class HttpTemplateCompileTests
 {
     [Fact]
-    public void Http_api_sample_compiles_clean()
+    public void Http_template_compiles_clean()
     {
-        var dir = Path.Combine(FindRepoRoot(), "samples", "http-api");
+        var dir = Path.Combine(FindRepoRoot(), "templates", "http");
         var env = new Dictionary<string, string>();
 
         var project = ProjectLoader.Load(dir, env);

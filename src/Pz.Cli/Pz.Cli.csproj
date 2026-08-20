@@ -27,20 +27,19 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- The scaffolding templates' ONLY source. Embedded rather than copied from samples/hello-pz at
-         build time: an MSBuild copy would let the two drift silently, and an installed tool must have
-         the template with no source tree on disk.
-         `init` is the runnable sample `pz init` scaffolds; `minimal` is the two-file project shape,
-         for a caller that already knows what it is building (see InitCommand.Template).
-         LogicalName is forced to forward slashes on every OS (RecursiveDir/Filename/Extension can come
-         back with backslashes from a Windows-hosted build) so InitCommand's "Templates/<name>/" prefix
-         match and relative-path reconstruction are platform-independent regardless of which OS produced
-         the assembly. -->
-    <EmbeddedResource Include="Templates/init/**/*">
-      <LogicalName>Templates/init/$([System.String]::new('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
-    </EmbeddedResource>
-    <EmbeddedResource Include="Templates/minimal/**/*">
-      <LogicalName>Templates/minimal/$([System.String]::new('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
+    <!-- `pz init`'s ONLY template source, and simultaneously the browsable, in-place-runnable
+         projects the test suite compiles. One copy exists: a second would drift, which is exactly
+         what happened to the hand-maintained copy this replaces.
+         Linked in from outside the project directory so the templates can live at the repo root
+         where a reader finds them; an installed tool still carries them with no source tree on disk.
+         The Exclude is load-bearing: these directories are runnable in place, so anyone who runs one
+         leaves .pz/ and out/ behind, and without it those artifacts would ship inside the tool.
+         LogicalName is forced to forward slashes on every OS (RecursiveDir/Filename/Extension can
+         come back with backslashes from a Windows-hosted build) so InitCommand's "Templates/" prefix
+         match and relative-path reconstruction are platform-independent. -->
+    <EmbeddedResource Include="..\..\templates\**\*"
+                      Exclude="..\..\templates\**\.pz\**;..\..\templates\**\out\**">
+      <LogicalName>Templates/$([System.String]::new('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

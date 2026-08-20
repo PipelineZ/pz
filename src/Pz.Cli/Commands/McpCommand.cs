@@ -574,19 +574,33 @@ internal static class McpCommand
         return merged;
     }
 
-    /// <summary>The <see cref="CliServices.InitProject"/> wiring: pre-checks "directory is empty" itself
-    /// (PZ0603, <see cref="PzErrorCode.McpInitDirNotEmpty"/>) BEFORE calling <see cref="InitCommand"/>'s
-    /// internals -- InitCommand's own not-empty check exists for the CLI's own PZ0130/console-error path,
-    /// which doesn't produce a <see cref="PzError"/> this seam can return. Once past that check, this
-    /// calls <see cref="InitCommand.Execute"/> with exactly the arguments `pz init &lt;name&gt;` (or
-    /// `pz init &lt;name&gt; --sample`) would receive if run from <paramref name="dir"/>'s parent
-    /// directory -- <paramref name="name"/> is <paramref name="dir"/>'s own leaf, so
+    /// <summary>The <see cref="CliServices.InitProject"/> wiring: validates <paramref name="templateId"/>
+    /// against <see cref="TemplateCatalog"/> (PZ0131, <see cref="PzErrorCode.InitTemplateUnknown"/>) and
+    /// pre-checks "directory is empty" itself (PZ0603, <see cref="PzErrorCode.McpInitDirNotEmpty"/>) --
+    /// both BEFORE calling <see cref="InitCommand"/>'s internals or touching the filesystem, and both
+    /// against the caller's own arguments, so an invalid call fails on what it got wrong rather than on
+    /// whatever <see cref="InitCommand.Execute"/> happens to check first. InitCommand's own not-empty
+    /// check exists for the CLI's own PZ0130/console-error path, which doesn't produce a
+    /// <see cref="PzError"/> this seam can return, and its own unknown-template check exists for the
+    /// CLI's own PZ0131/console-error path for the same reason. Once past both checks, this calls
+    /// <see cref="InitCommand.Execute"/> with exactly the arguments `pz init &lt;name&gt;` (or
+    /// `pz init &lt;name&gt; --template &lt;id&gt;`) would receive if run from <paramref name="dir"/>'s
+    /// parent directory -- <paramref name="name"/> is <paramref name="dir"/>'s own leaf, so
     /// <c>Path.GetFullPath(name, workingDir)</c> resolves back to <paramref name="dir"/> exactly, and
     /// project-name derivation (sanitization) stays InitCommand's, never reimplemented here.
-    /// <paramref name="minimal"/> maps to the same <see cref="InitCommand.Template"/> the CLI's own
-    /// flag selects, so the two front doors scaffold identically and default identically.</summary>
-    private static IReadOnlyList<PzError> InitProject(string dir, string name, bool minimal)
+    /// <paramref name="templateId"/> is looked up against the same <see cref="TemplateCatalog"/> the
+    /// CLI's own `--template` flag selects, so the two front doors scaffold identically and default
+    /// identically.</summary>
+    private static IReadOnlyList<PzError> InitProject(string dir, string name, string templateId)
     {
+        if (TemplateCatalog.Find(templateId) is null)
+        {
+            var known = string.Join(", ", TemplateCatalog.All.Select(t => t.Id));
+            return [new PzError(PzErrorCode.InitTemplateUnknown,
+                $"no built-in template named '{templateId}'.", null, null,
+                $"pick one of: {known}")];
+        }
+
         if (File.Exists(dir) || (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any()))
         {
             return [new PzError(PzErrorCode.McpInitDirNotEmpty,
@@ -595,8 +609,7 @@ internal static class McpCommand
         }
 
         var workingDir = Path.GetDirectoryName(dir) ?? dir;
-        var exitCode = InitCommand.Execute(
-            name, workingDir, minimal ? InitCommand.Template.Minimal : InitCommand.Template.Sample);
+        var exitCode = InitCommand.Execute(name, workingDir, templateId);
         return exitCode == ExitCodes.Ok
             ? []
             : [new PzError(PzErrorCode.McpInitDirNotEmpty,

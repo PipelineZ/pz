@@ -1,0 +1,44 @@
+# Credentials are always ${ENV_VAR} references, never literals. Unset variables fail fast (PZ0103)
+# rather than connecting to something unintended.
+erp:
+  connector: sqlserver
+  host: ${ERP_DB_HOST}
+  database: ${ERP_DB_NAME}
+  user: ${ERP_DB_USER}
+  password: ${ERP_DB_PASSWORD}
+  trust_server_certificate: true
+  entities:
+    dbo.orders:
+      read:
+        # A columns contract: reads prune to exactly these, and `pz validate --connect` fails on
+        # drift instead of discovering it mid-run.
+        columns:
+          order_id: bigint
+          customer_id: int
+          amount: decimal
+          status: varchar
+          updated_at: timestamp
+  retry:
+    max_attempts: 3
+    base_delay: 1s
+
+mart:
+  connector: sqlserver
+  host: ${MART_DB_HOST}
+  database: ${MART_DB_NAME}
+  user: ${MART_DB_USER}
+  password: ${MART_DB_PASSWORD}
+  trust_server_certificate: true
+
+# pz's own state -- watermarks, run results, optionally the event stream -- can live in SQL Server
+# too, which makes `.pz` disposable: an ephemeral host can die between runs and the next run, on any
+# machine, picks up where the last one stopped. Uncomment this connection and the `state:` block in
+# project.yml together.
+#
+# ops:
+#   connector: sqlserver
+#   host: ${OPS_DB_HOST}
+#   database: ${OPS_DB_NAME}
+#   user: ${OPS_DB_USER}
+#   password: ${OPS_DB_PASSWORD}
+#   trust_server_certificate: true

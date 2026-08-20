@@ -1,4 +1,4 @@
-# {{PROJECT_NAME}}
+# pz_new_project
 
 Scaffolded by `pz init`. This is a runnable PipelineZ project with TWO independent flows over
 builtin-connector `localfiles` data:
@@ -43,4 +43,4 @@ can pick per entity:
 Declaring the same entity-side in both places is an error (`PZ0341`) rather than a precedence
 puzzle: there is no merging, so whichever file you open tells you the whole story.
 
-See `https://pipelinez.dev/quickstart/` in the PipelineZ repository for a full walkthrough of every verb.
+See `https://pipelinez.dev/quickstart/` for a full walkthrough of every verb.

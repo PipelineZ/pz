@@ -12,8 +12,8 @@ namespace Pz.Cli.Tests;
 /// successful tmp deletions) must still emit an event and a console line -- silence there would be a
 /// silent failure, against this project's error philosophy.
 ///
-/// Uses the real `samples/hello-pz` project (self-contained, relative paths, real CSV data --
-/// unlike `Fixtures/hello-pz`, which is validation-error-path only) so `pz run` actually reaches
+/// Uses the shipped `templates/sample` project (self-contained, relative paths, real CSV data --
+/// unlike `Fixtures/hello-pz`, which is validation-error-path only) so `pz run --all` actually reaches
 /// finalize/retention instead of failing every node before retention ever runs.
 ///
 /// Unix permission bits only: <see cref="File.SetUnixFileMode"/> is a no-op fiction on Windows (and the
@@ -48,11 +48,11 @@ public sealed class RunRetentionFailureTests
     public void Console_line_names_deletions_that_failed_without_hiding_the_count()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-retention-fail-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         var undeletableRunDir = string.Empty;
         try
         {
-            // keep_last defaults to 10; 12 priors + the run that's about to happen makes 13 candidates,
+            // project.yml sets keep_last: 10; 12 priors + the run that's about to happen makes 13 candidates,
             // so the 3 oldest (ordinals 1-3) are selected for staging deletion -- same shape as
             // RunCommandTests.Retention_reports_what_it_freed.
             for (var i = 1; i <= 12; i++)
@@ -77,7 +77,7 @@ public sealed class RunRetentionFailureTests
             try
             {
                 Console.SetOut(stdout);
-                exit = CliApp.Build().Parse(["run", "--project", work]).Invoke();
+                exit = CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke();
             }
             finally
             {
@@ -117,7 +117,7 @@ public sealed class RunRetentionFailureTests
     public void Failed_tmp_sweep_alone_still_emits_the_summary_line()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-retention-fail-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         var tmpDir = Path.Combine(work, ".pz", "tmp", "stale-restore");
         try
         {
@@ -136,7 +136,7 @@ public sealed class RunRetentionFailureTests
             try
             {
                 Console.SetOut(stdout);
-                exit = CliApp.Build().Parse(["run", "--project", work]).Invoke();
+                exit = CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke();
             }
             finally
             {

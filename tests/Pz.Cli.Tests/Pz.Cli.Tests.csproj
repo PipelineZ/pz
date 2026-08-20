@@ -46,10 +46,15 @@
          RetryReuseEndToEndTests: the regression net proving `pz retry`'s staging-reuse and
          sink carry-forward end to end against a genuine failed-then-retried run. -->
     <Content Include="Fixtures\retry-reuse-e2e\**" CopyToOutputDirectory="PreserveNewest" />
-    <!-- Real, working sample project (with actual CSV data files matching its declared columns:
-         contracts) for tier-5 ("pz validate connect") CLI tests: ConnectivityValidator needs real
-         files on disk to probe, unlike tiers 1-4's Fixtures/hello-pz. -->
-    <Content Include="..\..\samples\hello-pz\**" LinkBase="SamplesHelloPz" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The shipped `pz init` sample template tree (with actual CSV data files matching its
+         declared columns: contracts) for tier-5 ("pz validate connect") CLI tests:
+         ConnectivityValidator needs real files on disk to probe, unlike tiers 1-4's Fixtures/hello-pz.
+         The Exclude is load-bearing (see src/Pz.Cli/Pz.Cli.csproj's EmbeddedResource for the same
+         tree): the sample is runnable in place, so anyone who runs it leaves .pz/ and out/ behind,
+         and without it those artifacts would get copied into TemplatesSample and every temp project
+         CopyTree seeds from it. -->
+    <Content Include="..\..\templates\sample\**" LinkBase="TemplatesSample" CopyToOutputDirectory="PreserveNewest"
+             Exclude="..\..\templates\sample\.pz\**;..\..\templates\sample\out\**" />
     <!-- Golden NDJSON fixture for JsonRendererTests (byte-compare); PZ_UPDATE_GOLDEN=1 regenerates it
          in the source tree (see JsonRendererTests.SourceTreeDir), same convention as
          Pz.Core.Tests/Artifacts/GoldenCompileTests. -->

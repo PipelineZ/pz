@@ -1,8 +1,8 @@
 bin/
 obj/
 .pz/
-# Sample projects write their outputs in place (e.g. samples/http-api -> out/issues/*.parquet);
-# run artifacts must never show up as untracked noise or get committed.
+# Sample projects write their outputs in place; run artifacts must never show up as untracked
+# noise or get committed.
 samples/*/out/
 *.user
 .superpowers/

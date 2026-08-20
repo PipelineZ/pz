@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pz.Cli.Commands;
 using Pz.Core.Validation;
 using Pz.Mcp;
 using Pz.Mcp.Handlers;
@@ -28,7 +29,7 @@ public class EntityPipelineAuthoringTests
     /// <summary>Mirrors <c>McpCommand.InitProject</c> exactly: pre-check "directory is empty" (PZ0603)
     /// before calling <c>InitCommand.Execute</c> with the arguments `pz init &lt;name&gt;` would receive
     /// if run from <paramref name="dir"/>'s parent.</summary>
-    private static IReadOnlyList<PzError> RealInitProject(string dir, string name, bool minimal)
+    private static IReadOnlyList<PzError> RealInitProject(string dir, string name, string templateId)
     {
         if (File.Exists(dir) || (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any()))
         {
@@ -38,8 +39,7 @@ public class EntityPipelineAuthoringTests
         }
 
         var workingDir = Path.GetDirectoryName(dir) ?? dir;
-        var exitCode = Pz.Cli.Commands.InitCommand.Execute(name, workingDir,
-            minimal ? Pz.Cli.Commands.InitCommand.Template.Minimal : Pz.Cli.Commands.InitCommand.Template.Sample);
+        var exitCode = Pz.Cli.Commands.InitCommand.Execute(name, workingDir, templateId);
         return exitCode == 0
             ? []
             : [new PzError(PzErrorCode.McpInitDirNotEmpty,
@@ -293,7 +293,7 @@ public class EntityPipelineAuthoringTests
         Directory.CreateDirectory(dir);
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: false, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, "sample", RealServices()));
             Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.True(doc.RootElement.GetProperty("applied").GetBoolean());
             Assert.True(doc.RootElement.GetProperty("result").GetProperty("created").GetBoolean());
@@ -306,23 +306,23 @@ public class EntityPipelineAuthoringTests
     }
 
     /// <summary>The default is the minimal shape. An agent asked for a specific pipeline does not
-    /// want the four-pipeline sample: it would have to delete six files first, and until it did,
-    /// `pz run --all` would move demo data nobody asked for. The sample stays one flag away, for the
-    /// case where a worked example IS the request.</summary>
+    /// want the four-pipeline sample: it would have to delete the sample's other pipelines and data
+    /// files first, and until it did, `pz run --all` would move demo data nobody asked for. The sample
+    /// stays one flag away, for the case where a worked example IS the request.</summary>
     [Fact]
-    public void Init_defaults_to_the_minimal_two_file_project()
+    public void Init_defaults_to_the_minimal_project()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pz-mcp-init-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: true, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, TemplateCatalog.DefaultId, RealServices()));
             var result = doc.RootElement.GetProperty("result");
 
             Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.Equal("minimal", result.GetProperty("template").GetString());
             Assert.Equal(
-                ["connections.yml", "project.yml"],
+                [".gitignore", "README.md", "connections.yml", "project.yml"],
                 result.GetProperty("files").EnumerateArray().Select(f => f.GetString()!).ToArray());
             Assert.False(Directory.Exists(Path.Combine(dir, "data")));
             Assert.False(Directory.Exists(Path.Combine(dir, "pipelines")));
@@ -342,7 +342,7 @@ public class EntityPipelineAuthoringTests
         Directory.CreateDirectory(dir);
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: false, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, "sample", RealServices()));
             var result = doc.RootElement.GetProperty("result");
             var files = result.GetProperty("files").EnumerateArray().Select(f => f.GetString()!).ToArray();
 
@@ -365,7 +365,7 @@ public class EntityPipelineAuthoringTests
         File.WriteAllText(Path.Combine(dir, "existing.txt"), "already here");
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: true, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, TemplateCatalog.DefaultId, RealServices()));
             Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
             Assert.Equal("PZ0603", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
@@ -374,6 +374,39 @@ public class EntityPipelineAuthoringTests
         finally
         {
             Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>Exercises the REAL <c>McpCommand.InitProject</c> wiring (<c>McpCommand.BuildServices()</c>,
+    /// the same construction `pz mcp` itself uses) rather than the <see cref="RealInitProject"/> mirror
+    /// above -- the unknown-template check under test lives in <c>McpCommand.InitProject</c> itself, so a
+    /// test against the mirror would prove nothing about the real wiring. Before the directory-empty
+    /// check on purpose: an unknown template is wrong about what the CALLER asked for, independent of
+    /// whatever is (or isn't) on disk at <paramref name="dir"/>, and the target must stay untouched.</summary>
+    [Fact]
+    public void Init_rejects_an_unknown_template_before_touching_the_directory()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-mcp-init-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(
+                dir, "nope", Pz.Cli.Commands.McpCommand.BuildServices()));
+
+            Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+            Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
+            var error = doc.RootElement.GetProperty("errors")[0];
+            Assert.Equal("PZ0131", error.GetProperty("code").GetString());
+            Assert.Contains("nope", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+            // The hint must name what IS valid -- an error that only says "no" costs a round trip.
+            Assert.Contains("minimal", error.GetProperty("next_step").GetString(), StringComparison.Ordinal);
+            Assert.False(Directory.Exists(dir), "an unknown template must scaffold nothing");
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
         }
     }
 
@@ -388,7 +421,7 @@ public class EntityPipelineAuthoringTests
         var withTrailingSeparator = dir + Path.DirectorySeparatorChar;
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(withTrailingSeparator, minimal: true, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(withTrailingSeparator, TemplateCatalog.DefaultId, RealServices()));
             Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.True(doc.RootElement.GetProperty("applied").GetBoolean());
             Assert.Equal(dir, doc.RootElement.GetProperty("result").GetProperty("dir").GetString());

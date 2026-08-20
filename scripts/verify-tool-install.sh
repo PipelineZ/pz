@@ -6,7 +6,7 @@
 # INSTALLED tool binary, completely offline, against `pz init`'s own scaffolded output -> assert
 # success + real output files -> cleanup.
 #
-# Both templates are exercised: the default (minimal) for its shape, and `--sample` for the run
+# Both templates are exercised: the default (minimal) for its shape, and `--template sample` for the run
 # proof, since only the sample ships pipelines to run (builtin connectors only, so no
 # `pz restore`/NuGet touch at run time).
 #
@@ -88,10 +88,11 @@ if ! env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
   echo "FAIL: pz init exited non-zero" >&2
   exit 1
 fi
-# The default is the MINIMAL project: project.yml + connections.yml and nothing else. Asserted from
-# the installed binary because the template set is chosen from embedded resources -- a packaging
-# mistake that shipped only one of the two template directories would otherwise surface as a
-# stranger's first command scaffolding the wrong project.
+# The default is the MINIMAL project: project.yml and connections.yml, with no pipelines/ or data/
+# directory (that content belongs to the sample template). Asserted from the installed binary
+# because the template set is chosen from embedded resources -- a packaging mistake that shipped
+# only one of the template directories would otherwise surface as a stranger's first command
+# scaffolding the wrong project.
 if [[ ! -f "${MINIMAL_DIR}/project.yml" || ! -f "${MINIMAL_DIR}/connections.yml" ]]; then
   echo "FAIL: expected project.yml and connections.yml after pz init" >&2
   exit 1
@@ -100,20 +101,41 @@ if [[ -d "${MINIMAL_DIR}/pipelines" || -d "${MINIMAL_DIR}/data" ]]; then
   echo "FAIL: default pz init scaffolded sample content; expected the minimal project" >&2
   exit 1
 fi
-echo "init OK: ${MINIMAL_DIR} holds the minimal project (project.yml + connections.yml)"
+# A dotfile dropped by the glob, the embed, or NuGet packaging fails silently -- the scaffold still
+# succeeds, just without the file. This is the only check that runs against a genuinely packed and
+# installed binary, which is exactly where that failure would first appear.
+if [[ ! -f "${MINIMAL_DIR}/README.md" || ! -f "${MINIMAL_DIR}/.gitignore" ]]; then
+  echo "FAIL: expected README.md and .gitignore after pz init" >&2
+  exit 1
+fi
+echo "init OK: ${MINIMAL_DIR} holds the minimal project (project.yml, connections.yml, README.md, .gitignore)"
 echo
 
-echo "-- pz init --sample smoke (offline, builtin connectors only) --"
+echo "-- pz init --template sample smoke (offline, builtin connectors only) --"
 if ! env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
-  "${PZ}" init "${INIT_DIR}" --sample; then
-  echo "FAIL: pz init --sample exited non-zero" >&2
+  "${PZ}" init "${INIT_DIR}" --template sample; then
+  echo "FAIL: pz init --template sample exited non-zero" >&2
   exit 1
 fi
 if [[ ! -f "${INIT_DIR}/project.yml" ]]; then
-  echo "FAIL: expected ${INIT_DIR}/project.yml to exist after pz init --sample" >&2
+  echo "FAIL: expected ${INIT_DIR}/project.yml to exist after pz init --template sample" >&2
   exit 1
 fi
 echo "init OK: ${INIT_DIR}/project.yml exists"
+echo
+
+echo "-- pz init --list-templates smoke (offline) --"
+LIST_OUT="$(env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy "${PZ}" init --list-templates)" || {
+  echo "FAIL: pz init --list-templates exited non-zero" >&2
+  exit 1
+}
+for id in minimal sample incremental http sqlserver; do
+  if ! grep -q "${id}" <<<"${LIST_OUT}"; then
+    echo "FAIL: --list-templates output does not name '${id}'" >&2
+    exit 1
+  fi
+done
+echo "list OK: all five templates named"
 echo
 
 echo "-- cd smoke && pz run --all (offline) --"

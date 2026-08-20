@@ -3,9 +3,9 @@ using Pz.Cli;
 
 namespace Pz.Cli.Tests;
 
-/// <summary>`pz test`: CLI coverage against <c>samples/hello-pz</c> (copied into the test output as
-/// "SamplesHelloPz" -- see the .csproj), a real, working project with actual CSV data files and no
-/// env-var-templated connection config, so these tests need no DATA_DIR/OUT_DIR juggling. Still joins
+/// <summary>`pz test`: CLI coverage against the shipped <c>templates/sample</c> tree (copied into the
+/// test output as "TemplatesSample" -- see the .csproj), a real, working project with actual CSV data
+/// files and no env-var-templated connection config, so these tests need no DATA_DIR/OUT_DIR juggling. Still joins
 /// "console-and-env-serialized" (see the collection definition in RestoreCommandTests.cs) because
 /// <c>Test_no_checks_exits_0</c> redirects the process-global <see cref="Console.Out"/> — the same
 /// resource <c>ValidateCommandTests</c>/<c>RunCommandTests</c> serialize on, not just DATA_DIR/OUT_DIR.</summary>
@@ -16,7 +16,7 @@ public class TestCommandTests : IDisposable
 
     public TestCommandTests()
     {
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), _work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), _work);
     }
 
     public void Dispose()
@@ -36,8 +36,8 @@ public class TestCommandTests : IDisposable
         Assert.Contains("check_orders_enriched_unique_id", names);
         Assert.Contains("orders_enriched", names);       // the checks' owning pipeline
         Assert.Contains("stg_orders", names);             // orders_enriched's pipeline dependency
-        Assert.Contains("src_crm__customers", names);      // ancestor source
-        Assert.Contains("src_crm__orders", names);         // ancestor source (via stg_orders)
+        Assert.Contains("src_raw__customers", names);      // ancestor source
+        Assert.Contains("src_raw__orders", names);         // ancestor source (via stg_orders)
         Assert.DoesNotContain("lake.orders_curated", names); // the sink never runs
     }
 
@@ -68,7 +68,7 @@ public class TestCommandTests : IDisposable
 
     /// <summary>Smoke test for the check vocabulary through the real CLI path (loader validation,
     /// DagCompiler naming, executor, exit code). custom_sql stands in for freshness because
-    /// hello-pz has no temporal column; the Check-node machinery is identical. The query returns
+    /// the sample template has no temporal column; the Check-node machinery is identical. The query returns
     /// every row, so the check fails by design.</summary>
     [Fact]
     public void Test_with_failing_custom_sql_check_exits_1()

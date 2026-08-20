@@ -216,10 +216,11 @@ public class RunCommandTests : IDisposable
     public async Task Stuck_renderer_does_not_hang_the_run()
     {
         // The Fixtures/hello-pz copy in _work is a validation-error-path fixture with no real data
-        // files; this test needs a run that actually executes, so it uses samples/hello-pz (copied
-        // into the test output as "SamplesHelloPz", same as TestCommandTests) in its own directory.
+        // files; this test needs a run that actually executes, so it uses the shipped templates/sample
+        // tree (copied into the test output as "TemplatesSample", same as TestCommandTests) in its own
+        // directory.
         var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
 
         var env = new Dictionary<string, string>();
         foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
@@ -269,29 +270,22 @@ public class RunCommandTests : IDisposable
     /// a well-formed two-field `timings` object for SourceLoad/SinkWrite nodes, with `version` still
     /// 1. `engine.force_universal` pins every load/sink to the Arrow-channel (universal) tier — the
     /// sample project would otherwise plan native_scan/native_copy, which bypass the channel entirely
-    /// and legitimately carry no timings. `customers` is contract-less in the shipped sample, and
-    /// `force_universal` + no contract is a hard error — so this test re-declares a `columns:` contract
-    /// on the local COPY's `customers` call site purely so a forced universal run has something to
-    /// succeed with; the real sample file is untouched.</summary>
+    /// and legitimately carry no timings. `force_universal` with no declared contract is a hard error,
+    /// but every dataset in the shipped sample already carries a `columns:` contract (`customers` and
+    /// `orders` in `connections.yml`, `products` at its `source()` call site), so no local edit is
+    /// needed to give a forced universal run something to succeed with.</summary>
     [Fact]
     public void Run_results_carries_timings_for_loads_and_sinks_only()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         try
         {
             var projectYml = Path.Combine(work, "project.yml");
             File.WriteAllText(projectYml,
                 File.ReadAllText(projectYml).Replace("engine:\n", "engine:\n  force_universal: true\n"));
 
-            var pipelinePath = Path.Combine(work, "pipelines", "orders_enriched.sql");
-            var pipelineSql = File.ReadAllText(pipelinePath).Replace(
-                "source('crm', 'customers', path: 'data/customers.csv', format: 'csv')",
-                "source('crm', 'customers', path: 'data/customers.csv', format: 'csv', " +
-                "columns: { id: 'bigint', email: 'varchar' })");
-            File.WriteAllText(pipelinePath, pipelineSql);
-
-            var exit = CliApp.Build().Parse(["run", "--project", work]).Invoke();
+            var exit = CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke();
             Assert.Equal(ExitCodes.Ok, exit);
 
             var runDir = Directory.GetDirectories(Path.Combine(work, ".pz", "runs")).Single();
@@ -598,23 +592,24 @@ public class RunCommandTests : IDisposable
     public void Run_sweeps_older_staging_and_keeps_run_results()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         try
         {
             var priors = Enumerable.Range(1, 12).Select(i => MakePriorRun(work, i)).ToList();
-            // hello-pz has no incremental datasets, so pz run never creates watermarks.json on its own --
-            // stub one here (as a real project with prior runs would already have) so this assertion
-            // actually exercises "retention never touches .pz/state" instead of throwing on a missing file.
+            // The sample template has no incremental datasets, so pz run never creates watermarks.json on
+            // its own -- stub one here (as a real project with prior runs would already have) so this
+            // assertion actually exercises "retention never touches .pz/state" instead of throwing on a
+            // missing file.
             var stateDir = Path.Combine(work, ".pz", "state");
             Directory.CreateDirectory(stateDir);
             var watermarksPath = Path.Combine(stateDir, "watermarks.json");
             File.WriteAllText(watermarksPath, "{}\n");
             var stateBefore = File.ReadAllBytes(watermarksPath);
 
-            var exit = CliApp.Build().Parse(["run", "--project", work]).Invoke();
+            var exit = CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke();
             Assert.Equal(ExitCodes.Ok, exit);
 
-            // keep_last defaults to 10 and the run that just finished occupies one of those slots, so
+            // project.yml sets keep_last: 10 and the run that just finished occupies one of those slots, so
             // exactly 9 of the 12 priors keep their staging DB and the 3 oldest lose theirs.
             var survivingStaging = priors
                 .Count(id => File.Exists(Path.Combine(work, ".pz", "runs", id, "staging.duckdb")));
@@ -633,11 +628,11 @@ public class RunCommandTests : IDisposable
 
             // State is never enumerated by any retention code path. This assertion is a real
             // regression net for RunSweeper (it structurally never touches .pz/state) -- but it only holds
-            // because hello-pz has no incremental datasets, so WatermarkAdvancement.Advance never calls
-            // store.Set and never rewrites this file on its own. If hello-pz ever gains an incremental
-            // dataset, a failure here would be fixture drift (the file legitimately changing), not a
-            // retention regression -- re-derive stateBefore from a run that already produced watermarks
-            // in that case, don't chase this test.
+            // because the sample template has no incremental datasets, so WatermarkAdvancement.Advance
+            // never calls store.Set and never rewrites this file on its own. If the sample ever gains an
+            // incremental dataset, a failure here would be fixture drift (the file legitimately changing),
+            // not a retention regression -- re-derive stateBefore from a run that already produced
+            // watermarks in that case, don't chase this test.
             Assert.Equal(stateBefore, File.ReadAllBytes(Path.Combine(work, ".pz", "state", "watermarks.json")));
         }
         finally
@@ -650,11 +645,14 @@ public class RunCommandTests : IDisposable
     public void Retention_off_sweeps_nothing_and_prints_nothing()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         try
         {
+            // The shipped project.yml already declares its own `retention:` block, so this overrides
+            // that block's value rather than appending a second (duplicate-key) one.
             var projectYml = Path.Combine(work, "project.yml");
-            File.WriteAllText(projectYml, File.ReadAllText(projectYml) + "\nretention: off\n");
+            File.WriteAllText(projectYml,
+                File.ReadAllText(projectYml).Replace("retention:\n  keep_last: 10\n", "retention: off\n"));
             var priors = Enumerable.Range(1, 12).Select(i => MakePriorRun(work, i)).ToList();
 
             var stdout = new StringWriter();
@@ -663,7 +661,7 @@ public class RunCommandTests : IDisposable
             try
             {
                 Console.SetOut(stdout);
-                exit = CliApp.Build().Parse(["run", "--project", work]).Invoke();
+                exit = CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke();
             }
             finally
             {
@@ -685,7 +683,7 @@ public class RunCommandTests : IDisposable
     public void Retention_reports_what_it_freed()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         try
         {
             for (var i = 1; i <= 12; i++)
@@ -698,7 +696,7 @@ public class RunCommandTests : IDisposable
             try
             {
                 Console.SetOut(stdout);
-                Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["run", "--project", work]).Invoke());
+                Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke());
             }
             finally
             {
@@ -721,7 +719,7 @@ public class RunCommandTests : IDisposable
     public void Retention_reports_tmp_only_bytes_not_zero()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         try
         {
             var tmpDir = Path.Combine(work, ".pz", "tmp", "stale-restore");
@@ -734,7 +732,7 @@ public class RunCommandTests : IDisposable
             try
             {
                 Console.SetOut(stdout);
-                Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["run", "--project", work]).Invoke());
+                Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke());
             }
             finally
             {
@@ -761,7 +759,7 @@ public class RunCommandTests : IDisposable
     public void Retention_swept_event_is_published_before_bus_completes()
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), work);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         try
         {
             for (var i = 1; i <= 12; i++)
@@ -775,7 +773,7 @@ public class RunCommandTests : IDisposable
             {
                 Console.SetOut(stdout);
                 Assert.Equal(ExitCodes.Ok,
-                    CliApp.Build().Parse(["run", "--project", work, "--log-format", "json"]).Invoke());
+                    CliApp.Build().Parse(["run", "--project", work, "--all", "--log-format", "json"]).Invoke());
             }
             finally
             {

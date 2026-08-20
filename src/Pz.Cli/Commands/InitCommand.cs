@@ -10,56 +10,79 @@ namespace Pz.Cli.Commands;
 /// resources (the single source of truth; there is no copy-from-samples build step, so an installed
 /// tool works with no source tree on disk).
 ///
-/// The default is <see cref="Template.Minimal"/> — project.yml + connections.yml, nothing to delete
-/// before authoring. <c>--sample</c> scaffolds the runnable four-pipeline demo instead; it uses only
-/// <c>Pz.Connector.LocalFiles</c> (a builtin), so `cd &lt;name&gt; &amp;&amp; pz run --all` succeeds
-/// fully offline — no `pz restore`, no network, no docker.</summary>
+/// Which template to scaffold is a catalog lookup (<see cref="TemplateCatalog"/>), never an
+/// incidental choice: the default is <see cref="TemplateCatalog.DefaultId"/>, and any other built-in
+/// is opt-in via <c>--template &lt;id&gt;</c>. `pz init --list-templates` browses the catalog without
+/// scaffolding anything.</summary>
 internal static class InitCommand
 {
-    /// <summary>Which embedded template set to scaffold. <see cref="Minimal"/> — project.yml +
-    /// connections.yml and nothing else — is the default everywhere: it is what someone starting
-    /// their own project wants, and the sample is a poor substitute for it because the demo files
-    /// COMPILE, so until they are deleted `pz run --all` moves demo data nobody asked for.
-    /// <see cref="Sample"/> is the runnable four-pipeline demo, for learning the shape from working
-    /// code; it is opt-in via <c>--sample</c> (or <c>pz_init_project</c>'s <c>minimal: false</c>).
-    ///
-    /// <see cref="Execute"/> deliberately takes this with no default value: which project a caller
-    /// scaffolds is never an incidental choice, and a default here is how the CLI and the MCP tool
-    /// would silently drift apart.</summary>
-    internal enum Template
-    {
-        Sample,
-        Minimal,
-    }
-
-    private const string ProjectNameToken = "{{PROJECT_NAME}}";
-
-    private static string ResourcePrefixFor(Template template) =>
-        template == Template.Minimal ? "Templates/minimal/" : "Templates/init/";
+    /// <summary>The placeholder every template's `project.yml` carries as its `name:`, replaced with
+    /// the caller's sanitized project name at scaffold time. Identifier-shaped rather than a
+    /// moustache so a template directory is itself a loadable project -- which is what lets the test
+    /// suite compile the real scaffold source instead of a copy of it.</summary>
+    private const string ProjectNameToken = "pz_new_project";
 
     public static Command Create()
     {
-        var nameArgument = new Argument<string>("name")
+        var nameArgument = new Argument<string?>("name")
         {
             Description = "Directory to scaffold the new project into ('.' scaffolds into the current directory)",
+            Arity = ArgumentArity.ZeroOrOne,
         };
-        var sampleOption = new Option<bool>("--sample")
+        var templateOption = new Option<string>("--template", "-t")
         {
-            Description = "Scaffold the runnable four-pipeline sample project instead of a minimal one",
+            Description = $"Which built-in template to scaffold (default: {TemplateCatalog.DefaultId}). "
+                + "`pz init --list-templates` shows them all",
+            DefaultValueFactory = _ => TemplateCatalog.DefaultId,
         };
-        var command = new Command("init", "Scaffold a new pz project (project.yml + connections.yml; --sample for a runnable demo)");
+        var listOption = new Option<bool>("--list-templates")
+        {
+            Description = "List every built-in template and exit",
+        };
+        var command = new Command("init", "Scaffold a new pz project from a built-in template");
         command.Arguments.Add(nameArgument);
-        command.Options.Add(sampleOption);
+        command.Options.Add(templateOption);
+        command.Options.Add(listOption);
         command.SetAction(parseResult => Execute(
-            parseResult.GetValue(nameArgument)!,
+            parseResult.GetValue(nameArgument),
             Directory.GetCurrentDirectory(),
-            parseResult.GetValue(sampleOption) ? Template.Sample : Template.Minimal));
+            parseResult.GetValue(templateOption)!,
+            parseResult.GetValue(listOption)));
         return command;
     }
 
-    internal static int Execute(string name, string workingDir, Template template)
+    internal static int Execute(string? name, string workingDir, string templateId, bool listTemplates = false)
     {
-        var resourcePrefix = ResourcePrefixFor(template);
+        if (listTemplates && name is not null)
+        {
+            return Fail(PzErrorCode.InitInvocationInvalid,
+                "`--list-templates` lists the catalog and scaffolds nothing, but a project name was also given.",
+                "run `pz init --list-templates` to browse, or `pz init <name> --template <id>` to scaffold");
+        }
+
+        if (listTemplates)
+        {
+            ListTemplates();
+            return ExitCodes.Ok;
+        }
+
+        if (name is null)
+        {
+            return Fail(PzErrorCode.InitInvocationInvalid,
+                "no project name given.",
+                "run `pz init <name>` to scaffold, or `pz init --list-templates` to see what is available");
+        }
+
+        var template = TemplateCatalog.Find(templateId);
+        if (template is null)
+        {
+            var known = string.Join(", ", TemplateCatalog.All.Select(t => t.Id));
+            return Fail(PzErrorCode.InitTemplateUnknown,
+                $"no built-in template named '{templateId}'.",
+                $"pick one of: {known} (see `pz init --list-templates`)");
+        }
+
+        var resourcePrefix = $"Templates/{template.Id}/";
         var targetDir = Path.GetFullPath(name, workingDir);
 
         if (File.Exists(targetDir))
@@ -93,6 +116,7 @@ internal static class InitCommand
 
         var assembly = Assembly.GetExecutingAssembly();
         var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        var copiedCount = 0;
         foreach (var resourceName in assembly.GetManifestResourceNames())
         {
             var normalized = resourceName.Replace('\\', '/');
@@ -110,6 +134,18 @@ internal static class InitCommand
             using var reader = new StreamReader(stream, Encoding.UTF8);
             var content = reader.ReadToEnd().Replace(ProjectNameToken, projectName, StringComparison.Ordinal);
             File.WriteAllText(destination, content, utf8NoBom);
+            copiedCount++;
+        }
+
+        // The id passed TemplateCatalog.Find above, so the catalog and the embedded resources
+        // disagree -- a build/packaging defect, not a user error. Reports rather than claiming
+        // success over an empty directory (no silent failures).
+        if (copiedCount == 0)
+        {
+            return Fail(PzErrorCode.InitTemplateUnknown,
+                $"template '{template.Id}' is in the catalog, but no resources under '{resourcePrefix}' " +
+                "are embedded in this build.",
+                "report this as a pz packaging bug");
         }
 
         Console.WriteLine($"scaffolded a new pz project '{projectName}' at {targetDir}");
@@ -117,15 +153,35 @@ internal static class InitCommand
         // with what project.yml's `name:` actually says -- this matches the common case exactly (bare,
         // already-valid names round-trip unchanged) and stays copy-paste-safe even when the raw argument
         // needed sanitizing (e.g. shell-hazardous characters like `!`).
-        Console.WriteLine(template == Template.Minimal
-            ? "next steps:\n" +
-              $"  cd {projectName}, declare a connection in connections.yml, then add a pipeline\n" +
-              "  under pipelines/ that source()s from it -- `pz validate` checks both\n" +
-              "  (want a worked example instead? `pz init <name> --sample`)"
-            : "next steps:\n" +
-              $"  cd {projectName} && pz run orders_enriched\n" +
-              "  (this template ships two independent flows; `pz run --all` runs both)");
+        Console.WriteLine("next steps:\n" + string.Format(
+            System.Globalization.CultureInfo.InvariantCulture, template.NextSteps, projectName));
         return ExitCodes.Ok;
+    }
+
+    private static int Fail(string code, string message, string nextStep)
+    {
+        Console.Error.WriteLine($"error {new PzError(code, message, null, null, nextStep)}");
+        return ExitCodes.ConfigError;
+    }
+
+    private static void ListTemplates()
+    {
+        Console.WriteLine("built-in templates (`pz init <name> --template <id>`):");
+        foreach (var template in TemplateCatalog.All)
+        {
+            var marker = template.Runnability switch
+            {
+                TemplateRunnability.Offline => "runs offline",
+                TemplateRunnability.NeedsNetwork => "needs network",
+                TemplateRunnability.NeedsDatabase => "needs a database",
+                _ => "nothing to run yet",
+            };
+            var star = string.Equals(template.Id, TemplateCatalog.DefaultId, StringComparison.Ordinal)
+                ? " (default)"
+                : string.Empty;
+            Console.WriteLine($"  {template.Id}{star}");
+            Console.WriteLine($"      {template.Summary} [{marker}]");
+        }
     }
 
     /// <summary>Lowercase, `[a-z0-9_]`, leading letter. Any other character

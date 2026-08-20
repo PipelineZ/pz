@@ -55,6 +55,11 @@ public static class PzErrorCode
     // was reported on an earlier run). Reuses DriftPolicyInvalid's PZ012x family rather than a new range.
     public const string SchemaAcceptTargetInvalid = "PZ0127";
     public const string InitTargetNotEmpty = "PZ0130"; // `pz init`: target directory exists and is not empty
+    public const string InitTemplateUnknown = "PZ0131";   // `pz init --template`: no such template id
+    // `pz init`: neither a name nor --list-templates was given, or both were. Two invocation shapes
+    // are valid and anything else is this error, so the code covers the whole shape rather than just
+    // the missing-name half.
+    public const string InitInvocationInvalid = "PZ0132";
     public const string UnresolvedRef = "PZ0201";
     public const string Cycle = "PZ0202";
     // PZ0203 (was SinkInputMissing: a YAML `input:` that matched no pipeline/source dataset) is

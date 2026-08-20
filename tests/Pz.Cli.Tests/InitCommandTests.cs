@@ -5,8 +5,8 @@ using Pz.Core.Loading;
 
 namespace Pz.Cli.Tests;
 
-/// <summary>`pz init` scaffolds the embedded <c>Templates/init/**</c> starter project
-/// (see <see cref="InitCommand"/>) into a target directory, substituting <c>{{PROJECT_NAME}}</c>
+/// <summary>`pz init` scaffolds one of the embedded <c>Templates/&lt;id&gt;/**</c> starter projects
+/// (see <see cref="InitCommand"/>) into a target directory, substituting <c>pz_new_project</c>
 /// (sanitized) into project.yml's <c>name:</c>. Every target directory used here is a unique absolute
 /// temp path passed directly as the `name` argument — never a bare relative name — so these tests never
 /// depend on (or mutate) the test process's current directory.</summary>
@@ -26,28 +26,112 @@ public class InitCommandTests : IDisposable
     }
 
     [Fact]
+    public void Init_with_template_flag_scaffolds_that_template()
+    {
+        var targetDir = Path.Combine(_work, "by-flag");
+
+        Assert.Equal(ExitCodes.Ok,
+            CliApp.Build().Parse(["init", targetDir, "--template", "sample"]).Invoke());
+
+        Assert.True(File.Exists(Path.Combine(targetDir, "pipelines", "orders_enriched.sql")));
+    }
+
+    [Fact]
+    public void Init_rejects_an_unknown_template()
+    {
+        var targetDir = Path.Combine(_work, "bad-template");
+        var stderr = new StringWriter();
+        var original = Console.Error;
+        Console.SetError(stderr);
+        int exit;
+        try
+        {
+            exit = CliApp.Build().Parse(["init", targetDir, "--template", "nope"]).Invoke();
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0131", stderr.ToString(), StringComparison.Ordinal);
+        // The message must name what IS valid -- an error that only says "no" costs a round trip.
+        Assert.Contains("minimal", stderr.ToString(), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(targetDir), "a rejected template must scaffold nothing");
+    }
+
+    [Fact]
+    public void Init_lists_templates()
+    {
+        var stdout = new StringWriter();
+        var original = Console.Out;
+        Console.SetOut(stdout);
+        int exit;
+        try
+        {
+            exit = CliApp.Build().Parse(["init", "--list-templates"]).Invoke();
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        foreach (var template in TemplateCatalog.All)
+        {
+            Assert.Contains(template.Id, stdout.ToString(), StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Init_without_a_name_or_list_flag_is_an_error()
+    {
+        var stderr = new StringWriter();
+        var original = Console.Error;
+        Console.SetError(stderr);
+        int exit;
+        try
+        {
+            exit = CliApp.Build().Parse(["init"]).Invoke();
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0132", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    /// <summary>Listing while a name was given would print the catalog and exit 0 without
+    /// scaffolding -- a silent failure for someone who asked for a project.</summary>
+    [Fact]
+    public void Init_with_both_a_name_and_the_list_flag_is_an_error()
+    {
+        var stderr = new StringWriter();
+        var original = Console.Error;
+        Console.SetError(stderr);
+        int exit;
+        try
+        {
+            exit = CliApp.Build().Parse(["init", Path.Combine(_work, "both"), "--list-templates"]).Invoke();
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0132", stderr.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Init_scaffolds_runnable_project()
     {
         var targetDir = Path.Combine(_work, "demo");
 
-        var initExit = CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke();
+        var initExit = CliApp.Build().Parse(["init", targetDir, "--template", "sample"]).Invoke();
         Assert.Equal(ExitCodes.Ok, initExit);
-
-        Assert.True(File.Exists(Path.Combine(targetDir, "project.yml")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "connections.yml")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "pipelines", "stg_orders.sql")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "pipelines", "orders_enriched.sql")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "pipelines", "order_totals.sql")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "pipelines", "product_catalog.sql")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "data", "products.csv")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "pipelines", "configs", "orders_enriched.yml")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "data", "customers.csv")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "data", "orders.csv")));
-        Assert.True(File.Exists(Path.Combine(targetDir, "README.md")));
-
-        var projectYml = File.ReadAllText(Path.Combine(targetDir, "project.yml"));
-        Assert.Contains("name: demo", projectYml);
-        Assert.DoesNotContain("{{PROJECT_NAME}}", projectYml);
 
         var runExit = CliApp.Build().Parse(["run", "--all", "--project", targetDir]).Invoke();
         Assert.Equal(ExitCodes.Ok, runExit);
@@ -70,18 +154,19 @@ public class InitCommandTests : IDisposable
         }
     }
 
-    /// <summary>The bare verb scaffolds the MINIMAL project — two files, nothing to delete before
-    /// authoring. The sample's files compile, so shipping them by default meant a first `pz run --all`
-    /// moved demo data the author never wrote; it is now opt-in via <c>--sample</c>.</summary>
+    /// <summary>The bare verb scaffolds the MINIMAL project — project.yml and connections.yml are
+    /// commented and empty, nothing to delete before authoring. The sample's files compile, so
+    /// shipping them by default meant a first `pz run --all`
+    /// moved demo data the author never wrote; it is now opt-in via <c>--template sample</c>.</summary>
     [Fact]
-    public void Init_without_sample_scaffolds_the_minimal_project()
+    public void Init_without_a_template_flag_scaffolds_the_minimal_project()
     {
         var targetDir = Path.Combine(_work, "minimal");
 
         Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir]).Invoke());
 
         Assert.Equal(
-            ["connections.yml", "project.yml"],
+            [".gitignore", "README.md", "connections.yml", "project.yml"],
             Directory.GetFiles(targetDir, "*", SearchOption.AllDirectories)
                 .Select(f => Path.GetRelativePath(targetDir, f).Replace(Path.DirectorySeparatorChar, '/'))
                 .OrderBy(f => f, StringComparer.Ordinal)
@@ -178,7 +263,7 @@ public class InitCommandTests : IDisposable
         int exit;
         try
         {
-            exit = CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke();
+            exit = CliApp.Build().Parse(["init", targetDir, "--template", "sample"]).Invoke();
         }
         finally
         {
@@ -195,7 +280,7 @@ public class InitCommandTests : IDisposable
     public void Init_scaffold_bare_run_requires_flow_or_all()
     {
         var targetDir = Path.Combine(_work, "gate");
-        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir, "--template", "sample"]).Invoke());
 
         var stderr = new StringWriter();
         var original = Console.Error;
@@ -219,7 +304,7 @@ public class InitCommandTests : IDisposable
     public void Init_scaffold_named_flow_runs_end_to_end()
     {
         var targetDir = Path.Combine(_work, "named");
-        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir, "--template", "sample"]).Invoke());
 
         var exit = CliApp.Build().Parse(["run", "product_catalog", "--project", targetDir]).Invoke();
         Assert.Equal(ExitCodes.Ok, exit);
@@ -275,7 +360,7 @@ public class InitCommandTests : IDisposable
     public void Init_scaffolded_output_is_lf_only()
     {
         var targetDir = Path.Combine(_work, "lf-check");
-        var initExit = CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke();
+        var initExit = CliApp.Build().Parse(["init", targetDir, "--template", "sample"]).Invoke();
         Assert.Equal(ExitCodes.Ok, initExit);
 
         var files = Directory.GetFiles(targetDir, "*", SearchOption.AllDirectories);
@@ -347,9 +432,105 @@ public class InitCommandTests : IDisposable
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Pz.slnx"))) dir = dir.Parent;
         var repoRoot = dir?.FullName ?? throw new InvalidOperationException("Pz.slnx not found above test base dir");
-        // The whole Templates/ tree, not one template: `minimal` ships alongside `init` and is what
-        // the bare verb scaffolds, so scoping this to a single directory would leave the DEFAULT
-        // output unguarded -- and any template added later silently unguarded too.
-        return Path.Combine(repoRoot, "src", "Pz.Cli", "Templates");
+        // The whole templates/ tree, not one template: scoping this to a single directory would leave
+        // the DEFAULT output unguarded -- and any template added later silently unguarded too.
+        return Path.Combine(repoRoot, "templates");
     }
+
+    public static TheoryData<string> EveryTemplate()
+    {
+        var data = new TheoryData<string>();
+        foreach (var template in TemplateCatalog.All)
+        {
+            data.Add(template.Id);
+        }
+
+        return data;
+    }
+
+    /// <summary>Every template in the catalog must scaffold and substitute its name, whatever it
+    /// needs in order to RUN. Driven from the catalog rather than named one by one so a template
+    /// added later cannot arrive with no coverage at all.</summary>
+    [Theory]
+    [MemberData(nameof(EveryTemplate))]
+    public void Every_template_scaffolds_and_substitutes_its_name(string templateId)
+    {
+        var targetDir = Path.Combine(_work, $"scaffold-{templateId}");
+
+        Assert.Equal(ExitCodes.Ok,
+            CliApp.Build().Parse(["init", targetDir, "--template", templateId]).Invoke());
+
+        var projectYml = File.ReadAllText(Path.Combine(targetDir, "project.yml"));
+        Assert.Contains($"name: scaffold_{templateId}", projectYml, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(targetDir, "README.md")));
+        Assert.True(File.Exists(Path.Combine(targetDir, ".gitignore")));
+
+        // The sentinel is a real identifier, so a substitution that silently did nothing would still
+        // produce a loadable project -- assert it is gone rather than trusting the load to catch it.
+        foreach (var file in Directory.GetFiles(targetDir, "*", SearchOption.AllDirectories))
+        {
+            Assert.DoesNotContain("pz_new_project", File.ReadAllText(file), StringComparison.Ordinal);
+        }
+    }
+
+    /// <summary>How far each template can be exercised is a property of the template, so the catalog
+    /// decides: only offline ones can actually run here. The rest still have to COMPILE, which is the
+    /// failure a scaffolded-but-broken template would otherwise show a stranger first.</summary>
+    [Theory]
+    [MemberData(nameof(EveryTemplate))]
+    public void Every_template_goes_as_far_as_its_runnability_allows(string templateId)
+    {
+        var template = TemplateCatalog.Find(templateId)!;
+        var targetDir = Path.Combine(_work, $"exercise-{templateId}");
+        Assert.Equal(ExitCodes.Ok,
+            CliApp.Build().Parse(["init", targetDir, "--template", templateId]).Invoke());
+
+        switch (template.Runnability)
+        {
+            case TemplateRunnability.Offline:
+                Assert.Equal(ExitCodes.Ok,
+                    CliApp.Build().Parse(["run", "--all", "--project", targetDir]).Invoke());
+                break;
+            case TemplateRunnability.NeedsDatabase:
+                foreach (var (key, value) in PlaceholderDbEnv)
+                {
+                    Environment.SetEnvironmentVariable(key, value);
+                }
+
+                try
+                {
+                    Assert.Equal(ExitCodes.Ok,
+                        CliApp.Build().Parse(["plan", "--project", targetDir]).Invoke());
+                }
+                finally
+                {
+                    foreach (var key in PlaceholderDbEnv.Keys)
+                    {
+                        Environment.SetEnvironmentVariable(key, null);
+                    }
+                }
+
+                break;
+            default:
+                // NeedsNetwork and Nothing alike: compile is as far as we go without reaching out.
+                Assert.Equal(ExitCodes.Ok,
+                    CliApp.Build().Parse(["compile", "--project", targetDir]).Invoke());
+                break;
+        }
+    }
+
+    /// <summary>Placeholder credentials for templates whose connections.yml interpolates ${VAR}:
+    /// loading resolves those eagerly and fails fast (PZ0103) when one is unset. `.invalid` hosts
+    /// cannot resolve, so a compile that accidentally tried to connect would fail loudly.</summary>
+    private static readonly Dictionary<string, string> PlaceholderDbEnv = new()
+    {
+        ["ERP_DB_HOST"] = "erp.example.invalid",
+        ["ERP_DB_NAME"] = "erp",
+        ["ERP_DB_USER"] = "sa",
+        ["ERP_DB_PASSWORD"] = "placeholder",
+        ["MART_DB_HOST"] = "mart.example.invalid",
+        ["MART_DB_NAME"] = "mart",
+        ["MART_DB_USER"] = "sa",
+        ["MART_DB_PASSWORD"] = "placeholder",
+    };
 }

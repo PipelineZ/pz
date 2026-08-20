@@ -1,6 +1,0 @@
-pipeline: orders_enriched
-materialization: table
-tags: [daily, crm]
-checks:
-  - not_null: [id, email]
-  - unique: [id]

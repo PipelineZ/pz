@@ -26,10 +26,10 @@ my-project/
 
 - **`project.yml`** — project name/version, the `connectors:` list (NuGet package + version each
   connector ships as), `vars:` (referenced from SQL via `var('name')`), and `engine:` tuning.
-  Minimal example (from `samples/hello-pz/project.yml`):
+  Minimal example:
 
   ```yaml
-  name: hello_pz
+  name: pz_new_project
   version: 0.1.0
 
   connectors:
@@ -99,7 +99,7 @@ for that entity-side. Kwarg names equal YAML keys at every nesting level, so mov
 between the two surfaces is cut-and-paste. Declaring the same entity-side in both places is
 `PZ0341`.
 
-Read, declared at the call site (from `samples/hello-pz/pipelines/orders_enriched.sql`):
+Read, declared at the call site:
 
 ```sql
 join {{ source('crm', 'customers', path: 'data/customers.csv', format: 'csv') }} as c
@@ -116,7 +116,7 @@ crm:
         format: csv
 ```
 
-Write, declared at the call site (from `samples/hello-pz/pipelines/orders_enriched.sql`):
+Write, declared at the call site:
 
 ```sql
 INSERT INTO {{ sink('lake', 'orders_curated', format: 'parquet', strategy: 'replace') }}
@@ -165,7 +165,7 @@ about the cursor.
 
 Declare a source entity incremental by comparing its cursor column against
 `{{ watermark('<connection>', '<entity>') }}` in the pipeline's `WHERE` clause — no `columns:`
-contract or `sync:` block required for a plain floor. From `samples/mssql-mart/pipelines/orders_mart.sql`:
+contract or `sync:` block required for a plain floor:
 
 ```sql
 INSERT INTO {{ sink('mart', 'mart.orders_current', strategy: 'merge', keys: ['order_id']) }}
@@ -203,7 +203,7 @@ Declare incrementality **either** in YAML (`sync: { mode: incremental }`) **or**
 `sink()`'s `strategy` is `replace` (default), `append`, or `merge` (needs `keys: [...]`). An
 incremental source feeding an `append` sink is **at-least-once** by construction (a re-run or
 retry can re-deliver a slice) — pz refuses that pairing at compile time unless you say so
-explicitly with `duplicates: 'accept'`. From `samples/http-api/pipelines/issues_log.sql`:
+explicitly with `duplicates: 'accept'`:
 
 ```sql
 -- Incremental extraction paired with an append sink is at-least-once ... pz refuses this

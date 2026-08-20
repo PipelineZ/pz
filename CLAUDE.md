@@ -33,8 +33,8 @@ call. `outputs:` is retired (PZ0347); leftovers are PZ0346.
   parser and passed to capable connectors; part of the SourceLoad content hash.
 - **`root:`** on `localfiles`/`s3` says where the place is; `path:` is optional (a read with none is
   `<root>/<entity>.<format>`, a write `<root>/<entity>/`).
-- Samples are points on that spectrum: `mssql-mart` declares its whole read in SQL, `http-api` in
-  YAML, `hello-pz` and the `init` template one of each.
+- Samples and templates are points on that spectrum: `mssql-mart` declares its whole read in SQL,
+  `templates/http` in YAML, `templates/sample` one of each.
 
 ## Build & test
 
@@ -51,7 +51,7 @@ dotnet test tests/Pz.Engine.Tests -c Release --filter "FullyQualifiedName~Waterm
 
 # Packaging end-to-end proof (pack → tool install → pz init → pz run, offline).
 # Also a PR CI gate (ci.yml's pack-and-verify job); still worth running locally after
-# touching src/Pz.Cli, src/Pz.Cli/Templates/, or any packable .csproj.
+# touching src/Pz.Cli, templates/, or any packable .csproj.
 scripts/verify-tool-install.sh
 ```
 
@@ -99,6 +99,9 @@ DuckDB is the buffer manager — the .NET side only ever holds in-flight Arrow b
 | `src/Pz.State.SqlServer` | pluggable state backend: `IKeyedStateStore`/`IRunArtifactStore` over SQL Server, schema creation/migration, batched event persistence — referenced directly by `Pz.Cli`, not loaded as a connector |
 | `src/Pz.Mcp` | the `pz mcp` verb's server: 22 typed tools (introspect/verify/author/docs always registered, `pz_run`/`pz_retry`/`pz_run_results` only under `--allow-run`) — referenced directly by `Pz.Cli`, not loaded as a connector |
 | `connectors/` | first-party connectors: LocalFiles, Postgres, S3, SqlServer, AzureBlob, Http, MySql, Sqlite |
+
+`templates/` holds real, in-place-runnable projects that are simultaneously the browsable examples
+and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
 
 > `src/Pz.Mcp/Pz.Mcp.csproj` embeds `docs/reference/authoring-for-agents.md` so `pz mcp init` can copy
 > it onto disk with no network and no source tree. It is the only documentation file still in this
