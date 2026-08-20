@@ -16,7 +16,7 @@ public class ConnectionAuthoringTests
         CreateRegistryAsync = (project, dir, ct) =>
             Pz.Cli.ConnectorRegistryFactory.CreateAsync(project, dir, noLockCheck: false, ct),
         CreateStateStores = (_, _) => throw new InvalidOperationException("not needed for authoring tools"),
-        InitProject = (_, _) => throw new InvalidOperationException("not needed for connection authoring"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed for connection authoring"),
         RunAsync = (_, _) => throw new InvalidOperationException("not needed for connection authoring"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed for connection authoring"),
     };

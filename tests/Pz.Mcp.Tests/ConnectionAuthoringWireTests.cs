@@ -23,7 +23,7 @@ public class ConnectionAuthoringWireTests
         CreateRegistryAsync = (project, dir, ct) =>
             Pz.Cli.ConnectorRegistryFactory.CreateAsync(project, dir, noLockCheck: false, ct),
         CreateStateStores = (_, _) => throw new InvalidOperationException("not needed"),
-        InitProject = (_, _) => throw new InvalidOperationException("not needed"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed"),
         RunAsync = (_, _) => throw new InvalidOperationException("not needed"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed"),
     };
@@ -154,7 +154,7 @@ public class ConnectionAuthoringWireTests
         {
             CreateRegistryAsync = (_, _, _) => throw new NotSupportedException("boom from the registry"),
             CreateStateStores = (_, _) => throw new InvalidOperationException("not needed"),
-            InitProject = (_, _) => throw new InvalidOperationException("not needed"),
+            InitProject = (_, _, _) => throw new InvalidOperationException("not needed"),
             RunAsync = (_, _) => throw new InvalidOperationException("not needed"),
             RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed"),
         };

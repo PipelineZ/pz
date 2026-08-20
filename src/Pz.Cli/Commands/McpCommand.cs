@@ -583,7 +583,7 @@ internal static class McpCommand
     /// <paramref name="dir"/>'s own leaf, so <c>Path.GetFullPath(name, workingDir)</c> resolves back to
     /// <paramref name="dir"/> exactly, and project-name derivation (sanitization) stays InitCommand's,
     /// never reimplemented here.</summary>
-    private static IReadOnlyList<PzError> InitProject(string dir, string name)
+    private static IReadOnlyList<PzError> InitProject(string dir, string name, bool minimal)
     {
         if (File.Exists(dir) || (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any()))
         {
@@ -593,7 +593,8 @@ internal static class McpCommand
         }
 
         var workingDir = Path.GetDirectoryName(dir) ?? dir;
-        var exitCode = InitCommand.Execute(name, workingDir);
+        var exitCode = InitCommand.Execute(
+            name, workingDir, minimal ? InitCommand.Template.Minimal : InitCommand.Template.Sample);
         return exitCode == ExitCodes.Ok
             ? []
             : [new PzError(PzErrorCode.McpInitDirNotEmpty,

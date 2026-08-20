@@ -17,7 +17,7 @@ public class PathGuardTests
         CreateRegistryAsync = (project, dir, ct) =>
             Pz.Cli.ConnectorRegistryFactory.CreateAsync(project, dir, noLockCheck: false, ct),
         CreateStateStores = (_, _) => throw new InvalidOperationException("not needed for path guard tests"),
-        InitProject = (_, _) => throw new InvalidOperationException("not needed for path guard tests"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed for path guard tests"),
         RunAsync = (_, _) => throw new InvalidOperationException("refusal must happen before any run"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("refusal must happen before any run"),
     };

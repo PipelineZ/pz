@@ -211,13 +211,16 @@ public static class PzMcpServer
                         "even if another pipeline still ref()s it -- self-verify reports the resulting errors.",
                 }),
             McpServerTool.Create(
-                () => AuthoringTools.InitProject(projectDir, services),
+                (bool minimal = true) => AuthoringTools.InitProject(projectDir, minimal, services),
                 new McpServerToolCreateOptions
                 {
                     Name = "pz_init_project",
-                    Description = "Scaffold a new runnable pz project (the same built-in starter template as " +
-                        "`pz init`) into this server's own project directory. Refuses if that directory " +
-                        "already exists and is not empty.",
+                    Description = "Scaffold a new pz project into this server's own project directory, and " +
+                        "list the files written. minimal (default true): project.yml + connections.yml only, " +
+                        "ready to author against. Pass minimal=false for the runnable four-pipeline sample " +
+                        "`pz init` scaffolds -- only when the user asked to see a worked example, since its " +
+                        "demo pipelines compile and would run. Refuses if the directory already exists and " +
+                        "is not empty.",
                 }),
         };
 

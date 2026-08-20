@@ -13,8 +13,23 @@ namespace Pz.Cli.Commands;
 /// pz run` succeeds fully offline — no `pz restore`, no network, no docker.</summary>
 internal static class InitCommand
 {
-    private const string ResourcePrefix = "Templates/init/";
+    /// <summary>Which embedded template set to scaffold. <see cref="Sample"/> is the runnable
+    /// four-pipeline demo `pz init` writes — the right thing for someone meeting pz for the first
+    /// time, who learns the shape by reading working code. <see cref="Minimal"/> is project.yml +
+    /// connections.yml and nothing else, for a caller that already knows what it is building and
+    /// would otherwise have to delete the demo first (see <c>pz_init_project</c>'s <c>minimal</c>).
+    /// The sample's own files are a poor starting point there: they compile, so leaving them in
+    /// place means `pz run --all` moves demo data the caller never asked for.</summary>
+    internal enum Template
+    {
+        Sample,
+        Minimal,
+    }
+
     private const string ProjectNameToken = "{{PROJECT_NAME}}";
+
+    private static string ResourcePrefixFor(Template template) =>
+        template == Template.Minimal ? "Templates/minimal/" : "Templates/init/";
 
     public static Command Create()
     {
@@ -28,8 +43,9 @@ internal static class InitCommand
         return command;
     }
 
-    internal static int Execute(string name, string workingDir)
+    internal static int Execute(string name, string workingDir, Template template = Template.Sample)
     {
+        var resourcePrefix = ResourcePrefixFor(template);
         var targetDir = Path.GetFullPath(name, workingDir);
 
         if (File.Exists(targetDir))
@@ -66,12 +82,12 @@ internal static class InitCommand
         foreach (var resourceName in assembly.GetManifestResourceNames())
         {
             var normalized = resourceName.Replace('\\', '/');
-            if (!normalized.StartsWith(ResourcePrefix, StringComparison.Ordinal))
+            if (!normalized.StartsWith(resourcePrefix, StringComparison.Ordinal))
             {
                 continue;
             }
 
-            var relativeSegments = normalized[ResourcePrefix.Length..].Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var relativeSegments = normalized[resourcePrefix.Length..].Split('/', StringSplitOptions.RemoveEmptyEntries);
             var destination = Path.Combine([targetDir, .. relativeSegments]);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
 
@@ -87,10 +103,13 @@ internal static class InitCommand
         // with what project.yml's `name:` actually says -- this matches the common case exactly (bare,
         // already-valid names round-trip unchanged) and stays copy-paste-safe even when the raw argument
         // needed sanitizing (e.g. shell-hazardous characters like `!`).
-        Console.WriteLine(
-            "next steps:\n" +
-            $"  cd {projectName} && pz run orders_enriched\n" +
-            "  (this template ships two independent flows; `pz run --all` runs both)");
+        Console.WriteLine(template == Template.Minimal
+            ? "next steps:\n" +
+              $"  cd {projectName}, declare a connection in connections.yml, then add a pipeline\n" +
+              "  under pipelines/ that source()s from it -- `pz validate` checks both"
+            : "next steps:\n" +
+              $"  cd {projectName} && pz run orders_enriched\n" +
+              "  (this template ships two independent flows; `pz run --all` runs both)");
         return ExitCodes.Ok;
     }
 

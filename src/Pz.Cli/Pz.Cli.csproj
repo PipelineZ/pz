@@ -27,15 +27,20 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- `pz init`'s ONLY template source. Embedded rather than copied from samples/hello-pz at build
-         time: an MSBuild copy would let the two drift silently, and an installed tool must have the
-         template with no source tree on disk.
+    <!-- The scaffolding templates' ONLY source. Embedded rather than copied from samples/hello-pz at
+         build time: an MSBuild copy would let the two drift silently, and an installed tool must have
+         the template with no source tree on disk.
+         `init` is the runnable sample `pz init` scaffolds; `minimal` is the two-file project shape,
+         for a caller that already knows what it is building (see InitCommand.Template).
          LogicalName is forced to forward slashes on every OS (RecursiveDir/Filename/Extension can come
-         back with backslashes from a Windows-hosted build) so InitCommand's "Templates/init/" prefix
+         back with backslashes from a Windows-hosted build) so InitCommand's "Templates/<name>/" prefix
          match and relative-path reconstruction are platform-independent regardless of which OS produced
          the assembly. -->
     <EmbeddedResource Include="Templates/init/**/*">
       <LogicalName>Templates/init/$([System.String]::new('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Templates/minimal/**/*">
+      <LogicalName>Templates/minimal/$([System.String]::new('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

@@ -406,8 +406,12 @@ internal static class AuthoringTools
     /// <see cref="CliServices.InitProject"/>, which wraps <c>InitCommand</c>'s real scaffolding logic.
     /// A non-empty <paramref name="projectDir"/> comes back as PZ0603 with nothing written -- checked by
     /// the <see cref="CliServices.InitProject"/> implementation itself before any file is touched.
-    /// Synchronous (no I/O here is awaited) but named/shaped like every other tool handler.</summary>
-    internal static string InitProject(string projectDir, CliServices services)
+    /// Synchronous (no I/O here is awaited) but named/shaped like every other tool handler.
+    ///
+    /// The result lists every file written. Reporting only <c>created: true</c> left the caller
+    /// needing a second round trip to learn what it had just been handed -- and, with the sample
+    /// template, what it would have to delete.</summary>
+    internal static string InitProject(string projectDir, bool minimal, CliServices services)
     {
         // Trim trailing separators ONCE, up front, and use the trimmed path consistently everywhere
         // below -- McpCommand.InitProject derives its InitCommand.Execute workingDir from this same
@@ -416,7 +420,7 @@ internal static class AuthoringTools
         // through would scaffold one level too deep (targetDir "/foo/bar/bar").
         var trimmed = projectDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var name = Path.GetFileName(trimmed);
-        var errors = services.InitProject(trimmed, name);
+        var errors = services.InitProject(trimmed, name, minimal);
         if (errors.Count > 0)
         {
             return ToolEnvelope.Errors(errors, applied: false);
@@ -427,8 +431,34 @@ internal static class AuthoringTools
             json.WriteStartObject("result");
             json.WriteBoolean("created", true);
             json.WriteString("dir", trimmed);
+            json.WriteString("template", minimal ? "minimal" : "sample");
+            json.WriteStartArray("files");
+            foreach (var file in ScaffoldedFiles(trimmed))
+            {
+                json.WriteStringValue(file);
+            }
+
+            json.WriteEndArray();
             json.WriteEndObject();
         }, applied: true);
+    }
+
+    /// <summary>Every file the scaffold just wrote, project-relative with forward slashes and
+    /// ordinal-sorted so the envelope is byte-stable across filesystems. Read back off disk rather
+    /// than predicted from the template: the manifest is whatever actually landed.</summary>
+    private static IReadOnlyList<string> ScaffoldedFiles(string projectDir)
+    {
+        if (!Directory.Exists(projectDir))
+        {
+            return [];
+        }
+
+        return
+        [
+            .. Directory.EnumerateFiles(projectDir, "*", SearchOption.AllDirectories)
+                .Select(f => Path.GetRelativePath(projectDir, f).Replace(Path.DirectorySeparatorChar, '/'))
+                .OrderBy(f => f, StringComparer.Ordinal),
+        ];
     }
 
     private static async Task<string> AddOrUpdateAsync(

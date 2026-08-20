@@ -13,7 +13,7 @@ public class ServerRoundTripTests
     {
         CreateRegistryAsync = (_, _, _) => throw new InvalidOperationException("not needed for listing"),
         CreateStateStores = (_, _) => throw new InvalidOperationException("not needed for listing"),
-        InitProject = (_, _) => throw new InvalidOperationException("not needed for listing"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed for listing"),
         RunAsync = (_, _) => throw new InvalidOperationException("not needed for listing"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed for listing"),
     };
@@ -25,7 +25,7 @@ public class ServerRoundTripTests
         CreateRegistryAsync = (project, dir, ct) =>
             Pz.Cli.ConnectorRegistryFactory.CreateAsync(project, dir, noLockCheck: false, ct),
         CreateStateStores = (_, _) => throw new InvalidOperationException("not needed for verify tools"),
-        InitProject = (_, _) => throw new InvalidOperationException("not needed for verify tools"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed for verify tools"),
         RunAsync = (_, _) => throw new InvalidOperationException("not needed for verify tools"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed for verify tools"),
     };
