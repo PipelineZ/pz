@@ -1,0 +1,10 @@
+files:
+  connector: localfiles
+  entities:
+    orders:
+      read:
+        path: data/orders.parquet
+        format: parquet
+
+lake:
+  connector: localfiles

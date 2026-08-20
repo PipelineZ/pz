@@ -1,0 +1,9 @@
+name: retry_reuse_e2e
+version: 0.1.0
+
+connectors:
+  - package: Pz.Connector.LocalFiles
+    version: 0.1.0
+
+engine:
+  threads: 1

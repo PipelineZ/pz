@@ -1,0 +1,27 @@
+erp:
+  connector: sqlserver
+  host: ${PZ_MSSQL_HOST}
+  port: 14333
+  database: ${PZ_MSSQL_DB}
+  user: ${PZ_MSSQL_USER}
+  password: ${PZ_MSSQL_PASSWORD}
+  trust_server_certificate: true
+  entities:
+    # YAML surface for the read: a columns contract, so reads prune to it and
+    # `--connect` fails on drift. The write side is declared at the sink() call.
+    dbo.customers:
+      read:
+        columns:
+          customer_id: int
+          name: varchar
+          country: varchar
+          created_at: timestamp
+
+mart:
+  connector: sqlserver
+  host: ${PZ_MSSQL_HOST}
+  port: 14333
+  database: ${PZ_MSSQL_DB}
+  user: ${PZ_MSSQL_USER}
+  password: ${PZ_MSSQL_PASSWORD}
+  trust_server_certificate: true

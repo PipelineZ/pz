@@ -1,0 +1,6 @@
+id,customer_id,amount,status
+1,1,25.50,shipped
+2,2,8.00,shipped
+3,1,42.00,returned
+4,3,5.00,pending
+5,2,15.75,shipped

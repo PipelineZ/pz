@@ -1,0 +1,12 @@
+pg:
+  connector: localfiles
+  root: data
+  entities:
+    orders:
+      read:
+        path: orders.parquet
+        format: parquet
+
+lake:
+  connector: localfiles
+  root: out

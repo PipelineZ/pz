@@ -1,0 +1,32 @@
+# Every place this project talks to. A connection is a place with credentials; an entity is a
+# thing in that place; the direction is the function you call -- source() to read, sink() to write.
+raw:
+  connector: localfiles
+  # An entity's read options live here OR at the source() call that reads it -- never both, and
+  # never merged. `customers` and `orders` are declared here because more than one pipeline could
+  # want them on the same terms; `products` is declared at its call site in product_catalog.sql,
+  # where the only pipeline reading it lives. Both spellings compile to the same node.
+  entities:
+    customers:
+      read:
+        path: data/customers.csv
+        format: csv
+        columns:
+          id: bigint
+          email: varchar
+    orders:
+      read:
+        path: data/orders.csv
+        format: csv
+        columns:
+          id: bigint
+          customer_id: bigint
+          amount: double
+          status: varchar
+
+lake:
+  connector: localfiles
+  # Where this lake is. Every write lands under it in a directory named after the entity, so
+  # `order_totals` becomes out/order_totals/. A `path:` kwarg on a sink() call overrides that for
+  # one entity; an absolute path ignores `root:` entirely.
+  root: out

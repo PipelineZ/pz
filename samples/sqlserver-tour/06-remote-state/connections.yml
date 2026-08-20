@@ -1,0 +1,31 @@
+erp:
+  connector: sqlserver
+  host: ${PZ_MSSQL_HOST}
+  port: 14333
+  database: ${PZ_MSSQL_DB}
+  user: ${PZ_MSSQL_USER}
+  password: ${PZ_MSSQL_PASSWORD}
+  trust_server_certificate: true
+  # No entities block, exactly as in 02: the whole read is declared in the pipeline SQL.
+
+mart:
+  connector: sqlserver
+  host: ${PZ_MSSQL_HOST}
+  port: 14333
+  database: ${PZ_MSSQL_DB}
+  user: ${PZ_MSSQL_USER}
+  password: ${PZ_MSSQL_PASSWORD}
+  trust_server_certificate: true
+
+# The state store's credentials. A connection is a place with credentials -- this one is never
+# read or written by any pipeline; only project.yml's `state.connection` points at it. Here it
+# is the same server as the data (fine for a tour); in production it is typically the ops
+# database that outlives every compute host.
+ops:
+  connector: sqlserver
+  host: ${PZ_MSSQL_HOST}
+  port: 14333
+  database: ${PZ_MSSQL_DB}
+  user: ${PZ_MSSQL_USER}
+  password: ${PZ_MSSQL_PASSWORD}
+  trust_server_certificate: true

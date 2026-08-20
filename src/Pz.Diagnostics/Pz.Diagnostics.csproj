@@ -1,0 +1,14 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Internal assembly: ships inside the Pz.Cli tool package rather than as its own NuGet. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Exposes RunEventBus.PendingCountForTests, the internal test-only seam for the gate-based
+         never-blocks proof. -->
+    <InternalsVisibleTo Include="Pz.Diagnostics.Tests" />
+  </ItemGroup>
+
+</Project>

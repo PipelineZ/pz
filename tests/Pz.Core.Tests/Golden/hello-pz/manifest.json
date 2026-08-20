@@ -1,0 +1,97 @@
+{
+  "project": "hello_pz",
+  "version": "0.1.0",
+  "generatedBy": "pz",
+  "nodes": [
+    {
+      "id": "59489ad607b22cf9",
+      "kind": "source_load",
+      "name": "src_crm__customers",
+      "dependsOn": [],
+      "tags": [],
+      "file": "connections.yml"
+    },
+    {
+      "id": "cddc6e19a966dea0",
+      "kind": "source_load",
+      "name": "src_crm__orders",
+      "dependsOn": [],
+      "tags": [],
+      "file": "connections.yml"
+    },
+    {
+      "id": "c12d90246f26ce45",
+      "kind": "pipeline",
+      "name": "stg_orders",
+      "dependsOn": [
+        "cddc6e19a966dea0"
+      ],
+      "tags": [],
+      "file": "pipelines/stg_orders.sql"
+    },
+    {
+      "id": "e57c0c96391041ac",
+      "kind": "pipeline",
+      "name": "order_totals",
+      "dependsOn": [
+        "c12d90246f26ce45"
+      ],
+      "tags": [],
+      "file": "pipelines/order_totals.sql"
+    },
+    {
+      "id": "e1ac44ee45ce6ff1",
+      "kind": "pipeline",
+      "name": "orders_enriched",
+      "dependsOn": [
+        "59489ad607b22cf9",
+        "c12d90246f26ce45"
+      ],
+      "tags": [
+        "daily",
+        "crm"
+      ],
+      "file": "pipelines/orders_enriched.sql"
+    },
+    {
+      "id": "920c5730ad9bb632",
+      "kind": "check",
+      "name": "check_orders_enriched_not_null_id_email",
+      "dependsOn": [
+        "e1ac44ee45ce6ff1"
+      ],
+      "tags": [],
+      "file": "pipelines/orders_enriched.sql"
+    },
+    {
+      "id": "ef802d36ac370b28",
+      "kind": "check",
+      "name": "check_orders_enriched_unique_id",
+      "dependsOn": [
+        "e1ac44ee45ce6ff1"
+      ],
+      "tags": [],
+      "file": "pipelines/orders_enriched.sql"
+    },
+    {
+      "id": "d310d06e14d9b686",
+      "kind": "sink_write",
+      "name": "lake.order_totals",
+      "dependsOn": [
+        "e57c0c96391041ac"
+      ],
+      "tags": [],
+      "file": "connections.yml"
+    },
+    {
+      "id": "cdb52b6c486cd791",
+      "kind": "sink_write",
+      "name": "lake.orders_curated",
+      "dependsOn": [
+        "e1ac44ee45ce6ff1"
+      ],
+      "tags": [],
+      "file": "connections.yml"
+    }
+  ]
+}

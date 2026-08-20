@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>FakeSourceConnector</PackageId>
+    <!-- Fix 4 (fixture debt): the fixture used to pass -p:PackageVersion=... on the `dotnet pack`
+         command line. That sets a GLOBAL MSBuild property for the whole build, which also leaks into
+         FakeTransitiveDep's P2P build (NuGet's ProjectReference-to-nuspec-dependency conversion reads
+         the referenced project's evaluated PackageVersion) — so FakeSourceConnector's nuspec ended up
+         recording FakeTransitiveDep's dependency as FakeSourceConnector's OWN version instead of
+         FakeTransitiveDep's true, independently-declared 2.0.0 (confirmed empirically: even
+         `UndefineProperties` on the ProjectReference item does not stop NuGet's pack-time version
+         lookup from seeing the global override). Fixed by routing the fixture's per-pack version
+         through a project-local property name that FakeTransitiveDep never reads, so the global
+         "PackageVersion" property is never set at all. -->
+    <PackageVersion Condition="'$(FakeSourceConnectorVersion)' != ''">$(FakeSourceConnectorVersion)</PackageVersion>
+    <!-- Test-double NuGet fixture, not one of the repo's 6 real packable projects.
+         MinVer (wired repo-wide via Directory.Build.props) would otherwise overwrite the
+         FakeSourceConnectorVersion-derived PackageVersion above with a height-based version at pack
+         time, regardless of which version the calling test asked for. -->
+    <MinVerSkip>true</MinVerSkip>
+    <!-- This fixture pins its own version (e.g. 1.2.3, a "stable" semver) while its
+         Pz.Connectors.Abstractions ProjectReference now floats on MinVer's real height-based prerelease
+         version (0.0.0-alpha.0.N pre-tag). NuGet's NU5104 ("a stable release should not have a
+         prerelease dependency") fires on that mismatch; it is an artifact of this test fixture's
+         hand-pinned version scheme, not a real packaging concern for the actual 6 packable projects
+         (which are always co-versioned identically by MinVer from the same commit). -->
+    <NoWarn>$(NoWarn);NU5104</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../FakeTransitiveDep/FakeTransitiveDep.csproj" />
+    <ProjectReference Include="../../../../src/Pz.Connectors.Abstractions/Pz.Connectors.Abstractions.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="pz.connector.json" Pack="true" PackagePath="" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

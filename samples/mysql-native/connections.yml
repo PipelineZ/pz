@@ -1,0 +1,13 @@
+shop:
+  connector: mysql
+  host: ${SHOP_DB_HOST}
+  database: ${SHOP_DB_NAME}
+  user: ${SHOP_DB_USER}
+  password: ${SHOP_DB_PASSWORD}
+
+mart:
+  connector: mysql
+  host: ${MART_DB_HOST}
+  database: ${MART_DB_NAME}
+  user: ${MART_DB_USER}
+  password: ${MART_DB_PASSWORD}

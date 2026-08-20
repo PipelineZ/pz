@@ -1,0 +1,50 @@
+github:
+  connector: http
+  base_url: https://api.github.com
+  # Works unauthenticated (GitHub allows ~60 requests/hour without a token). For
+  # 5,000/hour, export GITHUB_TOKEN and uncomment the line below. It ships commented
+  # out because ${VAR} interpolation fails fast (PZ0103) when the variable is unset --
+  # the sample must load with zero setup.
+  # auth: { type: bearer, token: ${GITHUB_TOKEN} }
+  headers: { X-GitHub-Api-Version: "2022-11-28" }
+  entities:
+    # Connector options (path, query, pagination, max_pages, ...) sit under `read:`,
+    # alongside the engine-level keys (columns, sync).
+    issues:
+      read:
+        path: /repos/duckdb/duckdb/issues
+        query:
+          state: all
+          per_page: "100"
+          # Ascending by the cursor (updated_at): sort/direction ask the API to serve pages
+          # oldest-first so a max_pages-truncated crawl still advances the watermark only
+          # over what actually landed -- see extract-from-http-api.md's cursor_order section.
+          sort: updated
+          direction: asc
+          # Rendered from the stored watermark (ISO-8601 UTC). On the first run there is
+          # no watermark yet, so the parameter is omitted entirely -- the API sees its own
+          # unbounded default.
+          since: "{{ watermark }}"
+        # GitHub returns an RFC 8288 Link header; the connector follows rel="next".
+        pagination: { strategy: link_header }
+        # A sample should never crawl unboundedly: at most 5 pages (500 issues) per run.
+        # Delete this line to pull the full history in one run.
+        max_pages: 5
+        # Declares the ordering promised by sort/direction above -- lets the compiler check
+        # a truncated crawl's safety at validate time instead of only at run time.
+        cursor_order: asc
+        # Typed contract: exactly these columns land, typed at extraction time; every
+        # other JSON key in the response is ignored. The cursor (updated_at) is just
+        # another declared column in contract mode.
+        columns:
+          id: bigint
+          number: bigint
+          title: varchar
+          state: varchar
+          updated_at: timestamp
+        sync:
+          mode: incremental
+          cursor: updated_at
+
+lake:
+  connector: localfiles

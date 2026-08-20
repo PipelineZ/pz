@@ -1,0 +1,11 @@
+name: two_flows
+version: 0.1.0
+
+connectors:
+  - package: Pz.Connector.LocalFiles
+    version: 0.1.0
+
+engine:
+  threads: 2
+  duckdb:
+    memory_limit: 1GiB

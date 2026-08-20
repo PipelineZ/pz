@@ -1,0 +1,6 @@
+pipeline: orders_enriched
+materialization: table
+tags: [daily]
+checks:
+  - not_null: [id, email]
+  - unique: [id]

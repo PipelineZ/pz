@@ -1,0 +1,20 @@
+name: Docs issue
+description: Something in the docs is wrong, missing, or confusing
+labels: [docs]
+body:
+  - type: input
+    id: page
+    attributes:
+      label: Which page?
+      placeholder: https://pipelinez.dev/quickstart/, README, --help text, an error hint...
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing?
+      description: >
+        If a doc contradicts what pz actually does, say what you observed — those
+        are the bugs we fix first.
+    validations:
+      required: true

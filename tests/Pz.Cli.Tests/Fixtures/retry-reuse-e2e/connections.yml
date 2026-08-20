@@ -1,0 +1,19 @@
+crm:
+  connector: localfiles
+  entities:
+    orders:
+      read:
+        path: orders.csv
+        format: csv
+        columns:
+          id: bigint
+          name: varchar
+        sync:
+          mode: incremental
+          cursor: id
+
+flaky:
+  connector: localfiles
+
+ok:
+  connector: localfiles

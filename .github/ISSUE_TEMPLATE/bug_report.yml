@@ -1,0 +1,49 @@
+name: Bug report
+description: Something pz did wrong — a crash, a wrong result, a misleading error
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you run, and what did pz do?
+      placeholder: |
+        $ pz run --all
+        ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: >
+        Ideally a tiny project: connections.yml + the pipeline SQL + a few rows of
+        data. `pz init` output plus your edits is perfect. Strip credentials —
+        never paste real connection config.
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: pz version (`pz --version`), OS, .NET SDK version, and — if a connector is involved — which one.
+      placeholder: |
+        pz 0.1.0, Ubuntu 24.04, .NET 10.0.400, Pz.Connector.Postgres
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: >
+        The failing run's console output, or better, its NDJSON
+        (`pz run --log-format json`) and `.pz/runs/<id>/run_results.json`.
+        Check for anything sensitive before pasting.
+    validations:
+      required: false

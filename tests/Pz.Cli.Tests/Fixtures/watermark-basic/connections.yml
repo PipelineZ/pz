@@ -1,0 +1,17 @@
+files:
+  connector: localfiles
+  entities:
+    orders:
+      read:
+        path: data/orders.csv
+        format: csv
+        columns:
+          id: bigint
+          customer: varchar
+          amount: double
+        sync:
+          mode: incremental
+          cursor: id
+
+lake:
+  connector: localfiles

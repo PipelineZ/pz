@@ -1,0 +1,14 @@
+files:
+  connector: localfiles
+  entities:
+    events:
+      read:
+        path: data/events.json
+        format: json
+        columns:
+          id: bigint
+          customer: varchar
+          amount: double
+
+lake:
+  connector: localfiles

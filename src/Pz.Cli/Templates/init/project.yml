@@ -1,0 +1,21 @@
+name: {{PROJECT_NAME}}
+version: 0.1.0
+
+connectors:
+  - package: Pz.Connector.LocalFiles
+    version: 0.1.0
+
+vars:
+  min_amount: 10
+  statuses: [shipped, returned]
+
+engine:
+  threads: 2
+  duckdb:
+    memory_limit: 1GiB
+
+# Reclaim disk automatically: after each run, delete staging.duckdb from all but
+# the newest 10 runs. Run history (run_results.json) is always kept. `retention: off`
+# disables it; `pz clean` does the same sweep on demand.
+retention:
+  keep_last: 10

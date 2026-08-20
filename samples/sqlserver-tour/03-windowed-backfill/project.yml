@@ -1,0 +1,7 @@
+name: sqlserver-03-windowed-backfill
+version: "1.0"
+
+# Automatic retention: this scenario is run 5+ times in a row, so keep_last: 2
+# makes the sweep observable (`ls .pz/runs/*/staging.duckdb` stays at 2).
+retention:
+  keep_last: 2

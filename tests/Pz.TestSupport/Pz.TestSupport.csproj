@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Shared test support (docker-gated skip helpers) consumed by test projects; it is not itself
+         a runnable test project, so `dotnet test` at the solution level must skip it. -->
+    <IsTestProject>false</IsTestProject>
+    <!-- Test-support library, not one of the packable projects. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/Pz.Engine/Pz.Engine.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+</Project>

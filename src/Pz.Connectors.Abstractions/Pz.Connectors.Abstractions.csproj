@@ -1,0 +1,12 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <!-- PooledNativeAllocator/PooledMemoryOwner manage raw native pointers
+         (NativeMemory.AlignedAlloc/AlignedFree) for pooled off-heap batch buffers. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Description>Connector authoring abstractions (sources, sinks, schema, protocol handshake) for PipelineZ (pz).</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Apache.Arrow" Version="23.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
+  </ItemGroup>
+</Project>

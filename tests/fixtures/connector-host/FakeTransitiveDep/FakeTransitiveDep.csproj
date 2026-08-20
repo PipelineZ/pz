@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <PackageId>FakeTransitiveDep</PackageId>
+    <PackageVersion>2.0.0</PackageVersion>
+    <!-- Test-double NuGet fixture, not one of the repo's 6 real packable projects.
+         MinVer (wired repo-wide via Directory.Build.props) would otherwise overwrite the hand-authored
+         PackageVersion above with a height-based version at pack time. -->
+    <MinVerSkip>true</MinVerSkip>
+  </PropertyGroup>
+</Project>

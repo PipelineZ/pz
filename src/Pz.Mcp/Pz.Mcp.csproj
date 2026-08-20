@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Same packable-set decision as Pz.Engine/Pz.Diagnostics/Pz.State.Http: internal assembly,
+         ships inside the Pz.Cli tool package (the `pz mcp` verb) rather than as its own NuGet. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pz.Core\Pz.Core.csproj" />
+    <ProjectReference Include="..\Pz.Engine\Pz.Engine.csproj" />
+    <ProjectReference Include="..\Pz.DuckDb\Pz.DuckDb.csproj" />
+    <ProjectReference Include="..\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+    <ProjectReference Include="..\Pz.PackageManagement\Pz.PackageManagement.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Mcp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The agent-facing authoring guide: the ONE documentation file still embedded here. Every
+         other doc is fetched from the published site by the pz_docs_* tools, but this one is copied
+         onto disk by `pz mcp init` for a client to read directly, so it must be present with no
+         network and no source tree. LogicalName is forced to a clean "docs/<relative-path>" form on
+         every OS (the same explicit-LogicalName convention Pz.Cli's Templates/init/** resources use)
+         rather than reversing MSBuild's default folder-to-dot manifest-name mangling, which is
+         ambiguous for filenames that themselves contain dots. -->
+    <EmbeddedResource Include="../../docs/reference/authoring-for-agents.md">
+      <LogicalName>docs/reference/authoring-for-agents.md</LogicalName>
+    </EmbeddedResource>
+    <!-- The pz-pipelines skill's SKILL.md, embedded so `pz mcp init` can copy it
+         out onto disk (aspire precedent: real file copies, not symlinks) with no source tree required.
+         Its references/authoring-for-agents.md rides along by reusing the embed above rather than a
+         second copy. -->
+    <EmbeddedResource Include="Skills/pz-pipelines/SKILL.md">
+      <LogicalName>skills/pz-pipelines/SKILL.md</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>

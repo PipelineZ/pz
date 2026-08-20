@@ -1,0 +1,4 @@
+broken:
+  connector: localfiles
+  root: /tmp/pz-data
+  entities: [a, b

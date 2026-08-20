@@ -1,0 +1,19 @@
+crm:
+  connector: localfiles
+  root: ${DATA_DIR}
+  entities:
+    customers:
+      read:
+        path: customers.csv
+        format: csv
+        columns:
+          id: bigint
+          email: varchar
+    orders:
+      read:
+        path: orders.csv
+        format: csv
+
+lake:
+  connector: localfiles
+  root: ${OUT_DIR}

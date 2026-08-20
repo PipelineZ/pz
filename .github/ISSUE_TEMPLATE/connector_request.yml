@@ -1,0 +1,33 @@
+name: Connector request
+description: A source or sink you need that pz doesn't have
+labels: [connector-request]
+body:
+  - type: input
+    id: system
+    attributes:
+      label: What system?
+      placeholder: SQLite, Snowflake, Kafka, Google Cloud Storage, ...
+    validations:
+      required: true
+  - type: dropdown
+    id: direction
+    attributes:
+      label: Direction
+      options:
+        - Source (read from it)
+        - Sink (write to it)
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Your use case
+      description: >
+        What would the pipeline do? Batch size, incremental or full loads, roughly
+        how much data. This is what lets us prioritize — and connectors ship as
+        ordinary NuGet packages against a versioned ABI, so "I'd like to build
+        this myself against the TestKit" is a great answer too (see
+        https://pipelinez.dev/how-to/author-a-connector/).
+    validations:
+      required: true

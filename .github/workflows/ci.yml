@@ -1,0 +1,66 @@
+name: ci
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build Pz.slnx -c Release
+      # Tests run on ubuntu only. Both legs BUILD (cross-platform compile safety); the ubuntu leg also runs
+      # the full suite, where Linux Docker lets every Testcontainers suite (Postgres/MinIO/Azurite) actually
+      # RUN. The windows runner's Docker daemon is reachable but can't run the Linux images those suites
+      # need, and not every suite's docker gate skips on that condition -- so windows stays build-only rather
+      # than running suites that would fail on a can't-pull-linux-image error. PZ_TESTS_OFFLINE=1 skips
+      # network-dependent tests (e.g. the live api.github.com smoke, whose SkipIfOffline() gate keys only on
+      # this env var) to keep CI hermetic -- the stub-server suites cover the same logic offline.
+      # --blame-hang: a hung test must name itself. On 2026-07-22 a run sat silent for 25 minutes
+      # (last suite output 11:38, workflow-level cancel 12:07) and the log couldn't say which test
+      # stalled -- passing tests print nothing at normal verbosity, so silence hides the culprit.
+      # With a 10m per-suite ceiling (longest suite is ~2m here), vstest kills the hung run, dumps
+      # every thread's stack, and prints the in-flight test names instead.
+      - run: dotnet test Pz.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+        if: runner.os == 'Linux'
+        env:
+          PZ_TESTS_OFFLINE: '1'
+
+  # The packaging end-to-end proof (pack -> local-feed tool install -> offline `pz init` -> offline
+  # `pz run`) runs here rather than only locally: it is the one gate on the install path a
+  # stranger's first five commands depend on, and an install path nothing checks will silently rot.
+  # fetch-depth: 0 because MinVer computes package versions from tag history inside the
+  # script's `dotnet pack`.
+  pack-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: scripts/verify-tool-install.sh
+      # The offline VM bundle is the install path for a machine with no nuget.org access, and it was
+      # only ever run by hand when cutting a release -- so its packable-set guard drifted unnoticed
+      # until it failed outright (it asserted 8 packages against an actual 12, once the MySQL and
+      # SQLite connectors landed). Gating it here costs one more Release build+pack and means the
+      # next connector cannot silently break the release path. RUNNER_TEMP keeps the zip out of the
+      # working tree. `zip` is present on the ubuntu runner image; the script fails loudly if not.
+      - run: scripts/make-release-bundle.sh "${RUNNER_TEMP}/release-bundle"

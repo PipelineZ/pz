@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Same rule as Pz.State.SqlServer: a state backend is a directly-referenced assembly, not a
+         connector-ABI package, so management verbs (`pz state show`, `pz cdc status`) work without
+         package restore or ALC loading. Ships inside the Pz.Cli tool package. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- No PackageReference: System.Net.Http is in the shared framework, and HttpClient.Send gives a
+         genuinely synchronous request path (see HttpStateEndpoint), so this backend needs nothing
+         beyond the BCL. -->
+    <ProjectReference Include="..\Pz.Core\Pz.Core.csproj" />
+    <ProjectReference Include="..\Pz.Engine\Pz.Engine.csproj" />
+  </ItemGroup>
+
+</Project>

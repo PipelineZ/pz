@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>PostgreSQL source connector (parallel range-partitioned reads) for PipelineZ (pz).</Description>
+    <!-- Builtin connector, ships inside the Pz.Cli tool package: see the note in
+         Pz.Connector.LocalFiles.csproj for why a separate nupkg would be unconsumable. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Connector.Postgres.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Follows the connector-authoring doc's own instructions
+         (https://pipelinez.dev/how-to/author-a-connector/): every connector package ships its pz.connector.json
+         manifest at the nupkg root. Deviates from the doc's CopyToOutputDirectory="PreserveNewest"
+         convenience for standalone fixtures (e.g. FakeSourceConnector): this connector is also
+         consumed via ProjectReference by Pz.Cli, which bundles all three connectors into one
+         PackAsTool package; CopyToOutputDirectory items from all three would collide at the same
+         "pz.connector.json" output-relative path during the tool's publish step (NETSDK1152).
+         Pack="true" + PackagePath="" alone is sufficient for this connector's own nupkg to embed it. -->
+    <None Include="pz.connector.json" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>

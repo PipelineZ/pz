@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Benchmarks are NOT tests. IsTestProject=false (no Microsoft.NET.Test.Sdk
+       reference either) so dotnet test never discovers or runs this project; it is a console app
+       (BenchmarkSwitcher) invoked directly with: dotnet run -c Release -p tests/Pz.Benchmarks -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.14.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Pz.DuckDb\Pz.DuckDb.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.SqlServer\Pz.Connector.SqlServer.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.AzureBlob\Pz.Connector.AzureBlob.csproj" />
+  </ItemGroup>
+
+</Project>

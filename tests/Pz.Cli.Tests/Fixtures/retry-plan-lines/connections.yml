@@ -1,0 +1,30 @@
+files:
+  connector: localfiles
+  retry:
+    max_attempts: 8
+    base_delay: 2s
+    max_delay: 5m
+  max_concurrency: 2
+  entities:
+    orders:
+      read:
+        path: data/orders.csv
+        format: csv
+        columns:
+          id: bigint
+          customer: varchar
+          amount: double
+        retry:
+          max_attempts: 10
+          base_delay: 500ms
+    customers:
+      read:
+        path: data/customers.csv
+        format: csv
+        columns:
+          id: bigint
+          name: varchar
+
+lake:
+  connector: localfiles
+  max_concurrency: 3

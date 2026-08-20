@@ -1,0 +1,60 @@
+# NuGet trusted publishing (OIDC) -- no long-lived API key secret is stored
+# in this repo. MANUAL PREREQUISITES (one-time; see CONTRIBUTING.md "Release process" for the full
+# walkthrough):
+#   1. On nuget.org (https://www.nuget.org/account/trustedpublishing -> Add policy), create ONE trusted
+#      publishing policy naming this repository's owner/name, this exact workflow filename
+#      ("release.yml", no path), and environment "release". Scope it with the package glob "Pz.*" and
+#      the "Push new packages and package versions" scope -- not "push only new package versions",
+#      which cannot create an id that does not exist yet. One policy covers every id. On a private
+#      repo it stays "temporarily active" for 7 days until a successful publish binds it to the
+#      GitHub repo/owner IDs.
+#   2. Create a GitHub Environment named "release" (repo Settings -> Environments -> New environment) and
+#      add an environment secret NUGET_USER = the nuget.org profile name (NOT email) of the account that
+#      owns the trusted publishing policy above.
+#   3. No NuGet API key secret needs to be stored anywhere -- NuGet/login exchanges this workflow's OIDC
+#      token for a short-lived nuget.org API key at run time, scoped to exactly what step 1 configured.
+# Until that one-time setup exists, a real `v*` tag push will fail at the NuGet/login step with an
+# authentication error -- that failure is expected and does not indicate a workflow bug.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release # secret-scopes NUGET_USER to this job; supports required-reviewer gating too.
+    permissions:
+      contents: read
+      id-token: write # required for NuGet/login's OIDC exchange.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # MinVer computes the release version from this tag + history.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build Pz.slnx -c Release
+      # Same test invocation as ci.yml's ubuntu leg, deliberately: PZ_TESTS_OFFLINE=1 for hermeticity
+      # and --blame-hang so a stall names itself. Without them a release is *more* fragile than the CI
+      # run that already passed on this exact commit -- live-network tests and Docker Testcontainers
+      # suites would gate the publish, so a network blip or a failed image pull blocks a release, and a
+      # hang would burn the job timeout without saying which test stalled. The offline suites cover the
+      # same logic; releasing is not the moment to widen coverage beyond what merge already proved.
+      - run: dotnet test Pz.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+        env:
+          PZ_TESTS_OFFLINE: '1'
+      - run: dotnet pack Pz.slnx -c Release -o packages --no-build
+      - name: NuGet login (trusted publishing)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }} # nuget.org profile name, NOT email -- see prerequisites above.
+      - name: Push packages to nuget.org
+        run: >
+          dotnet nuget push 'packages/*.nupkg'
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --skip-duplicate

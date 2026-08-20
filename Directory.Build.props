@@ -1,0 +1,56 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <!-- MinVer drives every packable project's version from git tags (MinVerTagPrefix
+       "v" -> tags like v0.1.0). Pre-tag builds produce a 0.0.0-alpha.0.<height> height-based prerelease;
+       the first real release tag is v0.1.0. PrivateAssets=All keeps MinVer itself out of consumers'
+       dependency graphs. -->
+  <ItemGroup>
+    <PackageReference Include="MinVer" Version="6.*" PrivateAssets="All" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <MinVerTagPrefix>v</MinVerTagPrefix>
+  </PropertyGroup>
+
+  <!-- Shared NuGet package metadata for every packable project. Exactly four ids publish today, and
+       each has a real consumer: Pz.Cli (the product), Pz.Connectors.Abstractions (the ABI a connector
+       author compiles against), Pz.Connectors.Toolkit (shared codecs and format helpers), and
+       Pz.Connectors.TestKit (the acceptance suite a connector runs against).
+       Packability is opt-OUT: every other project sets <IsPackable>false</IsPackable> explicitly in
+       its own .csproj, which flips this Condition off for them. That includes all eight builtin
+       connectors, which ship inside the Pz.Cli tool package; publishing them separately produced
+       packages nobody could install and use, because the host that drives a connector
+       (Pz.PackageManagement) is itself unpublished. A NEW project is therefore packable the moment it
+       exists, so anything genuinely meant to publish needs no ceremony, and anything not meant to
+       publish must say so. CONTRIBUTING.md "Release process" holds the authoritative id list.
+       No package icon in v0.1 (documented decision, not an oversight; revisit post-v0.1 if the
+       project wants a recognizable NuGet gallery presence). -->
+  <PropertyGroup Condition="'$(IsPackable)' != 'false'">
+    <Authors>PipelineZ contributors</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/coccor/pz</RepositoryUrl>
+    <!-- RepositoryUrl is the source link; PackageProjectUrl is what the gallery renders as the
+         package's website. Both point at the repository today because that is where the docs live. -->
+    <PackageProjectUrl>https://github.com/coccor/pz</PackageProjectUrl>
+    <!-- Every package shipped with an EMPTY tag list through v0.1.1, which is the main lever
+         nuget.org search offers besides id and description. "pipelinez" leads because that is the
+         name people know the project by while every id starts with the abbreviation "Pz".
+         Deliberately NOT tagged "pipelinez-connector": that is the ratified discovery tag for
+         third-party connector packages, and applying it to first-party tooling would pollute the
+         one query an author uses to find real connectors. Kept short on purpose. Tag stuffing is
+         penalized by relevance ranking and reads as spam on the gallery page. -->
+    <PackageTags>pipelinez;pz;etl;elt;duckdb;data-pipeline;data-engineering;sql;arrow</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(IsPackable)' != 'false'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>

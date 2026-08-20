@@ -1,0 +1,22 @@
+files:
+  connector: localfiles
+  entities:
+    orders_a:
+      read:
+        path: data/orders_a.csv
+        format: csv
+        columns:
+          id: bigint
+          customer: varchar
+          amount: double
+    orders_b:
+      read:
+        path: data/orders_b.csv
+        format: csv
+        columns:
+          id: bigint
+          customer: varchar
+          amount: double
+
+lake:
+  connector: localfiles

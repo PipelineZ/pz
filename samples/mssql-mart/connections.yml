@@ -1,0 +1,12 @@
+erp:
+  connector: sqlserver
+  host: ${ERP_DB_HOST}
+  database: ${ERP_DB_NAME}
+  # On the Azure VM: managed identity -- no password exists anywhere.
+  authentication: Active Directory Managed Identity
+
+mart:
+  connector: sqlserver
+  host: ${MART_DB_HOST}
+  database: ${MART_DB_NAME}
+  authentication: Active Directory Managed Identity

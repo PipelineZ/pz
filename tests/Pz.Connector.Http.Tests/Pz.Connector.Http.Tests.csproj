@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\connectors\Pz.Connector.Http\Pz.Connector.Http.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.TestKit\Pz.Connectors.TestKit.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
+    <!-- Test-only: exercises the REAL Pz.Engine.Resilience.OperationGate against HttpPartition
+         (op-level retry + pacing). The connector itself never references Pz.Engine — the ABI
+         (IOperationGate/IOperationGateAware) is the only contract it depends on. -->
+    <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
+    <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
+  </ItemGroup>
+
+</Project>

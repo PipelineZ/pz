@@ -1,0 +1,24 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- This project ships abstract acceptance-test classes as library API (xunit is a production
+         dependency here, not a test-runner reference); it is not itself a runnable test project,
+         and has no Microsoft.NET.Test.Sdk or VSTest runner, so `dotnet test` at the solution level
+         must skip it. -->
+    <IsTestProject>false</IsTestProject>
+    <Description>Shared acceptance-test base classes (incl. an in-memory reference connector) for authoring and validating PipelineZ (pz) connectors.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <!-- Every base [Fact] becomes [SkippableFact] (behaves identically to
+         [Fact] when nothing skips) plus a protected virtual GateFact() hook, so docker-backed connector
+         subclasses can skip cleanly instead of failing when docker is absent. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,51 @@
+<Solution>
+  <Folder Name="/connectors/">
+    <Project Path="connectors/Pz.Connector.AzureBlob/Pz.Connector.AzureBlob.csproj" />
+    <Project Path="connectors/Pz.Connector.Http/Pz.Connector.Http.csproj" />
+    <Project Path="connectors/Pz.Connector.LocalFiles/Pz.Connector.LocalFiles.csproj" />
+    <Project Path="connectors/Pz.Connector.MySql/Pz.Connector.MySql.csproj" />
+    <Project Path="connectors/Pz.Connector.S3/Pz.Connector.S3.csproj" />
+    <Project Path="connectors/Pz.Connector.Postgres/Pz.Connector.Postgres.csproj" />
+    <Project Path="connectors/Pz.Connector.Sqlite/Pz.Connector.Sqlite.csproj" />
+    <Project Path="connectors/Pz.Connector.SqlServer/Pz.Connector.SqlServer.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Pz.Cli/Pz.Cli.csproj" />
+    <Project Path="src/Pz.Connectors.Abstractions/Pz.Connectors.Abstractions.csproj" />
+    <Project Path="src/Pz.Connectors.TestKit/Pz.Connectors.TestKit.csproj" />
+    <Project Path="src/Pz.Connectors.Toolkit/Pz.Connectors.Toolkit.csproj" />
+    <Project Path="src/Pz.Core/Pz.Core.csproj" />
+    <Project Path="src/Pz.Diagnostics/Pz.Diagnostics.csproj" />
+    <Project Path="src/Pz.DuckDb/Pz.DuckDb.csproj" />
+    <Project Path="src/Pz.Engine/Pz.Engine.csproj" />
+    <Project Path="src/Pz.Mcp/Pz.Mcp.csproj" />
+    <Project Path="src/Pz.PackageManagement/Pz.PackageManagement.csproj" />
+    <Project Path="src/Pz.State.Http/Pz.State.Http.csproj" />
+    <Project Path="src/Pz.State.SqlServer/Pz.State.SqlServer.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Pz.Benchmarks/Pz.Benchmarks.csproj" />
+    <Project Path="tests/Pz.Cli.Tests/Pz.Cli.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.AzureBlob.Tests/Pz.Connector.AzureBlob.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.Http.Tests/Pz.Connector.Http.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.LocalFiles.Tests/Pz.Connector.LocalFiles.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.MySql.Tests/Pz.Connector.MySql.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.S3.Tests/Pz.Connector.S3.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.Postgres.Tests/Pz.Connector.Postgres.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.Sqlite.Tests/Pz.Connector.Sqlite.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.SqlServer.Tests/Pz.Connector.SqlServer.Tests.csproj" />
+    <Project Path="tests/Pz.Connectors.Abstractions.Tests/Pz.Connectors.Abstractions.Tests.csproj" />
+    <Project Path="tests/Pz.Connectors.TestKit.Tests/Pz.Connectors.TestKit.Tests.csproj" />
+    <Project Path="tests/Pz.Connectors.Toolkit.Tests/Pz.Connectors.Toolkit.Tests.csproj" />
+    <Project Path="tests/Pz.Core.Tests/Pz.Core.Tests.csproj" />
+    <Project Path="tests/Pz.Diagnostics.Tests/Pz.Diagnostics.Tests.csproj" />
+    <Project Path="tests/Pz.DuckDb.Tests/Pz.DuckDb.Tests.csproj" />
+    <Project Path="tests/Pz.Engine.Tests/Pz.Engine.Tests.csproj" />
+    <Project Path="tests/Pz.EndToEnd.Tests/Pz.EndToEnd.Tests.csproj" />
+    <Project Path="tests/Pz.Mcp.Tests/Pz.Mcp.Tests.csproj" />
+    <Project Path="tests/Pz.PackageManagement.Tests/Pz.PackageManagement.Tests.csproj" />
+    <Project Path="tests/Pz.State.Http.Tests/Pz.State.Http.Tests.csproj" />
+    <Project Path="tests/Pz.State.SqlServer.Tests/Pz.State.SqlServer.Tests.csproj" />
+    <Project Path="tests/Pz.TestSupport/Pz.TestSupport.csproj" />
+  </Folder>
+</Solution>

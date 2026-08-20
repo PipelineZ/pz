@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Shared connector mechanism library (codecs, paging, auth, bindings, transient classification) for PipelineZ (pz) connectors. ALC-private: not part of the connector ABI.</Description>
+    <!-- CsvWriteCodec pins each Arrow column buffer once per batch and reads cells through raw
+         pointers; going through Span/Memory per cell costs more than the formatting does. Same
+         reason Pz.Connectors.Abstractions (pooled native buffers) and Pz.DuckDb (the C Data
+         Interface) enable it. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Connectors.Toolkit.Tests" />
+  </ItemGroup>
+
+</Project>

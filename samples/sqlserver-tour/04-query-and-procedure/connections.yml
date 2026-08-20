@@ -1,0 +1,46 @@
+erp:
+  connector: sqlserver
+  host: ${PZ_MSSQL_HOST}
+  port: 14333
+  database: ${PZ_MSSQL_DB}
+  user: ${PZ_MSSQL_USER}
+  password: ${PZ_MSSQL_PASSWORD}
+  trust_server_certificate: true
+  entities:
+    # query mode: user SQL runs verbatim — no watermark/predicate pushdown ever.
+    # The key is just a label; there is no object of this name in the database.
+    order_totals:
+      read:
+        query: >
+          select o.customer_id, c.country, count(*) as order_count,
+                 sum(o.amount) as total_amount
+          from dbo.orders o
+          join dbo.customers c on c.customer_id = o.customer_id
+          group by o.customer_id, c.country
+
+    # procedure mode: the proc IS the pushdown — "$watermark" binds the stored
+    # cursor value as @min_id (NULL on the first run; the proc treats that as
+    # unbounded and returns everything).
+    recent_orders:
+      read:
+        procedure: dbo.orders_since
+        parameters:
+          min_id: "$watermark"
+        columns:
+          order_id: bigint
+          customer_id: int
+          amount: decimal
+          status: varchar
+          updated_at: timestamp
+        sync:
+          mode: incremental
+          cursor: order_id
+
+mart:
+  connector: sqlserver
+  host: ${PZ_MSSQL_HOST}
+  port: 14333
+  database: ${PZ_MSSQL_DB}
+  user: ${PZ_MSSQL_USER}
+  password: ${PZ_MSSQL_PASSWORD}
+  trust_server_certificate: true

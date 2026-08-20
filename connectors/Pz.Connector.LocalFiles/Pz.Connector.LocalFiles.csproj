@@ -1,0 +1,46 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>CSV, Parquet and JSON (NDJSON) local-file source/sink connector for PipelineZ (pz).</Description>
+    <!-- Builtin connector: Pz.Cli project-references it and registers it in-process
+         (BuiltinConnectors), and BuiltinConnectors.PackageIds excludes it from NuGet resolution, the
+         lock file, and drift checking. A project.yml naming it therefore downloads nothing. No
+         published assembly can host it either, because the ConnectorHost that drives a connector
+         lives in Pz.PackageManagement, which is itself unpublished. A separate nupkg would be one
+         nobody could consume, so this ships inside Pz.Cli instead. The pz.connector.json Pack item
+         below stays inert but correct: flip this to true and the package is publishable as is,
+         which is the path if a builtin is ever unbundled and restored like a third-party
+         connector. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Parquet.Net" Version="6.0.3" />
+    <PackageReference Include="Sylvan.Data.Csv" Version="1.4.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same arrangement every other connector already has: the csv split planner and partition are
+         internal, and their tests need to drive them with a small min-bytes-per-partition rather than
+         writing out a 64 MB fixture to reach the production threshold. -->
+    <InternalsVisibleTo Include="Pz.Connector.LocalFiles.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Follows the connector-authoring doc's own instructions
+         (https://pipelinez.dev/how-to/author-a-connector/): every connector package ships its pz.connector.json
+         manifest at the nupkg root. Deviates from the doc's CopyToOutputDirectory="PreserveNewest"
+         convenience for standalone fixtures (e.g. FakeSourceConnector): this connector is also
+         consumed via ProjectReference by Pz.Cli, which bundles all three connectors into one
+         PackAsTool package; CopyToOutputDirectory items from all three would collide at the same
+         "pz.connector.json" output-relative path during the tool's publish step (NETSDK1152).
+         Pack="true" + PackagePath="" alone is sufficient for this connector's own nupkg to embed it. -->
+    <None Include="pz.connector.json" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>

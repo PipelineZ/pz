@@ -1,0 +1,69 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pz.Cli\Pz.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Core\Pz.Core.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Diagnostics\Pz.Diagnostics.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
+    <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\Pz.Core.Tests\Fixtures\**" LinkBase="Fixtures" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Real, working small project (data/orders.csv -> pipeline -> parquet sink) for RetryCommandTests:
+         `pz retry` selection needs a genuine compiled dag (real content-hash node ids) to test against,
+         unlike Fixtures/hello-pz (validation-error-path only, no real data files). -->
+    <Content Include="Fixtures\retry-basic\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- A runnable two-component project (two disjoint
+         source->pipeline->sink chains over builtin localfiles) for the PZ0215 bare-run gate and
+         positional-name closure end-to-end tests. -->
+    <Content Include="Fixtures\two-flows\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Real, working small project declaring `retry:` at source-instance, dataset (cascading over the
+         instance), and output level (on a sink with NO instance-level retry:). RetryPlanLineTests
+         drives `pz plan` end-to-end against this to prove the console retry-line loop's ordering and
+         cascade, not just the pure formatting helpers. -->
+    <Content Include="Fixtures\retry-plan-lines\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Real, working small project with an `incremental: { cursor: id }` dataset: proves `pz run`
+         actually wires RunCommand's WatermarkStore/WatermarkAdvancement end-to-end (a real localfiles
+         CSV source, not the engine-level InMemory/stub fixtures). -->
+    <Content Include="Fixtures\watermark-basic\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Real, working project with an incremental source and two sinks (one deliberately flaky) for
+         RetryReuseEndToEndTests: the regression net proving `pz retry`'s staging-reuse and
+         sink carry-forward end to end against a genuine failed-then-retried run. -->
+    <Content Include="Fixtures\retry-reuse-e2e\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Real, working sample project (with actual CSV data files matching its declared columns:
+         contracts) for tier-5 ("pz validate connect") CLI tests: ConnectivityValidator needs real
+         files on disk to probe, unlike tiers 1-4's Fixtures/hello-pz. -->
+    <Content Include="..\..\samples\hello-pz\**" LinkBase="SamplesHelloPz" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Golden NDJSON fixture for JsonRendererTests (byte-compare); PZ_UPDATE_GOLDEN=1 regenerates it
+         in the source tree (see JsonRendererTests.SourceTreeDir), same convention as
+         Pz.Core.Tests/Artifacts/GoldenCompileTests. -->
+    <Content Include="Golden\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Two contract-less parquet-backed datasets (localfiles parquet
+         is self-describing, unlike CSV, which requires a `columns:`
+         contract and so can never exercise SchemaDriftGate) for SchemaCommandTests. Data files are
+         generated at test run time (DuckSession COPY ... TO parquet), not checked in, so each test
+         controls its own drift shape. -->
+    <Content Include="Fixtures\schema-accept-basic\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Sibling with `on_source_drift: ignore`: the gate never DESCRIBEs under ignore, so the latest
+         run never carries an observed_schema for its one dataset; used for the "no recorded observed
+         schema" PZ0127 error path. -->
+    <Content Include="Fixtures\schema-accept-ignore\**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

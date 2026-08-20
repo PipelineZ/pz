@@ -1,0 +1,13 @@
+name: sqlserver-06-remote-state
+version: "1.0"
+
+# The lesson of this project: pz's OWN state -- watermarks, run results, and (opted in below)
+# the run-event stream -- lives in SQL Server too, so `.pz` is disposable. An ephemeral host
+# can die between runs and the next run, on any machine, picks up where the last stopped.
+# See https://pipelinez.dev/how-to/remote-state/.
+state:
+  backend: sqlserver
+  connection: ops      # a connections.yml entry, connector: sqlserver -- credentials in ONE place
+  schema: pzstate      # pz creates/migrates this schema itself (needs DDL rights)
+  events: true         # also persist the NDJSON event stream (requires artifacts, which
+                       # defaults to true on a non-local backend)

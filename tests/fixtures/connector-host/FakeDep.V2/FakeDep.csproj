@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>FakeDep</AssemblyName>
+    <RootNamespace>FakeDep</RootNamespace>
+    <Version>2.0.0</Version>
+    <!-- Test-double NuGet fixture, not one of the repo's 6 real packable projects.
+         MinVer (wired repo-wide via Directory.Build.props) would otherwise overwrite the hand-authored
+         Version above (FakeConnectorA/B disambiguate V1 vs V2 by this exact value). -->
+    <MinVerSkip>true</MinVerSkip>
+  </PropertyGroup>
+</Project>

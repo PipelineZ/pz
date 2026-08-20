@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- The state backend is a directly-referenced assembly, not a connector-ABI
+         package: management verbs (`pz state show`, `pz cdc status`)
+         must work without package restore or ALC loading. Ships inside the Pz.Cli tool package. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pz.Core\Pz.Core.csproj" />
+    <ProjectReference Include="..\Pz.Engine\Pz.Engine.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The event-buffer overflow test needs a deterministic, non-timing-based gate on the background
+         drain task, mirroring RunEventBus.PendingCountForTests's InternalsVisibleTo seam. -->
+    <InternalsVisibleTo Include="Pz.State.SqlServer.Tests" />
+  </ItemGroup>
+
+</Project>

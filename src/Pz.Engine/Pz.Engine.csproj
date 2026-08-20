@@ -1,0 +1,44 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Internal assembly: ships inside the Pz.Cli tool package rather than as its own NuGet. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pz.Core\Pz.Core.csproj" />
+    <ProjectReference Include="..\Pz.DuckDb\Pz.DuckDb.csproj" />
+    <ProjectReference Include="..\Pz.Diagnostics\Pz.Diagnostics.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pz.Connector.MySql.Tests' SecretRedactionTests is the mysql variant of the same regression
+         guard (a malformed CREATE SECRET must never leak its literal into a NativeSetup failure
+         message) - see that test's doc comment. -->
+    <InternalsVisibleTo Include="Pz.Connector.MySql.Tests" />
+    <!-- Pz.Connector.Sqlite.Tests' e2e suite runs connector fragments through internal
+         NativeSetup.ExecuteSetupAsync against a live DuckSession (the MySql e2e precedent). -->
+    <InternalsVisibleTo Include="Pz.Connector.Sqlite.Tests" />
+    <!-- Pz.Connector.S3.Tests' SecretRedactionTests calls internal NativeSetup.ExecuteSetupAsync
+         directly (regression guard: a malformed CREATE SECRET must never leak its literal into a
+         NativeSetup failure message) - see that test's doc comment. -->
+    <InternalsVisibleTo Include="Pz.Connector.S3.Tests" />
+    <!-- Pz.Connector.AzureBlob.Tests' SecretRedactionTests is the azure variant of the same
+         regression guard - see that test's doc comment. -->
+    <InternalsVisibleTo Include="Pz.Connector.AzureBlob.Tests" />
+    <!-- Pz.Engine.Tests sets the internal, settable ConnectivityValidator.ProbeTimeout
+         seam to a near-zero value so its probe-timeout tests complete fast instead of waiting out the
+         real 30s default. -->
+    <InternalsVisibleTo Include="Pz.Engine.Tests" />
+    <!-- Pz.Connector.Http.Tests' HttpEngineEndToEndTests asserts
+         the internal SinkDeliveryLedger table directly (ReadAsync/AcknowledgedRows) to prove the real
+         HttpConnector's checkpoint-resume ledger writes/clears end-to-end through SinkWriteExecutor —
+         mirrors the Pz.Engine.Tests entry above for the same internal type. -->
+    <InternalsVisibleTo Include="Pz.Connector.Http.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="JsonSchema.Net" Version="9.2.2" />
+  </ItemGroup>
+
+</Project>

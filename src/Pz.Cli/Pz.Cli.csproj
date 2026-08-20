@@ -1,0 +1,72 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pz.Engine\Pz.Engine.csproj" />
+    <ProjectReference Include="..\Pz.Mcp\Pz.Mcp.csproj" />
+    <ProjectReference Include="..\Pz.PackageManagement\Pz.PackageManagement.csproj" />
+    <!-- StateBackendFactory composes the SQL Server state backend directly, not through the connector
+         ABI: management verbs (`pz state show`) must work without package restore or ALC loading. -->
+    <ProjectReference Include="..\Pz.State.Http\Pz.State.Http.csproj" />
+    <ProjectReference Include="..\Pz.State.SqlServer\Pz.State.SqlServer.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.MySql\Pz.Connector.MySql.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.S3\Pz.Connector.S3.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.Postgres\Pz.Connector.Postgres.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.Sqlite\Pz.Connector.Sqlite.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.SqlServer\Pz.Connector.SqlServer.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.AzureBlob\Pz.Connector.AzureBlob.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.Http\Pz.Connector.Http.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Cli.Tests" />
+    <!-- Pz.Mcp.Tests exercises the real Pz.Cli.ConnectorRegistryFactory (internal — same seam Pz.Cli's
+         own McpCommand uses) end to end rather than a fake, so the verify tools are covered against
+         the registry the shipping CLI actually builds. -->
+    <InternalsVisibleTo Include="Pz.Mcp.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- `pz init`'s ONLY template source. Embedded rather than copied from samples/hello-pz at build
+         time: an MSBuild copy would let the two drift silently, and an installed tool must have the
+         template with no source tree on disk.
+         LogicalName is forced to forward slashes on every OS (RecursiveDir/Filename/Extension can come
+         back with backslashes from a Windows-hosted build) so InitCommand's "Templates/init/" prefix
+         match and relative-path reconstruction are platform-independent regardless of which OS produced
+         the assembly. -->
+    <EmbeddedResource Include="Templates/init/**/*">
+      <LogicalName>Templates/init/$([System.String]::new('%(RecursiveDir)%(Filename)%(Extension)').Replace('\', '/'))</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry" Version="1.16.0" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
+    <PackageReference Include="Spectre.Console" Version="0.57.1" />
+    <PackageReference Include="System.CommandLine" Version="2.0.9" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- The packable tool: this is the project that ships as the `pz` command. -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>pz</ToolCommandName>
+    <!-- Leads with the project name: nuget.org's search matches the description, and "PipelineZ"
+         appeared nowhere in the old text, so the flagship package was the hardest of the four to find
+         by the name people actually know it by. Naming the bundled connectors is not padding either,
+         it is what someone searching "duckdb postgres etl" needs to see to recognize a match. -->
+    <Description>PipelineZ (pz): a lightweight, developer-first CLI for batch ETL/ELT, powered by DuckDB. Describe your pipeline in plain SQL files and run it anywhere, with no data platform required. Bundles connectors for local files, S3, Azure Blob, Postgres, SQL Server, MySQL, SQLite and HTTP.</Description>
+    <!-- PublishReadyToRun is a "dotnet publish, targeting one RID" concept: it crossgens the entry
+         assembly ahead of time for a single specific runtime. "dotnet pack" and "dotnet tool install"
+         never publish for a RID; an installed .NET tool always runs as portable IL via the shim the
+         tool install machinery generates, so this flag has NO effect on the packaged tool NuGet or on
+         a tool install. It only matters if someone separately runs a self contained,
+         PublishReadyToRun-enabled publish of this project for a specific RID, outside the tool install
+         path entirely. Spelled out here so nobody reads this flag as meaning R2R applies to the
+         pack/install flow it does not affect. RollForward is intentionally omitted: the tool
+         targets net10.0 exactly (Global Constraints: TFM net10.0 everywhere), so there is no older
+         major runtime to roll forward from. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
+  </PropertyGroup>
+
+</Project>

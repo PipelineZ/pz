@@ -1,0 +1,1 @@
+{ "name": "s3", "protocolMajorMin": 1, "protocolMajorMax": 1, "capabilities": ["sink"] }
