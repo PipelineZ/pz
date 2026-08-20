@@ -24,7 +24,7 @@ internal static class ProjectPhases
         string projectDir)
     {
         var env = SnapshotEnvironment();
-        var project = ProjectLoader.Load(projectDir, env);
+        var project = LoadWithMcpHints(projectDir, env);
         ThrowOnPathEscapes(project, projectDir);
         var ctx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
         var notices = new List<string>();
@@ -38,9 +38,58 @@ internal static class ProjectPhases
     /// connections.yml, exactly like <see cref="LoadAndCompile"/>'s first step.</summary>
     internal static PzProject Load(string projectDir)
     {
-        var project = ProjectLoader.Load(projectDir, SnapshotEnvironment());
+        var project = LoadWithMcpHints(projectDir, SnapshotEnvironment());
         ThrowOnPathEscapes(project, projectDir);
         return project;
+    }
+
+    /// <summary><see cref="ProjectLoader.Load"/> with the load-path hints that name a CLI verb
+    /// rewritten for a caller that has no shell. An MCP client cannot act on "run 'pz init &lt;name&gt;'"
+    /// — it can only call a tool, or ask its human — so the hint has to say which. The rewrite is
+    /// keyed on the hint text the loader writes; if that text ever changes the agent simply gets the
+    /// CLI phrasing back, which is a worse hint rather than a wrong one.</summary>
+    private static PzProject LoadWithMcpHints(string projectDir, Dictionary<string, string> env)
+    {
+        try
+        {
+            return ProjectLoader.Load(projectDir, env);
+        }
+        catch (PzValidationException ex)
+        {
+            throw new PzValidationException([.. ex.Errors.Select(RewriteHint)]);
+        }
+    }
+
+    private static PzError RewriteHint(PzError error)
+    {
+        if (error.Hint is not { } hint)
+        {
+            return error;
+        }
+
+        if (hint.Contains("pz init", StringComparison.Ordinal))
+        {
+            return error with
+            {
+                Hint = "this directory is not a pz project -- call pz_init_project to scaffold one " +
+                    "here, or ask the user to point the server at an existing project directory",
+            };
+        }
+
+        if (error.Code == PzErrorCode.UndeclaredEnvVar)
+        {
+            // The restart is the non-obvious half: `pz mcp` snapshots the environment per call, but
+            // from ITS OWN process, which inherited the client's environment at launch. Exporting the
+            // variable in some other shell changes nothing until the server is restarted.
+            return error with
+            {
+                Hint = hint + " An MCP server reads the environment of the process it was launched " +
+                    "in, so ask the user to set it and restart the pz MCP server -- setting it " +
+                    "elsewhere will not reach this server.",
+            };
+        }
+
+        return error;
     }
 
     /// <summary>Every MCP tool that touches the project refuses an escaping localfiles path
