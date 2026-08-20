@@ -347,9 +347,8 @@ public class InitCommandTests : IDisposable
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Pz.slnx"))) dir = dir.Parent;
         var repoRoot = dir?.FullName ?? throw new InvalidOperationException("Pz.slnx not found above test base dir");
-        // The whole Templates/ tree, not one template: `minimal` ships alongside `init` and is what
-        // the bare verb scaffolds, so scoping this to a single directory would leave the DEFAULT
-        // output unguarded -- and any template added later silently unguarded too.
-        return Path.Combine(repoRoot, "src", "Pz.Cli", "Templates");
+        // The whole templates/ tree, not one template: scoping this to a single directory would leave
+        // the DEFAULT output unguarded -- and any template added later silently unguarded too.
+        return Path.Combine(repoRoot, "templates");
     }
 }

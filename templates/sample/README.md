@@ -1,4 +1,4 @@
-# {{PROJECT_NAME}}
+# pz_new_project
 
 Scaffolded by `pz init`. This is a runnable PipelineZ project with TWO independent flows over
 builtin-connector `localfiles` data:

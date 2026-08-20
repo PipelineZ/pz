@@ -32,10 +32,14 @@ internal static class InitCommand
         Minimal,
     }
 
-    private const string ProjectNameToken = "{{PROJECT_NAME}}";
+    /// <summary>The placeholder every template's `project.yml` carries as its `name:`, replaced with
+    /// the caller's sanitized project name at scaffold time. Identifier-shaped rather than a
+    /// moustache so a template directory is itself a loadable project -- which is what lets the test
+    /// suite compile the real scaffold source instead of a copy of it.</summary>
+    private const string ProjectNameToken = "pz_new_project";
 
     private static string ResourcePrefixFor(Template template) =>
-        template == Template.Minimal ? "Templates/minimal/" : "Templates/init/";
+        template == Template.Minimal ? "Templates/minimal/" : "Templates/sample/";
 
     public static Command Create()
     {

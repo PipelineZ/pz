@@ -1,18 +1,12 @@
-name: {{PROJECT_NAME}}
+name: pz_new_project
 version: 0.1.0
 
-connectors:
-  - package: Pz.Connector.LocalFiles
-    version: 0.1.0
-
-vars:
-  min_amount: 10
-  statuses: [shipped, returned]
-
-engine:
-  threads: 2
-  duckdb:
-    memory_limit: 1GiB
+# Builtin connectors (localfiles, postgres, s3, sqlserver, azureblob, http, mysql, sqlite) need no
+# declaration. A connector shipped as a NuGet package does:
+#
+# connectors:
+#   - package: Some.Connector.Package
+#     version: 1.0.0
 
 # Reclaim disk automatically: after each run, delete staging.duckdb from all but
 # the newest 10 runs. Run history (run_results.json) is always kept. `retention: off`
