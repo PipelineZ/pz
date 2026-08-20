@@ -23,8 +23,10 @@ dotnet pack "${ROOT_DIR}/Pz.slnx" -c Release -o "${FEED_DIR}" --nologo -v quiet
 pz_packable_ids "${ROOT_DIR}"
 pz_assert_feed_matches "${FEED_DIR}"
 
-cli_nupkg="$(find "${FEED_DIR}" -maxdepth 1 -name 'Pz.Cli.*.nupkg' -printf '%f\n')"
-version="$(sed -E 's/^Pz\.Cli\.(.+)\.nupkg$/\1/' <<< "${cli_nupkg}")"
+# The tool package's id is `pz`, lowercase, while every other id starts with a capital `Pz.` -- the
+# glob is case-sensitive, so it cannot pick up a connector package by accident.
+cli_nupkg="$(find "${FEED_DIR}" -maxdepth 1 -name 'pz.*.nupkg' -printf '%f\n')"
+version="$(sed -E 's/^pz\.(.+)\.nupkg$/\1/' <<< "${cli_nupkg}")"
 echo "bundle version: ${version}"
 
 # The feed path is RELATIVE: NuGet resolves it against the nuget.config location, so the

@@ -61,8 +61,10 @@ EOF
 echo "wrote ${NUGET_CONFIG}"
 echo
 
-echo "-- Installing Pz.Cli as a local tool (clean tool-path, local-feed-only config) --"
-dotnet tool install Pz.Cli --tool-path "${TOOL_DIR}" --configfile "${NUGET_CONFIG}" --prerelease
+# `pz` is the package id (Pz.Cli.csproj's <PackageId>), not just the command name -- installing by
+# the project name would fail, which is the whole point of proving the real install line here.
+echo "-- Installing pz as a local tool (clean tool-path, local-feed-only config) --"
+dotnet tool install pz --tool-path "${TOOL_DIR}" --configfile "${NUGET_CONFIG}" --prerelease
 PZ="${TOOL_DIR}/pz"
 if [[ ! -x "${PZ}" ]]; then
   echo "FAIL: expected an executable pz shim at ${PZ}" >&2

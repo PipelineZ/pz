@@ -5,9 +5,13 @@
 #      publishing policy naming this repository's owner/name, this exact workflow filename
 #      ("release.yml", no path), and environment "release". Scope it with the package glob "Pz.*" and
 #      the "Push new packages and package versions" scope -- not "push only new package versions",
-#      which cannot create an id that does not exist yet. One policy covers every id. On a private
-#      repo it stays "temporarily active" for 7 days until a successful publish binds it to the
-#      GitHub repo/owner IDs.
+#      which cannot create an id that does not exist yet. On a private repo it stays "temporarily
+#      active" for 7 days until a successful publish binds it to the GitHub repo/owner IDs.
+#   1b. Cover the tool package too: it publishes as "pz" (Pz.Cli.csproj's <PackageId>), and a bare
+#      "pz" does NOT match the "Pz.*" glob above. Either widen that policy's package list to include
+#      "pz" or add a second policy for it, with the same repository, workflow, environment, and
+#      scope. Miss this and the push below fails authentication for "pz" alone, AFTER the other
+#      three packages have already published -- the tag is then spent and the release is half out.
 #   2. Create a GitHub Environment named "release" (repo Settings -> Environments -> New environment) and
 #      add an environment secret NUGET_USER = the nuget.org profile name (NOT email) of the account that
 #      owns the trusted publishing policy above.

@@ -20,12 +20,13 @@
   </PropertyGroup>
 
   <!-- Shared NuGet package metadata for every packable project. Exactly four ids publish today, and
-       each has a real consumer: Pz.Cli (the product), Pz.Connectors.Abstractions (the ABI a connector
+       each has a real consumer: pz (the product; the Pz.Cli project publishes under that id, see its
+       PackageId override), Pz.Connectors.Abstractions (the ABI a connector
        author compiles against), Pz.Connectors.Toolkit (shared codecs and format helpers), and
        Pz.Connectors.TestKit (the acceptance suite a connector runs against).
        Packability is opt-OUT: every other project sets <IsPackable>false</IsPackable> explicitly in
        its own .csproj, which flips this Condition off for them. That includes all eight builtin
-       connectors, which ship inside the Pz.Cli tool package; publishing them separately produced
+       connectors, which ship inside the `pz` tool package; publishing them separately produced
        packages nobody could install and use, because the host that drives a connector
        (Pz.PackageManagement) is itself unpublished. A NEW project is therefore packable the moment it
        exists, so anything genuinely meant to publish needs no ceremony, and anything not meant to

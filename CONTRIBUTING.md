@@ -58,8 +58,12 @@ repository is ever renamed, update it in the same change.
      versions", which cannot create an id that does not exist yet, and at `v0.1.0` every id is new.
      Leave "Unlist or relist package versions" unchecked: `release.yml` only pushes, and unlisting
      is a manual, occasional act better done from the website than granted to a workflow.
-   - **Packages**: the glob **`Pz.*`**. The field is required (at least one glob or package), and
-     this one pattern matches every published id plus any future one without a return trip.
+   - **Packages**: the glob **`Pz.*`** *and* the exact id **`pz`**. The field is required (at least
+     one glob or package). The glob covers the three connector-author packages and any future
+     `Pz.`-prefixed id; the tool package publishes as a bare `pz`, which the glob does **not** match,
+     so it has to be listed in its own right (here, or in a second policy with the same repository,
+     workflow, environment, and scope). Omitting it fails the push for `pz` alone, after the other
+     three have already published.
 
    Microsoft's [trusted publishing docs](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing)
    still describe a policy as owner-wide, applying to "all packages owned by the selected owner",
@@ -95,10 +99,24 @@ Four ids publish, and each has a real consumer:
 
 | Package | Who installs it |
 |---|---|
-| `Pz.Cli` | anyone running `pz` |
+| `pz` (the `Pz.Cli` project) | anyone running `pz` |
 | `Pz.Connectors.Abstractions` | a connector author, as the ABI they compile against |
 | `Pz.Connectors.Toolkit` | a connector author, for the shared format codecs |
 | `Pz.Connectors.TestKit` | a connector author, for the acceptance suite |
+
+**`Pz.Cli` publishes as `pz`.** The project keeps its name; `<PackageId>pz</PackageId>` in
+`src/Pz.Cli/Pz.Cli.csproj` is the only place a published id differs from a project name, and
+`scripts/lib/packable-ids.sh` reads the override rather than assuming the two match. Two things
+follow that no code can enforce, so they are checklist items for whoever runs the release:
+
+- **The trusted publishing policy must cover `pz`.** The original policy is globbed `Pz.*`, which
+  does not match a bare `pz`; without a second policy (or a widened one) `release.yml`'s push fails
+  authentication for that package alone, after the other three have already gone out.
+- **`Pz.Cli` stays deprecated, listed, and unreplaced.** It published `0.1.0` through `0.2.0` under
+  the old id. Deprecate it on nuget.org ("Other", alternate package `pz`) so the gallery and
+  `dotnet` point at the new id; leave its versions listed so existing lock files still restore. Do
+  **not** publish new versions under both ids — a machine with both installed globally has two
+  packages claiming the `pz` shim, and the second install fails.
 
 **The eight builtin connectors deliberately do not publish.** `Pz.Cli` project-references them and
 registers them in-process (`BuiltinConnectors`), and `BuiltinConnectors.PackageIds` excludes them

@@ -2,8 +2,10 @@
 # Shared by scripts/verify-tool-install.sh and scripts/make-release-bundle.sh.
 #
 # The expected package set is DERIVED, never hardcoded: every project under src/ and connectors/
-# that does not opt out with <IsPackable>false</IsPackable> must produce exactly one .nupkg, and its
-# package id is its project name (nothing under src/ or connectors/ overrides <PackageId>).
+# that does not opt out with <IsPackable>false</IsPackable> must produce exactly one .nupkg, whose id
+# is that project's <PackageId> when it sets one and its project name otherwise. Pz.Cli is the only
+# project that overrides today: it publishes as `pz`, so the install line is
+# `dotnet tool install -g pz`.
 #
 # Hardcoded counts have gone stale twice: once when the MySQL and SQLite connectors landed and took
 # the set from 10 to 12, and again when the eight builtin connectors stopped publishing and took it
@@ -13,11 +15,12 @@
 
 # Populates the global `expected_ids` array with every packable project's id, sorted.
 pz_packable_ids() {
-  local root="$1" proj
+  local root="$1" proj id
   expected_ids=()
   while IFS= read -r proj; do
     grep -q '<IsPackable>false</IsPackable>' "${proj}" && continue
-    expected_ids+=("$(basename "${proj}" .csproj)")
+    id="$(sed -n 's:.*<PackageId>\(.*\)</PackageId>.*:\1:p' "${proj}" | head -n 1)"
+    expected_ids+=("${id:-$(basename "${proj}" .csproj)}")
   done < <(find "${root}/src" "${root}/connectors" -name '*.csproj' | sort)
 }
 
