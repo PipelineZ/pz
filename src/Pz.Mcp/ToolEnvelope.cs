@@ -14,8 +14,12 @@ public static class ToolEnvelope
     public static string Ok(Action<Utf8JsonWriter>? writeResult = null, bool? applied = null) =>
         Write(true, applied, null, writeResult);
 
-    public static string Errors(IReadOnlyList<PzError> errors, bool? applied = null) =>
-        Write(false, applied, errors, null);
+    /// <param name="writeResult">Writes a <c>result</c> object alongside the errors. An error envelope
+    /// may still carry one: a mutation that applied and then failed self-verify has real facts to
+    /// report about what it did, and those facts are often what explains the errors.</param>
+    public static string Errors(
+        IReadOnlyList<PzError> errors, bool? applied = null, Action<Utf8JsonWriter>? writeResult = null) =>
+        Write(false, applied, errors, writeResult);
 
     private static string Write(
         bool ok, bool? applied, IReadOnlyList<PzError>? errors, Action<Utf8JsonWriter>? writeResult)

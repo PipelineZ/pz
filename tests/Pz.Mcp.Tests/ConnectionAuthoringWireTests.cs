@@ -78,6 +78,69 @@ public class ConnectionAuthoringWireTests
         Assert.Contains("root: elsewhere", File.ReadAllText(Path.Combine(p.Dir, "connections.yml")), StringComparison.Ordinal);
     }
 
+    /// <summary>A wholesale replace takes the connection's entities with it. Reporting only
+    /// <c>dropped_comment</c> made the envelope actively reassuring about the one thing that had just
+    /// been destroyed — an agent that called pz_add_entity and then adjusted a single connection
+    /// option would be told <c>ok: true</c> over the wreckage of its own prior call.</summary>
+    [Fact]
+    public async Task Update_connection_names_the_entities_it_dropped()
+    {
+        using var p = new TempProject();
+        await using var client = await Connect(p.Dir);
+
+        var result = await client.CallToolAsync("pz_update_connection", new Dictionary<string, object?>
+        {
+            ["name"] = "raw", // TempProject declares raw.orders under an entities: block
+            ["connector"] = "localfiles",
+            ["connection"] = new Dictionary<string, object?> { ["root"] = "data" },
+        });
+
+        var envelope = Envelope(result);
+        Assert.Equal(
+            ["orders"],
+            envelope.GetProperty("result").GetProperty("dropped_entities")
+                .EnumerateArray().Select(e => e.GetString()!).ToArray());
+        Assert.Contains(
+            "pz_add_entity",
+            envelope.GetProperty("result").GetProperty("warnings").EnumerateArray().Single().GetString()!,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>Dropping an entity is usually the very reason self-verify then fails, so the report
+    /// must ride the error envelope too — that is where it explains the errors above it.</summary>
+    [Fact]
+    public async Task Dropped_entities_are_reported_even_when_self_verify_fails()
+    {
+        using var p = new TempProject();
+        // Any self-verify failure will do -- what is under test is that the result still rides the
+        // error envelope, not which error put it there. A ref() to a pipeline that does not exist is
+        // the cheapest guaranteed one.
+        p.WritePipeline("broken", "select * from {{ ref('no_such_pipeline') }}\n");
+        await using var client = await Connect(p.Dir);
+        await client.CallToolAsync("pz_add_entity", new Dictionary<string, object?>
+        {
+            ["connection"] = "out",
+            ["entity"] = "orders_out",
+            ["write"] = new Dictionary<string, object?> { ["format"] = "csv", ["strategy"] = "replace" },
+        });
+
+        var result = await client.CallToolAsync("pz_update_connection", new Dictionary<string, object?>
+        {
+            ["name"] = "out",
+            ["connector"] = "localfiles",
+            ["connection"] = new Dictionary<string, object?> { ["root"] = "elsewhere" },
+        });
+
+        var envelope = Envelope(result);
+        Assert.False(envelope.GetProperty("ok").GetBoolean());
+        Assert.True(envelope.GetProperty("applied").GetBoolean());
+        Assert.NotEmpty(envelope.GetProperty("errors").EnumerateArray());
+        Assert.Equal(
+            ["orders_out"],
+            envelope.GetProperty("result").GetProperty("dropped_entities")
+                .EnumerateArray().Select(e => e.GetString()!).ToArray());
+    }
+
     /// <summary>A handler failure must still name something. The SDK's own catch would answer "An
     /// error occurred invoking '&lt;tool&gt;'." with the exception discarded and nothing logged
     /// (`pz mcp` wires no ILoggerFactory), so <see cref="ArgumentValidatingTool"/> translates one into

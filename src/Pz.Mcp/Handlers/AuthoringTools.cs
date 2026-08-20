@@ -505,10 +505,16 @@ internal static class AuthoringTools
         // Step 3: apply.
         var canonicalBlock = RenderConnectionBlock(name, connector, connection);
         bool? droppedComment = null;
+        IReadOnlyList<string> droppedEntities = [];
         try
         {
             if (isUpdate)
             {
+                // A wholesale replace takes the connection's `entities:` block with it (class doc).
+                // Name what went, from the project loaded at step 2a -- an agent that called
+                // pz_add_entity and then adjusted one connection option would otherwise be told
+                // `ok: true` over the wreckage of its own prior calls, and only find out at compile.
+                droppedEntities = DeclaredEntityNames(project, name);
                 droppedComment = YamlSurgeon.ReplaceMappingEntry(connectionsFile, [], name, canonicalBlock);
             }
             else
@@ -528,24 +534,45 @@ internal static class AuthoringTools
         }
 
         // Step 4: self-verify.
-        return await FinishWithSelfVerifyAsync(projectDir, services, ct, droppedComment).ConfigureAwait(false);
+        return await FinishWithSelfVerifyAsync(projectDir, services, ct, droppedComment, droppedEntities)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>The entity names a connection declares, by the same union
+    /// <c>IntrospectTools.WriteOverview</c> reports: read declarations (<c>Datasets</c>) plus write
+    /// declarations (<c>Outputs</c> and <c>EntityWrites</c>). Ordinal-sorted for a byte-stable
+    /// envelope. Empty when the connection declares none, or does not exist.</summary>
+    private static IReadOnlyList<string> DeclaredEntityNames(PzProject project, string connectionName)
+    {
+        var connection = project.Connections.FirstOrDefault(c => c.Name == connectionName);
+        if (connection is null)
+        {
+            return [];
+        }
+
+        return
+        [
+            .. connection.Datasets.Select(d => d.Name)
+                .Concat(connection.Outputs.Select(o => o.Name))
+                .Concat(connection.EntityWrites.Keys)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(n => n, StringComparer.Ordinal),
+        ];
     }
 
     /// <summary>Step 4, shared by all three tools: the mutation already applied by this point, so
     /// <c>applied</c> is always <see langword="true"/> from here on -- only <c>ok</c>
     /// and the errors array depend on what self-verify finds. <paramref name="dropComment"/> is
     /// <see langword="null"/> for insert/remove (no comment-tracking to report) and the
-    /// <see cref="YamlSurgeon.ReplaceMappingEntry"/> result for update.</summary>
+    /// <see cref="YamlSurgeon.ReplaceMappingEntry"/> result for update. <paramref name="dropEntities"/>
+    /// is likewise update-only, and written only when non-empty — a caller that dropped nothing sees
+    /// no such field.</summary>
     private static async Task<string> FinishWithSelfVerifyAsync(
-        string projectDir, CliServices services, CancellationToken ct, bool? dropComment)
+        string projectDir, CliServices services, CancellationToken ct, bool? dropComment,
+        IReadOnlyList<string>? dropEntities = null)
     {
         var verifyErrors = await VerifyProjectAsync(projectDir, services, ct).ConfigureAwait(false);
-        if (verifyErrors.Count > 0)
-        {
-            return ToolEnvelope.Errors(verifyErrors, applied: true);
-        }
-
-        return ToolEnvelope.Ok(json =>
+        void WriteResult(Utf8JsonWriter json)
         {
             json.WriteStartObject("result");
             json.WriteString("file", ConnectionsFileName);
@@ -554,8 +581,31 @@ internal static class AuthoringTools
                 json.WriteBoolean("dropped_comment", dropped);
             }
 
+            if (dropEntities is { Count: > 0 })
+            {
+                json.WriteStartArray("dropped_entities");
+                foreach (var entity in dropEntities)
+                {
+                    json.WriteStringValue(entity);
+                }
+
+                json.WriteEndArray();
+                json.WriteStartArray("warnings");
+                json.WriteStringValue(
+                    "pz_update_connection replaced the connection block wholesale, so these entity " +
+                    "declarations went with it -- re-add each with pz_add_entity if it is still wanted");
+                json.WriteEndArray();
+            }
+
             json.WriteEndObject();
-        }, applied: true);
+        }
+
+        // The result rides BOTH envelopes: a dropped entity is usually the very reason self-verify
+        // now fails (a pipeline still source()s it), so reporting it only on the success path would
+        // withhold the explanation exactly when it is needed most.
+        return verifyErrors.Count > 0
+            ? ToolEnvelope.Errors(verifyErrors, applied: true, WriteResult)
+            : ToolEnvelope.Ok(WriteResult, applied: true);
     }
 
     /// <summary>Overload for the entity/pipeline tools: same self-verify contract as the one above, but

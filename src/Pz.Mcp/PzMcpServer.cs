@@ -108,8 +108,11 @@ public static class PzMcpServer
                 new McpServerToolCreateOptions
                 {
                     Name = "pz_update_connection",
-                    Description = "Replace an existing connection's connector + options wholesale. Validates " +
-                        "before writing, refuses literal credentials (use ${VAR}), and self-verifies after applying.",
+                    Description = "Replace an existing connection's connector + options wholesale -- this DROPS " +
+                        "the connection's entities: block (re-add with pz_add_entity; the result reports " +
+                        "dropped_entities). Pass every option the connection should keep, not just the changed " +
+                        "one. Validates before writing, refuses literal credentials (use ${VAR}), and " +
+                        "self-verifies after applying.",
                 }),
             McpServerTool.Create(
                 (string name, CancellationToken ct) =>
