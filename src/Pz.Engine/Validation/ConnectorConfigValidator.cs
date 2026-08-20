@@ -248,10 +248,119 @@ public static class ConnectorConfigValidator
                 continue; // already reported this exact property in this same schema evaluation
             }
 
+            // An `additionalProperties: false` violation is the single most common authoring mistake
+            // (a misremembered or misspelled option name) and gets the least usable message: the
+            // library reports the subschema it failed -- "All values fail against the false schema" --
+            // which names neither the offending key nor what was allowed instead. Say both.
+            if (TryDescribeUnknownOption(schemaText, detail, out var unknownOption, out var accepted))
+            {
+                errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
+                    $"{kind} '{name}'{Where(blockLabel)}: {ContainerLocation(detail)}unknown option '{unknownOption}'",
+                    filePath, null,
+                    accepted.Count > 0
+                        ? $"remove or rename it -- accepted options: {string.Join(", ", accepted)}"
+                        : "remove it -- this block accepts no options"));
+                continue;
+            }
+
             var firstError = detailErrors.Values.First();
             errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
                 $"{kind} '{name}'{Where(blockLabel)}: {location}{firstError}", filePath, null, Hint));
         }
+    }
+
+    /// <summary>The instance path of the object the unknown option sits IN, as a message prefix —
+    /// empty for a top-level option, where the option's own name is the whole story and repeating it
+    /// as a path would stutter ("/connection_string: unknown option 'connection_string'").</summary>
+    private static string ContainerLocation(EvaluationResults detail)
+    {
+        var segments = SplitPointer(detail.InstanceLocation.ToString());
+        return segments.Count <= 1 ? "" : $"/{string.Join('/', segments.Take(segments.Count - 1))}: ";
+    }
+
+    /// <summary>Recognizes the "unknown option" violation and names what was allowed instead.
+    ///
+    /// Detection is structural, never textual: the evaluation path's last segment is
+    /// <c>additionalProperties</c>, AND resolving its parent in the schema document finds an
+    /// <c>additionalProperties</c> that is literally <see langword="false"/>. Both halves matter —
+    /// <c>additionalProperties</c> is equally legal as a SUBSCHEMA (localfiles' <c>columns</c> maps
+    /// every column name to a type enum that way), and a violation under one of those means "this
+    /// value is wrong", not "this key is unknown". Matching the library's message text instead would
+    /// conflate the two and break on any rewording upstream.</summary>
+    private static bool TryDescribeUnknownOption(
+        string schemaText, EvaluationResults detail, out string option, out IReadOnlyList<string> accepted)
+    {
+        option = "";
+        accepted = [];
+
+        var schemaSegments = SplitPointer(detail.EvaluationPath.ToString());
+        if (schemaSegments.Count == 0 ||
+            !string.Equals(schemaSegments[^1], "additionalProperties", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        JsonElement root;
+        try
+        {
+            root = JsonSerializer.Deserialize<JsonElement>(schemaText);
+        }
+        catch (JsonException)
+        {
+            return false; // malformed schema: the generic branch reports it in the library's terms
+        }
+
+        if (!TryResolve(root, schemaSegments.Take(schemaSegments.Count - 1), out var container) ||
+            !container.TryGetProperty("additionalProperties", out var additional) ||
+            additional.ValueKind != JsonValueKind.False)
+        {
+            return false;
+        }
+
+        var instanceSegments = SplitPointer(detail.InstanceLocation.ToString());
+        if (instanceSegments.Count == 0)
+        {
+            return false; // the root object itself, with no key to name
+        }
+
+        option = instanceSegments[^1];
+        accepted = container.TryGetProperty("properties", out var properties) &&
+                properties.ValueKind == JsonValueKind.Object
+            ? [.. properties.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal)]
+            : [];
+        return true;
+    }
+
+    /// <summary>JSON Pointer segments, unescaped per RFC 6901 (<c>~1</c> before <c>~0</c>, or a literal
+    /// <c>~1</c> would decode twice). Works off the pointer's string form rather than the library's
+    /// indexer, which has been renamed across major versions of JsonPointer.Net.</summary>
+    private static List<string> SplitPointer(string pointer) =>
+    [
+        .. pointer.Split('/', StringSplitOptions.RemoveEmptyEntries)
+            .Select(s => s.Replace("~1", "/", StringComparison.Ordinal).Replace("~0", "~", StringComparison.Ordinal)),
+    ];
+
+    /// <summary>Walks <paramref name="segments"/> through <paramref name="root"/>, stepping into array
+    /// elements by index (an <c>allOf</c>/<c>anyOf</c> branch puts one in the evaluation path).</summary>
+    private static bool TryResolve(JsonElement root, IEnumerable<string> segments, out JsonElement resolved)
+    {
+        resolved = root;
+        foreach (var segment in segments)
+        {
+            if (resolved.ValueKind == JsonValueKind.Array && int.TryParse(segment, out var index) &&
+                index >= 0 && index < resolved.GetArrayLength())
+            {
+                resolved = resolved[index];
+                continue;
+            }
+
+            if (resolved.ValueKind != JsonValueKind.Object || !resolved.TryGetProperty(segment, out resolved))
+            {
+                return false;
+            }
+        }
+
+        return resolved.ValueKind == JsonValueKind.Object;
     }
 
     private static async Task ValidateCrossFieldAsync(IConnector connector,

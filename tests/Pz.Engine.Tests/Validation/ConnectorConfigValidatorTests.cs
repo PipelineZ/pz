@@ -74,8 +74,55 @@ public sealed class ConnectorConfigValidatorTests
 
         var error = Assert.Single(errors);
         Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
-        Assert.Contains("bogus", error.Message, StringComparison.Ordinal);
+        Assert.Equal("connection 'crm': unknown option 'bogus'", error.Message);
         Assert.Equal("connections.yml", error.File);
+        // The accepted set is the whole next step -- a misremembered option name is fixed by seeing
+        // the real ones, and the raw schema message ("All values fail against the false schema")
+        // named neither the offending key nor the alternatives.
+        Assert.Equal("remove or rename it -- accepted options: root", error.Hint);
+    }
+
+    /// <summary>`additionalProperties` is equally legal as a SUBSCHEMA -- localfiles' <c>columns</c>
+    /// maps every column name to a type enum that way. A violation under one of those means "this
+    /// value is wrong", not "this key is unknown", and must keep its own message.</summary>
+    [Fact]
+    public async Task A_subschema_additionalProperties_violation_is_not_called_an_unknown_option()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("localfiles", new StubConnector { DatasetConfigSchema = LocalFilesDatasetSchema });
+
+        var source = new ConnectionDef("crm", "localfiles", new Dictionary<string, object?>(),
+            [new DatasetDef("customers", new Dictionary<string, object?> { ["path"] = "c.csv" },
+                new Dictionary<string, string> { ["id"] = "notatype" })],
+            "connections.yml");
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+
+        Assert.DoesNotContain("unknown option", error.Message, StringComparison.Ordinal);
+        Assert.Contains("/columns/id", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A nested unknown key names the object it sits in; a top-level one does not, or the
+    /// message stutters ("/bogus: unknown option 'bogus'").</summary>
+    [Fact]
+    public async Task A_nested_unknown_option_names_the_block_it_sits_in()
+    {
+        const string nestedSchema =
+            """{ "type": "object", "properties": { "tls": { "type": "object", "properties": { "verify": { "type": "boolean" } }, "additionalProperties": false } }, "additionalProperties": false }""";
+        var registry = new ConnectorRegistry();
+        registry.AddSource("thing", new StubConnector { ConnectionConfigSchema = nestedSchema });
+
+        var source = new ConnectionDef("t", "thing",
+            new Dictionary<string, object?>
+            {
+                ["tls"] = new Dictionary<string, object?> { ["verfiy"] = true },
+            },
+            [], "connections.yml");
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+
+        Assert.Equal("connection 't': /tls: unknown option 'verfiy'", error.Message);
+        Assert.Equal("remove or rename it -- accepted options: verify", error.Hint);
     }
 
     [Fact]

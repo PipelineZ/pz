@@ -12,7 +12,7 @@
 
 ```console
 $ dotnet tool install --global Pz.Cli
-$ pz init demo
+$ pz init demo --sample
 $ cd demo
 $ pz run --all
 $ cat out/order_totals/*.csv
@@ -110,7 +110,7 @@ config alone.
 
 | Verb | Does |
 |---|---|
-| `pz init <name>` | Scaffold a new runnable project |
+| `pz init <name>` | Scaffold a new project; `--sample` for the runnable demo above |
 | `pz run [name]` | Run a flow, or `--all` for everything |
 | `pz test` | Run only the data-quality checks |
 | `pz retry` | Re-run just what didn't succeed last time |

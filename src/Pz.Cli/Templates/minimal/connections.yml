@@ -1,0 +1,23 @@
+# Every place this project talks to. A connection is a place with credentials; an entity is a thing
+# in that place, named the way that place names it; the direction is the function you call --
+# source() to read, sink() to write.
+#
+# Each connection is a top-level key here (there is no `connections:` wrapper), and credentials are
+# always ${ENV_VAR} references, never literals:
+#
+# warehouse:
+#   connector: sqlserver
+#   host: ${WAREHOUSE_HOST}
+#   database: ${WAREHOUSE_DB}
+#   user: ${WAREHOUSE_USER}
+#   password: ${WAREHOUSE_PASSWORD}
+#   entities:
+#     dbo.orders:
+#       read: {}
+#
+# lake:
+#   connector: localfiles
+#   root: out
+#
+# A read or write option may be declared here OR as a source()/sink() keyword argument in the
+# pipeline SQL -- never both, and never merged.

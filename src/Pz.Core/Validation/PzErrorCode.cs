@@ -459,4 +459,12 @@ public static class PzErrorCode
     /// is unreachable" and "you asked for a page that does not exist" need different fixes, and
     /// collapsing them would send a caller checking its network over a typo.</summary>
     public const string McpDocsRequestInvalid = "PZ0608";
+
+    /// <summary>Under `pz mcp`, a tool handler failed with an exception no handler-level catch
+    /// classified. Never a diagnosis — it is the backstop that keeps the "no silent failures" rule
+    /// true across the MCP boundary: without it the SDK answers its own "An error occurred invoking
+    /// '&lt;tool&gt;'." with the exception text discarded, leaving an agent nothing to act on and no
+    /// server-side trace either. A PZ0609 in the wild means a real handler is missing a typed catch;
+    /// the exception text it carries is what identifies which.</summary>
+    public const string McpToolFailed = "PZ0609";
 }

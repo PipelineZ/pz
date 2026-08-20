@@ -16,7 +16,7 @@ public class IntrospectToolsTests
             backends.EnsureSchema();
             return new McpStateStores(backends.Watermarks, backends.SyncState, backends.Schemas, backends.Artifacts);
         },
-        InitProject = (_, _) => throw new InvalidOperationException("not needed for introspect tools"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed for introspect tools"),
         RunAsync = (_, _) => throw new InvalidOperationException("not needed for introspect tools"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed for introspect tools"),
     };

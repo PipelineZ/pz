@@ -27,6 +27,37 @@ public static class PzMcpServer
         Timeout = TimeSpan.FromSeconds(15),
     });
 
+    /// <summary>The schema the SDK infers for a <see cref="JsonElement"/> parameter is the boolean
+    /// schema <c>true</c> — "any value", which tells a reader nothing about the one shape the handler
+    /// accepts. Every such parameter here (<c>connection</c>, <c>read</c>, <c>write</c>) is a mapping
+    /// of YAML option keys, so republish it as a typed object: an agent choosing its first call reads
+    /// the schema, and "any value" is the one answer that cannot guide it.
+    ///
+    /// Deliberately narrow — it rewrites a node only when that node is the untyped one and the
+    /// parameter really is a JsonElement, so no other tool's schema is touched.</summary>
+    private const string OptionMapDescription =
+        "YAML option keys and values for this block, nested exactly as they appear in " +
+        "connections.yml (see pz_connector_reference for the connector's own schema).";
+
+    private static readonly Microsoft.Extensions.AI.AIJsonSchemaCreateOptions OptionMapSchema = new()
+    {
+        TransformSchemaNode = static (context, node) =>
+        {
+            if (context.TypeInfo.Type != typeof(JsonElement) && context.TypeInfo.Type != typeof(JsonElement?))
+            {
+                return node;
+            }
+
+            // Two shapes reach here: `true` (a required JsonElement) arrives as a JsonValue, while an
+            // optional JsonElement? arrives as an object carrying only its `default`. Keep whatever
+            // the SDK put there — dropping `default` would make the parameter read as required.
+            var schema = node as System.Text.Json.Nodes.JsonObject ?? [];
+            schema["type"] = "object";
+            schema["description"] = OptionMapDescription;
+            return schema;
+        },
+    };
+
     /// <param name="docsHttp">Overrides the HTTP client the documentation tools use. Production passes
     /// nothing; tests pass a client over a stub handler so the doc tools are exercised without a
     /// network.</param>
@@ -97,6 +128,7 @@ public static class PzMcpServer
                         projectDir, name, connector, ToConnectionOptions(connection), services, ct),
                 new McpServerToolCreateOptions
                 {
+                    SchemaCreateOptions = OptionMapSchema,
                     Name = "pz_add_connection",
                     Description = "Add a new connection to connections.yml. Validates before writing, refuses " +
                         "literal credentials (use ${VAR}), and self-verifies after applying.",
@@ -107,9 +139,13 @@ public static class PzMcpServer
                         projectDir, name, connector, ToConnectionOptions(connection), services, ct),
                 new McpServerToolCreateOptions
                 {
+                    SchemaCreateOptions = OptionMapSchema,
                     Name = "pz_update_connection",
-                    Description = "Replace an existing connection's connector + options wholesale. Validates " +
-                        "before writing, refuses literal credentials (use ${VAR}), and self-verifies after applying.",
+                    Description = "Replace an existing connection's connector + options wholesale -- this DROPS " +
+                        "the connection's entities: block (re-add with pz_add_entity; the result reports " +
+                        "dropped_entities). Pass every option the connection should keep, not just the changed " +
+                        "one. Validates before writing, refuses literal credentials (use ${VAR}), and " +
+                        "self-verifies after applying.",
                 }),
             McpServerTool.Create(
                 (string name, CancellationToken ct) =>
@@ -128,6 +164,7 @@ public static class PzMcpServer
                         services, ct),
                 new McpServerToolCreateOptions
                 {
+                    SchemaCreateOptions = OptionMapSchema,
                     Name = "pz_add_entity",
                     Description = "Add a new entity (read:/write: options) under an existing connection in " +
                         "connections.yml. Self-verifies after applying.",
@@ -140,6 +177,7 @@ public static class PzMcpServer
                         services, ct),
                 new McpServerToolCreateOptions
                 {
+                    SchemaCreateOptions = OptionMapSchema,
                     Name = "pz_set_entity_options",
                     Description = "Replace an existing entity's read:/write: options wholesale. Self-verifies " +
                         "after applying.",
@@ -173,13 +211,16 @@ public static class PzMcpServer
                         "even if another pipeline still ref()s it -- self-verify reports the resulting errors.",
                 }),
             McpServerTool.Create(
-                () => AuthoringTools.InitProject(projectDir, services),
+                (bool minimal = true) => AuthoringTools.InitProject(projectDir, minimal, services),
                 new McpServerToolCreateOptions
                 {
                     Name = "pz_init_project",
-                    Description = "Scaffold a new runnable pz project (the same built-in starter template as " +
-                        "`pz init`) into this server's own project directory. Refuses if that directory " +
-                        "already exists and is not empty.",
+                    Description = "Scaffold a new pz project into this server's own project directory, and " +
+                        "list the files written. minimal (default true, same as `pz init`): project.yml + " +
+                        "connections.yml only, ready to author against. Pass minimal=false for the runnable " +
+                        "four-pipeline sample (`pz init --sample`) -- only when the user asked to see a " +
+                        "worked example, since its demo pipelines compile and would run. Refuses if the " +
+                        "directory already exists and is not empty.",
                 }),
         };
 

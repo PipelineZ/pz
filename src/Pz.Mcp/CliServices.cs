@@ -22,14 +22,17 @@ public sealed class CliServices
     /// pz_state is the one handler that catches it.</summary>
     public required Func<PzProject, string, McpStateStores> CreateStateStores { get; init; }
 
-    /// <summary>Scaffolds a brand-new project: <c>(dir, name) -&gt; errors</c> (empty = success), wired
-    /// by McpCommand to <c>Pz.Cli.Commands.InitCommand</c>'s real scaffolding logic. The <c>dir</c>
-    /// argument is the absolute target directory (pz_init_project always scaffolds into the server's own
-    /// project directory); <c>name</c> is the raw leaf argument pz init's own CLI contract
-    /// expects (its project-name derivation stays InitCommand's, never reimplemented here). The
-    /// implementation pre-checks "directory is empty" itself and returns PZ0603
-    /// (<see cref="PzErrorCode.McpInitDirNotEmpty"/>) before touching anything.</summary>
-    public required Func<string, string, IReadOnlyList<PzError>> InitProject { get; init; }
+    /// <summary>Scaffolds a brand-new project: <c>(dir, name, minimal) -&gt; errors</c> (empty =
+    /// success), wired by McpCommand to <c>Pz.Cli.Commands.InitCommand</c>'s real scaffolding logic.
+    /// The <c>dir</c> argument is the absolute target directory (pz_init_project always scaffolds into
+    /// the server's own project directory); <c>name</c> is the raw leaf argument pz init's own CLI
+    /// contract expects (its project-name derivation stays InitCommand's, never reimplemented here).
+    /// <c>minimal</c> selects the two-file project shape over the runnable sample — a
+    /// <see langword="bool"/> rather than InitCommand's own <c>Template</c> enum because Pz.Mcp cannot
+    /// reference Pz.Cli (the dependency runs the other way). The implementation pre-checks "directory
+    /// is empty" itself and returns PZ0603 (<see cref="PzErrorCode.McpInitDirNotEmpty"/>) before
+    /// touching anything.</summary>
+    public required Func<string, string, bool, IReadOnlyList<PzError>> InitProject { get; init; }
 
     /// <summary>Wired by McpCommand to a Pz.Cli adapter that mirrors <c>RunCommand.Execute</c>'s
     /// composition (load+compile, <c>RunSelection.Resolve</c>, <c>RunCommand.ExecuteRun</c>) -- see

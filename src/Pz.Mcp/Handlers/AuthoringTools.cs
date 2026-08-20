@@ -406,8 +406,12 @@ internal static class AuthoringTools
     /// <see cref="CliServices.InitProject"/>, which wraps <c>InitCommand</c>'s real scaffolding logic.
     /// A non-empty <paramref name="projectDir"/> comes back as PZ0603 with nothing written -- checked by
     /// the <see cref="CliServices.InitProject"/> implementation itself before any file is touched.
-    /// Synchronous (no I/O here is awaited) but named/shaped like every other tool handler.</summary>
-    internal static string InitProject(string projectDir, CliServices services)
+    /// Synchronous (no I/O here is awaited) but named/shaped like every other tool handler.
+    ///
+    /// The result lists every file written. Reporting only <c>created: true</c> left the caller
+    /// needing a second round trip to learn what it had just been handed -- and, with the sample
+    /// template, what it would have to delete.</summary>
+    internal static string InitProject(string projectDir, bool minimal, CliServices services)
     {
         // Trim trailing separators ONCE, up front, and use the trimmed path consistently everywhere
         // below -- McpCommand.InitProject derives its InitCommand.Execute workingDir from this same
@@ -416,7 +420,7 @@ internal static class AuthoringTools
         // through would scaffold one level too deep (targetDir "/foo/bar/bar").
         var trimmed = projectDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var name = Path.GetFileName(trimmed);
-        var errors = services.InitProject(trimmed, name);
+        var errors = services.InitProject(trimmed, name, minimal);
         if (errors.Count > 0)
         {
             return ToolEnvelope.Errors(errors, applied: false);
@@ -427,8 +431,34 @@ internal static class AuthoringTools
             json.WriteStartObject("result");
             json.WriteBoolean("created", true);
             json.WriteString("dir", trimmed);
+            json.WriteString("template", minimal ? "minimal" : "sample");
+            json.WriteStartArray("files");
+            foreach (var file in ScaffoldedFiles(trimmed))
+            {
+                json.WriteStringValue(file);
+            }
+
+            json.WriteEndArray();
             json.WriteEndObject();
         }, applied: true);
+    }
+
+    /// <summary>Every file the scaffold just wrote, project-relative with forward slashes and
+    /// ordinal-sorted so the envelope is byte-stable across filesystems. Read back off disk rather
+    /// than predicted from the template: the manifest is whatever actually landed.</summary>
+    private static IReadOnlyList<string> ScaffoldedFiles(string projectDir)
+    {
+        if (!Directory.Exists(projectDir))
+        {
+            return [];
+        }
+
+        return
+        [
+            .. Directory.EnumerateFiles(projectDir, "*", SearchOption.AllDirectories)
+                .Select(f => Path.GetRelativePath(projectDir, f).Replace(Path.DirectorySeparatorChar, '/'))
+                .OrderBy(f => f, StringComparer.Ordinal),
+        ];
     }
 
     private static async Task<string> AddOrUpdateAsync(
@@ -505,10 +535,16 @@ internal static class AuthoringTools
         // Step 3: apply.
         var canonicalBlock = RenderConnectionBlock(name, connector, connection);
         bool? droppedComment = null;
+        IReadOnlyList<string> droppedEntities = [];
         try
         {
             if (isUpdate)
             {
+                // A wholesale replace takes the connection's `entities:` block with it (class doc).
+                // Name what went, from the project loaded at step 2a -- an agent that called
+                // pz_add_entity and then adjusted one connection option would otherwise be told
+                // `ok: true` over the wreckage of its own prior calls, and only find out at compile.
+                droppedEntities = DeclaredEntityNames(project, name);
                 droppedComment = YamlSurgeon.ReplaceMappingEntry(connectionsFile, [], name, canonicalBlock);
             }
             else
@@ -528,24 +564,45 @@ internal static class AuthoringTools
         }
 
         // Step 4: self-verify.
-        return await FinishWithSelfVerifyAsync(projectDir, services, ct, droppedComment).ConfigureAwait(false);
+        return await FinishWithSelfVerifyAsync(projectDir, services, ct, droppedComment, droppedEntities)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>The entity names a connection declares, by the same union
+    /// <c>IntrospectTools.WriteOverview</c> reports: read declarations (<c>Datasets</c>) plus write
+    /// declarations (<c>Outputs</c> and <c>EntityWrites</c>). Ordinal-sorted for a byte-stable
+    /// envelope. Empty when the connection declares none, or does not exist.</summary>
+    private static IReadOnlyList<string> DeclaredEntityNames(PzProject project, string connectionName)
+    {
+        var connection = project.Connections.FirstOrDefault(c => c.Name == connectionName);
+        if (connection is null)
+        {
+            return [];
+        }
+
+        return
+        [
+            .. connection.Datasets.Select(d => d.Name)
+                .Concat(connection.Outputs.Select(o => o.Name))
+                .Concat(connection.EntityWrites.Keys)
+                .Distinct(StringComparer.Ordinal)
+                .OrderBy(n => n, StringComparer.Ordinal),
+        ];
     }
 
     /// <summary>Step 4, shared by all three tools: the mutation already applied by this point, so
     /// <c>applied</c> is always <see langword="true"/> from here on -- only <c>ok</c>
     /// and the errors array depend on what self-verify finds. <paramref name="dropComment"/> is
     /// <see langword="null"/> for insert/remove (no comment-tracking to report) and the
-    /// <see cref="YamlSurgeon.ReplaceMappingEntry"/> result for update.</summary>
+    /// <see cref="YamlSurgeon.ReplaceMappingEntry"/> result for update. <paramref name="dropEntities"/>
+    /// is likewise update-only, and written only when non-empty — a caller that dropped nothing sees
+    /// no such field.</summary>
     private static async Task<string> FinishWithSelfVerifyAsync(
-        string projectDir, CliServices services, CancellationToken ct, bool? dropComment)
+        string projectDir, CliServices services, CancellationToken ct, bool? dropComment,
+        IReadOnlyList<string>? dropEntities = null)
     {
         var verifyErrors = await VerifyProjectAsync(projectDir, services, ct).ConfigureAwait(false);
-        if (verifyErrors.Count > 0)
-        {
-            return ToolEnvelope.Errors(verifyErrors, applied: true);
-        }
-
-        return ToolEnvelope.Ok(json =>
+        void WriteResult(Utf8JsonWriter json)
         {
             json.WriteStartObject("result");
             json.WriteString("file", ConnectionsFileName);
@@ -554,8 +611,31 @@ internal static class AuthoringTools
                 json.WriteBoolean("dropped_comment", dropped);
             }
 
+            if (dropEntities is { Count: > 0 })
+            {
+                json.WriteStartArray("dropped_entities");
+                foreach (var entity in dropEntities)
+                {
+                    json.WriteStringValue(entity);
+                }
+
+                json.WriteEndArray();
+                json.WriteStartArray("warnings");
+                json.WriteStringValue(
+                    "pz_update_connection replaced the connection block wholesale, so these entity " +
+                    "declarations went with it -- re-add each with pz_add_entity if it is still wanted");
+                json.WriteEndArray();
+            }
+
             json.WriteEndObject();
-        }, applied: true);
+        }
+
+        // The result rides BOTH envelopes: a dropped entity is usually the very reason self-verify
+        // now fails (a pipeline still source()s it), so reporting it only on the success path would
+        // withhold the explanation exactly when it is needed most.
+        return verifyErrors.Count > 0
+            ? ToolEnvelope.Errors(verifyErrors, applied: true, WriteResult)
+            : ToolEnvelope.Ok(WriteResult, applied: true);
     }
 
     /// <summary>Overload for the entity/pipeline tools: same self-verify contract as the one above, but

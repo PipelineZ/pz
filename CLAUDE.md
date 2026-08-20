@@ -51,7 +51,7 @@ dotnet test tests/Pz.Engine.Tests -c Release --filter "FullyQualifiedName~Waterm
 
 # Packaging end-to-end proof (pack → tool install → pz init → pz run, offline).
 # Also a PR CI gate (ci.yml's pack-and-verify job); still worth running locally after
-# touching src/Pz.Cli, src/Pz.Cli/Templates/init, or any packable .csproj.
+# touching src/Pz.Cli, src/Pz.Cli/Templates/, or any packable .csproj.
 scripts/verify-tool-install.sh
 ```
 

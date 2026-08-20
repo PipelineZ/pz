@@ -25,7 +25,7 @@ public sealed class EntitySchemaTests
         CreateRegistryAsync = (project, dir, ct) =>
             Pz.Cli.ConnectorRegistryFactory.CreateAsync(project, dir, noLockCheck: false, ct),
         CreateStateStores = (_, _) => throw new InvalidOperationException("not needed for entity schema"),
-        InitProject = (_, _) => throw new InvalidOperationException("not needed for entity schema"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed for entity schema"),
         RunAsync = (_, _) => throw new InvalidOperationException("not needed for entity schema"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed for entity schema"),
     };

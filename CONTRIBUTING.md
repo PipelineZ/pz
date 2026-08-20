@@ -21,8 +21,8 @@ docker and will still exercise the Postgres/S3 suites; your PR only needs its ow
 to be clean modulo those expected skips.
 
 `scripts/verify-tool-install.sh` is the packaging/tool-install end-to-end proof (pack -> install ->
-`pz init` -> `pz run`, fully offline). Run it after touching anything under `src/Pz.Cli`,
-`src/Pz.Cli/Templates/init`, or any packable project's `.csproj`.
+`pz init` -> `pz init --sample` -> `pz run`, fully offline). Run it after touching anything under
+`src/Pz.Cli`, `src/Pz.Cli/Templates/`, or any packable project's `.csproj`.
 
 ## Branch protection
 

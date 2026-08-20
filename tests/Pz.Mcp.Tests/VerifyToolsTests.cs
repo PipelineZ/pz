@@ -11,7 +11,7 @@ public class VerifyToolsTests
         CreateRegistryAsync = (project, dir, ct) =>
             Pz.Cli.ConnectorRegistryFactory.CreateAsync(project, dir, noLockCheck: false, ct),
         CreateStateStores = (_, _) => throw new InvalidOperationException("not needed for verify tools"),
-        InitProject = (_, _) => throw new InvalidOperationException("not needed for verify tools"),
+        InitProject = (_, _, _) => throw new InvalidOperationException("not needed for verify tools"),
         RunAsync = (_, _) => throw new InvalidOperationException("not needed for verify tools"),
         RetryAsync = (_, _, _) => throw new InvalidOperationException("not needed for verify tools"),
     };
