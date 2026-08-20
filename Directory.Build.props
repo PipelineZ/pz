@@ -37,8 +37,8 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/coccor/pz</RepositoryUrl>
     <!-- RepositoryUrl is the source link; PackageProjectUrl is what the gallery renders as the
-         package's website. Both point at the repository today because that is where the docs live. -->
-    <PackageProjectUrl>https://github.com/coccor/pz</PackageProjectUrl>
+         package's website, so it points at the documentation site rather than the repository. -->
+    <PackageProjectUrl>https://pipelinez.dev</PackageProjectUrl>
     <!-- Every package shipped with an EMPTY tag list through v0.1.1, which is the main lever
          nuget.org search offers besides id and description. "pipelinez" leads because that is the
          name people know the project by while every id starts with the abbreviation "Pz".
