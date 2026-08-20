@@ -1,0 +1,14 @@
+name: pz_new_project
+version: 0.1.0
+
+retention:
+  keep_last: 10
+
+# Remote state: uncomment together with the `ops:` connection in connections.yml. pz creates and
+# migrates the schema itself, so the account needs DDL rights.
+#
+# state:
+#   backend: sqlserver
+#   connection: ops
+#   schema: pzstate
+#   events: true

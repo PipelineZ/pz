@@ -58,6 +58,11 @@ internal static class TemplateCatalog
             TemplateRunnability.Offline,
             "  cd {0} && pz run --all\n" +
             "  then run it again -- the second run extracts nothing, which is the point"),
+        new("sqlserver",
+            "SQL Server to SQL Server: incremental merge, five kinds of check, optional remote state",
+            TemplateRunnability.NeedsDatabase,
+            "  cd {0}, export the ERP_DB_* and MART_DB_* variables connections.yml names,\n" +
+            "  then `pz validate --connect` before `pz run --all`"),
     ];
 
     public static TemplateInfo? Find(string id) =>
