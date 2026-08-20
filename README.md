@@ -1,4 +1,4 @@
-# PipelineZ (`pz`)
+# [PipelineZ (`pz`)](https://pipelinez.dev)
 
 **Write SQL. Get a data pipeline. Run it anywhere.**
 
@@ -49,11 +49,16 @@ A pipeline is a SQL file. Three template calls give `pz` everything it needs to 
 
 ```sql
 -- pipelines/orders_enriched.sql
-INSERT INTO {{ sink('lake', 'orders_curated', format: 'parquet', strategy: 'replace') }}
-select o.id, o.amount, c.email
-from {{ ref('stg_orders') }} as o
-join {{ source('crm', 'customers', path: 'data/customers.csv', format: 'csv') }} as c
-  on c.id = o.customer_id
+INSERT INTO {{ sink('lake', 'orders_curated') }}
+SELECT
+    o.id,
+    o.amount,
+    c.email
+-- ref() names another pipeline in this project by file name (pipelines/stg_orders.sql),
+-- which is what makes it run first and hand its rows to this one.
+FROM {{ ref('stg_orders') }} AS o
+JOIN {{ source('crm', 'customers') }} AS c
+  ON c.id = o.customer_id
 ```
 
 `connections.yml` says where those places are and how to get in. It's a CSV folder here, but the
@@ -63,15 +68,18 @@ same two lines of SQL work against Postgres or S3 once you point the connection 
 crm:
   connector: localfiles
   entities:
-    orders:
-      read: { path: data/orders.csv, format: csv }
+    customers:
+      read: { path: data/customers.csv, format: csv }
 
 lake:
   connector: localfiles
   root: out
+  entities:
+    orders_curated:
+      write: { format: parquet, strategy: replace }
 ```
 
-Every read and write option can live in the YAML, as `orders` does above, or right at the
+Every read and write option can live in the YAML, as they do above, or right at the
 `source()`/`sink()` call that uses it. Your choice, but never both, so there's no precedence puzzle
 to solve. That's the whole project. No `models/`, no profiles directory, no adapter to install.
 
@@ -81,60 +89,26 @@ DuckDB does the work, and often your data never even enters .NET: when both side
 speak SQL, `pz` hands DuckDB a fragment and steps out of the way. When they can't, data streams
 through .NET as zero-copy Arrow batches, never row by row.
 
-Moving **1,000,000 rows**, end to end through `pz run`, next to raw DuckDB doing the same move by
-itself:
+**A million rows, SQL Server to SQL Server, end to end through `pz run`: 10.5 s — 1.5× faster than
+raw DuckDB doing the same move by itself.** The sink measures your text columns, sizes the target
+table to fit, and bulk-copies into it.
 
-| Move | `pz` | Raw DuckDB | |
-|---|---|---|---|
-| SQL Server → SQL Server | **10.5 s** | 16.2 s | 🏆 `pz` is 1.5× faster |
-| CSV → Parquet on S3 | 1.4 s | 0.5 s | ~0.9 s of that is startup |
-| CSV → Parquet on Azure Blob | 1.0 s | 0.5 s | ~0.5 s of that is startup |
-| Local CSV → CSV | 1.9 s | 0.4 s | staged, not fused |
-| Postgres → Postgres | 4.9 s | 1.9 s | the .NET driver floor |
+| Moving 1,000,000 rows | `pz` | |
+|---|---|---|
+| SQL Server → SQL Server | **10.5 s** | 🏆 1.5× faster than raw DuckDB (16.2 s) |
+| CSV → Parquet on Azure Blob | **1.0 s** | ~0.5 s of that is process startup |
+| CSV → Parquet on S3 | **1.4 s** | ~0.9 s of that is process startup |
+| Local CSV → CSV | **1.9 s** | |
 
-`pz` beats DuckDB's own SQL Server extension because its sink measures your text columns and sizes
-the target table to fit, then bulk-copies into it. Everywhere else the gap is a flat startup cost
-that gets smaller as your data gets bigger, not a per-row tax.
-
-Under the hood, on the same laptop: **~806k rows/sec** into DuckDB, **~960k rows/sec** back out.
+Startup is a flat cost that gets smaller as your data gets bigger, not a per-row tax. Sustained
+throughput on the same machine: **~806k rows/sec** into DuckDB, **~960k rows/sec** back out.
 
 > Every number here is one laptop (i7-8665U, 4 cores, 15 GiB), measured, not tuned. Re-run them on
 > your own hardware with the harnesses documented in [Performance](https://pipelinez.dev/performance/), which also
-> explains the ones where `pz` loses, and why.
+> covers the moves where raw DuckDB still wins, and why.
 
 And you know the memory cost before you run: `pz plan` prints a static budget computed from your
 config alone.
-
-## 🔌 What's in the box
-
-Eight connectors ship built in, with no packages to install:
-
-| | Read | Write | Notes |
-|---|---|---|---|
-| **Local files** | ✅ | ✅ | csv, NDJSON, parquet |
-| **Postgres** | ✅ | ✅ | incremental, merge, CDC |
-| **SQL Server** | ✅ | ✅ | incremental, merge, CDC |
-| **MySQL** | ✅ | ✅ | incremental; append/replace |
-| **SQLite** | ✅ | ✅ | incremental; append/replace |
-| **S3** | ✅ | ✅ | any S3-compatible store, incl. [GCS](https://pipelinez.dev/how-to/gcs/) |
-| **Azure Blob** | ✅ | ✅ | csv, NDJSON, parquet |
-| **HTTP APIs** | ✅ | ✅ | REST; append/merge |
-
-Need another? Connectors are ordinary NuGet packages behind a small, versioned interface.
-See [Author a connector](https://pipelinez.dev/how-to/author-a-connector/).
-
-## Why you might like it
-
-- **It's just files.** Your pipeline reviews like code, diffs like code, and rolls back like code.
-- **One tool, no moving parts.** No daemon, no scheduler, no service to keep alive. The same project
-  runs on your laptop, in CI, and in a container without changing a line.
-- **Nothing runs twice by accident.** Watermarks only advance after every destination has committed,
-  and `pz retry` re-runs the failed nodes while reusing the data that already landed.
-- **Errors that tell you what to do.** Every failure has a code, names the file, and suggests a next
-  step. Validation reports *all* the problems at once, not the first one.
-- **Look before you leap.** `pz compile`, `pz plan`, and `pz validate` show you the graph, the
-  strategy, and the memory budget without touching a single connection.
-- **Your agent can drive it.** `pz mcp` exposes the whole thing as an MCP server.
 
 ## Commands
 
