@@ -18,10 +18,10 @@ $ pz run --all
 $ cat out/order_totals/*.csv
 ```
 
-> **Installed `Pz.Cli` before?** That was the package id through `v0.2.0`; it is now `pz`. Both
-> packages install a command named `pz`, so run `dotnet tool uninstall --global Pz.Cli` first — the
-> install above fails on the shim collision otherwise, and `dotnet tool update --global Pz.Cli`
-> keeps you pinned to `0.2.0` forever.
+> **Installed `Pz.Cli` before?** That was the old package id; it is now `pz`. Both packages install
+> a command named `pz`, so run `dotnet tool uninstall --global Pz.Cli` first — the install above
+> fails on the shim collision otherwise, and `dotnet tool update --global Pz.Cli` keeps you on the
+> last release that used the old id, forever.
 
 No Docker, no database, no network calls after the install. All you need is the .NET 10 SDK. Here's
 what the run prints:

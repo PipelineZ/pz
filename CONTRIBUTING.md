@@ -112,11 +112,13 @@ follow that no code can enforce, so they are checklist items for whoever runs th
 - **The trusted publishing policy must cover `pz`.** The original policy is globbed `Pz.*`, which
   does not match a bare `pz`; without a second policy (or a widened one) `release.yml`'s push fails
   authentication for that package alone, after the other three have already gone out.
-- **`Pz.Cli` stays deprecated, listed, and unreplaced.** It published `0.1.0` through `0.2.0` under
-  the old id. Deprecate it on nuget.org ("Other", alternate package `pz`) so the gallery and
-  `dotnet` point at the new id; leave its versions listed so existing lock files still restore. Do
-  **not** publish new versions under both ids — a machine with both installed globally has two
-  packages claiming the `pz` shim, and the second install fails.
+- **`Pz.Cli` stays deprecated, listed, and unreplaced.** It published `0.1.0` through `0.2.1` under
+  the old id; `pz` picks up at `0.2.2`. That boundary is final, not a running total — the rule below
+  is what freezes it, so no release ever has to revisit these numbers. Deprecate `Pz.Cli` on
+  nuget.org ("Other", alternate package `pz`) so the gallery and `dotnet` point at the new id; leave
+  its versions listed so existing lock files still restore. Do **not** publish new versions under
+  both ids — a machine with both installed globally has two packages claiming the `pz` shim, and the
+  second install fails.
 
 **The eight builtin connectors deliberately do not publish.** `Pz.Cli` project-references them and
 registers them in-process (`BuiltinConnectors`), and `BuiltinConnectors.PackageIds` excludes them
