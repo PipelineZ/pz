@@ -6,20 +6,26 @@ using Pz.Core.Validation;
 
 namespace Pz.Cli.Commands;
 
-/// <summary>`pz init &lt;name&gt;`: scaffolds a runnable starter project from the embedded
-/// <c>Templates/init/**</c> resources (the single source of truth; there is no copy-from-samples build
-/// step, so an installed tool works with no source tree on disk). The
-/// scaffolded project uses only <c>Pz.Connector.LocalFiles</c> (a builtin), so `cd &lt;name&gt; &amp;&amp;
-/// pz run` succeeds fully offline — no `pz restore`, no network, no docker.</summary>
+/// <summary>`pz init &lt;name&gt;`: scaffolds a new project from the embedded <c>Templates/**</c>
+/// resources (the single source of truth; there is no copy-from-samples build step, so an installed
+/// tool works with no source tree on disk).
+///
+/// The default is <see cref="Template.Minimal"/> — project.yml + connections.yml, nothing to delete
+/// before authoring. <c>--sample</c> scaffolds the runnable four-pipeline demo instead; it uses only
+/// <c>Pz.Connector.LocalFiles</c> (a builtin), so `cd &lt;name&gt; &amp;&amp; pz run --all` succeeds
+/// fully offline — no `pz restore`, no network, no docker.</summary>
 internal static class InitCommand
 {
-    /// <summary>Which embedded template set to scaffold. <see cref="Sample"/> is the runnable
-    /// four-pipeline demo `pz init` writes — the right thing for someone meeting pz for the first
-    /// time, who learns the shape by reading working code. <see cref="Minimal"/> is project.yml +
-    /// connections.yml and nothing else, for a caller that already knows what it is building and
-    /// would otherwise have to delete the demo first (see <c>pz_init_project</c>'s <c>minimal</c>).
-    /// The sample's own files are a poor starting point there: they compile, so leaving them in
-    /// place means `pz run --all` moves demo data the caller never asked for.</summary>
+    /// <summary>Which embedded template set to scaffold. <see cref="Minimal"/> — project.yml +
+    /// connections.yml and nothing else — is the default everywhere: it is what someone starting
+    /// their own project wants, and the sample is a poor substitute for it because the demo files
+    /// COMPILE, so until they are deleted `pz run --all` moves demo data nobody asked for.
+    /// <see cref="Sample"/> is the runnable four-pipeline demo, for learning the shape from working
+    /// code; it is opt-in via <c>--sample</c> (or <c>pz_init_project</c>'s <c>minimal: false</c>).
+    ///
+    /// <see cref="Execute"/> deliberately takes this with no default value: which project a caller
+    /// scaffolds is never an incidental choice, and a default here is how the CLI and the MCP tool
+    /// would silently drift apart.</summary>
     internal enum Template
     {
         Sample,
@@ -37,13 +43,21 @@ internal static class InitCommand
         {
             Description = "Directory to scaffold the new project into ('.' scaffolds into the current directory)",
         };
-        var command = new Command("init", "Scaffold a new runnable pz project from the built-in starter template");
+        var sampleOption = new Option<bool>("--sample")
+        {
+            Description = "Scaffold the runnable four-pipeline sample project instead of a minimal one",
+        };
+        var command = new Command("init", "Scaffold a new pz project (project.yml + connections.yml; --sample for a runnable demo)");
         command.Arguments.Add(nameArgument);
-        command.SetAction(parseResult => Execute(parseResult.GetValue(nameArgument)!, Directory.GetCurrentDirectory()));
+        command.Options.Add(sampleOption);
+        command.SetAction(parseResult => Execute(
+            parseResult.GetValue(nameArgument)!,
+            Directory.GetCurrentDirectory(),
+            parseResult.GetValue(sampleOption) ? Template.Sample : Template.Minimal));
         return command;
     }
 
-    internal static int Execute(string name, string workingDir, Template template = Template.Sample)
+    internal static int Execute(string name, string workingDir, Template template)
     {
         var resourcePrefix = ResourcePrefixFor(template);
         var targetDir = Path.GetFullPath(name, workingDir);
@@ -106,7 +120,8 @@ internal static class InitCommand
         Console.WriteLine(template == Template.Minimal
             ? "next steps:\n" +
               $"  cd {projectName}, declare a connection in connections.yml, then add a pipeline\n" +
-              "  under pipelines/ that source()s from it -- `pz validate` checks both"
+              "  under pipelines/ that source()s from it -- `pz validate` checks both\n" +
+              "  (want a worked example instead? `pz init <name> --sample`)"
             : "next steps:\n" +
               $"  cd {projectName} && pz run orders_enriched\n" +
               "  (this template ships two independent flows; `pz run --all` runs both)");

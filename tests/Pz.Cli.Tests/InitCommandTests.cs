@@ -30,7 +30,7 @@ public class InitCommandTests : IDisposable
     {
         var targetDir = Path.Combine(_work, "demo");
 
-        var initExit = CliApp.Build().Parse(["init", targetDir]).Invoke();
+        var initExit = CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke();
         Assert.Equal(ExitCodes.Ok, initExit);
 
         Assert.True(File.Exists(Path.Combine(targetDir, "project.yml")));
@@ -68,6 +68,40 @@ public class InitCommandTests : IDisposable
         {
             Assert.Equal("success", node.GetProperty("status").GetString());
         }
+    }
+
+    /// <summary>The bare verb scaffolds the MINIMAL project — two files, nothing to delete before
+    /// authoring. The sample's files compile, so shipping them by default meant a first `pz run --all`
+    /// moved demo data the author never wrote; it is now opt-in via <c>--sample</c>.</summary>
+    [Fact]
+    public void Init_without_sample_scaffolds_the_minimal_project()
+    {
+        var targetDir = Path.Combine(_work, "minimal");
+
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir]).Invoke());
+
+        Assert.Equal(
+            ["connections.yml", "project.yml"],
+            Directory.GetFiles(targetDir, "*", SearchOption.AllDirectories)
+                .Select(f => Path.GetRelativePath(targetDir, f).Replace(Path.DirectorySeparatorChar, '/'))
+                .OrderBy(f => f, StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    /// <summary>The minimal scaffold must still be a project pz can load and compile -- it is the
+    /// starting point for every hand-authored project, so a typo in the template would strand every
+    /// one of them at their first command.</summary>
+    [Fact]
+    public void Minimal_scaffold_loads_and_compiles_clean()
+    {
+        var targetDir = Path.Combine(_work, "minimal-loads");
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir]).Invoke());
+
+        var project = ProjectLoader.Load(targetDir, new Dictionary<string, string>());
+
+        Assert.Equal("minimal_loads", project.Name);
+        Assert.Empty(project.Connections);
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["compile", "--project", targetDir]).Invoke());
     }
 
     [Fact]
@@ -144,7 +178,7 @@ public class InitCommandTests : IDisposable
         int exit;
         try
         {
-            exit = CliApp.Build().Parse(["init", targetDir]).Invoke();
+            exit = CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke();
         }
         finally
         {
@@ -161,7 +195,7 @@ public class InitCommandTests : IDisposable
     public void Init_scaffold_bare_run_requires_flow_or_all()
     {
         var targetDir = Path.Combine(_work, "gate");
-        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir]).Invoke());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke());
 
         var stderr = new StringWriter();
         var original = Console.Error;
@@ -185,7 +219,7 @@ public class InitCommandTests : IDisposable
     public void Init_scaffold_named_flow_runs_end_to_end()
     {
         var targetDir = Path.Combine(_work, "named");
-        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir]).Invoke());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke());
 
         var exit = CliApp.Build().Parse(["run", "product_catalog", "--project", targetDir]).Invoke();
         Assert.Equal(ExitCodes.Ok, exit);
@@ -241,7 +275,7 @@ public class InitCommandTests : IDisposable
     public void Init_scaffolded_output_is_lf_only()
     {
         var targetDir = Path.Combine(_work, "lf-check");
-        var initExit = CliApp.Build().Parse(["init", targetDir]).Invoke();
+        var initExit = CliApp.Build().Parse(["init", targetDir, "--sample"]).Invoke();
         Assert.Equal(ExitCodes.Ok, initExit);
 
         var files = Directory.GetFiles(targetDir, "*", SearchOption.AllDirectories);
@@ -313,6 +347,9 @@ public class InitCommandTests : IDisposable
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Pz.slnx"))) dir = dir.Parent;
         var repoRoot = dir?.FullName ?? throw new InvalidOperationException("Pz.slnx not found above test base dir");
-        return Path.Combine(repoRoot, "src", "Pz.Cli", "Templates", "init");
+        // The whole Templates/ tree, not one template: `minimal` ships alongside `init` and is what
+        // the bare verb scaffolds, so scoping this to a single directory would leave the DEFAULT
+        // output unguarded -- and any template added later silently unguarded too.
+        return Path.Combine(repoRoot, "src", "Pz.Cli", "Templates");
     }
 }

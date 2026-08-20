@@ -3,9 +3,12 @@
 # tool, not just buildable in-repo.
 #
 # Pack everything -> local folder feed -> `dotnet tool install --tool-path <clean tmp dir>` -> run the
-# INSTALLED tool binary, completely offline, against `pz init`'s own scaffolded output (builtin
-# connectors only, so no `pz restore`/NuGet touch at run time) -> assert success + real output files ->
-# cleanup.
+# INSTALLED tool binary, completely offline, against `pz init`'s own scaffolded output -> assert
+# success + real output files -> cleanup.
+#
+# Both templates are exercised: the default (minimal) for its shape, and `--sample` for the run
+# proof, since only the sample ships pipelines to run (builtin connectors only, so no
+# `pz restore`/NuGet touch at run time).
 #
 # The install step must be hermetic. `dotnet tool install --add-source <feed>` is
 # ADDITIVE -- the machine's ambient NuGet sources (nuget.org, any configured private feeds, etc.) are
@@ -23,6 +26,7 @@ WORK_DIR="$(mktemp -d)"
 FEED_DIR="${WORK_DIR}/feed"
 TOOL_DIR="${WORK_DIR}/tool"
 INIT_DIR="${WORK_DIR}/init-smoke"
+MINIMAL_DIR="${WORK_DIR}/init-minimal-smoke"
 NUGET_CONFIG="${WORK_DIR}/nuget.config"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 
@@ -78,14 +82,35 @@ echo
 # Force offline for both init and run: unset any proxy env vars so a network call would fail loudly
 # rather than silently succeed if this invariant ever regresses. `pz init` writes only builtin
 # (Pz.Connector.LocalFiles) sources/sinks, so neither verb ever touches NuGet/pz.lock.json here.
-echo "-- pz init smoke (offline, builtin connectors only) --"
+echo "-- pz init smoke (offline, default template) --"
 if ! env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
-  "${PZ}" init "${INIT_DIR}"; then
+  "${PZ}" init "${MINIMAL_DIR}"; then
   echo "FAIL: pz init exited non-zero" >&2
   exit 1
 fi
+# The default is the MINIMAL project: project.yml + connections.yml and nothing else. Asserted from
+# the installed binary because the template set is chosen from embedded resources -- a packaging
+# mistake that shipped only one of the two template directories would otherwise surface as a
+# stranger's first command scaffolding the wrong project.
+if [[ ! -f "${MINIMAL_DIR}/project.yml" || ! -f "${MINIMAL_DIR}/connections.yml" ]]; then
+  echo "FAIL: expected project.yml and connections.yml after pz init" >&2
+  exit 1
+fi
+if [[ -d "${MINIMAL_DIR}/pipelines" || -d "${MINIMAL_DIR}/data" ]]; then
+  echo "FAIL: default pz init scaffolded sample content; expected the minimal project" >&2
+  exit 1
+fi
+echo "init OK: ${MINIMAL_DIR} holds the minimal project (project.yml + connections.yml)"
+echo
+
+echo "-- pz init --sample smoke (offline, builtin connectors only) --"
+if ! env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
+  "${PZ}" init "${INIT_DIR}" --sample; then
+  echo "FAIL: pz init --sample exited non-zero" >&2
+  exit 1
+fi
 if [[ ! -f "${INIT_DIR}/project.yml" ]]; then
-  echo "FAIL: expected ${INIT_DIR}/project.yml to exist after pz init" >&2
+  echo "FAIL: expected ${INIT_DIR}/project.yml to exist after pz init --sample" >&2
   exit 1
 fi
 echo "init OK: ${INIT_DIR}/project.yml exists"

@@ -216,11 +216,11 @@ public static class PzMcpServer
                 {
                     Name = "pz_init_project",
                     Description = "Scaffold a new pz project into this server's own project directory, and " +
-                        "list the files written. minimal (default true): project.yml + connections.yml only, " +
-                        "ready to author against. Pass minimal=false for the runnable four-pipeline sample " +
-                        "`pz init` scaffolds -- only when the user asked to see a worked example, since its " +
-                        "demo pipelines compile and would run. Refuses if the directory already exists and " +
-                        "is not empty.",
+                        "list the files written. minimal (default true, same as `pz init`): project.yml + " +
+                        "connections.yml only, ready to author against. Pass minimal=false for the runnable " +
+                        "four-pipeline sample (`pz init --sample`) -- only when the user asked to see a " +
+                        "worked example, since its demo pipelines compile and would run. Refuses if the " +
+                        "directory already exists and is not empty.",
                 }),
         };
 
