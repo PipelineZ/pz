@@ -22,7 +22,7 @@ for expected in feed nuget.config install.ps1 run-pz.ps1; do
 done
 
 echo "-- Installing from the bundle's own nuget.config --"
-dotnet tool install Pz.Cli --tool-path "${WORK_DIR}/tool" \
+dotnet tool install pz --tool-path "${WORK_DIR}/tool" \
   --configfile "${BUNDLE_DIR}/nuget.config" --prerelease
 PZ="${WORK_DIR}/tool/pz"
 if [[ ! -x "${PZ}" ]]; then

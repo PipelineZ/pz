@@ -55,6 +55,19 @@
     <!-- The packable tool: this is the project that ships as the `pz` command. -->
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>pz</ToolCommandName>
+    <!-- The published id is the command people type, not the project name, so the install line is
+         `dotnet tool install -g pz`: an id anyone has to be told ("it's Pz.Cli, with a dot") is
+         friction on the one command that has to work before any other. The project, assembly, and
+         namespace stay Pz.Cli; only the id on nuget.org differs, and this is the single place the
+         two names diverge. Two consequences to keep in mind:
+         (1) the nuget.org trusted publishing policy scopes ids by glob, and a bare `pz` does NOT
+             match "Pz.*". A policy naming `pz` too is a manual prerequisite; without it release.yml
+             fails authentication pushing this package alone. Its prerequisites block says so.
+         (2) `Pz.Cli` published 0.1.0 through 0.2.0 under the old id and is deprecated on nuget.org
+             pointing here. NuGet has no redirect, so `dotnet tool update -g Pz.Cli` still resolves
+             the old id, and a global install of the old package must be uninstalled before `pz`
+             installs, because both packages claim the same `pz` shim name. -->
+    <PackageId>pz</PackageId>
     <!-- Leads with the project name: nuget.org's search matches the description, and "PipelineZ"
          appeared nowhere in the old text, so the flagship package was the hardest of the four to find
          by the name people actually know it by. Naming the bundled connectors is not padding either,
