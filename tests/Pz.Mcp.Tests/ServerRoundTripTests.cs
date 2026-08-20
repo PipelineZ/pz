@@ -147,6 +147,34 @@ public class ServerRoundTripTests
         Assert.Contains("connection", ex.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>An untyped input is an unanswerable question. The SDK infers the boolean schema
+    /// `true` ("any value") for a JsonElement parameter, which is what an agent reads when deciding
+    /// its first pz_add_connection call — so the option-map parameters republish as typed objects.
+    /// The optional ones must stay optional while doing it: `default` is what marks them so.</summary>
+    [Fact]
+    public async Task Option_map_parameters_publish_as_typed_objects()
+    {
+        await using var client = await Connect(allowRun: false);
+        var tools = (await client.ListToolsAsync()).ToDictionary(t => t.Name, t => t.ProtocolTool.InputSchema);
+
+        foreach (var (tool, parameter) in new[]
+        {
+            ("pz_add_connection", "connection"), ("pz_update_connection", "connection"),
+            ("pz_add_entity", "read"), ("pz_add_entity", "write"),
+            ("pz_set_entity_options", "read"), ("pz_set_entity_options", "write"),
+        })
+        {
+            var schema = tools[tool].GetProperty("properties").GetProperty(parameter);
+            Assert.Equal("object", schema.GetProperty("type").GetString());
+            Assert.True(schema.TryGetProperty("description", out _), $"{tool}.{parameter} has no description");
+        }
+
+        // read/write stay optional -- the `default` the SDK emitted must survive the rewrite.
+        Assert.Equal(
+            ["connection", "entity"],
+            RequiredNames(tools["pz_add_entity"]));
+    }
+
     private static string[] PropertyNames(JsonElement schema) =>
         schema.TryGetProperty("properties", out var properties)
             ? [.. properties.EnumerateObject().Select(p => p.Name).Order(StringComparer.Ordinal)]
