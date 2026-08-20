@@ -3,6 +3,7 @@ checks:
   - not_null: [order_id, status]
   - unique: [order_id]
   - row_count: { min: 1 }
+  - freshness: { column: updated_at, max_age: 24h }
   - accepted_values: { column: status, values: [pending, shipped, delivered] }
   - custom_sql:
       name: no_negative_amounts

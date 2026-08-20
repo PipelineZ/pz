@@ -26,7 +26,7 @@ write commits, so an interrupted run re-reads rather than skipping.
 
 ## Data-quality checks
 
-`pipelines/configs/orders_current.yml` uses all five check kinds. `pz test` runs only the checks;
+`pipelines/configs/orders_current.yml` uses all six check kinds. `pz test` runs only the checks;
 `pz run` runs them inline and fails the node when one does.
 
 ## Remote state

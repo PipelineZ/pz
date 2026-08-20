@@ -5,8 +5,8 @@ using Pz.Core.Loading;
 
 namespace Pz.Cli.Tests;
 
-/// <summary>`pz init` scaffolds the embedded <c>Templates/init/**</c> starter project
-/// (see <see cref="InitCommand"/>) into a target directory, substituting <c>{{PROJECT_NAME}}</c>
+/// <summary>`pz init` scaffolds one of the embedded <c>Templates/&lt;id&gt;/**</c> starter projects
+/// (see <see cref="InitCommand"/>) into a target directory, substituting <c>pz_new_project</c>
 /// (sanitized) into project.yml's <c>name:</c>. Every target directory used here is a unique absolute
 /// temp path passed directly as the `name` argument — never a bare relative name — so these tests never
 /// depend on (or mutate) the test process's current directory.</summary>
@@ -154,8 +154,9 @@ public class InitCommandTests : IDisposable
         }
     }
 
-    /// <summary>The bare verb scaffolds the MINIMAL project — two files, nothing to delete before
-    /// authoring. The sample's files compile, so shipping them by default meant a first `pz run --all`
+    /// <summary>The bare verb scaffolds the MINIMAL project — project.yml and connections.yml are
+    /// commented and empty, nothing to delete before authoring. The sample's files compile, so
+    /// shipping them by default meant a first `pz run --all`
     /// moved demo data the author never wrote; it is now opt-in via <c>--template sample</c>.</summary>
     [Fact]
     public void Init_without_a_template_flag_scaffolds_the_minimal_project()

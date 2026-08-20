@@ -27,7 +27,7 @@
          other doc is fetched from the published site by the pz_docs_* tools, but this one is copied
          onto disk by `pz mcp init` for a client to read directly, so it must be present with no
          network and no source tree. LogicalName is forced to a clean "docs/<relative-path>" form on
-         every OS (the same explicit-LogicalName convention Pz.Cli's Templates/init/** resources use)
+         every OS (the same explicit-LogicalName convention Pz.Cli's Templates/** resources use)
          rather than reversing MSBuild's default folder-to-dot manifest-name mangling, which is
          ambiguous for filenames that themselves contain dots. -->
     <EmbeddedResource Include="../../docs/reference/authoring-for-agents.md">

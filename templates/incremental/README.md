@@ -8,8 +8,12 @@ Run it twice:
     pz run --all
 
 The first run lands all five orders. The second lands none -- the stored watermark advanced past
-every row's `updated_at`, so extraction is bounded and nothing is re-read. Add a row to
-`data/orders.csv` with a later `updated_at` and run again to see just that row land.
+every row's `updated_at`, so the pipeline is bounded and nothing new lands. Whether that bound also
+reaches extraction (so the connector itself reads less) depends on the connector: local CSV has no
+way to push a predicate into a file scan, so the second run still reads all five rows before the
+pipeline's `where` clause discards them. See `pz init <name> --template sqlserver` for a connector
+that pushes the bound into the query it sends. Add a row to `data/orders.csv` with a later
+`updated_at` and run again to see just that row land.
 
 ## How the incremental is declared
 

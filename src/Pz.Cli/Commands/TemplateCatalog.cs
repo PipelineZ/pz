@@ -31,7 +31,7 @@ internal sealed record TemplateInfo(
 /// scaffold source rather than a copy of it.</summary>
 internal static class TemplateCatalog
 {
-    /// <summary>What `pz init <name>` scaffolds with no `--template`. Minimal because that is what
+    /// <summary>What `pz init &lt;name&gt;` scaffolds with no `--template`. Minimal because that is what
     /// someone starting their own project wants: the sample's demo files COMPILE, so until they are
     /// deleted `pz run --all` moves data nobody asked for.</summary>
     public const string DefaultId = "minimal";
@@ -48,18 +48,18 @@ internal static class TemplateCatalog
             TemplateRunnability.Offline,
             "  cd {0} && pz run orders_enriched\n" +
             "  (this template ships two independent flows; `pz run --all` runs both)"),
-        new("http",
-            "GitHub REST API to a parquet delta log: pagination, a crawl guard, a typed contract",
-            TemplateRunnability.NeedsNetwork,
-            "  cd {0} && pz run --all\n" +
-            "  (reads the public GitHub API -- needs internet, no credentials)"),
         new("incremental",
             "watermark-bounded reads over local CSVs: run it twice, see the second run land nothing",
             TemplateRunnability.Offline,
             "  cd {0} && pz run --all\n" +
             "  then run it again -- the second run extracts nothing, which is the point"),
+        new("http",
+            "GitHub REST API to a parquet delta log: pagination, a crawl guard, a typed contract",
+            TemplateRunnability.NeedsNetwork,
+            "  cd {0} && pz run --all\n" +
+            "  (reads the public GitHub API -- needs internet, no credentials)"),
         new("sqlserver",
-            "SQL Server to SQL Server: incremental merge, five kinds of check, optional remote state",
+            "SQL Server to SQL Server: incremental merge, six kinds of check, optional remote state",
             TemplateRunnability.NeedsDatabase,
             "  cd {0}, export the ERP_DB_* and MART_DB_* variables connections.yml names,\n" +
             "  then `pz validate --connect` before `pz run --all`"),

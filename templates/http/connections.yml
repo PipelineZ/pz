@@ -18,7 +18,7 @@ github:
           per_page: "100"
           # Ascending by the cursor (updated_at): sort/direction ask the API to serve pages
           # oldest-first so a max_pages-truncated crawl still advances the watermark only
-          # over what actually landed -- see extract-from-http-api.md's cursor_order section.
+          # over what actually landed.
           sort: updated
           direction: asc
           # Rendered from the stored watermark (ISO-8601 UTC). On the first run there is

@@ -22,8 +22,7 @@ database — `pz run --all` works as-is, rate-limited to ~60 requests/hour.
   in `connections.yml`, and this template keeps it there deliberately. A `source()` call cannot
   span lines, so a read this large would become one unreadable line; and an http incremental
   declared purely in SQL has an unguarded first run (nothing bounds the very first crawl), which
-  is exactly what `max_pages` is here to prevent. `samples/mssql-mart/` is the mirror image —
-  the same options, all written at the call site.
+  is exactly what `max_pages` is here to prevent.
 - **The delivery-guarantee consent rule** — incremental + an append sink is at-least-once
   (GitHub's `since` is "at or after", so the boundary row re-lands next run). pz refuses that
   pairing at compile time (PZ0214) unless the output says `write: { duplicates: accept }` — which a
@@ -67,4 +66,5 @@ current-state view is one query away in any DuckDB:
   [Extract from an HTTP API](https://pipelinez.dev/how-to/extract-from-http-api/).
 - Rate limiting and request pacing (`Retry-After`, operation gating) are covered in
   [Throttle a source](https://pipelinez.dev/how-to/throttle-a-source/).
-- `samples/mssql-mart/` is the equivalent template for a SQL Server → SQL Server mart.
+- `pz init <name> --template sqlserver` is the equivalent template for a SQL Server to SQL Server
+  mart.

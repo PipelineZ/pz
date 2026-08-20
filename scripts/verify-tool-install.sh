@@ -88,10 +88,11 @@ if ! env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
   echo "FAIL: pz init exited non-zero" >&2
   exit 1
 fi
-# The default is the MINIMAL project: project.yml + connections.yml and nothing else. Asserted from
-# the installed binary because the template set is chosen from embedded resources -- a packaging
-# mistake that shipped only one of the two template directories would otherwise surface as a
-# stranger's first command scaffolding the wrong project.
+# The default is the MINIMAL project: project.yml and connections.yml, with no pipelines/ or data/
+# directory (that content belongs to the sample template). Asserted from the installed binary
+# because the template set is chosen from embedded resources -- a packaging mistake that shipped
+# only one of the template directories would otherwise surface as a stranger's first command
+# scaffolding the wrong project.
 if [[ ! -f "${MINIMAL_DIR}/project.yml" || ! -f "${MINIMAL_DIR}/connections.yml" ]]; then
   echo "FAIL: expected project.yml and connections.yml after pz init" >&2
   exit 1
@@ -107,7 +108,7 @@ if [[ ! -f "${MINIMAL_DIR}/README.md" || ! -f "${MINIMAL_DIR}/.gitignore" ]]; th
   echo "FAIL: expected README.md and .gitignore after pz init" >&2
   exit 1
 fi
-echo "init OK: ${MINIMAL_DIR} holds the minimal project (project.yml + connections.yml)"
+echo "init OK: ${MINIMAL_DIR} holds the minimal project (project.yml, connections.yml, README.md, .gitignore)"
 echo
 
 echo "-- pz init --template sample smoke (offline, builtin connectors only) --"

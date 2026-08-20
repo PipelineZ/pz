@@ -61,7 +61,9 @@ public class TemplateCatalogTests
     /// <summary>The embed and the tree must hold exactly the same files. A file present on disk but
     /// not embedded ships a broken template; a file embedded but not on disk is a run artifact that
     /// leaked into the tool. Neither fails the build on its own, and the second is easy to cause --
-    /// these directories are runnable in place.</summary>
+    /// these directories are runnable in place. This compares against files ON DISK (minus `.pz`/`out`),
+    /// not against what git tracks -- an untracked stray file under <c>templates/</c> would be embedded
+    /// and would ship, and this test would not catch it.</summary>
     [Fact]
     public void Embedded_resources_match_the_template_tree()
     {

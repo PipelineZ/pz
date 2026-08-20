@@ -1,6 +1,7 @@
 # pz_new_project
 
-A new PipelineZ project. Two files, both commented, nothing to delete.
+A new PipelineZ project. `project.yml` and `connections.yml` are commented and empty, ready to
+author against -- nothing to delete before you start.
 
 ## What goes where
 

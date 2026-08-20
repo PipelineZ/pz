@@ -116,6 +116,7 @@ internal static class InitCommand
 
         var assembly = Assembly.GetExecutingAssembly();
         var utf8NoBom = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        var copiedCount = 0;
         foreach (var resourceName in assembly.GetManifestResourceNames())
         {
             var normalized = resourceName.Replace('\\', '/');
@@ -133,6 +134,18 @@ internal static class InitCommand
             using var reader = new StreamReader(stream, Encoding.UTF8);
             var content = reader.ReadToEnd().Replace(ProjectNameToken, projectName, StringComparison.Ordinal);
             File.WriteAllText(destination, content, utf8NoBom);
+            copiedCount++;
+        }
+
+        // The id passed TemplateCatalog.Find above, so the catalog and the embedded resources
+        // disagree -- a build/packaging defect, not a user error. Reports rather than claiming
+        // success over an empty directory (no silent failures).
+        if (copiedCount == 0)
+        {
+            return Fail(PzErrorCode.InitTemplateUnknown,
+                $"template '{template.Id}' is in the catalog, but no resources under '{resourcePrefix}' " +
+                "are embedded in this build.",
+                "report this as a pz packaging bug");
         }
 
         Console.WriteLine($"scaffolded a new pz project '{projectName}' at {targetDir}");
