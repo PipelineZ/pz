@@ -377,6 +377,39 @@ public class EntityPipelineAuthoringTests
         }
     }
 
+    /// <summary>Exercises the REAL <c>McpCommand.InitProject</c> wiring (<c>McpCommand.BuildServices()</c>,
+    /// the same construction `pz mcp` itself uses) rather than the <see cref="RealInitProject"/> mirror
+    /// above -- the unknown-template check under test lives in <c>McpCommand.InitProject</c> itself, so a
+    /// test against the mirror would prove nothing about the real wiring. Before the directory-empty
+    /// check on purpose: an unknown template is wrong about what the CALLER asked for, independent of
+    /// whatever is (or isn't) on disk at <paramref name="dir"/>, and the target must stay untouched.</summary>
+    [Fact]
+    public void Init_rejects_an_unknown_template_before_touching_the_directory()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-mcp-init-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(
+                dir, "nope", Pz.Cli.Commands.McpCommand.BuildServices()));
+
+            Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+            Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
+            var error = doc.RootElement.GetProperty("errors")[0];
+            Assert.Equal("PZ0131", error.GetProperty("code").GetString());
+            Assert.Contains("nope", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+            // The hint must name what IS valid -- an error that only says "no" costs a round trip.
+            Assert.Contains("minimal", error.GetProperty("next_step").GetString(), StringComparison.Ordinal);
+            Assert.False(Directory.Exists(dir), "an unknown template must scaffold nothing");
+        }
+        finally
+        {
+            if (Directory.Exists(dir))
+            {
+                Directory.Delete(dir, recursive: true);
+            }
+        }
+    }
+
     [Fact]
     public void Init_with_a_trailing_separator_scaffolds_directly_into_that_directory()
     {

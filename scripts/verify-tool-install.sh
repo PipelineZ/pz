@@ -6,7 +6,7 @@
 # INSTALLED tool binary, completely offline, against `pz init`'s own scaffolded output -> assert
 # success + real output files -> cleanup.
 #
-# Both templates are exercised: the default (minimal) for its shape, and `--sample` for the run
+# Both templates are exercised: the default (minimal) for its shape, and `--template sample` for the run
 # proof, since only the sample ships pipelines to run (builtin connectors only, so no
 # `pz restore`/NuGet touch at run time).
 #
@@ -103,14 +103,14 @@ fi
 echo "init OK: ${MINIMAL_DIR} holds the minimal project (project.yml + connections.yml)"
 echo
 
-echo "-- pz init --sample smoke (offline, builtin connectors only) --"
+echo "-- pz init --template sample smoke (offline, builtin connectors only) --"
 if ! env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
-  "${PZ}" init "${INIT_DIR}" --sample; then
-  echo "FAIL: pz init --sample exited non-zero" >&2
+  "${PZ}" init "${INIT_DIR}" --template sample; then
+  echo "FAIL: pz init --template sample exited non-zero" >&2
   exit 1
 fi
 if [[ ! -f "${INIT_DIR}/project.yml" ]]; then
-  echo "FAIL: expected ${INIT_DIR}/project.yml to exist after pz init --sample" >&2
+  echo "FAIL: expected ${INIT_DIR}/project.yml to exist after pz init --template sample" >&2
   exit 1
 fi
 echo "init OK: ${INIT_DIR}/project.yml exists"
