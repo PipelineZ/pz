@@ -306,9 +306,9 @@ public class EntityPipelineAuthoringTests
     }
 
     /// <summary>The default is the minimal shape. An agent asked for a specific pipeline does not
-    /// want the four-pipeline sample: it would have to delete six files first, and until it did,
-    /// `pz run --all` would move demo data nobody asked for. The sample stays one flag away, for the
-    /// case where a worked example IS the request.</summary>
+    /// want the four-pipeline sample: it would have to delete the sample's other pipelines and data
+    /// files first, and until it did, `pz run --all` would move demo data nobody asked for. The sample
+    /// stays one flag away, for the case where a worked example IS the request.</summary>
     [Fact]
     public void Init_defaults_to_the_minimal_project()
     {

@@ -10,8 +10,9 @@ namespace Pz.Engine.Tests.Validation;
 /// <summary>Tier 4 (`SqlDryCompiler`): EXPLAIN-by-materialization against contract-derived empty tables
 /// in a throwaway file-backed DuckDB session. Builds tiny hand-written <see cref="CompiledDag"/>s the
 /// way <c>NodeExecutorTests</c> does (real DuckDB, no fakes) for the unit-level behaviors, plus two
-/// tests loading the real hello-pz project trees (golden fixture vs. samples copy) to make each one's
-/// own undeclared dataset (and which pipeline(s) it skips) visible.</summary>
+/// tests loading real project trees (the Fixtures/hello-pz golden fixture vs. a mutated copy of the
+/// shipped templates/sample) to make each one's own undeclared dataset (and which pipeline(s) it
+/// skips) visible.</summary>
 public sealed class SqlDryCompilerTests
 {
     private static ConnectionDef Source(string name, string dataset, IReadOnlyDictionary<string, string>? columns) =>
@@ -146,7 +147,8 @@ public sealed class SqlDryCompilerTests
         Assert.Throws<ArgumentException>(() => ContractTypes.ToDuckDdl("notatype"));
     }
 
-    // --- hello-pz golden fixture vs. samples copy: each has its own undeclared dataset ---
+    // --- Fixtures/hello-pz golden fixture vs. a mutated templates/sample copy: each has its own
+    // undeclared dataset ---
 
     [Fact]
     public async Task HelloPz_golden_fixture_orders_dataset_has_no_contract_and_skips_its_dependents()
@@ -162,25 +164,53 @@ public sealed class SqlDryCompilerTests
         Assert.Contains("orders_enriched", result.SkippedPipelines);
     }
 
-    /// <summary>The real sample's `customers` dataset carries no `columns:` contract (see
-    /// `orders_enriched.sql`), because a contract-less `localfiles` csv source runs fine via `pz run`'s
-    /// native-scan tier. Tier 4 dry-compile is a different code path and cannot dry-compile without a
-    /// contract, so `crm.customers` shows up as undeclared and its one reader, `orders_enriched`, is
-    /// skipped -- while `crm.orders` (still declared in `connections.yml`) and its dependents (`stg_orders`,
-    /// `order_totals`) dry-compile normally.</summary>
+    /// <summary>Every dataset in the shipped `templates/sample` now carries a `columns:` contract, so
+    /// this test works from a COPY with `customers`' contract stripped back out of `connections.yml` --
+    /// reconstructing the contract-less-csv case a contract-less `localfiles` csv source runs fine
+    /// through via `pz run`'s native-scan tier. Tier 4 dry-compile is a different code path and cannot
+    /// dry-compile without a contract, so `raw.customers` shows up as undeclared and its one reader,
+    /// `orders_enriched`, is skipped -- while `raw.orders` (contract untouched) and its dependents
+    /// (`stg_orders`, `order_totals`) dry-compile normally.</summary>
     [Fact]
-    public async Task HelloPz_samples_copy_customers_dataset_has_no_contract_and_skips_orders_enriched_only()
+    public async Task Sample_copy_customers_dataset_has_no_contract_and_skips_orders_enriched_only()
     {
-        var dag = CompileHelloPz(Path.Combine(FindRepoRoot(), "samples", "hello-pz"), new Dictionary<string, string>());
+        var work = Path.Combine(Path.GetTempPath(), "pz-sql-dry-compiler-tests", Guid.NewGuid().ToString("N"));
+        CopyTree(Path.Combine(FindRepoRoot(), "templates", "sample"), work);
+        try
+        {
+            var connectionsPath = Path.Combine(work, "connections.yml");
+            var connectionsYml = File.ReadAllText(connectionsPath).Replace(
+                "    customers:\n      read:\n        path: data/customers.csv\n        format: csv\n" +
+                "        columns:\n          id: bigint\n          email: varchar\n",
+                "    customers:\n      read:\n        path: data/customers.csv\n        format: csv\n");
+            File.WriteAllText(connectionsPath, connectionsYml);
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+            var dag = CompileHelloPz(work, new Dictionary<string, string>());
 
-        Assert.Empty(result.Errors);
-        Assert.Contains("crm.customers", result.UndeclaredDatasets);
-        Assert.Contains("orders_enriched", result.SkippedPipelines);
-        Assert.DoesNotContain("crm.orders", result.UndeclaredDatasets);
-        Assert.DoesNotContain("stg_orders", result.SkippedPipelines);
-        Assert.DoesNotContain("order_totals", result.SkippedPipelines);
+            var result = await SqlDryCompiler.RunAsync(dag, default);
+
+            Assert.Empty(result.Errors);
+            Assert.Contains("raw.customers", result.UndeclaredDatasets);
+            Assert.Contains("orders_enriched", result.SkippedPipelines);
+            Assert.DoesNotContain("raw.orders", result.UndeclaredDatasets);
+            Assert.DoesNotContain("stg_orders", result.SkippedPipelines);
+            Assert.DoesNotContain("order_totals", result.SkippedPipelines);
+        }
+        finally
+        {
+            try { Directory.Delete(work, recursive: true); } catch { /* best-effort cleanup */ }
+        }
+    }
+
+    private static void CopyTree(string from, string to)
+    {
+        Directory.CreateDirectory(to);
+        foreach (var file in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories))
+        {
+            var dest = Path.Combine(to, Path.GetRelativePath(from, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+            File.Copy(file, dest, overwrite: true);
+        }
     }
 
     private static CompiledDag CompileHelloPz(string projectDir, IReadOnlyDictionary<string, string> env)

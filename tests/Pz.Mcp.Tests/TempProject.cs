@@ -1,7 +1,7 @@
 namespace Pz.Mcp.Tests;
 
 /// <summary>A minimal self-contained project (no docker, no network) for exercising the verify tools
-/// (pz_compile/pz_validate/pz_plan) end to end. Spellings verified against samples/hello-pz's real
+/// (pz_compile/pz_validate/pz_plan) end to end. Spellings verified against templates/sample's real
 /// connections.yml/pipelines/*.sql:
 /// connections.yml has NO top-level `connections:` wrapper and NO nested `connection:` key — a
 /// connection's own name is the top-level YAML key, and connector options (e.g. `root`) sit directly

@@ -130,25 +130,33 @@ public sealed class ValidateCommandTests : IDisposable
         Assert.Contains("typo_check.sql", output);
     }
 
-    /// <summary>Tier 5 (`--connect`) against the real `samples/hello-pz` (content-linked into this test
-    /// project as "SamplesHelloPz" -- see the .csproj), AS SHIPPED: `orders` declares a `columns:`
-    /// contract in `connections.yml` that exactly matches its real CSV header, and its connectivity probe
-    /// succeeds cleanly. `customers` is contract-less (`pz run`'s native-scan tier handles it fine via
-    /// DuckDB's own `auto_detect`, see `orders_enriched.sql`), but tier 5's `ConnectivityValidator`
-    /// calls `ISource.GetSchemaAsync`, which is the universal-tier schema path and unconditionally
-    /// requires a full contract for csv -- so `customers`' probe fails with PZ0330. That is an accepted
-    /// tier-5 gap for a contract-less csv/json dataset: `--connect` cannot pre-flight-check it, so a
-    /// real shape problem there only surfaces at `pz run` time. `.pz/target/schemas.json` is
-    /// still written (byte-stably) even though the command exits non-zero -- empty, since neither dataset
-    /// ends up in `ConnectivityResult.FetchedSchemas` (that dictionary is populated only for a dataset
-    /// whose schema fetch actually SUCCEEDED with no declared contract, which never happens for csv).</summary>
+    /// <summary>Tier 5 (`--connect`) against a mutated COPY of the shipped `templates/sample` tree
+    /// (content-linked into this test project as "TemplatesSample" -- see the .csproj). Every dataset
+    /// the sample ships declares a `columns:` contract, so this test strips the one it declares for
+    /// `customers` in `connections.yml` back out, reconstructing the contract-less csv/json case:
+    /// `pz run`'s native-scan tier would handle it fine via DuckDB's own `auto_detect`, but tier 5's
+    /// `ConnectivityValidator` calls `ISource.GetSchemaAsync`, which is the universal-tier schema path
+    /// and unconditionally requires a full contract for csv -- so `customers`' probe fails with PZ0330,
+    /// while `orders` and `products` (contracts untouched) probe cleanly. That is an accepted tier-5 gap
+    /// for a contract-less csv/json dataset: `--connect` cannot pre-flight-check it, so a real shape
+    /// problem there only surfaces at `pz run` time. `.pz/target/schemas.json` is still written
+    /// (byte-stably) even though the command exits non-zero -- empty, since no dataset ends up in
+    /// `ConnectivityResult.FetchedSchemas` (that dictionary is populated only for a dataset whose schema
+    /// fetch actually SUCCEEDED with no declared contract, which never happens for csv).</summary>
     [Fact]
     public void Validate_connect_reports_undeclared_csv_gap_on_sample()
     {
         var sampleDir = Path.Combine(Path.GetTempPath(), "pz-validate-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), sampleDir);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), sampleDir);
         try
         {
+            var connectionsPath = Path.Combine(sampleDir, "connections.yml");
+            var connectionsYml = File.ReadAllText(connectionsPath).Replace(
+                "    customers:\n      read:\n        path: data/customers.csv\n        format: csv\n" +
+                "        columns:\n          id: bigint\n          email: varchar\n",
+                "    customers:\n      read:\n        path: data/customers.csv\n        format: csv\n");
+            File.WriteAllText(connectionsPath, connectionsYml);
+
             var stdout = new StringWriter();
             var stderr = new StringWriter();
             var originalOut = Console.Out;
@@ -167,7 +175,7 @@ public sealed class ValidateCommandTests : IDisposable
             }
 
             Assert.Equal(ExitCodes.ConfigError, exit);
-            Assert.Contains("note: dataset 'crm.customers' has no columns: contract", stdout.ToString());
+            Assert.Contains("note: dataset 'raw.customers' has no columns: contract", stdout.ToString());
             var output = stderr.ToString();
             Assert.Contains("PZ0330", output);
             Assert.Contains("dataset 'customers'", output);
@@ -188,27 +196,21 @@ public sealed class ValidateCommandTests : IDisposable
     /// <summary>A dataset may declare its `columns:` contract at its source() CALL SITE rather than in
     /// `connections.yml`, so tiers 3-5 must validate the EFFECTIVE connections, not the loaded ones:
     /// reading `PzProject.Connections` instead of `dag.Connections` skips a call-site-declared entity
-    /// entirely and its drift goes unnoticed. `samples/hello-pz`'s own `customers` declares no contract,
-    /// so this test re-adds one to a COPY of `orders_enriched.sql` purely to keep exercising the
-    /// call-site path; the real sample file is untouched.</summary>
+    /// entirely and its drift goes unnoticed. The shipped sample's own `products` (read at its
+    /// `source()` call site in `pipelines/product_catalog.sql`) already IS that call-site-declared
+    /// entity, so this test only needs to corrupt a COPY of its CSV header to create drift; no pipeline
+    /// edit is needed.</summary>
     [Fact]
     public void Validate_connect_reports_drift_for_call_site_declared_contract()
     {
         var sampleDir = Path.Combine(Path.GetTempPath(), "pz-validate-tests", Guid.NewGuid().ToString("N"));
-        CopyTree(Path.Combine(AppContext.BaseDirectory, "SamplesHelloPz"), sampleDir);
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), sampleDir);
         try
         {
-            var pipelinePath = Path.Combine(sampleDir, "pipelines", "orders_enriched.sql");
-            var pipelineSql = File.ReadAllText(pipelinePath).Replace(
-                "source('crm', 'customers', path: 'data/customers.csv', format: 'csv')",
-                "source('crm', 'customers', path: 'data/customers.csv', format: 'csv', " +
-                "columns: { id: 'bigint', email: 'varchar' })");
-            File.WriteAllText(pipelinePath, pipelineSql);
-
-            var customersPath = Path.Combine(sampleDir, "data", "customers.csv");
-            var lines = File.ReadAllLines(customersPath);
-            lines[0] = "id"; // drop the just-re-declared "email" column from the real header
-            File.WriteAllLines(customersPath, lines);
+            var productsPath = Path.Combine(sampleDir, "data", "products.csv");
+            var lines = File.ReadAllLines(productsPath);
+            lines[0] = "id,name"; // drop the call-site-declared "price" column from the real header
+            File.WriteAllLines(productsPath, lines);
 
             var stderr = new StringWriter();
             var originalErr = Console.Error;
@@ -226,7 +228,7 @@ public sealed class ValidateCommandTests : IDisposable
             Assert.Equal(ExitCodes.ConfigError, exit);
             var output = stderr.ToString();
             Assert.Contains("PZ0331", output);
-            Assert.Contains("email", output);
+            Assert.Contains("price", output);
         }
         finally
         {
