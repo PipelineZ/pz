@@ -310,7 +310,7 @@ public class EntityPipelineAuthoringTests
     /// `pz run --all` would move demo data nobody asked for. The sample stays one flag away, for the
     /// case where a worked example IS the request.</summary>
     [Fact]
-    public void Init_defaults_to_the_minimal_two_file_project()
+    public void Init_defaults_to_the_minimal_project()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pz-mcp-init-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
