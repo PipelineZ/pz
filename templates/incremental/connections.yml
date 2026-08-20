@@ -1,0 +1,22 @@
+# A connection is a place with credentials; an entity is a thing in that place; the direction is the
+# function you call -- source() to read, sink() to write.
+raw:
+  connector: localfiles
+  entities:
+    orders:
+      read:
+        path: data/orders.csv
+        format: csv
+        # CSV is not self-describing, so the read declares its types. The cursor column
+        # (updated_at) is just another declared column -- what makes the read incremental is the
+        # watermark() comparison in pipelines/orders_log.sql, not anything here.
+        columns:
+          order_id: bigint
+          customer_id: bigint
+          amount: double
+          status: varchar
+          updated_at: timestamp
+
+lake:
+  connector: localfiles
+  root: out

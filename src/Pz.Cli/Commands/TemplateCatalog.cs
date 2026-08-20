@@ -53,6 +53,11 @@ internal static class TemplateCatalog
             TemplateRunnability.NeedsNetwork,
             "  cd {0} && pz run --all\n" +
             "  (reads the public GitHub API -- needs internet, no credentials)"),
+        new("incremental",
+            "watermark-bounded reads over local CSVs: run it twice, see the second run land nothing",
+            TemplateRunnability.Offline,
+            "  cd {0} && pz run --all\n" +
+            "  then run it again -- the second run extracts nothing, which is the point"),
     ];
 
     public static TemplateInfo? Find(string id) =>

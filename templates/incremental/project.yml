@@ -1,0 +1,5 @@
+name: pz_new_project
+version: 0.1.0
+
+retention:
+  keep_last: 10
