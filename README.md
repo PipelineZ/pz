@@ -48,17 +48,13 @@ A pipeline is a SQL file. Three template calls give `pz` everything it needs to 
 `source()` reads from outside, `ref()` reads another pipeline, `sink()` writes back out.
 
 ```sql
--- pipelines/orders_enriched.sql
+-- pipelines/orders_curated.sql
 INSERT INTO {{ sink('lake', 'orders_curated') }}
 SELECT
-    o.id,
-    o.amount,
-    c.email
--- ref() names another pipeline in this project by file name (pipelines/stg_orders.sql),
--- which is what makes it run first and hand its rows to this one.
-FROM {{ ref('stg_orders') }} AS o
-JOIN {{ source('crm', 'customers') }} AS c
-  ON c.id = o.customer_id
+    id,
+    amount,
+    customer_id
+FROM {{ source('crm', 'orders') }}
 ```
 
 `connections.yml` says where those places are and how to get in. It's a CSV folder here, but the
@@ -68,8 +64,8 @@ same two lines of SQL work against Postgres or S3 once you point the connection 
 crm:
   connector: localfiles
   entities:
-    customers:
-      read: { path: data/customers.csv, format: csv }
+    orders:
+      read: { path: data/orders.csv, format: csv }
 
 lake:
   connector: localfiles
