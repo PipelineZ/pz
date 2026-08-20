@@ -1,0 +1,4 @@
+# pz run state: staging databases, run artifacts, and the run lock.
+.pz/
+# Default localfiles sink root. Adjust if connections.yml points its lake elsewhere.
+out/

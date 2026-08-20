@@ -322,7 +322,7 @@ public class EntityPipelineAuthoringTests
             Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.Equal("minimal", result.GetProperty("template").GetString());
             Assert.Equal(
-                ["connections.yml", "project.yml"],
+                [".gitignore", "README.md", "connections.yml", "project.yml"],
                 result.GetProperty("files").EnumerateArray().Select(f => f.GetString()!).ToArray());
             Assert.False(Directory.Exists(Path.Combine(dir, "data")));
             Assert.False(Directory.Exists(Path.Combine(dir, "pipelines")));

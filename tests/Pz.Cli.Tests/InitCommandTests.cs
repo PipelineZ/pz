@@ -81,7 +81,7 @@ public class InitCommandTests : IDisposable
         Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["init", targetDir]).Invoke());
 
         Assert.Equal(
-            ["connections.yml", "project.yml"],
+            [".gitignore", "README.md", "connections.yml", "project.yml"],
             Directory.GetFiles(targetDir, "*", SearchOption.AllDirectories)
                 .Select(f => Path.GetRelativePath(targetDir, f).Replace(Path.DirectorySeparatorChar, '/'))
                 .OrderBy(f => f, StringComparer.Ordinal)
