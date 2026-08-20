@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pz.Cli.Commands;
 using Pz.Core.Validation;
 using Pz.Mcp;
 using Pz.Mcp.Handlers;
@@ -28,7 +29,7 @@ public class EntityPipelineAuthoringTests
     /// <summary>Mirrors <c>McpCommand.InitProject</c> exactly: pre-check "directory is empty" (PZ0603)
     /// before calling <c>InitCommand.Execute</c> with the arguments `pz init &lt;name&gt;` would receive
     /// if run from <paramref name="dir"/>'s parent.</summary>
-    private static IReadOnlyList<PzError> RealInitProject(string dir, string name, bool minimal)
+    private static IReadOnlyList<PzError> RealInitProject(string dir, string name, string templateId)
     {
         if (File.Exists(dir) || (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any()))
         {
@@ -38,8 +39,7 @@ public class EntityPipelineAuthoringTests
         }
 
         var workingDir = Path.GetDirectoryName(dir) ?? dir;
-        var exitCode = Pz.Cli.Commands.InitCommand.Execute(name, workingDir,
-            minimal ? Pz.Cli.Commands.InitCommand.Template.Minimal : Pz.Cli.Commands.InitCommand.Template.Sample);
+        var exitCode = Pz.Cli.Commands.InitCommand.Execute(name, workingDir, templateId);
         return exitCode == 0
             ? []
             : [new PzError(PzErrorCode.McpInitDirNotEmpty,
@@ -293,7 +293,7 @@ public class EntityPipelineAuthoringTests
         Directory.CreateDirectory(dir);
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: false, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, "sample", RealServices()));
             Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.True(doc.RootElement.GetProperty("applied").GetBoolean());
             Assert.True(doc.RootElement.GetProperty("result").GetProperty("created").GetBoolean());
@@ -316,7 +316,7 @@ public class EntityPipelineAuthoringTests
         Directory.CreateDirectory(dir);
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: true, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, TemplateCatalog.DefaultId, RealServices()));
             var result = doc.RootElement.GetProperty("result");
 
             Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
@@ -342,7 +342,7 @@ public class EntityPipelineAuthoringTests
         Directory.CreateDirectory(dir);
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: false, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, "sample", RealServices()));
             var result = doc.RootElement.GetProperty("result");
             var files = result.GetProperty("files").EnumerateArray().Select(f => f.GetString()!).ToArray();
 
@@ -365,7 +365,7 @@ public class EntityPipelineAuthoringTests
         File.WriteAllText(Path.Combine(dir, "existing.txt"), "already here");
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, minimal: true, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(dir, TemplateCatalog.DefaultId, RealServices()));
             Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
             Assert.Equal("PZ0603", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
@@ -388,7 +388,7 @@ public class EntityPipelineAuthoringTests
         var withTrailingSeparator = dir + Path.DirectorySeparatorChar;
         try
         {
-            var doc = JsonDocument.Parse(AuthoringTools.InitProject(withTrailingSeparator, minimal: true, RealServices()));
+            var doc = JsonDocument.Parse(AuthoringTools.InitProject(withTrailingSeparator, TemplateCatalog.DefaultId, RealServices()));
             Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
             Assert.True(doc.RootElement.GetProperty("applied").GetBoolean());
             Assert.Equal(dir, doc.RootElement.GetProperty("result").GetProperty("dir").GetString());

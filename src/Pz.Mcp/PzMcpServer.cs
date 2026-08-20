@@ -211,7 +211,7 @@ public static class PzMcpServer
                         "even if another pipeline still ref()s it -- self-verify reports the resulting errors.",
                 }),
             McpServerTool.Create(
-                (bool minimal = true) => AuthoringTools.InitProject(projectDir, minimal, services),
+                (string template = "minimal") => AuthoringTools.InitProject(projectDir, template, services),
                 new McpServerToolCreateOptions
                 {
                     Name = "pz_init_project",

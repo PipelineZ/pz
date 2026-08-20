@@ -579,13 +579,14 @@ internal static class McpCommand
     /// internals -- InitCommand's own not-empty check exists for the CLI's own PZ0130/console-error path,
     /// which doesn't produce a <see cref="PzError"/> this seam can return. Once past that check, this
     /// calls <see cref="InitCommand.Execute"/> with exactly the arguments `pz init &lt;name&gt;` (or
-    /// `pz init &lt;name&gt; --sample`) would receive if run from <paramref name="dir"/>'s parent
-    /// directory -- <paramref name="name"/> is <paramref name="dir"/>'s own leaf, so
+    /// `pz init &lt;name&gt; --template &lt;id&gt;`) would receive if run from <paramref name="dir"/>'s
+    /// parent directory -- <paramref name="name"/> is <paramref name="dir"/>'s own leaf, so
     /// <c>Path.GetFullPath(name, workingDir)</c> resolves back to <paramref name="dir"/> exactly, and
     /// project-name derivation (sanitization) stays InitCommand's, never reimplemented here.
-    /// <paramref name="minimal"/> maps to the same <see cref="InitCommand.Template"/> the CLI's own
-    /// flag selects, so the two front doors scaffold identically and default identically.</summary>
-    private static IReadOnlyList<PzError> InitProject(string dir, string name, bool minimal)
+    /// <paramref name="templateId"/> is looked up against the same <see cref="TemplateCatalog"/> the
+    /// CLI's own `--template` flag selects, so the two front doors scaffold identically and default
+    /// identically.</summary>
+    private static IReadOnlyList<PzError> InitProject(string dir, string name, string templateId)
     {
         if (File.Exists(dir) || (Directory.Exists(dir) && Directory.EnumerateFileSystemEntries(dir).Any()))
         {
@@ -595,8 +596,7 @@ internal static class McpCommand
         }
 
         var workingDir = Path.GetDirectoryName(dir) ?? dir;
-        var exitCode = InitCommand.Execute(
-            name, workingDir, minimal ? InitCommand.Template.Minimal : InitCommand.Template.Sample);
+        var exitCode = InitCommand.Execute(name, workingDir, templateId);
         return exitCode == ExitCodes.Ok
             ? []
             : [new PzError(PzErrorCode.McpInitDirNotEmpty,

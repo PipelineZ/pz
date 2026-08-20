@@ -82,6 +82,28 @@ public class TemplateCatalogTests
         Assert.Equal(onDisk, embedded);
     }
 
+    /// <summary>Catalog and tree are bound in BOTH directions on purpose: a directory with no entry
+    /// is a template nobody can select, and an entry with no directory is a `--template` id that
+    /// scaffolds an empty project. Neither shows up as a build or scaffold failure on its own.</summary>
+    [Fact]
+    public void Catalog_ids_and_template_directories_are_the_same_set()
+    {
+        var onDisk = Directory.GetDirectories(TemplatesDir())
+            .Select(Path.GetFileName)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToArray();
+        var catalog = TemplateCatalog.All
+            .Select(t => t.Id)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(onDisk, catalog);
+    }
+
+    [Fact]
+    public void Default_template_is_in_the_catalog() =>
+        Assert.NotNull(TemplateCatalog.Find(TemplateCatalog.DefaultId));
+
     internal static string TemplatesDir()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

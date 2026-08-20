@@ -411,7 +411,7 @@ internal static class AuthoringTools
     /// The result lists every file written. Reporting only <c>created: true</c> left the caller
     /// needing a second round trip to learn what it had just been handed -- and, with the sample
     /// template, what it would have to delete.</summary>
-    internal static string InitProject(string projectDir, bool minimal, CliServices services)
+    internal static string InitProject(string projectDir, string templateId, CliServices services)
     {
         // Trim trailing separators ONCE, up front, and use the trimmed path consistently everywhere
         // below -- McpCommand.InitProject derives its InitCommand.Execute workingDir from this same
@@ -420,7 +420,7 @@ internal static class AuthoringTools
         // through would scaffold one level too deep (targetDir "/foo/bar/bar").
         var trimmed = projectDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         var name = Path.GetFileName(trimmed);
-        var errors = services.InitProject(trimmed, name, minimal);
+        var errors = services.InitProject(trimmed, name, templateId);
         if (errors.Count > 0)
         {
             return ToolEnvelope.Errors(errors, applied: false);
@@ -431,7 +431,7 @@ internal static class AuthoringTools
             json.WriteStartObject("result");
             json.WriteBoolean("created", true);
             json.WriteString("dir", trimmed);
-            json.WriteString("template", minimal ? "minimal" : "sample");
+            json.WriteString("template", templateId);
             json.WriteStartArray("files");
             foreach (var file in ScaffoldedFiles(trimmed))
             {
