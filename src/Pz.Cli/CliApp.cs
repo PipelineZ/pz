@@ -7,7 +7,9 @@ public static class CliApp
 {
     public static RootCommand Build()
     {
-        var root = new RootCommand("pz — batch ETL powered by DuckDB");
+        var root = new RootCommand(
+            "pz — a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, "
+            + "powered by DuckDB, that can run anywhere without requiring a data platform");
 
         root.Subcommands.Add(InitCommand.Create());
         root.Subcommands.Add(CompileCommand.Create());

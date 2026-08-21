@@ -16,9 +16,11 @@ description: >-
 
 # pz pipelines
 
-pz (`pipelinez`) is a dbt-inspired batch ETL CLI: one `connections.yml` (places with
-credentials, and the entities read from / written to them) plus SQL files under
-`pipelines/` compile into a dependency-ordered DAG that runs in-process over DuckDB.
+pz (`pipelinez`) is a lightweight, developer-first batch data pipeline engine for SQL-based
+ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform: one
+`connections.yml` (places with credentials, and the entities read from / written to them)
+plus SQL files under `pipelines/` compile into a dependency-ordered DAG that runs in-process
+over DuckDB.
 
 ## The tool loop
 

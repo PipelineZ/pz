@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-PipelineZ (`pz`) is a dbt-inspired batch ETL CLI for .NET powered by DuckDB. A project is one
+PipelineZ (`pz`) is a lightweight, developer-first batch data pipeline engine for SQL-based
+ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. A project
+is one
 `connections.yml` (places with credentials) + SQL files (transformations, and the reads and writes
 they perform); `pz` compiles them into a dependency-ordered DAG and executes it in-process, moving
 data through zero-copy Arrow via a versioned connector ABI. Pre-release (v0.x).
