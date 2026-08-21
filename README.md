@@ -5,8 +5,9 @@
 [![CI](https://github.com/coccor/pz/actions/workflows/ci.yml/badge.svg)](https://github.com/coccor/pz/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`pz` is a lightweight, developer-first engine for batch ETL/ELT, powered by
-[DuckDB](https://duckdb.org). You describe your pipeline in plain SQL files.
+`pz` is a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT,
+powered by [DuckDB](https://duckdb.org), that can run anywhere without requiring a data
+platform. You describe your pipeline in plain SQL files.
 
 ## 🚀 Try it in five commands
 

@@ -72,7 +72,7 @@
          appeared nowhere in the old text, so the flagship package was the hardest of the four to find
          by the name people actually know it by. Naming the bundled connectors is not padding either,
          it is what someone searching "duckdb postgres etl" needs to see to recognize a match. -->
-    <Description>PipelineZ (pz): a lightweight, developer-first CLI for batch ETL/ELT, powered by DuckDB. Describe your pipeline in plain SQL files and run it anywhere, with no data platform required. Bundles connectors for local files, S3, Azure Blob, Postgres, SQL Server, MySQL, SQLite and HTTP.</Description>
+    <Description>PipelineZ (pz): a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline in plain SQL files. Bundles connectors for local files, S3, Azure Blob, Postgres, SQL Server, MySQL, SQLite and HTTP.</Description>
     <!-- PublishReadyToRun is a "dotnet publish, targeting one RID" concept: it crossgens the entry
          assembly ahead of time for a single specific runtime. "dotnet pack" and "dotnet tool install"
          never publish for a RID; an installed .NET tool always runs as portable IL via the shim the
