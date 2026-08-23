@@ -14,7 +14,20 @@ public interface ISink : IAsyncDisposable
 
     /// <summary>Begins a write session for one output. The engine guarantees exactly one of
     /// <see cref="ISinkWriteSession.CommitAsync"/> or <see cref="ISinkWriteSession.AbortAsync"/> is
-    /// called before disposal.</summary>
+    /// called before disposal.
+    ///
+    /// <para>NULLABILITY: every field of <paramref name="schema"/> arrives with
+    /// <c>Field.IsNullable</c> true, whatever the source column actually was. The schema is derived
+    /// from DuckDB's Arrow export, which does not reliably carry a NOT NULL constraint through, so pz
+    /// normalizes rather than propagating something it cannot trust. A sink must not read nullability
+    /// off this schema as a statement about the source, and any guard a sink builds around it is
+    /// unreachable on this host — including through an otherwise green <c>pz run</c>.</para>
+    ///
+    /// <para>TYPES: <paramref name="schema"/> only ever carries the types in pz's v0 matrix — Int32,
+    /// Int64, Double, Decimal128, String, Boolean, Date32, and microsecond Timestamp. Notably there is
+    /// no Float: a sink's single-precision handling is likewise unreachable through pz today. Another
+    /// ABI consumer may hand over either, so neither is safe to leave unimplemented — just untested by
+    /// a pz run.</para></summary>
     ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct);
 
     /// <summary>Abort semantics for sessions this sink opens. The default is the contract for
