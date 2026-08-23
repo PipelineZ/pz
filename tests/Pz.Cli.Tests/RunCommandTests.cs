@@ -232,7 +232,7 @@ public class RunCommandTests : IDisposable
         }
 
         var project = ProjectLoader.Load(work, env, null);
-        project = InjectLocalFilesBaseDir(project, work);
+        project = ProjectDirectoryAnchor.Inject(project, work);
         var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
         var fullDag = Pz.Core.Dag.DagCompiler.Compile(project, renderCtx);
         var selection = RunSelection.Resolve(fullDag, null);
@@ -428,7 +428,7 @@ public class RunCommandTests : IDisposable
         }
 
         var project = ProjectLoader.Load(work, env, null);
-        project = InjectLocalFilesBaseDir(project, work);
+        project = ProjectDirectoryAnchor.Inject(project, work);
         var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
         var fullDag = DagCompiler.Compile(project, renderCtx);
         var selection = RunSelection.Resolve(fullDag, null);
@@ -482,23 +482,6 @@ public class RunCommandTests : IDisposable
         }
     }
 
-    /// <summary>Same `localfiles` `base_dir` injection <see cref="RunCommand"/> performs internally
-    /// (private there) — duplicated here (mirroring <c>TestCommand</c>'s own copy) since the test drives
-    /// <see cref="RunCommand.ExecuteRun"/> directly rather than through <see cref="RunCommand.Execute"/>.</summary>
-    private static Pz.Core.Model.PzProject InjectLocalFilesBaseDir(Pz.Core.Model.PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector == "localfiles" ? s with { Connection = WithBaseDir(s.Connection, projectDir) } : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
-
-    private static IReadOnlyDictionary<string, object?> WithBaseDir(
-        IReadOnlyDictionary<string, object?> connection, string projectDir)
-    {
-        var merged = new Dictionary<string, object?>(connection) { ["base_dir"] = projectDir };
-        return merged;
-    }
 
     /// <summary>Test-only <see cref="IEventRenderer"/> whose <see cref="Render"/> blocks forever,
     /// simulating a wedged terminal/renderer for <see cref="Stuck_renderer_does_not_hang_the_run"/>.</summary>

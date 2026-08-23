@@ -3,9 +3,17 @@ using System.Text.Json;
 namespace Pz.PackageManagement.Hosting;
 
 /// <summary>A connector's declared protocol-compatibility manifest, read from
-/// <c>pz.connector.json</c> at the root of a materialized package directory.</summary>
+/// <c>pz.connector.json</c> at the root of a materialized package directory.
+///
+/// <para><paramref name="ProjectDirectoryAnchor"/> is the connector asking the host to supply the
+/// project directory as a <c>base_dir</c> connection option, so a relative path in its config resolves
+/// against the project rather than against the process working directory. Opt-in and defaulted false: a
+/// manifest that says nothing receives nothing, so the option can never collide with a
+/// <c>ConnectionConfigSchema</c> that does not declare it. A connector that opts in must declare
+/// <c>base_dir</c> in that schema.</para></summary>
 public sealed record ConnectorManifest(
-    string? Name, int ProtocolMajorMin, int ProtocolMajorMax, IReadOnlyList<string> Capabilities);
+    string? Name, int ProtocolMajorMin, int ProtocolMajorMax, IReadOnlyList<string> Capabilities,
+    bool ProjectDirectoryAnchor = false);
 
 /// <summary>Reads a connector package's <c>pz.connector.json</c> manifest, if any, WITHOUT loading any
 /// assembly — this is what lets <see cref="ConnectorHost.LoadFromDirectory"/> reject an
@@ -57,7 +65,9 @@ public static class ManifestReader
                 "fix the manifest's protocolMajorMin/protocolMajorMax ordering");
         }
 
-        return new ConnectorManifest(dto.Name, dto.ProtocolMajorMin, dto.ProtocolMajorMax, dto.Capabilities ?? []);
+        return new ConnectorManifest(
+            dto.Name, dto.ProtocolMajorMin, dto.ProtocolMajorMax, dto.Capabilities ?? [],
+            dto.ProjectDirectoryAnchor);
     }
 
     private sealed class ManifestDto
@@ -66,5 +76,6 @@ public static class ManifestReader
         public int ProtocolMajorMin { get; set; }
         public int ProtocolMajorMax { get; set; }
         public List<string>? Capabilities { get; set; }
+        public bool ProjectDirectoryAnchor { get; set; }
     }
 }

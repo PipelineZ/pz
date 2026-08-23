@@ -85,7 +85,7 @@ internal static class RetryCommand
         {
             var env = SharedInputHelpers.SnapshotEnvironment();
             project = ProjectLoader.Load(projectDir, env);
-            project = InjectLocalFilesBaseDir(project, projectDir);
+            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
             {
                 Console.Error.WriteLine($"error: {stateUrlError}");
@@ -285,20 +285,5 @@ internal static class RetryCommand
         return new RetryPlan(prior, selection, reuse, carriedForward);
     }
 
-    /// <summary>Same base_dir injection <see cref="RunCommand"/>/<see cref="TestCommand"/> perform.</summary>
-    private static PzProject InjectLocalFilesBaseDir(PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector is "localfiles" or "sqlite" ? s with { Connection = WithBaseDir(s.Connection, projectDir) } : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
-
-    private static IReadOnlyDictionary<string, object?> WithBaseDir(
-        IReadOnlyDictionary<string, object?> connection, string projectDir)
-    {
-        var merged = new Dictionary<string, object?>(connection) { ["base_dir"] = projectDir };
-        return merged;
-    }
 
 }

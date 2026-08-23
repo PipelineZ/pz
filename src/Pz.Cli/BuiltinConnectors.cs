@@ -21,9 +21,9 @@ namespace Pz.Cli;
 ///
 /// Note on <c>base_dir</c>: <see cref="LocalFilesConnector"/> keeps itself pure — it never assumes a
 /// project layout, resolving relative dataset/output <c>path</c>s only against a connection option
-/// named <c>base_dir</c>. This registry does not (and should not) inject that option: it is
-/// <c>RunCommand</c>'s job to add <c>base_dir = projectDir</c> to every <c>localfiles</c> source/sink's
-/// <c>connection:</c> config before compiling, since only the CLI verb knows the project directory.
+/// named <c>base_dir</c>. This registry does not (and should not) inject that option; see
+/// <see cref="Pz.Core.Loading.ProjectDirectoryAnchor"/>, which every verb applies before compiling,
+/// since only the host knows the project directory.
 /// </summary>
 internal static class BuiltinConnectors
 {

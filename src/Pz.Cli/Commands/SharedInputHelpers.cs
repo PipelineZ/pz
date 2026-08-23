@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Text.Json;
+using Pz.Core.Loading;
 using Pz.Core.Validation;
+using Pz.PackageManagement.Hosting;
 
 namespace Pz.Cli.Commands;
 
@@ -10,6 +12,15 @@ namespace Pz.Cli.Commands;
 /// <see cref="SharedOptions"/>'s precedent, so the command files cannot drift apart.</summary>
 internal static class SharedInputHelpers
 {
+    /// <summary>Applies the project-directory anchor every verb applies before compiling, with the
+    /// package-manifest half looked up from this project's own <c>.pz/packages</c> — see
+    /// <see cref="ProjectDirectoryAnchor"/> for which connectors get one and why it is declared rather
+    /// than matched by name.</summary>
+    internal static Pz.Core.Model.PzProject AnchorToProjectDir(Pz.Core.Model.PzProject project, string projectDir) =>
+        ProjectDirectoryAnchor.Inject(
+            project, projectDir,
+            PackageManifests.AnchoredConnectorNames(Path.Combine(projectDir, ".pz", "packages")));
+
     /// <summary>Snapshots every environment variable visible to this process into a plain
     /// string-to-string map.</summary>
     internal static Dictionary<string, string> SnapshotEnvironment()

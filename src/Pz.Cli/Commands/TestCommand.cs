@@ -68,7 +68,7 @@ internal static class TestCommand
             var env = SharedInputHelpers.SnapshotEnvironment();
             var overrides = SharedInputHelpers.ParseVars(varsJson);
             project = ProjectLoader.Load(projectDir, env, overrides);
-            project = InjectLocalFilesBaseDir(project, projectDir);
+            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
             {
                 Console.Error.WriteLine($"error: {stateUrlError}");
@@ -149,23 +149,5 @@ internal static class TestCommand
         }
     }
 
-    /// <summary>Same base_dir injection <see cref="RunCommand"/>/<see cref="PlanCommand"/> perform
-    /// (see their doc comments for why this lives at the CLI-verb level) -- a check's owning
-    /// pipeline may itself depend on a `localfiles` source, which needs the same connection config
-    /// the executor would see.</summary>
-    private static PzProject InjectLocalFilesBaseDir(PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector is "localfiles" or "sqlite" ? s with { Connection = WithBaseDir(s.Connection, projectDir) } : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
-
-    private static IReadOnlyDictionary<string, object?> WithBaseDir(
-        IReadOnlyDictionary<string, object?> connection, string projectDir)
-    {
-        var merged = new Dictionary<string, object?>(connection) { ["base_dir"] = projectDir };
-        return merged;
-    }
 
 }

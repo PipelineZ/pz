@@ -101,7 +101,7 @@ internal static class RunCommand
             var env = SharedInputHelpers.SnapshotEnvironment();
             var overrides = SharedInputHelpers.ParseVars(varsJson);
             project = ProjectLoader.Load(projectDir, env, overrides);
-            project = InjectLocalFilesBaseDir(project, projectDir);
+            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
             {
                 Console.Error.WriteLine($"error: {stateUrlError}");
@@ -671,24 +671,5 @@ internal static class RunCommand
         return false;
     }
 
-    /// <summary>Injects <c>base_dir = projectDir</c> into the <c>connection:</c> config of every
-    /// <c>localfiles</c> source/sink (see <see cref="BuiltinConnectors"/>'s doc comment for why this
-    /// lives here rather than in the connector or the registry). Safe to do before compiling: neither
-    /// <c>SourceLoad</c> nor <c>SinkWrite</c> node IDs are derived from <c>Connection</c>
-    /// (<c>DagCompiler</c> canonicalizes only dataset/output options and columns).</summary>
-    private static PzProject InjectLocalFilesBaseDir(PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector is "localfiles" or "sqlite" ? s with { Connection = WithBaseDir(s.Connection, projectDir) } : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
-
-    private static IReadOnlyDictionary<string, object?> WithBaseDir(
-        IReadOnlyDictionary<string, object?> connection, string projectDir)
-    {
-        var merged = new Dictionary<string, object?>(connection) { ["base_dir"] = projectDir };
-        return merged;
-    }
 
 }
