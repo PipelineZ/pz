@@ -529,38 +529,59 @@ public static class DagCompiler
         }
 
         // The write-side counterpart of the source-side pass above.
-        // An output's `path` may embed the same calendar tokens, substituted per-row from
-        // `partition_by: <column>` rather than from a window. The two must agree: `partition_by` with no
-        // date tokens in `path` has nowhere to route partitions, and a date-templated `path` with no
-        // `partition_by` has no column to substitute tokens from -- either combination is PZ0219.
-        // Whether `partition_by` NAMES a real column is impossible to check here -- OutputDef carries no
-        // declared column set at compile time (its schema is the upstream pipeline's runtime result) --
-        // so that check is deferred to runtime; PZ0220 is not claimed here. Malformed token
-        // sequences reuse PZ0218, same as the source side, aggregated into the same incrementalErrors list.
+        // `partition_by:` names the columns an output is partitioned by. WHAT THAT PRODUCES is the
+        // destination's business, and only two things are checkable connector-agnostically here.
+        //
+        // (1) The declaration is well formed -- a column name, or a list of them. Reading it as
+        // `.ToString() is { Length: > 0 }` is the trap this parse closes: a deserialized YAML list
+        // stringifies to its CLR type name, which is non-empty, so the presence check passes and
+        // everything downstream reads a column named "System.Collections.Generic.List`1[System.Object]".
+        //
+        // (2) It agrees with `path:`. Calendar tokens in the path are pz's OWN layout rule -- one
+        // timestamp column rendered into a folder -- so tokens with no partition_by have no column to
+        // substitute from, and tokens with several columns have no way to choose. Both are PZ0219.
+        //
+        // partition_by WITHOUT tokens is deliberately NOT refused here: a format that records its own
+        // partitioning (Delta, Iceberg, Hive-layout parquet) has no templated path to route into and is
+        // correct as written. Whether the target connector can actually honour it is a capability
+        // question, and only the planner holds the connector instance -- so that refusal is PZ0314
+        // there, exactly as the source-side templating refusal already is.
+        //
+        // Whether a named column EXISTS is impossible to check here -- OutputDef carries no declared
+        // column set at compile time (its schema is the upstream pipeline's runtime result) -- so that
+        // check is deferred to runtime; PZ0220 is not claimed here. Malformed token sequences reuse
+        // PZ0218, same as the source side, aggregated into the same incrementalErrors list.
         foreach (var sink in project.Connections)
         {
             foreach (var output in sink.Outputs)
             {
-                var hasPartitionBy = output.Options.TryGetValue("partition_by", out var partitionByObj)
-                    && partitionByObj?.ToString() is { Length: > 0 };
                 var path = output.Options.TryGetValue("path", out var pathObj) ? pathObj?.ToString() : null;
                 var hasDateTokens = path is not null && PathTemplate.HasDateTokens(path);
 
-                if (hasPartitionBy && !hasDateTokens)
+                if (!PartitionColumns.TryRead(output.Options, out var partitionColumns, out var problem))
                 {
                     incrementalErrors.Add(new PzError(PzErrorCode.PartitionedOutputConfigInvalid,
-                        $"sink '{sink.Name}.{output.Name}' in {sink.FilePath} declares partition_by: but its " +
-                        "path has no calendar tokens ({yyyy}/{MM}/{dd}/{HH}/{mm}) to route partitions into",
+                        $"sink '{sink.Name}.{output.Name}' in {sink.FilePath} declares partition_by: but " +
+                        problem,
                         sink.FilePath, null,
-                        "add calendar tokens to path:, or remove partition_by:"));
+                        "set partition_by: to a column name, or to a list of column names"));
                 }
-                else if (!hasPartitionBy && hasDateTokens)
+                else if (partitionColumns.Count == 0 && hasDateTokens)
                 {
                     incrementalErrors.Add(new PzError(PzErrorCode.PartitionedOutputConfigInvalid,
                         $"sink '{sink.Name}.{output.Name}' in {sink.FilePath} has a date-templated path but " +
                         "declares no partition_by: -- there is no column to substitute the tokens from at write time",
                         sink.FilePath, null,
                         "add `partition_by: <column>` naming the column to partition by"));
+                }
+                else if (partitionColumns.Count > 1 && hasDateTokens)
+                {
+                    incrementalErrors.Add(new PzError(PzErrorCode.PartitionedOutputConfigInvalid,
+                        $"sink '{sink.Name}.{output.Name}' in {sink.FilePath} declares partition_by: with " +
+                        $"{partitionColumns.Count} columns and a date-templated path -- calendar tokens render " +
+                        "from exactly one timestamp column, so there is no way to choose between them",
+                        sink.FilePath, null,
+                        "name a single timestamp column in partition_by:, or remove the calendar tokens from path:"));
                 }
 
                 if (!hasDateTokens)

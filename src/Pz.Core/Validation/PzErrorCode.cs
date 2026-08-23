@@ -104,12 +104,16 @@ public static class PzErrorCode
     // run) -- delegates to PathTemplate.Validate, re-raised here as an aggregated compile error naming
     // the source file/dataset.
     public const string TemplatedPathTokensInvalid = "PZ0218";
-    // DagCompiler validation of partitioned sink outputs: an output's `partition_by` and its `path`'s
-    // date tokens must be both present or both absent -- `partition_by` with no date tokens in `path`
-    // has nowhere to route partitions, and a date-templated `path` with no `partition_by` has no
-    // column to substitute tokens from at write time. Whether `partition_by` names a real column is
-    // NOT checked here -- OutputDef carries no declared column set at compile time, so that check is
-    // deferred to the runtime write session; PZ0220 is reserved for that and intentionally unclaimed here.
+    // DagCompiler validation of a partitioned sink output's DECLARATION: `partition_by:` must name a
+    // column or a list of columns, and must agree with `path:`. Calendar tokens in the path are pz's own
+    // layout rule -- one timestamp column rendered into a folder -- so tokens with no partition_by have
+    // no column to substitute from, and tokens with several columns have no way to choose. partition_by
+    // WITHOUT tokens is not refused here: a format that records its own partitioning (Delta, Iceberg,
+    // Hive-layout parquet) is correct as written, and whether the connector can honour it is PZ0314's
+    // capability question, which needs the connector instance the compiler does not have. Whether a
+    // named column EXISTS is likewise not checked here -- OutputDef carries no declared column set at
+    // compile time, so that is deferred to the runtime write session; PZ0220 is reserved for it and
+    // intentionally unclaimed here.
     public const string PartitionedOutputConfigInvalid = "PZ0219";
     // A date-templated `path` whose dataset does not declare a bounded window (`initial:` +
     // `max_window:`, mirroring PZ0213's notion of "bounded") -- cover pruning needs both watermark
@@ -187,10 +191,13 @@ public static class PzErrorCode
     // that ignores the bound silently extracts everything the window exists to prevent.
     public const string WindowCapabilityMissing = "PZ0313";
     // A dataset's `path` has date tokens, or a sink output declares `partition_by`, but the connector
-    // does not declare ConnectorCapabilities.PathTemplating -- raised by the planner (never mid-run),
+    // does not declare the capability that would honour it -- raised by the planner (never mid-run),
     // mirroring WindowCapabilityMissing (PZ0313): DagCompiler's PZ0217/0218/0219/0221 already validated
-    // the templating *syntax* connector-agnostically, but only the planner has the connector instance
-    // and its declared Capabilities, so this refusal must live here, not in DagCompiler.
+    // the DECLARATION connector-agnostically, but only the planner has the connector instance and its
+    // declared Capabilities, so this refusal must live here, not in DagCompiler. Which capability is
+    // required follows from `path:`, because that is what says who owns the layout: calendar tokens mean
+    // pz renders it (PathTemplating), no tokens mean the destination records its own partitioning
+    // (ColumnPartitionedWrites).
     public const string TemplatingCapabilityMissing = "PZ0314";
     // Two resume mechanisms declared for one dataset. Guards two conflicts the unified `sync:` block
     // does not rule out:

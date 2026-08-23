@@ -82,4 +82,12 @@ public enum ConnectorCapabilities
     /// instead of defaulting to an unbounded type. Purely an optimization hint: the engine computes
     /// nothing for sinks without this flag.</summary>
     TextLengthStats = 524288,
+    /// <summary>Sink partitions by COLUMN VALUE and lays the destination out itself — Delta, Iceberg,
+    /// Hive-layout parquet, anything that records its partition columns in its own metadata. It takes
+    /// <c>partition_by:</c> as the list of column names it stands for
+    /// (<see cref="PartitionColumns"/>) and needs no <c>path:</c> template to route into, which is what
+    /// separates it from <see cref="PathTemplating"/>: there, pz owns the layout and the calendar tokens
+    /// in <c>path:</c> are how one timestamp column becomes a folder. A partitioned output must reach a
+    /// connector declaring one flag or the other, or the planner refuses it (PZ0314).</summary>
+    ColumnPartitionedWrites = 1048576,
 }
