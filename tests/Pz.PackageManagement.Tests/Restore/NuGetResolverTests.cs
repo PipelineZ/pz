@@ -36,7 +36,7 @@ public sealed class NuGetResolverTests(FeedFixture feed)
         var result = await Resolve("1.2.3");
         var dep = Assert.Single(result.Lock.Packages, p => p.Id == "FakeTransitiveDep");
         Assert.Equal("2.0.0", dep.Version);
-        Assert.Contains("FakeTransitiveDep.dll", dep.Assets.Lib);
+        Assert.Contains(dep.Assets.Lib, a => a.File == "FakeTransitiveDep.dll");
     }
 
     [Fact]
@@ -77,8 +77,9 @@ public sealed class NuGetResolverTests(FeedFixture feed)
             [new ConnectorPackageRef("FakeNative", "1.0.0")],
             [syntheticFeed], "linux-x64", NewWorkDir());
         var pkg = result.Lock.Packages.Single(p => p.Id == "FakeNative");
-        Assert.Contains("libfake.so", pkg.Assets.Native);
-        Assert.DoesNotContain("fake.dll", pkg.Assets.Native); // win-x64 asset not selected
+        var native = Assert.Single(pkg.Assets.Native);
+        Assert.Equal("libfake.so", native.File);
+        Assert.Equal("runtimes/linux-x64/native/libfake.so", native.ArchivePath);
     }
 
     [Fact]

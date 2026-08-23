@@ -227,6 +227,11 @@ public static class PzErrorCode
     // ReplaceWrites. Raised by the planner (never mid-run, mirroring PZ0313/PZ0314/PZ0317) rather than
     // from BeginWriteAsync at run time.
     public const string WriteModeUnsupported = "PZ0324";
+    // Two resolved packages provide the same lib/ or native/ file name, and both must be flattened into
+    // one connector package's directory for its ALC to probe them. Raised by PackageMaterializer rather
+    // than resolved by picking a winner: the flattening is a plain copy, so a "winner" is whichever
+    // package enumeration reached last.
+    public const string PackageAssetCollision = "PZ0325";
     // NOTE: Pz.PackageManagement cannot reference Pz.Core (see RestoreException's doc comment), so every
     // PZ032x code above is ALSO duplicated as a bare string literal over there (NuGetResolver.cs,
     // RestoreException.cs, DriftChecker.cs comments). This registry is the source of truth for the

@@ -6,7 +6,8 @@ namespace Pz.PackageManagement.Tests.Restore;
 public class DriftCheckerTests
 {
     private static LockedPackage Locked(string id, string version, bool requested = true) =>
-        new(id, version, new string('a', 128), new LockedAssets([$"{id}.dll"], []), requested);
+        new(id, version, new string('a', 128),
+            new LockedAssets([new LockedAsset($"{id}.dll", $"lib/net10.0/{id}.dll")], []), requested);
 
     private static string PackagesDirWith(params (string Id, string Version)[] installed)
     {
@@ -22,7 +23,7 @@ public class DriftCheckerTests
     [Fact]
     public void Requirement_missing_from_lock_is_reported()
     {
-        var lockFile = new LockFile(1, "linux-x64", []);
+        var lockFile = new LockFile(LockFileWriter.CurrentVersion, "linux-x64", []);
         var findings = DriftChecker.Verify(
             [new ConnectorPackageRef("FakeSourceConnector", "1.2.3")], lockFile, PackagesDirWith());
 
@@ -32,7 +33,7 @@ public class DriftCheckerTests
     [Fact]
     public void Locked_version_outside_declared_range_is_reported()
     {
-        var lockFile = new LockFile(1, "linux-x64", [Locked("FakeSourceConnector", "1.0.0")]);
+        var lockFile = new LockFile(LockFileWriter.CurrentVersion, "linux-x64", [Locked("FakeSourceConnector", "1.0.0")]);
         var packagesDir = PackagesDirWith(("FakeSourceConnector", "1.0.0"));
 
         var findings = DriftChecker.Verify(
@@ -44,7 +45,7 @@ public class DriftCheckerTests
     [Fact]
     public void Stale_lock_entry_with_no_requirement_is_reported()
     {
-        var lockFile = new LockFile(1, "linux-x64",
+        var lockFile = new LockFile(LockFileWriter.CurrentVersion, "linux-x64",
             [Locked("FakeSourceConnector", "1.2.3"), Locked("OldConnector", "1.0.0")]);
         var packagesDir = PackagesDirWith(("FakeSourceConnector", "1.2.3"), ("OldConnector", "1.0.0"));
 
@@ -57,7 +58,7 @@ public class DriftCheckerTests
     [Fact]
     public void Missing_package_directory_is_reported()
     {
-        var lockFile = new LockFile(1, "linux-x64", [Locked("FakeSourceConnector", "1.2.3")]);
+        var lockFile = new LockFile(LockFileWriter.CurrentVersion, "linux-x64", [Locked("FakeSourceConnector", "1.2.3")]);
         var packagesDir = PackagesDirWith(); // nothing materialized
 
         var findings = DriftChecker.Verify(
@@ -69,7 +70,7 @@ public class DriftCheckerTests
     [Fact]
     public void Clean_case_reports_no_drift()
     {
-        var lockFile = new LockFile(1, "linux-x64", [Locked("FakeSourceConnector", "1.2.3")]);
+        var lockFile = new LockFile(LockFileWriter.CurrentVersion, "linux-x64", [Locked("FakeSourceConnector", "1.2.3")]);
         var packagesDir = PackagesDirWith(("FakeSourceConnector", "1.2.3"));
 
         var findings = DriftChecker.Verify(
@@ -83,7 +84,7 @@ public class DriftCheckerTests
     {
         // FakeTransitiveDep is Requested=false (pulled in only transitively) — it must never be
         // reported as a stale/orphaned entry just because it isn't itself a declared connector.
-        var lockFile = new LockFile(1, "linux-x64",
+        var lockFile = new LockFile(LockFileWriter.CurrentVersion, "linux-x64",
             [Locked("FakeSourceConnector", "1.2.3"), Locked("FakeTransitiveDep", "2.0.0", requested: false)]);
         var packagesDir = PackagesDirWith(("FakeSourceConnector", "1.2.3"), ("FakeTransitiveDep", "2.0.0"));
 
