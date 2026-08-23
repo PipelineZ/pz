@@ -438,20 +438,32 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             return Universal(node, $"arrow stream: connector '{def.Sink.Connector}' has no native path");
         }
 
-        // Path-templating capability gate: the sink-side counterpart of the
-        // source-side check in PlanSourceLoadAsync above. Static Capabilities read (no OpenAsync,
-        // same never-connects promise) -- an output declaring partition_by on a connector that
-        // doesn't implement PathTemplating would otherwise silently misroute every row into a
-        // literal "{yyyy}" folder instead of fanning out per partition_by.
-        if (def.Output.Options.TryGetValue("partition_by", out var partitionByOpt) &&
-            partitionByOpt?.ToString() is { Length: > 0 } &&
-            !connector.Capabilities.HasFlag(ConnectorCapabilities.PathTemplating))
+        // Partitioned-write capability gate: the sink-side counterpart of the source-side check in
+        // PlanSourceLoadAsync above. Static Capabilities read (no OpenAsync, same never-connects
+        // promise). WHICH capability is required follows from `path:`, because that is what says who
+        // owns the layout: calendar tokens mean pz's own rule (one timestamp column rendered into a
+        // folder -- PathTemplating), no tokens mean the destination records its own partitioning
+        // (ColumnPartitionedWrites). A connector declaring neither would silently write every row into
+        // one unpartitioned place, or into a literal "{yyyy}" folder.
+        var partitionColumns = PartitionColumns.Read(def.Output.Options);
+        if (partitionColumns.Count > 0)
         {
-            errors.Add(new PzError(PzErrorCode.TemplatingCapabilityMissing,
-                $"output '{def.Output.Name}' on sink '{def.Sink.Name}' declares partition_by, but connector " +
-                $"'{def.Sink.Connector}' does not support path templating",
-                def.Sink.FilePath, null,
-                "use a PathTemplating-capable connector, or remove the date tokens / partition_by"));
+            var path = def.Output.Options.TryGetValue("path", out var pathOpt) ? pathOpt?.ToString() : null;
+            var rendersFromPath = path is not null && Pz.Connectors.Abstractions.Paths.PathTemplate.HasDateTokens(path);
+            var required = rendersFromPath
+                ? ConnectorCapabilities.PathTemplating
+                : ConnectorCapabilities.ColumnPartitionedWrites;
+
+            if (!connector.Capabilities.HasFlag(required))
+            {
+                errors.Add(new PzError(PzErrorCode.TemplatingCapabilityMissing,
+                    $"output '{def.Output.Name}' on sink '{def.Sink.Name}' declares partition_by, but connector " +
+                    $"'{def.Sink.Connector}' does not declare {required}",
+                    def.Sink.FilePath, null,
+                    rendersFromPath
+                        ? "use a PathTemplating-capable connector, or remove the date tokens / partition_by"
+                        : "use a connector that partitions by column value, or remove partition_by"));
+            }
         }
 
         // Pacing capability gate, sink-side mirror of the source check in

@@ -60,6 +60,16 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// the same dictionary instance, which is exactly right — the slot is per-run state.</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, DeliveryStats> DeliveryFailures { get; } = new();
 
+    /// <summary>Which attempt at each node is currently executing, from 1.
+    /// <see cref="KindDispatchingExecutor"/> owns the retry loop and stamps this before every call into
+    /// the inner executor; <see cref="SinkWriteExecutor"/> reads it to fill
+    /// <see cref="Pz.Connectors.Abstractions.OutputSpec.Attempt"/>, so a sink that can record a durable
+    /// progress marker can tell a retry from a first attempt. Same shape and lifetime as
+    /// <see cref="DeliveryFailures"/>: per-run state that `with`-clones share, and an absent entry means
+    /// attempt 1 (a directly-built RunContext in a test, or an executor invoked without the retry
+    /// loop).</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, int> Attempts { get; } = new();
+
     /// <summary><see cref="Batch"/> when set, else <see cref="BatchOptions.Default"/> (32MB / 122,880
     /// rows) — every batch-producing site (universal source reads, egress) should read this, not
     /// <see cref="Batch"/> directly, so a RunContext built without an explicit Batch still gets the

@@ -6,6 +6,6 @@ namespace Pz.PackageManagement.Restore;
 /// comment above PzErrorCode.FloatingVersionRejected.</summary>
 public sealed class RestoreException(string code, string message, string? hint = null) : Exception(message)
 {
-    public string Code { get; } = code;   // "PZ0320" | "PZ0321" | "PZ0322" | "PZ0323"
+    public string Code { get; } = code;   // "PZ0320" | "PZ0321" | "PZ0323" | "PZ0325"
     public string? Hint { get; } = hint;
 }

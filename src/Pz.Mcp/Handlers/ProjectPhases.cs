@@ -1,6 +1,7 @@
 using System.Collections;
 using Pz.Core.Dag;
 using Pz.Core.Loading;
+using Pz.PackageManagement.Hosting;
 using Pz.Core.Model;
 using Pz.Core.Templating;
 using Pz.Core.Validation;
@@ -105,17 +106,14 @@ internal static class ProjectPhases
         }
     }
 
-    /// <summary>Same base_dir injection Run/Plan/Validate/Retry commands perform for the connectors
-    /// that resolve relative paths against the project directory (localfiles, sqlite).</summary>
-    internal static PzProject InjectLocalFilesBaseDir(PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector is "localfiles" or "sqlite"
-                ? s with { Connection = new Dictionary<string, object?>(s.Connection) { ["base_dir"] = projectDir } }
-                : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
+    /// <summary>The same project-directory anchor Run/Plan/Validate/Retry apply, through the same two
+    /// helpers rather than a second copy of the rule: which connectors get one is declared (a builtin
+    /// in <see cref="ProjectDirectoryAnchor.BuiltinAnchoredConnectors"/>, a package connector in its own
+    /// manifest), never matched by name here.</summary>
+    internal static PzProject InjectProjectDirectoryAnchor(PzProject project, string projectDir) =>
+        ProjectDirectoryAnchor.Inject(
+            project, projectDir,
+            PackageManifests.AnchoredConnectorNames(Path.Combine(projectDir, ".pz", "packages")));
 
     /// <summary>Same semantics as Pz.Cli.Commands.SharedInputHelpers.SnapshotEnvironment: a plain
     /// foreach over every environment variable visible to this process into a string-to-string map

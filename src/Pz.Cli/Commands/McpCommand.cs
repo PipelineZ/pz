@@ -321,7 +321,7 @@ internal static class McpCommand
         {
             var env = SharedInputHelpers.SnapshotEnvironment();
             project = ProjectLoader.Load(projectDir, env);
-            project = InjectLocalFilesBaseDir(project, projectDir);
+            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
             fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new DuckDbSqlAstReader());
         }
@@ -404,7 +404,7 @@ internal static class McpCommand
         {
             var env = SharedInputHelpers.SnapshotEnvironment();
             project = ProjectLoader.Load(projectDir, env);
-            project = InjectLocalFilesBaseDir(project, projectDir);
+            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
             fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new DuckDbSqlAstReader());
         }
@@ -557,22 +557,6 @@ internal static class McpCommand
         "wait for the other run to finish before retrying -- if no pz process is actually running, the " +
         "lock is stale (the OS releases it on process exit, including a crash) and pz clean can reclaim it");
 
-    /// <summary>Same base_dir injection <see cref="RunCommand"/>/<see cref="RetryCommand"/> each perform
-    /// for their own load+compile.</summary>
-    private static PzProject InjectLocalFilesBaseDir(PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector is "localfiles" or "sqlite" ? s with { Connection = WithBaseDir(s.Connection, projectDir) } : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
-
-    private static IReadOnlyDictionary<string, object?> WithBaseDir(
-        IReadOnlyDictionary<string, object?> connection, string projectDir)
-    {
-        var merged = new Dictionary<string, object?>(connection) { ["base_dir"] = projectDir };
-        return merged;
-    }
 
     /// <summary>The <see cref="CliServices.InitProject"/> wiring: validates <paramref name="templateId"/>
     /// against <see cref="TemplateCatalog"/> (PZ0131, <see cref="PzErrorCode.InitTemplateUnknown"/>) and

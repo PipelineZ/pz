@@ -35,7 +35,13 @@ public class DagCompilerTemplatingTests
     /// source dataset's <c>path</c>/<c>incremental</c> for the output's <c>path</c>/<c>partition_by</c>.
     /// The output is bound to pipeline 'stg', which itself reads source('crm', 'orders'), so the same
     /// stage-0 pass that validates the source dataset above also runs over this sink's outputs.</summary>
-    private static PzProject TemplatedOutputProject(string outputPath, string? partitionBy)
+    private static PzProject TemplatedOutputProject(string outputPath, string? partitionBy) =>
+        TemplatedOutputProjectRaw(outputPath, partitionBy is null ? null : $"'{partitionBy}'");
+
+    /// <summary><paramref name="partitionByLiteral"/> is spliced into the sink() call verbatim, so a test
+    /// can declare a LIST of columns (<c>['a', 'b']</c>) as well as a single name — the shape whose
+    /// mis-parse is the whole point of PartitionColumns.</summary>
+    private static PzProject TemplatedOutputProjectRaw(string outputPath, string? partitionByLiteral)
     {
         var source = new ConnectionDef("crm", "localfiles", new Dictionary<string, object?> { ["root"] = "/data" },
             [new DatasetDef("orders", new Dictionary<string, object?> { ["path"] = "orders.csv", ["format"] = "csv" },
@@ -44,7 +50,7 @@ public class DagCompilerTemplatingTests
 
         // Path/partition_by are connector write options, so they are sink() kwargs -- and the pipeline
         // must carry the INSERT INTO, because an output exists only where a call site declares it.
-        var partitionKwarg = partitionBy is null ? "" : $", partition_by: '{partitionBy}'";
+        var partitionKwarg = partitionByLiteral is null ? "" : $", partition_by: {partitionByLiteral}";
         var insert = "INSERT INTO {{ sink('lake', 'orders', strategy: 'replace', format: 'parquet', " +
             $"path: '{outputPath}'{partitionKwarg}) }}}}\n";
 
@@ -129,12 +135,37 @@ public class DagCompilerTemplatingTests
         Assert.DoesNotContain(errors, e => e.Code is "PZ0217" or "PZ0218" or "PZ0221");
     }
 
+    /// <summary>A format that records its own partitioning — Delta, Iceberg, Hive-layout parquet — has
+    /// no templated path to route into and is correct as written, so the compiler no longer refuses it.
+    /// Whether the target connector can honour it is a capability question the compiler cannot answer;
+    /// that refusal is the planner's PZ0314.</summary>
     [Fact]
-    public void Partition_by_without_date_tokens_in_output_path_is_PZ0219()
+    public void Partition_by_without_date_tokens_is_left_to_the_connector()
     {
         var project = TemplatedOutputProject("e/orders/*.parquet", "ts");
         var errors = CompileAndCollectErrors(project);
-        Assert.Contains(errors, e => e.Code == "PZ0219" && e.Message.Contains("partition_by"));
+        Assert.DoesNotContain(errors, e => e.Code == "PZ0219");
+    }
+
+    /// <summary>Calendar tokens render from exactly ONE timestamp column, so several columns leave the
+    /// compiler no way to choose between them.</summary>
+    [Fact]
+    public void Several_partition_columns_with_a_date_templated_path_is_PZ0219()
+    {
+        var project = TemplatedOutputProjectRaw("e/{yyyy}/{MM}/{dd}/*.parquet", "['ts', 'region']");
+        var errors = CompileAndCollectErrors(project);
+        Assert.Contains(errors, e => e.Code == "PZ0219" && e.Message.Contains("2 columns"));
+    }
+
+    /// <summary>The type trap: a list used to pass the presence check by stringifying to its CLR type
+    /// name, so a single "column" named System.Collections.Generic.List`1[System.Object] would have
+    /// reached the write session. A one-element list is just that column.</summary>
+    [Fact]
+    public void A_single_element_partition_list_is_that_column_not_a_clr_type_name()
+    {
+        var project = TemplatedOutputProjectRaw("e/{yyyy}/{MM}/{dd}/*.parquet", "['ts']");
+        var errors = CompileAndCollectErrors(project);
+        Assert.DoesNotContain(errors, e => e.Code == "PZ0219");
     }
 
     [Fact]

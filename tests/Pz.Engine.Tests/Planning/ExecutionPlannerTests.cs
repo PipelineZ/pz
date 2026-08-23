@@ -241,6 +241,58 @@ public sealed class ExecutionPlannerTests
         Assert.Contains("stub", error.ToString());
     }
 
+    /// <summary>No calendar tokens in the path means the DESTINATION owns the layout — a format that
+    /// records its own partition columns (Delta, Iceberg, Hive-layout parquet). DagCompiler no longer
+    /// refuses that shape, so the planner is what must refuse a connector that cannot honour it: without
+    /// the flag every row would land in one unpartitioned place.</summary>
+    [Fact]
+    public async Task Column_partitioned_output_on_a_sink_that_cannot_partition_is_PZ0314()
+    {
+        var output = new OutputDef("out", "stg_orders", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["partition_by"] = new List<object?> { "dt" } });
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSink(output, ConnectorCapabilities.PathTemplating);
+
+        var ex = await Assert.ThrowsAsync<PzValidationException>(
+            () => new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.TemplatingCapabilityMissing);
+        Assert.Contains("ColumnPartitionedWrites", error.ToString());
+    }
+
+    [Fact]
+    public async Task Column_partitioned_output_on_a_sink_that_declares_it_plans_clean()
+    {
+        var output = new OutputDef("out", "stg_orders", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["partition_by"] = new List<object?> { "dt", "region" } });
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSink(
+            output, ConnectorCapabilities.ColumnPartitionedWrites | ConnectorCapabilities.ReplaceWrites);
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default);
+
+        Assert.Contains(plan.Nodes, n => n.Kind == NodeKind.SinkWrite);
+    }
+
+    /// <summary>The two capabilities are not interchangeable: a connector that renders pz's calendar
+    /// tokens does not thereby know how to partition a table by column value, and vice versa.</summary>
+    [Fact]
+    public async Task A_templated_path_still_requires_PathTemplating_not_the_column_flag()
+    {
+        var output = new OutputDef("out", "stg_orders", "replace", "fail_on_change",
+            new Dictionary<string, object?>
+            {
+                ["path"] = "orders/{yyyy}/{MM}/{dd}/",
+                ["partition_by"] = "event_date",
+            });
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSink(
+            output, ConnectorCapabilities.ColumnPartitionedWrites);
+
+        var ex = await Assert.ThrowsAsync<PzValidationException>(
+            () => new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.TemplatingCapabilityMissing);
+        Assert.Contains("PathTemplating", error.ToString());
+    }
+
     [Fact]
     public async Task Partitioned_output_on_pathtemplating_sink_plans_clean()
     {

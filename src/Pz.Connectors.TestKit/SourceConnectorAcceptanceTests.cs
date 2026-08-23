@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using Apache.Arrow;
@@ -102,17 +103,50 @@ public abstract class SourceConnectorAcceptanceTests
     /// <summary>Invoked first by every <c>[SkippableFact]</c> below. No-op by
     /// default (InMemory/LocalFiles subclasses need no change); docker-backed subclasses (e.g.
     /// <c>PostgresSourceAcceptance</c>) override this with <c>DockerFacts.SkipUnlessDocker()</c> so the
-    /// suite SKIPs cleanly instead of failing when docker is absent.</summary>
+    /// suite SKIPs cleanly instead of failing when docker is absent. It receives nothing identifying the
+    /// caller, so it can only skip the suite as a whole — override <see cref="ShouldRun"/> to skip a
+    /// subset.</summary>
     protected virtual void GateFact()
     {
     }
+
+    /// <summary>Per-fact opt-out, by fact method name. Every fact runs by default, so an existing
+    /// subclass is unaffected. Override to skip a SUBSET — a connector that cannot satisfy one fact for
+    /// a structural reason no capability flag expresses would otherwise have to skip the whole suite
+    /// through <see cref="GateFact"/> and lose the facts it does satisfy.</summary>
+    protected virtual bool ShouldRun(string fact) => true;
+
+    /// <summary>What each fact actually calls: the suite-wide <see cref="GateFact"/> first (so an
+    /// override that skips on absent docker still runs first), then this fact's own
+    /// <see cref="ShouldRun"/> verdict. <paramref name="fact"/> is filled in by the compiler with the
+    /// calling fact's method name.</summary>
+    private void Gate([CallerMemberName] string fact = "")
+    {
+        GateFact();
+        Skip.IfNot(ShouldRun(fact), $"subclass excluded '{fact}' via ShouldRun");
+    }
+
+    /// <summary>Skips the calling fact for a connector whose read path is a DuckDB-native scan and whose
+    /// <see cref="ISource.PlanReadAsync"/> therefore always throws (<see cref="INativeOnlySource"/>).
+    /// Every data-plane fact below reads through PlanReadAsync, so without this such a connector could
+    /// not satisfy the suite at all — not because it violates the contract, but because the suite only
+    /// knew one way to ask for rows. What it must satisfy instead is the <c>NativeScan_*</c> group.</summary>
+    private static void SkipIfNativeOnly(ISourceConnector connector) =>
+        Skip.If(connector is INativeOnlySource,
+            "connector is INativeOnlySource: it has no universal read path for this fact to read through");
+
+    /// <summary>The dataset the <c>NativeScan_*</c> facts ask for a scan of. Defaults to
+    /// <see cref="SmallDataset"/> — for most connectors the same dataset answers both paths. Override
+    /// when the scan-able dataset is a different one (a format the connector can only read natively,
+    /// say).</summary>
+    protected virtual DatasetSpec NativeScanDataset => SmallDataset;
 
     private const int SmallBatchTargetBytes = 4096;
 
     [SkippableFact]
     public async Task Validate_accepts_valid_config()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
         var result = await connector.ValidateAsync(ValidConfig, CancellationToken.None);
 
@@ -122,8 +156,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Schema_matches_produced_batches()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         var declared = await source.GetSchemaAsync(SmallDataset, CancellationToken.None);
 
@@ -142,8 +177,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Read_is_deterministic_across_two_reads()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
 
         var (rowCount1, column1) = await ReadFirstColumn(source, SmallDataset);
@@ -156,8 +192,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Partitions_union_equals_single_partition_read()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
 
         var partitions = await source.PlanReadAsync(SmallDataset, ReadHints.None, CancellationToken.None);
@@ -198,7 +235,7 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Cancellation_honored_within_5s()
     {
-        GateFact();
+        Gate();
         if (LargeDataset is null)
         {
             Assert.True(true);
@@ -206,6 +243,7 @@ public abstract class SourceConnectorAcceptanceTests
         }
 
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         var partitions = await source.PlanReadAsync(LargeDataset, ReadHints.None, CancellationToken.None);
         var partition = partitions[0];
@@ -250,7 +288,7 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Transient_failures_carry_is_transient()
     {
-        GateFact();
+        Gate();
         if (TransientFailureDataset is null)
         {
             Assert.True(true);
@@ -258,6 +296,7 @@ public abstract class SourceConnectorAcceptanceTests
         }
 
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         var partitions = await source.PlanReadAsync(TransientFailureDataset, ReadHints.None, CancellationToken.None);
 
@@ -284,7 +323,7 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task BoundedWindow_filters_to_lower_exclusive_upper_inclusive_cursor_range()
     {
-        GateFact();
+        Gate();
         if (BoundedWindowDataset is null)
         {
             Assert.True(true);
@@ -292,6 +331,7 @@ public abstract class SourceConnectorAcceptanceTests
         }
 
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         var (_, column) = await ReadFirstColumn(source, BoundedWindowDataset);
 
@@ -314,8 +354,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public virtual async Task Inclusive_watermark_bound_returns_boundary_row()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.InclusiveWatermarkBound),
             "connector does not declare InclusiveWatermarkBound");
 
@@ -345,8 +386,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Gated_connector_routes_reads_through_gate()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations),
             "connector does not declare GatedOperations");
 
@@ -375,8 +417,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Gated_connector_does_not_retry_outside_gate()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations),
             "connector does not declare GatedOperations");
 
@@ -409,8 +452,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Gated_op_labels_are_static_tokens()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations),
             "connector does not declare GatedOperations");
 
@@ -439,8 +483,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Stable_partition_ids_are_present_unique_and_stable()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.StablePartitionIds),
             "connector does not declare StablePartitionIds");
 
@@ -471,7 +516,7 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public void Checkpointable_connector_also_declares_stable_ids()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.CheckpointableReads),
             "connector does not declare CheckpointableReads");
@@ -482,8 +527,9 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task Checkpoint_resume_yields_strictly_after_the_token()
     {
-        GateFact();
+        Gate();
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.CheckpointableReads),
             "connector does not declare CheckpointableReads");
         Skip.If(CheckpointDataset is null, "no CheckpointDataset provided");
@@ -584,10 +630,11 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task ChangeCapture_snapshot_then_poll_lands_mutations_exactly_once_per_key()
     {
-        GateFact();
+        Gate();
         Skip.If(ChangeCaptureFixture is null, "no ChangeCaptureFixture provided");
         var fixture = ChangeCaptureFixture!;
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.ChangeCapture),
             "connector does not declare ChangeCapture");
 
@@ -623,10 +670,11 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task ChangeCapture_delete_lands_as_delete_op_with_nonnull_key()
     {
-        GateFact();
+        Gate();
         Skip.If(ChangeCaptureFixture is null, "no ChangeCaptureFixture provided");
         var fixture = ChangeCaptureFixture!;
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.ChangeCapture),
             "connector does not declare ChangeCapture");
 
@@ -663,10 +711,11 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task ChangeCapture_replaying_the_same_prior_sync_state_yields_equal_net_state()
     {
-        GateFact();
+        Gate();
         Skip.If(ChangeCaptureFixture is null, "no ChangeCaptureFixture provided");
         var fixture = ChangeCaptureFixture!;
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.ChangeCapture),
             "connector does not declare ChangeCapture");
 
@@ -706,10 +755,11 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public async Task ChangeCapture_contract_shape_is_pz_header_then_columns_with_ordinal_lsn()
     {
-        GateFact();
+        Gate();
         Skip.If(ChangeCaptureFixture is null, "no ChangeCaptureFixture provided");
         var fixture = ChangeCaptureFixture!;
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.ChangeCapture),
             "connector does not declare ChangeCapture");
 
@@ -767,10 +817,11 @@ public abstract class SourceConnectorAcceptanceTests
     [SkippableFact]
     public virtual async Task ChangeCapture_position_before_retained_minimum_throws()
     {
-        GateFact();
+        Gate();
         Skip.If(ChangeCaptureFixture is null, "no ChangeCaptureFixture provided");
         var fixture = ChangeCaptureFixture!;
         var connector = CreateSource();
+        SkipIfNativeOnly(connector);
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.ChangeCapture),
             "connector does not declare ChangeCapture");
 
@@ -969,6 +1020,119 @@ public abstract class SourceConnectorAcceptanceTests
         }
 
         return (rowCount, values);
+    }
+
+    /// <summary>A connector declaring <see cref="ConnectorCapabilities.NativeScan"/> must actually offer
+    /// one for its own dataset. The suite does NOT execute the fragment: running it would put DuckDB
+    /// into every connector's test dependencies, and the TestKit deliberately depends on nothing but the
+    /// ABI and xunit. What it can prove is everything the planner relies on before execution — that a
+    /// scan is offered, that asking twice is free and gives the same answer, and that the mechanism it
+    /// names carries no location or credential.</summary>
+    [SkippableFact]
+    public async Task NativeScan_is_offered_when_the_capability_is_declared()
+    {
+        Gate();
+        var connector = CreateSource();
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.NativeScan),
+            "connector does not declare NativeScan");
+
+        await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        Assert.True(
+            source.TryGetNativeScan(NativeScanDataset, out var scan),
+            "a connector declaring NativeScan must offer one for its own NativeScanDataset");
+        Assert.False(string.IsNullOrWhiteSpace(scan!.SqlFragment));
+        Assert.NotNull(scan.SetupStatements);
+    }
+
+    /// <summary>TryGetNativeScan is documented as cheap and offline, which makes it a pure function of
+    /// the spec: the planner may call it more than once, and a fragment that differed between calls
+    /// would make a plan disagree with the run it produced.</summary>
+    [SkippableFact]
+    public async Task NativeScan_is_repeatable_for_the_same_spec()
+    {
+        Gate();
+        var connector = CreateSource();
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.NativeScan),
+            "connector does not declare NativeScan");
+
+        await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        Skip.IfNot(source.TryGetNativeScan(NativeScanDataset, out var first), "no native scan offered");
+        Assert.True(source.TryGetNativeScan(NativeScanDataset, out var second));
+
+        Assert.Equal(first!.SqlFragment, second!.SqlFragment);
+        Assert.Equal(first.SetupStatements, second.SetupStatements);
+        Assert.Equal(first.Mechanism, second.Mechanism);
+    }
+
+    /// <summary>Secret hygiene at the one boundary where a connector hands pz a string bound for planner
+    /// Reason strings and plan.json: <see cref="NativeScan.Mechanism"/> is a short, static description of
+    /// the mechanism, so it must not carry a URL or a query string — the shapes a credential or a
+    /// location travels in. Setup statements may legitimately contain secrets (CREATE SECRET is exactly
+    /// what they are for) and are deliberately not asserted on; keeping those unlogged is the engine's
+    /// job, not the connector's.</summary>
+    [SkippableFact]
+    public async Task NativeScan_mechanism_is_a_static_token()
+    {
+        Gate();
+        var connector = CreateSource();
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.NativeScan),
+            "connector does not declare NativeScan");
+
+        await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        Skip.IfNot(source.TryGetNativeScan(NativeScanDataset, out var scan), "no native scan offered");
+        Skip.If(scan!.Mechanism is null, "connector declares no mechanism");
+
+        Assert.DoesNotContain("://", scan.Mechanism!);
+        Assert.DoesNotContain("?", scan.Mechanism!);
+    }
+
+    /// <summary>A native-only source still owes the engine a schema — the planner reads one before it
+    /// ever executes a scan — so GetSchemaAsync must work on the path that has no PlanReadAsync.</summary>
+    [SkippableFact]
+    public async Task NativeScan_source_still_declares_a_schema()
+    {
+        Gate();
+        var connector = CreateSource();
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.NativeScan),
+            "connector does not declare NativeScan");
+
+        await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        var declared = await source.GetSchemaAsync(NativeScanDataset, CancellationToken.None);
+
+        Assert.NotNull(declared.Schema);
+        Assert.NotEmpty(declared.Schema.FieldsList);
+    }
+
+    /// <summary><see cref="INativeOnlySource"/> means PlanReadAsync always throws, and the refusal is
+    /// part of the contract rather than an accident: the planner turns engine.force_universal into PZ0312
+    /// for these connectors, and one that returned an empty partition list instead would produce a
+    /// silently empty run.</summary>
+    [SkippableFact]
+    public async Task Native_only_source_refuses_the_universal_read_path()
+    {
+        Gate();
+        var connector = CreateSource();
+        Skip.If(connector is not INativeOnlySource, "connector is not INativeOnlySource");
+
+        await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(async () =>
+        {
+            var partitions = await source.PlanReadAsync(NativeScanDataset, ReadHints.None, CancellationToken.None);
+            foreach (var partition in partitions)
+            {
+                await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+                {
+                    batch.Dispose();
+                }
+            }
+        });
+
+        // Permanent, not transient: retrying cannot make a universal read path exist.
+        if (ex is PzConnectorException connectorException)
+        {
+            Assert.False(connectorException.IsTransient);
+        }
     }
 
     private static void AssertSchemasMatch(Schema expected, Schema actual)

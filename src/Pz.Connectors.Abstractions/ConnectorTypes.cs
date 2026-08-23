@@ -82,7 +82,41 @@ public sealed record OutputSpec(string Sink, string Output, string Mode, string 
     /// string columns). A column absent from the map had no non-null value. Additive — mirrors the
     /// <see cref="Keys"/> precedent.</summary>
     public IReadOnlyDictionary<string, long>? MaxTextLengths { get; init; }
+
+    /// <summary>Identifies this write attempt, so a sink whose destination can record a durable
+    /// progress marker can recognize work a previous attempt already committed. Null when the host
+    /// cannot supply one (a directly-constructed spec, or the planner's side-effect-free probe).
+    /// Additive — mirrors the <see cref="Keys"/> precedent, so every existing
+    /// <c>new OutputSpec(...)</c> compiles and every existing sink behaves exactly as before.
+    /// See <see cref="WriteAttempt"/> for what it does and does not promise.</summary>
+    public WriteAttempt? Attempt { get; init; }
 }
+
+/// <summary>Which attempt at which write this is.
+///
+/// <para><paramref name="Node"/> plus <paramref name="Run"/> identify the LOGICAL write;
+/// <paramref name="Ordinal"/> counts attempts at it, from 1. A sink whose destination can record
+/// "I already applied &lt;identity&gt;" — a transaction marker, an idempotency key, a dedupe table —
+/// can use that to make a retried write effectively-once instead of at-least-once: record the identity
+/// in the same transaction as the data, and on a later attempt with an ordinal that is not greater than
+/// the one recorded, skip.</para>
+///
+/// <para>WHAT IT PROMISES: the identity is stable across every attempt the engine makes at one write
+/// WITHIN one run. <paramref name="Node"/> is pz's content-addressed node id — the same output fed by
+/// the same input has the same id across runs — and <paramref name="Ordinal"/> strictly increases with
+/// each retry. That covers the case duplicates actually come from: a commit that reached the
+/// destination and then failed to report back, which the engine can only treat as a failure and
+/// retry.</para>
+///
+/// <para>WHAT IT DOES NOT PROMISE: nothing here spans runs. A <c>pz retry</c> re-executing a write is a
+/// new run with a new <paramref name="Run"/>, so a sink cannot use this to tell that write apart from a
+/// genuinely new one, and <c>append</c> stays at-least-once across runs. (The engine narrows that
+/// window on its own: <c>pz retry</c> carries forward sinks it observed commit, and only re-executes
+/// the ones it did not.) Do not build a cross-run dedupe on <paramref name="Run"/>.</para>
+///
+/// <para><c>merge</c> and <c>replace</c> are effectively-once by construction and need none of
+/// this.</para></summary>
+public sealed record WriteAttempt(string Node, string Run, int Ordinal);
 
 /// <summary>Pushdown hints. Connectors ignore hints they did not declare capabilities for; the engine
 /// re-applies unpushed filters in DuckDB, so honoring hints is an optimization, never a correctness duty.</summary>

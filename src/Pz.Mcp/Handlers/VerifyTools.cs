@@ -80,7 +80,7 @@ internal static class VerifyTools
 
             if (connect)
             {
-                var connectProject = ProjectPhases.InjectLocalFilesBaseDir(project, projectDir);
+                var connectProject = ProjectPhases.InjectProjectDirectoryAnchor(project, projectDir);
                 var connectivity = await ConnectivityValidator.RunAsync(connectProject, registry, ct).ConfigureAwait(false);
                 if (connectivity.Errors.Count > 0)
                 {
@@ -118,7 +118,7 @@ internal static class VerifyTools
             // Injected after compile here (PlanCommand injects before compiling instead) — harmless
             // either way: base_dir is a connector-open-time value, never consulted by DagCompiler
             // itself, so which side of Compile() it's added on doesn't change the resulting DAG.
-            project = ProjectPhases.InjectLocalFilesBaseDir(project, projectDir);
+            project = ProjectPhases.InjectProjectDirectoryAnchor(project, projectDir);
             var runDag = new CompiledDag([.. dag.Nodes.Where(n => n.Kind != NodeKind.Check)]);
 
             var (registry, host) = await services.CreateRegistryAsync(project, projectDir, ct).ConfigureAwait(false);

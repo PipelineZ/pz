@@ -4,10 +4,14 @@ namespace Pz.PackageManagement.Tests.Restore;
 
 public sealed class LockFileWriterTests
 {
-    private static LockFile Sample() => new(1, "linux-x64",
+    private static LockedAsset Lib(string file) => new(file, $"lib/net10.0/{file}");
+
+    private static LockFile Sample() => new(LockFileWriter.CurrentVersion, "linux-x64",
     [
-        new LockedPackage("Zeta", "2.0.0", new string('b', 128), new LockedAssets(["z.dll"], [])),
-        new LockedPackage("Alpha", "1.0.0", new string('a', 128), new LockedAssets(["a2.dll", "a1.dll"], ["n.so"]))
+        new LockedPackage("Zeta", "2.0.0", new string('b', 128), new LockedAssets([Lib("z.dll")], [])),
+        new LockedPackage("Alpha", "1.0.0", new string('a', 128), new LockedAssets(
+            [Lib("a2.dll"), Lib("a1.dll")],
+            [new LockedAsset("n.so", "runtimes/linux-x64/native/n.so")]))
     ]);
 
     [Fact]
@@ -37,6 +41,36 @@ public sealed class LockFileWriterTests
         var read = LockFileWriter.Read(path)!;
         Assert.Equal(2, read.Packages.Count);
         Assert.Equal("Alpha", read.Packages[0].Id);
+        Assert.Equal("runtimes/linux-x64/native/n.so", read.Packages[0].Assets.Native[0].ArchivePath);
+    }
+
+    /// <summary>A lock written before assets carried archive paths names no archive path for anything,
+    /// so it cannot be upgraded in place — and its asset entries are bare strings where this schema
+    /// expects objects, which would otherwise surface as unhelpful "malformed JSON". The version must be
+    /// diagnosed as the version, so the reader is told to re-restore rather than to go looking for a
+    /// syntax error.</summary>
+    [Fact]
+    public void Read_rejects_an_older_schema_version_naming_the_version()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"))).FullName;
+        var path = Path.Combine(dir, "pz.lock.json");
+        File.WriteAllText(path, """
+            {
+              "version": 1,
+              "rid": "linux-x64",
+              "packages": [
+                { "id": "Alpha", "version": "1.0.0", "sha512": "aa", "requested": true,
+                  "assets": { "lib": ["a.dll"], "native": [] } }
+              ]
+            }
+            """);
+
+        var ex = Assert.Throws<RestoreException>(() => LockFileWriter.Read(path));
+
+        Assert.Equal("PZ0321", ex.Code);
+        Assert.Contains("schema version 1", ex.Message);
+        Assert.Contains($"version {LockFileWriter.CurrentVersion}", ex.Message);
+        Assert.Contains("pz restore", ex.Hint!);
     }
 
     /// <summary>A present-but-broken lock file must NOT silently

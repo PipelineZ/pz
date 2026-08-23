@@ -18,7 +18,7 @@ namespace Pz.Cli.Commands;
 /// before the next tier runs. Tiers 1-4 (and a plain `pz validate` invocation) write no artifacts (no
 /// `.pz/target` mutation); tier 5 is the one exception -- it writes `.pz/target/schemas.json` for every
 /// source dataset without a declared `columns:` contract (<see cref="SchemaCacheWriter"/>).
-/// `InjectLocalFilesBaseDir` is applied ONLY to the project instance tier 5 uses to open connectors (so
+/// The project-directory anchor is applied ONLY to the project instance tier 5 uses to open connectors (so
 /// `localfiles` datasets resolve real paths) -- tier 3 always validates connection/dataset config exactly
 /// as the user wrote it, pre-injection.</summary>
 internal static class ValidateCommand
@@ -138,10 +138,10 @@ internal static class ValidateCommand
 
         if (connect)
         {
-            // Tier 5: InjectLocalFilesBaseDir applies ONLY to the project instance used to open
+            // Tier 5: the project-directory anchor applies ONLY to the project instance used to open
             // connectors here -- tier 3 above already validated `project.Connections`/`project.Connections` exactly
             // as the user wrote them.
-            var connectProject = InjectLocalFilesBaseDir(project, projectDir);
+            var connectProject = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var connectivity = await ConnectivityValidator.RunAsync(connectProject, registry, ct);
             SchemaCacheWriter.Write(connectivity.FetchedSchemas, Path.Combine(projectDir, ".pz", "target"));
 
@@ -164,23 +164,6 @@ internal static class ValidateCommand
         return ExitCodes.Ok;
     }
 
-    /// <summary>Same base_dir injection <see cref="RunCommand"/>/<see cref="PlanCommand"/> perform (see
-    /// their doc comments for why this lives at the CLI-verb level) -- tier 5 opens `localfiles`
-    /// connectors too, so it needs the same connection config the executor would see.</summary>
-    private static PzProject InjectLocalFilesBaseDir(PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector is "localfiles" or "sqlite" ? s with { Connection = WithBaseDir(s.Connection, projectDir) } : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
-
-    private static IReadOnlyDictionary<string, object?> WithBaseDir(
-        IReadOnlyDictionary<string, object?> connection, string projectDir)
-    {
-        var merged = new Dictionary<string, object?>(connection) { ["base_dir"] = projectDir };
-        return merged;
-    }
 
     /// <summary>Approximates how many pipelines a given undeclared "source.dataset" notice covers: every
     /// pipeline reachable downstream (direct or transitive) from that source's SourceLoad node that ended

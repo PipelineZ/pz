@@ -28,7 +28,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         // Partitioned output fans one blob out per row-date folder -- a single native COPY ... TO cannot
         // express a per-row-value fan-out, so partitioned outputs must take the universal write-session
         // path: partitioned write is universal-tier only.
-        if (Str(spec.Options, "partition_by") is { Length: > 0 })
+        if (PartitionColumns.Read(spec.Options).Count > 0)
         {
             copy = null;
             return false;
@@ -58,7 +58,9 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
 
         // Partitioned output routes rows into per-day folders; validate the partition column and build a
         // folder->inner-session fan-out session instead of a single-blob session.
-        if (Str(spec.Options, "partition_by") is { Length: > 0 } partitionBy)
+        // Exactly one column: this connector renders pz's calendar tokens from a timestamp column, and
+        // DagCompiler's PZ0219 has already refused a multi-column partition_by against a templated path.
+        if (PartitionColumns.Read(spec.Options) is [var partitionBy])
         {
             return BeginPartitionedWrite(spec, schema, format, objectName, loc, partitionBy, ct);
         }

@@ -56,7 +56,7 @@ internal static class PlanCommand
             var env = SharedInputHelpers.SnapshotEnvironment();
             var overrides = SharedInputHelpers.ParseVars(varsJson);
             var project = ProjectLoader.Load(projectDir, env, overrides);
-            project = InjectLocalFilesBaseDir(project, projectDir);
+            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
             var compileNotices = new List<string>();
             var fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new Pz.DuckDb.DuckDbSqlAstReader());
@@ -250,22 +250,5 @@ internal static class PlanCommand
         return $"{ms}ms";
     }
 
-    /// <summary>Same base_dir injection <see cref="RunCommand"/> performs (see its doc comment for
-    /// why this lives at the CLI-verb level) — the planner opens `localfiles` connectors too, so it
-    /// needs the same connection config the executor would see.</summary>
-    private static PzProject InjectLocalFilesBaseDir(PzProject project, string projectDir)
-    {
-        var connections = project.Connections
-            .Select(s => s.Connector is "localfiles" or "sqlite" ? s with { Connection = WithBaseDir(s.Connection, projectDir) } : s)
-            .ToList();
-        return project with { Connections = connections };
-    }
-
-    private static IReadOnlyDictionary<string, object?> WithBaseDir(
-        IReadOnlyDictionary<string, object?> connection, string projectDir)
-    {
-        var merged = new Dictionary<string, object?>(connection) { ["base_dir"] = projectDir };
-        return merged;
-    }
 
 }

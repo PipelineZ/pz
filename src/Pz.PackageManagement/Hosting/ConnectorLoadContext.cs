@@ -6,7 +6,10 @@ namespace Pz.PackageManagement.Hosting;
 /// <summary>One collectible <see cref="AssemblyLoadContext"/> per connector package. Assemblies named in
 /// <see cref="SharedAssemblies.Names"/> defer to the default ALC (unification); everything else is
 /// probed for and loaded privately from this package's <c>lib/</c> directory, so two packages can carry
-/// conflicting versions of the same dependency without colliding.</summary>
+/// conflicting versions of the same dependency without colliding. Unmanaged libraries are probed for in
+/// the sibling <c>native/</c> directory only — which is why <c>PackageMaterializer</c> must flatten a
+/// dependency's native assets into the connector package's own directory, not leave them in the
+/// dependency's.</summary>
 internal sealed class ConnectorLoadContext(string packageId, string libDir) : AssemblyLoadContext(packageId, isCollectible: true)
 {
     protected override Assembly? Load(AssemblyName assemblyName)
@@ -42,7 +45,9 @@ internal sealed class ConnectorLoadContext(string packageId, string libDir) : As
             }
         }
 
-        return IntPtr.Zero; // v0 ships no native fixtures.
+        // Falling through to the default probing logic (which would search the host's own directories)
+        // would load a library this connector never asked for, so an unresolved name stays unresolved.
+        return IntPtr.Zero;
     }
 
     private static IEnumerable<string> NativeCandidateNames(string unmanagedDllName)

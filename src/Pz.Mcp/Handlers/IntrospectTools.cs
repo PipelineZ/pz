@@ -273,7 +273,7 @@ internal static class IntrospectTools
             {
                 Connections = [matchedConnection with { Datasets = [matchedDataset] }],
             };
-            filteredProject = ProjectPhases.InjectLocalFilesBaseDir(filteredProject, projectDir);
+            filteredProject = ProjectPhases.InjectProjectDirectoryAnchor(filteredProject, projectDir);
 
             var (registry, host) = await services.CreateRegistryAsync(filteredProject, projectDir, ct)
                 .ConfigureAwait(false);

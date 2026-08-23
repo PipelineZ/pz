@@ -7,6 +7,12 @@ namespace Pz.PackageManagement.Restore;
 /// ordinal — so two restores of the same requirements produce an identical <c>pz.lock.json</c>.</summary>
 public static class LockFileWriter
 {
+    /// <summary>Schema version this build writes and is the only one it reads. Bumped to 2 when assets
+    /// grew from bare file names to <c>{ file, archivePath }</c> pairs (see <see cref="LockedAsset"/>);
+    /// a version-1 lock names no archive paths at all, so it cannot be upgraded in place and is
+    /// rejected in favour of a regenerating <c>pz restore</c>.</summary>
+    public const int CurrentVersion = 2;
+
     private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
 
     public static void Write(LockFile lockFile, string path)
@@ -27,8 +33,8 @@ public static class LockFileWriter
             writer.WriteString("sha512", package.Sha512);
             writer.WriteBoolean("requested", package.Requested);
             writer.WriteStartObject("assets");
-            WriteSortedStringArray(writer, "lib", package.Assets.Lib);
-            WriteSortedStringArray(writer, "native", package.Assets.Native);
+            WriteSortedAssetArray(writer, "lib", package.Assets.Lib);
+            WriteSortedAssetArray(writer, "native", package.Assets.Native);
             writer.WriteEndObject();
             writer.WriteEndObject();
         }
@@ -39,12 +45,15 @@ public static class LockFileWriter
         stream.WriteByte((byte)'\n');
     }
 
-    private static void WriteSortedStringArray(Utf8JsonWriter writer, string propertyName, IReadOnlyList<string> values)
+    private static void WriteSortedAssetArray(Utf8JsonWriter writer, string propertyName, IReadOnlyList<LockedAsset> assets)
     {
         writer.WriteStartArray(propertyName);
-        foreach (var value in values.OrderBy(v => v, StringComparer.Ordinal))
+        foreach (var asset in assets.OrderBy(a => a.File, StringComparer.Ordinal).ThenBy(a => a.ArchivePath, StringComparer.Ordinal))
         {
-            writer.WriteStringValue(value);
+            writer.WriteStartObject();
+            writer.WriteString("file", asset.File);
+            writer.WriteString("archivePath", asset.ArchivePath);
+            writer.WriteEndObject();
         }
 
         writer.WriteEndArray();
@@ -52,7 +61,7 @@ public static class LockFileWriter
 
     /// <summary>Returns null when <paramref name="path"/> does not exist. Throws
     /// <see cref="RestoreException"/> with code PZ0321 when the file exists but is not valid JSON matching
-    /// the lock schema.</summary>
+    /// the lock schema, or declares a schema version this build does not write.</summary>
     public static LockFile? Read(string path)
     {
         if (!File.Exists(path))
@@ -60,21 +69,22 @@ public static class LockFileWriter
             return null;
         }
 
-        LockFile? lockFile;
+        var bytes = File.ReadAllBytes(path);
+
+        // The version is read on its own pass FIRST: an older lock's asset entries are bare strings
+        // where this schema expects objects, so a single-pass deserialize would fail as "malformed"
+        // and hide the one thing the reader actually needs to be told.
+        VersionProbe? probe;
         try
         {
-            var bytes = File.ReadAllBytes(path);
-            lockFile = JsonSerializer.Deserialize<LockFile>(bytes, ReadOptions);
+            probe = JsonSerializer.Deserialize<VersionProbe>(bytes, ReadOptions);
         }
         catch (JsonException ex)
         {
-            throw new RestoreException(
-                "PZ0321",
-                $"pz.lock.json is malformed: {ex.Message}",
-                "run 'pz restore' to regenerate it");
+            throw Malformed(ex.Message);
         }
 
-        if (lockFile is null)
+        if (probe is null)
         {
             throw new RestoreException(
                 "PZ0321",
@@ -82,6 +92,32 @@ public static class LockFileWriter
                 "run 'pz restore' to regenerate it");
         }
 
-        return lockFile;
+        if (probe.Version != CurrentVersion)
+        {
+            throw new RestoreException(
+                "PZ0321",
+                $"pz.lock.json declares schema version {probe.Version}, but this pz writes version " +
+                $"{CurrentVersion}; the lock cannot be upgraded in place because an older lock records " +
+                "no per-asset archive paths",
+                "run 'pz restore' to regenerate it");
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<LockFile>(bytes, ReadOptions)!;
+        }
+        catch (JsonException ex)
+        {
+            throw Malformed(ex.Message);
+        }
     }
+
+    private static RestoreException Malformed(string detail) => new(
+        "PZ0321",
+        $"pz.lock.json is malformed: {detail}",
+        "run 'pz restore' to regenerate it");
+
+    /// <summary>Reads nothing but <c>version</c>, so a lock written by a different schema version is
+    /// diagnosed as such rather than as malformed JSON.</summary>
+    private sealed record VersionProbe(int Version);
 }

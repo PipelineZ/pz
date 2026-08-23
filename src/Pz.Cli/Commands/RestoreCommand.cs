@@ -89,18 +89,23 @@ internal static class RestoreCommand
                 .ToArray();
 
             ResolveResult resolved;
+            IReadOnlyDictionary<string, bool> hits;
             try
             {
                 resolved = await NuGetResolver.ResolveAsync(
-                    requirements, HostFeeds.Resolve(feeds, env), RuntimeInformation.RuntimeIdentifier, workDir, ct);
+                    requirements, HostFeeds.Resolve(feeds, env), RuntimeInformation.RuntimeIdentifier, workDir, ct,
+                    warn: message => Console.Error.WriteLine($"warning: {message}"));
+
+                // Materialization is inside the same arm: it is where the resolver's per-asset choices
+                // are acted on, so an asset the lock names but the package does not carry, and two
+                // packages colliding on one file name, both surface as coded restore failures.
+                hits = PackageMaterializer.Materialize(resolved, CacheRoot(), packagesDir);
             }
             catch (RestoreException ex)
             {
                 Console.Error.WriteLine($"error {new PzError(ex.Code, ex.Message, null, null, ex.Hint)}");
                 return ExitCodes.ConfigError;
             }
-
-            var hits = PackageMaterializer.Materialize(resolved, CacheRoot(), packagesDir);
 
             LockFileWriter.Write(resolved.Lock, Path.Combine(projectDir, "pz.lock.json"));
 

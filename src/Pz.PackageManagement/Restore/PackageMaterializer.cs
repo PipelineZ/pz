@@ -28,9 +28,12 @@ namespace Pz.PackageManagement.Restore;
 /// ALC (<c>ConnectorHost</c>/<c>ConnectorLoadContext</c>) resolves a connector's private dependencies
 /// only from the connector package's OWN <c>lib/</c> directory — it never looks at a sibling package's
 /// directory. So a root package that has any transitive (non-root) dependencies in the resolved lock is
-/// always MATERIALIZED BY COPY (never symlinked), with every library package's <c>lib/*</c> files also
-/// copied alongside its own — flattening the whole private dependency closure into the one directory
-/// the ALC actually probes. This is a deliberate v0 simplification: <see cref="LockFile"/> does not
+/// always MATERIALIZED BY COPY (never symlinked), with every library package's <c>lib/*</c> AND
+/// <c>native/*</c> files also copied alongside its own — flattening the whole private dependency
+/// closure into the one directory the ALC actually probes (it resolves managed assemblies from that
+/// <c>lib/</c> and unmanaged ones from its sibling <c>native/</c>, never from another package's
+/// directory). Two packages contributing the same file name is refused with PZ0325 rather than letting
+/// one silently overwrite the other. This is a deliberate v0 simplification: <see cref="LockFile"/> does not
 /// track per-root dependency edges, so a root with ANY transitive deps in the lock gets ALL of them
 /// copied in, even ones a different root actually owns; harmless in practice because
 /// <c>ConnectorLoadContext.Load</c> only ever loads an assembly that is actually referenced by name.
@@ -87,13 +90,51 @@ public static class PackageMaterializer
                 continue;
             }
 
-            var transitiveLibFiles = libraryPackages
-                .SelectMany(lib => lib.Assets.Lib.Select(fileName => Path.Combine(entryDirs[lib.Id], "lib", fileName)))
-                .ToArray();
-            MaterializeVersionDir(entryDirs[package.Id], versionDir, transitiveLibFiles);
+            var flattened = new FlattenedAssets(
+                CollectTransitive(package, libraryPackages, entryDirs, "lib", a => a.Assets.Lib),
+                CollectTransitive(package, libraryPackages, entryDirs, "native", a => a.Assets.Native));
+            MaterializeVersionDir(entryDirs[package.Id], versionDir, flattened);
         }
 
         return hits;
+    }
+
+    /// <summary>The absolute cache-entry paths of every library package's assets of one role, to be
+    /// flattened into <paramref name="root"/>'s own directory.
+    ///
+    /// <para>Two packages contributing the same file name is refused rather than resolved: the
+    /// flattening is a plain copy into one directory, so "resolving" it means one build of an assembly
+    /// (or one native library) silently overwriting another chosen only by enumeration order, and the
+    /// connector then loads whichever won. The root package itself counts as a contributor — a root
+    /// shipping a file its own dependency also ships is the same ambiguity.</para></summary>
+    private static IReadOnlyList<string> CollectTransitive(
+        LockedPackage root, IReadOnlyList<LockedPackage> libraryPackages,
+        IReadOnlyDictionary<string, string> entryDirs, string role,
+        Func<LockedPackage, IReadOnlyList<LockedAsset>> assetsOf)
+    {
+        var ownerByFile = assetsOf(root)
+            .ToDictionary(asset => asset.File, _ => root.Id, StringComparer.OrdinalIgnoreCase);
+        var paths = new List<string>();
+
+        foreach (var library in libraryPackages)
+        {
+            foreach (var asset in assetsOf(library))
+            {
+                if (ownerByFile.TryGetValue(asset.File, out var owner))
+                {
+                    throw new RestoreException(
+                        "PZ0325",
+                        $"packages '{owner}' and '{library.Id}' both provide {role}/{asset.File}, which the " +
+                        $"connector package '{root.Id}' needs flattened into one directory",
+                        "remove one of the two packages, or pin versions so only one of them is resolved");
+                }
+
+                ownerByFile[asset.File] = library.Id;
+                paths.Add(Path.Combine(entryDirs[library.Id], role, asset.File));
+            }
+        }
+
+        return paths;
     }
 
     /// <summary>Internal (not private) so <c>MaterializerTests</c> can drive it directly with several
@@ -216,27 +257,8 @@ public static class PackageMaterializer
 
         var relativePaths = new List<string>();
 
-        if (package.Assets.Lib.Count > 0)
-        {
-            Directory.CreateDirectory(Path.Combine(entryDir, "lib"));
-            foreach (var fileName in package.Assets.Lib)
-            {
-                var archivePath = FindArchivePath(allFiles, "lib/", fileName);
-                ExtractFile(reader, archivePath, Path.Combine(entryDir, "lib", fileName));
-                relativePaths.Add($"lib/{fileName}");
-            }
-        }
-
-        if (package.Assets.Native.Count > 0)
-        {
-            Directory.CreateDirectory(Path.Combine(entryDir, "native"));
-            foreach (var fileName in package.Assets.Native)
-            {
-                var archivePath = FindArchivePath(allFiles, "runtimes/", fileName);
-                ExtractFile(reader, archivePath, Path.Combine(entryDir, "native", fileName));
-                relativePaths.Add($"native/{fileName}");
-            }
-        }
+        ExtractRole(reader, allFiles, package.Id, package.Assets.Lib, entryDir, "lib", relativePaths);
+        ExtractRole(reader, allFiles, package.Id, package.Assets.Native, entryDir, "native", relativePaths);
 
         var connectorJsonPath = allFiles.FirstOrDefault(f => string.Equals(f, "pz.connector.json", StringComparison.OrdinalIgnoreCase));
         if (connectorJsonPath is not null)
@@ -250,10 +272,37 @@ public static class PackageMaterializer
         File.WriteAllBytes(Path.Combine(entryDir, ".ok"), []); // written last: marks the entry complete
     }
 
-    private static string FindArchivePath(IReadOnlyList<string> allFiles, string prefix, string fileName) =>
-        allFiles.First(f =>
-            f.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(Path.GetFileName(f), fileName, StringComparison.OrdinalIgnoreCase));
+    /// <summary>Extracts one role's assets by the EXACT archive path the resolver recorded, flattening
+    /// them into <c>&lt;entryDir&gt;/&lt;role&gt;/</c>. The path is never re-derived from the file name:
+    /// a name alone matches every framework and every RID the package ships, and the resolver already
+    /// chose which one this host needs.</summary>
+    private static void ExtractRole(
+        PackageArchiveReader reader, IReadOnlyList<string> allFiles, string packageId,
+        IReadOnlyList<LockedAsset> assets, string entryDir, string role, List<string> relativePaths)
+    {
+        if (assets.Count == 0)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(Path.Combine(entryDir, role));
+        foreach (var asset in assets)
+        {
+            var archivePath = allFiles.FirstOrDefault(
+                f => string.Equals(f.Replace('\\', '/'), asset.ArchivePath, StringComparison.OrdinalIgnoreCase));
+            if (archivePath is null)
+            {
+                throw new RestoreException(
+                    "PZ0321",
+                    $"pz.lock.json expects '{asset.ArchivePath}' inside package '{packageId}', but that " +
+                    "package does not contain it",
+                    "run 'pz restore' to regenerate pz.lock.json");
+            }
+
+            ExtractFile(reader, archivePath, Path.Combine(entryDir, role, asset.File));
+            relativePaths.Add($"{role}/{asset.File}");
+        }
+    }
 
     private static void ExtractFile(PackageArchiveReader reader, string archivePath, string destination)
     {
@@ -262,9 +311,15 @@ public static class PackageMaterializer
         entryStream.CopyTo(fileStream);
     }
 
-    /// <summary><paramref name="extraLibFiles"/> non-null means "always copy, then flatten these
-    /// transitive lib files in too" (root-with-transitive-deps rule); null means "prefer a symlink."</summary>
-    private static void MaterializeVersionDir(string entryDir, string versionDir, IReadOnlyList<string>? extraLibFiles)
+    /// <summary>The transitive assets to flatten into a root package's own directory, by role. Native
+    /// assets are flattened for the same reason lib assets are: <c>ConnectorLoadContext</c> probes
+    /// <c>&lt;lib&gt;/../native</c> and nowhere else, so a native library owned by a dependency is
+    /// unreachable from the connector's load context unless it is placed there.</summary>
+    private sealed record FlattenedAssets(IReadOnlyList<string> Lib, IReadOnlyList<string> Native);
+
+    /// <summary><paramref name="flattened"/> non-null means "always copy, then flatten these transitive
+    /// files in too" (root-with-transitive-deps rule); null means "prefer a symlink."</summary>
+    private static void MaterializeVersionDir(string entryDir, string versionDir, FlattenedAssets? flattened)
     {
         if (Directory.Exists(versionDir))
         {
@@ -273,21 +328,33 @@ public static class PackageMaterializer
 
         Directory.CreateDirectory(Path.GetDirectoryName(versionDir)!);
 
-        if (extraLibFiles is null && TrySymlink(versionDir, entryDir))
+        if (flattened is null && TrySymlink(versionDir, entryDir))
         {
             return;
         }
 
         CopyDirectory(entryDir, versionDir);
 
-        if (extraLibFiles is { Count: > 0 })
+        if (flattened is null)
         {
-            var libDir = Path.Combine(versionDir, "lib");
-            Directory.CreateDirectory(libDir);
-            foreach (var source in extraLibFiles)
-            {
-                File.Copy(source, Path.Combine(libDir, Path.GetFileName(source)), overwrite: true);
-            }
+            return;
+        }
+
+        CopyInto(flattened.Lib, Path.Combine(versionDir, "lib"));
+        CopyInto(flattened.Native, Path.Combine(versionDir, "native"));
+    }
+
+    private static void CopyInto(IReadOnlyList<string> sources, string destinationDir)
+    {
+        if (sources.Count == 0)
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(destinationDir);
+        foreach (var source in sources)
+        {
+            File.Copy(source, Path.Combine(destinationDir, Path.GetFileName(source)), overwrite: true);
         }
     }
 

@@ -20,12 +20,16 @@ public static class NuGetResolver
     /// <see cref="ConnectorPackageRef.Version"/>) plus transitive dependencies against
     /// <paramref name="feeds"/> (URLs or local folder paths). Downloads every resolved .nupkg into
     /// <paramref name="workDir"/>. Deterministic: feeds probed in declared order, first feed carrying
-    /// any satisfying version wins the package; highest satisfying version within that feed.</summary>
+    /// any satisfying version wins the package; highest satisfying version within that feed.
+    /// <paramref name="warn"/> receives diagnostics that must not stop the restore — today, a package
+    /// that ships native assets for no RID compatible with <paramref name="rid"/>.</summary>
     public static async Task<ResolveResult> ResolveAsync(
         IReadOnlyList<ConnectorPackageRef> requirements, IReadOnlyList<string> feeds,
-        string rid, string workDir, CancellationToken ct = default)
+        string rid, string workDir, CancellationToken ct = default, Action<string>? warn = null)
     {
         Directory.CreateDirectory(workDir);
+
+        var ridChain = RuntimeIdentifierGraph.Expand(rid);
 
         var repositories = feeds.Select(feed => Repository.Factory.GetCoreV3(feed)).ToArray();
         using var cache = new SourceCacheContext { NoCache = true };
@@ -91,21 +95,8 @@ public static class NuGetResolver
             using var readerStream = File.OpenRead(nupkgPath);
             using var reader = new PackageArchiveReader(readerStream);
 
-            var lib = SelectNearestFrameworkFileNames(reader.GetLibItems());
-
-            // DELIBERATE LIMITATION (v0): naive RID prefix-match, no RID-graph fallback (e.g. a package
-            // shipping only "linux-x64" assets is invisible to a "linux-musl-x64" or "linux-arm64"
-            // request, even though NuGet's RID graph would consider "linux-x64" a compatible ancestor).
-            // Acceptable because connectors are managed-only today (no native RID-specific packages
-            // ship yet); revisit if/when a connector starts shipping real runtimes/ assets across RIDs.
-            var nativePrefix = $"runtimes/{rid}/native/";
-            var native = reader.GetFiles()
-                .Where(f => f.StartsWith(nativePrefix, StringComparison.OrdinalIgnoreCase))
-                .Select(Path.GetFileName)
-                .Where(name => name is not null)
-                .Select(name => name!)
-                .OrderBy(name => name, StringComparer.Ordinal)
-                .ToArray();
+            var lib = SelectNearestFrameworkAssets(reader.GetLibItems());
+            var native = SelectNativeAssets(reader.GetFiles().ToArray(), ridChain, id, rid, warn);
 
             resolved[id] = new ResolvedPackage(id, bestVersion, sha512, nupkgPath, lib, native);
 
@@ -138,7 +129,7 @@ public static class NuGetResolver
 
         var nupkgPaths = resolved.Values.ToDictionary(p => p.Id, p => p.NupkgPath, StringComparer.OrdinalIgnoreCase);
 
-        return new ResolveResult(new LockFile(1, rid, packages), nupkgPaths);
+        return new ResolveResult(new LockFile(LockFileWriter.CurrentVersion, rid, packages), nupkgPaths);
     }
 
     private static async Task<(NuGetVersion? Version, FindPackageByIdResource? Resource)> FindBestAsync(
@@ -176,9 +167,12 @@ public static class NuGetResolver
         return (null, null);
     }
 
-    /// <summary>Lib assets from the nearest-net10.0 framework group, file names only (no lib/&lt;tfm&gt;/
-    /// prefix — the materializer places them straight into the package's own lib/ dir), sorted ordinal.</summary>
-    private static IReadOnlyList<string> SelectNearestFrameworkFileNames(IEnumerable<FrameworkSpecificGroup> groups)
+    /// <summary>Lib assets from the nearest-net10.0 framework group. The materializer places them
+    /// straight into the package's own flat lib/ dir, so each asset carries both the name it lands under
+    /// and the <c>lib/&lt;tfm&gt;/</c> path it must be extracted from — the chosen framework is part of
+    /// that path, and dropping it is what let archive order substitute a net472 build for a net9.0
+    /// one.</summary>
+    private static IReadOnlyList<LockedAsset> SelectNearestFrameworkAssets(IEnumerable<FrameworkSpecificGroup> groups)
     {
         var groupList = groups.ToArray();
         var nearest = Reducer.GetNearest(TargetFramework, groupList.Select(g => g.TargetFramework));
@@ -190,12 +184,60 @@ public static class NuGetResolver
         return groupList
             .First(g => g.TargetFramework.Equals(nearest))
             .Items
-            .Select(Path.GetFileName)
-            .Where(name => name is not null)
-            .Select(name => name!)
-            .OrderBy(name => name, StringComparer.Ordinal)
+            .Where(item => Path.GetFileName(item) is { Length: > 0 })
+            .Select(item => new LockedAsset(Path.GetFileName(item), NormalizeArchivePath(item)))
+            .OrderBy(asset => asset.File, StringComparer.Ordinal)
             .ToArray();
     }
+
+    /// <summary>Native assets from the MOST SPECIFIC RID in <paramref name="ridChain"/> the package
+    /// actually ships — never a union across the chain, mirroring NuGet's own single-RID selection. A
+    /// package shipping a <c>runtimes/</c> tree that matches nothing in the chain is reported through
+    /// <paramref name="warn"/> naming the RIDs it does ship, rather than resolving zero assets in
+    /// silence and surfacing later as a DllNotFoundException.</summary>
+    private static IReadOnlyList<LockedAsset> SelectNativeAssets(
+        IReadOnlyList<string> allFiles, IReadOnlyList<string> ridChain, string packageId, string hostRid,
+        Action<string>? warn)
+    {
+        foreach (var candidateRid in ridChain)
+        {
+            var prefix = $"runtimes/{candidateRid}/native/";
+            var assets = allFiles
+                .Where(f => f.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                .Where(f => Path.GetFileName(f) is { Length: > 0 })
+                .Select(f => new LockedAsset(Path.GetFileName(f), NormalizeArchivePath(f)))
+                .OrderBy(asset => asset.File, StringComparer.Ordinal)
+                .ToArray();
+            if (assets.Length > 0)
+            {
+                return assets;
+            }
+        }
+
+        var shippedRids = allFiles
+            .Where(f => f.StartsWith("runtimes/", StringComparison.OrdinalIgnoreCase))
+            .Select(f => f.Split('/'))
+            .Where(segments => segments.Length > 3 && segments[2].Equals("native", StringComparison.OrdinalIgnoreCase))
+            .Select(segments => segments[1])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(r => r, StringComparer.Ordinal)
+            .ToArray();
+
+        if (shippedRids.Length > 0)
+        {
+            warn?.Invoke(
+                $"package '{packageId}' ships native assets for {string.Join(", ", shippedRids)} but none " +
+                $"is compatible with this host's runtime identifier '{hostRid}'; no native assets were " +
+                "installed for it");
+        }
+
+        return [];
+    }
+
+    /// <summary>Archive entry paths are '/'-separated by the zip format; a
+    /// <see cref="PackageArchiveReader"/> on Windows can hand back '\' separators for the same entry, and
+    /// the path is used verbatim as a lookup key at extraction time.</summary>
+    private static string NormalizeArchivePath(string archivePath) => archivePath.Replace('\\', '/');
 
     /// <summary>A bare version in a requirement (e.g. <c>1.2.3</c>) is an EXACT pin — the
     /// range <c>[1.2.3]</c> — not NuGet's own "minimum version" convention for bare dependency versions.
@@ -237,5 +279,5 @@ public static class NuGetResolver
 
     private sealed record ResolvedPackage(
         string Id, NuGetVersion Version, string Sha512, string NupkgPath,
-        IReadOnlyList<string> Lib, IReadOnlyList<string> Native);
+        IReadOnlyList<LockedAsset> Lib, IReadOnlyList<LockedAsset> Native);
 }
