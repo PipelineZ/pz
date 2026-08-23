@@ -110,6 +110,9 @@ public sealed class KindDispatchingExecutor(
 
             try
             {
+                // Published before the call, not after: the executor reads it while running, to tell a
+                // connector which attempt at this write it is looking at.
+                ctx.Attempts[node.Id] = attempt;
                 var inner = await executor.ExecuteAsync(node, ctx, ct).ConfigureAwait(false);
                 breaker?.RecordSuccess(ticket);
                 return inner with { Duration = stopwatch.Elapsed };

@@ -95,6 +95,14 @@ public sealed class SinkWriteExecutor : INodeExecutor
             return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null);
         }
 
+        // Stamped only now, past the native-copy branch: a COPY has no session to carry a progress
+        // marker, and TryGetNativeCopy above must see the same spec the planner probed with.
+        spec = spec with
+        {
+            Attempt = new WriteAttempt(
+                node.Id.Value, ctx.Paths.RunId, ctx.Attempts.TryGetValue(node.Id, out var a) ? a : 1),
+        };
+
         var schema = await ctx.Duck.GetResultSchemaAsync($"select * from {relation}", ct).ConfigureAwait(false);
 
         if (connector.Capabilities.HasFlag(ConnectorCapabilities.TextLengthStats))
