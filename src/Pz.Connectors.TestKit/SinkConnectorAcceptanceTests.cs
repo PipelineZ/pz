@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
@@ -15,7 +16,10 @@ public abstract class SinkConnectorAcceptanceTests
     protected abstract ConnectorConfig ValidConfig { get; }
     protected abstract OutputSpec SmallOutput { get; }
 
-    /// <summary>Read back what a committed session persisted, for content assertions.</summary>
+    /// <summary>Read back what a committed session persisted, for content assertions. ROW ORDER IS NOT
+    /// PART OF THIS CONTRACT: a destination with no inherent order (an object store, a table written as
+    /// several files) may hand rows back in any order, and no fact below assumes otherwise — the
+    /// property they test is that every row is there, not that it came back in insertion order.</summary>
     protected abstract ValueTask<IReadOnlyList<RecordBatch>> ReadCommittedAsync(ISinkConnector connector, OutputSpec spec);
 
     private static readonly Schema FixedSchema = new(
@@ -27,9 +31,26 @@ public abstract class SinkConnectorAcceptanceTests
     /// <summary>Invoked first by every <c>[SkippableFact]</c> below. No-op by
     /// default (InMemory/LocalFiles subclasses need no change); docker-backed subclasses override this
     /// with <c>DockerFacts.SkipUnlessDocker()</c> so the suite SKIPs cleanly instead of failing when
-    /// docker is absent.</summary>
+    /// docker is absent. It receives nothing identifying the caller, so it can only skip the suite as a
+    /// whole — override <see cref="ShouldRun"/> to skip a subset.</summary>
     protected virtual void GateFact()
     {
+    }
+
+    /// <summary>Per-fact opt-out, by fact method name. Every fact runs by default, so an existing
+    /// subclass is unaffected. Override to skip a SUBSET — a connector that cannot satisfy one fact for
+    /// a structural reason no capability flag expresses would otherwise have to skip the whole suite
+    /// through <see cref="GateFact"/> and lose the facts it does satisfy.</summary>
+    protected virtual bool ShouldRun(string fact) => true;
+
+    /// <summary>What each fact actually calls: the suite-wide <see cref="GateFact"/> first (so an
+    /// override that skips on absent docker still runs first), then this fact's own
+    /// <see cref="ShouldRun"/> verdict. <paramref name="fact"/> is filled in by the compiler with the
+    /// calling fact's method name.</summary>
+    private void Gate([CallerMemberName] string fact = "")
+    {
+        GateFact();
+        Skip.IfNot(ShouldRun(fact), $"subclass excluded '{fact}' via ShouldRun");
     }
 
     /// <summary>A <c>mode: merge</c> output spec (non-empty <see
@@ -59,7 +80,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Commit_persists_all_written_batches()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
@@ -77,17 +98,16 @@ public abstract class SinkConnectorAcceptanceTests
         var committed = await ReadCommittedAsync(connector, SmallOutput);
         Assert.Equal(150, committed.Sum(b => (long)b.Length));
 
-        var firstId = ((Int64Array)committed[0].Column(0)).GetValue(0);
-        var lastBatch = committed[^1];
-        var lastId = ((Int64Array)lastBatch.Column(0)).GetValue(lastBatch.Length - 1);
-        Assert.Equal(0L, firstId);
-        Assert.Equal(149L, lastId);
+        // Sorted, not indexed: the property is that all 150 rows survived the commit. Reading
+        // committed[0] and committed[^1] as "first" and "last" would instead require an ordering
+        // ReadCommittedAsync never promises, failing nondeterministically on any unordered destination.
+        Assert.Equal(Enumerable.Range(0, 150).Select(i => (long)i), CommittedIds(committed).Order());
     }
 
     [SkippableFact]
     public async Task Abort_discards_everything()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         await using (var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None))
@@ -115,7 +135,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Double_commit_is_rejected()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
@@ -129,7 +149,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Commit_after_abort_is_rejected()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
@@ -143,26 +163,78 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Sink_does_not_retain_engine_owned_batch_instances()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
 
         var handed = BuildBatches(batchCount: 2, rowsPerBatch: 10);
-        foreach (var batch in handed)
+        try
         {
-            await session.WriteBatchAsync(batch, CancellationToken.None);
-            batch.Dispose(); // Engine-owned: the connector must not still need this instance afterward.
-        }
-
-        await session.CommitAsync(CancellationToken.None);
-
-        var committed = await ReadCommittedAsync(connector, SmallOutput);
-        foreach (var committedBatch in committed)
-        {
-            foreach (var handedBatch in handed)
+            foreach (var batch in handed)
             {
-                Assert.NotSame(handedBatch, committedBatch);
+                await session.WriteBatchAsync(batch, CancellationToken.None);
+
+                // Engine-owned again the moment the call returns: the engine's pool refills these
+                // buffers with the next batch's rows. Zeroing them is that refill, made deterministic —
+                // a connector that kept the instance instead of copying out of it now holds rows of
+                // zeros and commits recognisably wrong DATA. Disposal is deliberately left to the
+                // finally below rather than done here: handing the memory back to the pool outright
+                // would make a retaining connector's later read undefined instead of merely wrong, and
+                // "undefined" is what let this fact pass connectors that were violating the protocol.
+                Recycle(batch);
+            }
+
+            await session.CommitAsync(CancellationToken.None);
+
+            var committed = await ReadCommittedAsync(connector, SmallOutput);
+            foreach (var committedBatch in committed)
+            {
+                foreach (var handedBatch in handed)
+                {
+                    Assert.NotSame(handedBatch, committedBatch);
+                }
+            }
+
+            // Content, not just instance identity: a connector that reads its rows back out of the
+            // destination hands back fresh batches either way, so NotSame alone can never catch it.
+            Assert.Equal(Enumerable.Range(0, 20).Select(i => (long)i), CommittedIds(committed).Order());
+        }
+        finally
+        {
+            foreach (var batch in handed)
+            {
+                batch.Dispose();
+            }
+        }
+    }
+
+    /// <summary>Overwrites every buffer a batch owns with zeros — what the engine's buffer pool does to
+    /// a batch it has taken back. Zeros rather than a poison pattern on purpose: the result is still a
+    /// structurally valid Arrow batch (in-range offsets, readable values), so a connector that retained
+    /// it fails an assertion instead of faulting somewhere unhelpful.</summary>
+    private static void Recycle(RecordBatch batch)
+    {
+        foreach (var array in batch.Arrays)
+        {
+            foreach (var buffer in array.Data.Buffers)
+            {
+                System.Runtime.InteropServices.MemoryMarshal.AsMemory(buffer.Memory).Span.Clear();
+            }
+        }
+    }
+
+    /// <summary>Every id column value across the committed batches, in whatever order the destination
+    /// handed them back — callers sort. Nulls surface as a distinguishable sentinel rather than
+    /// throwing, so a batch whose validity bitmap was zeroed fails as a value mismatch.</summary>
+    private static IEnumerable<long> CommittedIds(IReadOnlyList<RecordBatch> batches)
+    {
+        foreach (var batch in batches)
+        {
+            var ids = (Int64Array)batch.Column(0);
+            for (var i = 0; i < batch.Length; i++)
+            {
+                yield return ids.GetValue(i) ?? long.MinValue;
             }
         }
     }
@@ -170,7 +242,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Replace_mode_overwrites_the_prior_commit()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         if (ReplaceOutput is not { } output ||
             !connector.Capabilities.HasFlag(ConnectorCapabilities.ReplaceWrites))
@@ -189,7 +261,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Checkpointable_sessions_implement_the_interface()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         if (!connector.Capabilities.HasFlag(ConnectorCapabilities.CheckpointableWrites) ||
             CheckpointOutput is not { } output)
@@ -205,7 +277,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Checkpoint_resume_delivers_strictly_after_the_acknowledged_prefix()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         if (!connector.Capabilities.HasFlag(ConnectorCapabilities.CheckpointableWrites) ||
             CheckpointOutput is not { } output)
@@ -258,7 +330,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Merge_upserts_by_keys()
     {
-        GateFact();
+        Gate();
         if (MergeOutput is null)
         {
             Assert.True(true);
@@ -298,7 +370,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Merge_is_idempotent()
     {
-        GateFact();
+        Gate();
         if (MergeOutput is null)
         {
             Assert.True(true);
@@ -335,7 +407,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Merge_same_session_duplicate_keys_resolve_last_writer_wins()
     {
-        GateFact();
+        Gate();
         if (MergeOutput is null)
         {
             Assert.True(true);
@@ -370,7 +442,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Merge_batch_missing_key_column_errors_cleanly()
     {
-        GateFact();
+        Gate();
         if (MergeOutput is null)
         {
             Assert.True(true);
@@ -404,7 +476,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Gated_connector_routes_writes_through_gate()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations),
             "connector does not declare GatedOperations");
@@ -431,7 +503,7 @@ public abstract class SinkConnectorAcceptanceTests
     [SkippableFact]
     public async Task Gated_sink_op_labels_are_static_tokens()
     {
-        GateFact();
+        Gate();
         var connector = CreateSink();
         Skip.If(!connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations),
             "connector does not declare GatedOperations");
