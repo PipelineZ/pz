@@ -18,6 +18,10 @@
 
   <ItemGroup>
     <PackageReference Include="NuGet.Protocol" Version="7.6.0" />
+    <!-- PcpClient opens the control-plane GrpcChannel directly; flows transitively from
+         Pz.Connectors.Protocol's ProjectReference too, but pinned explicitly here since this
+         assembly calls into it, not just references generated types. -->
+    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
   </ItemGroup>
 
 </Project>

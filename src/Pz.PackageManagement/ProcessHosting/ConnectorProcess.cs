@@ -78,8 +78,14 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// <summary>Creates the run-scoped socket directory (owner-only permissions), then spawns
     /// <paramref name="entrypointPath"/> with <c>--pz-socket &lt;SocketPath&gt;</c> and a minimal env
     /// allowlist. Throws <see cref="ConnectorHostException"/> PZ0355 if the entrypoint is missing, is
-    /// not executable, or otherwise fails to start.</summary>
-    public static ConnectorProcess Spawn(string entrypointPath, string socketDir, string packageName)
+    /// not executable, or otherwise fails to start.
+    ///
+    /// <para><paramref name="extraArgs"/> is a test-only escape hatch, never used on the production
+    /// spawn path (connection config crosses only through the Configure RPC -- see
+    /// <c>Pz.PackageManagement.ProcessHosting.PcpClient</c> -- never argv): it exists so a test can
+    /// select which failure a fixture connector stages via its own argv switches.</para></summary>
+    public static ConnectorProcess Spawn(
+        string entrypointPath, string socketDir, string packageName, IReadOnlyList<string>? extraArgs = null)
     {
         var createdSocketDir = CreateSocketDir(socketDir);
         var socketPath = Path.Combine(socketDir, "control.sock");
@@ -95,6 +101,13 @@ public sealed class ConnectorProcess : IAsyncDisposable
         };
         startInfo.ArgumentList.Add("--pz-socket");
         startInfo.ArgumentList.Add(socketPath);
+        if (extraArgs is not null)
+        {
+            foreach (var arg in extraArgs)
+            {
+                startInfo.ArgumentList.Add(arg);
+            }
+        }
 
         startInfo.EnvironmentVariables.Clear();
         foreach (var name in EnvAllowlist)

@@ -20,6 +20,14 @@
     <ProjectReference Include="..\..\src\Pz.PackageManagement\Pz.PackageManagement.csproj" />
     <ProjectReference Include="..\..\src\Pz.Core\Pz.Core.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
+    <!-- HandshakeTests spawns this fixture as a child process rather than calling into it, so the
+         reference exists only to make `dotnet build`/`dotnet test` build it first, never to link
+         its assembly (which would pull the fixture's own Program/console-host types in). -->
+    <ProjectReference Include="..\fixtures\PcpFakeConnector\PcpFakeConnector.csproj" ReferenceOutputAssembly="false" />
+    <!-- HandshakeTests computes the expected handshake capability set from the real connector's
+         Capabilities flags rather than hardcoding the number, so the assertion tracks LocalFiles
+         instead of silently drifting from it. -->
+    <ProjectReference Include="..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
   </ItemGroup>
 
   <ItemGroup>
