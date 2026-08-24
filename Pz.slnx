@@ -44,6 +44,7 @@
     <Project Path="tests/Pz.DuckDb.Tests/Pz.DuckDb.Tests.csproj" />
     <Project Path="tests/Pz.Engine.Tests/Pz.Engine.Tests.csproj" />
     <Project Path="tests/Pz.EndToEnd.Tests/Pz.EndToEnd.Tests.csproj" />
+    <Project Path="tests/fixtures/PcpFakeConnector/PcpFakeConnector.csproj" />
     <Project Path="tests/Pz.Mcp.Tests/Pz.Mcp.Tests.csproj" />
     <Project Path="tests/Pz.PackageManagement.Tests/Pz.PackageManagement.Tests.csproj" />
     <Project Path="tests/Pz.State.Http.Tests/Pz.State.Http.Tests.csproj" />
