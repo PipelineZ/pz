@@ -9,6 +9,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
   </ItemGroup>
 
   <ItemGroup>
@@ -19,6 +20,12 @@
     <ProjectReference Include="..\..\src\Pz.PackageManagement\Pz.PackageManagement.csproj" />
     <ProjectReference Include="..\..\src\Pz.Core\Pz.Core.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Bash fixtures for ConnectorProcessTests; the executable bit does not survive the copy, so the
+         test fixture chmods them in setup rather than relying on git/MSBuild to preserve it. -->
+    <Content Include="ProcessHosting\fake-exes\**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

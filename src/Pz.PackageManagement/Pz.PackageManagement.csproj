@@ -7,6 +7,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+    <!-- Protocol references only Google.Protobuf/Grpc.Net.Client, not Pz.Core, so this stays
+         within the "PackageManagement must not depend on Pz.Core" constraint (see ConnectorHost.cs). -->
+    <ProjectReference Include="..\Pz.Connectors.Protocol\Pz.Connectors.Protocol.csproj" />
   </ItemGroup>
 
   <ItemGroup>
