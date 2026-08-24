@@ -247,7 +247,7 @@ internal sealed class PcpService(
             var session = await sink
                 .BeginWriteAsync(SpecMapping.ToOutputSpec(request.Spec), schema, ct)
                 .ConfigureAwait(false);
-            var state = new WriteSessionState(Guid.NewGuid().ToString("n"), session);
+            var state = new WriteSessionState(Guid.NewGuid().ToString("n"), request.OpId, session);
             _sessions[state.SessionId] = state;
             return new WriteSessionTicket
             {
@@ -276,6 +276,10 @@ internal sealed class PcpService(
                 throw;
             }
 
+            // Drained is set from inside the pump, a few instructions before the pump task itself
+            // completes. Closing and awaiting it is what guarantees no WriteBatchAsync is still in
+            // flight when CommitAsync runs, and shuts out any later data connection for this session.
+            await QuiesceAsync(state, context.CancellationToken).ConfigureAwait(false);
             await using (state.Session.ConfigureAwait(false))
             {
                 var result = await state.Session.CommitAsync(context.CancellationToken).ConfigureAwait(false);
@@ -286,8 +290,13 @@ internal sealed class PcpService(
     public override Task<AbortResponse> AbortWrite(SessionRef request, ServerCallContext context) =>
         Guarded(async () =>
         {
-            // No drain wait: abort exists precisely for the case where the stream never completed.
+            // No drain wait: abort exists precisely for the case where the stream never completed. But
+            // a pump may well be mid-WriteBatchAsync right now, so cancel it and wait for it to stop
+            // before aborting -- disposing the session under a live writer is the use-after-dispose
+            // this ordering exists to prevent.
             var state = TakeSession(request.SessionId);
+            await state.Cancellation.CancelAsync().ConfigureAwait(false);
+            await QuiesceAsync(state, context.CancellationToken).ConfigureAwait(false);
             await using (state.Session.ConfigureAwait(false))
             {
                 await state.Session.AbortAsync(context.CancellationToken).ConfigureAwait(false);
@@ -298,14 +307,24 @@ internal sealed class PcpService(
 
     // ---- cross-cutting ----------------------------------------------------------------------
 
-    public override Task<CancelResponse> Cancel(CancelRequest request, ServerCallContext context)
+    public override async Task<CancelResponse> Cancel(CancelRequest request, ServerCallContext context)
     {
         if (_ops.TryGetValue(request.OpId, out var cts))
         {
-            cts.Cancel();
+            await cts.CancelAsync().ConfigureAwait(false);
         }
 
-        return Task.FromResult(new CancelResponse());
+        // A write pump reads from the host, not from the op's read path, so the op token alone never
+        // reaches it. Cancelling the op must stop its writes too.
+        foreach (var session in _sessions.Values)
+        {
+            if (string.Equals(session.OpId, request.OpId, StringComparison.Ordinal))
+            {
+                await session.Cancellation.CancelAsync().ConfigureAwait(false);
+            }
+        }
+
+        return new CancelResponse();
     }
 
     public override Task<ShutdownResponse> Shutdown(ShutdownRequest request, ServerCallContext context)
@@ -323,16 +342,20 @@ internal sealed class PcpService(
     {
         // LocalFiles consumes no host service, so the fixture holds the reverse channel open and
         // silent. Draining it still matters: the host's pump must see a well-formed channel that ends
-        // only when the host ends it.
+        // only when the host ends it -- or when the fixture does. Without the ApplicationStopping link
+        // this loop outlives a graceful shutdown and holds it open until the host's shutdown timeout,
+        // which is precisely the Shutdown-inside-the-grace budget it must not spend.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            context.CancellationToken, lifetime.ApplicationStopping);
         try
         {
-            while (await requestStream.MoveNext(context.CancellationToken).ConfigureAwait(false))
+            while (await requestStream.MoveNext(linked.Token).ConfigureAwait(false))
             {
             }
         }
         catch (OperationCanceledException)
         {
-            // The host closed the channel or the call deadline passed.
+            // The host closed the channel, the call deadline passed, or the fixture is shutting down.
         }
     }
 
@@ -356,6 +379,17 @@ internal sealed class PcpService(
         }
 
         throw new RpcException(new Status(StatusCode.NotFound, $"unknown partition '{partitionId}'"));
+    }
+
+    /// <summary>Closes a write session to any further data-plane pumping and waits for the pump that
+    /// already claimed it, if any. After this returns, nothing is writing into the session, so
+    /// Commit/Abort/dispose are safe.</summary>
+    private static async Task QuiesceAsync(WriteSessionState state, CancellationToken ct)
+    {
+        if (state.Close() is { } pump)
+        {
+            await pump.WaitAsync(ct).ConfigureAwait(false);
+        }
     }
 
     private WriteSessionState TakeSession(string sessionId) =>
@@ -506,7 +540,16 @@ internal static class StructMapping
     /// (Pz.Engine's SpecBuilder puts the declared contract in the options bag under that type), while
     /// everything else is read as <c>object?</c>-valued. An all-string map is therefore rebuilt as a
     /// value that answers to both shapes rather than picking one and silently making the other
-    /// option invisible to the connector.</summary>
+    /// option invisible to the connector.
+    ///
+    /// <para>ORDER IS LOAD-BEARING AND ONLY C# GUARANTEES IT. LocalFiles binds a <c>columns:</c>
+    /// contract to the csv header BY POSITION, so the order the host declared must survive the wire.
+    /// It does here because Google.Protobuf's <c>MapField</c> enumerates in insertion order on the C#
+    /// side, and the rebuild below walks the fields in that order. That is an implementation property
+    /// of one runtime, not a protobuf guarantee: proto3 map entries are explicitly unordered, and a
+    /// peer in another language may hand its map back in any order at all. A connector that needs
+    /// ordered columns cannot get them from a <c>Struct</c> — this is a spec-level hazard, tracked for
+    /// the protocol follow-up rather than papered over here.</para></summary>
     private static object ToNestedMap(Struct value)
     {
         var plain = new Dictionary<string, object?>(StringComparer.Ordinal);

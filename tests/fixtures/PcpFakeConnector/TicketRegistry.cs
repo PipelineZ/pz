@@ -24,16 +24,64 @@ internal sealed record ReadTicket(
 internal sealed record WriteTicket(WriteSessionState Session) : TicketEntry;
 
 /// <summary>One open sink write session, reachable from the control plane by session id and from the
-/// data plane by ticket. <see cref="Drained"/> is the whole point: CommitWrite must not run until the
-/// write stream has been read to end-of-stream, so the control plane awaits it and the data plane
-/// completes it (or faults it, so a torn stream surfaces as a failed commit rather than a lost
-/// suffix).</summary>
-internal sealed class WriteSessionState(string sessionId, ISinkWriteSession session)
+/// data plane by ticket.
+///
+/// <para><see cref="Drained"/> is one half of the point: CommitWrite must not run until the write
+/// stream has been read to end-of-stream, so the control plane awaits it and the data plane completes
+/// it (or faults it, so a torn stream surfaces as a failed commit rather than a lost suffix).</para>
+///
+/// <para><see cref="TryBeginPump"/>/<see cref="Close"/> are the other half: the data plane writes
+/// batches into <see cref="Session"/> from its own task, so the control plane must not commit, abort,
+/// or dispose the session while a write is in flight. Close shuts the door on a pump that has not
+/// started and hands back the one that has, and <see cref="Cancellation"/> is what stops it — which is
+/// what makes AbortWrite and Cancel able to end a write at all.</para></summary>
+internal sealed class WriteSessionState(string sessionId, string opId, ISinkWriteSession session)
 {
+    private readonly Lock _gate = new();
+    private Task? _pump;
+    private bool _closed;
+
     public string SessionId { get; } = sessionId;
+
+    /// <summary>The op this session belongs to, so <c>Cancel {opId}</c> can reach its write pump.</summary>
+    public string OpId { get; } = opId;
+
     public ISinkWriteSession Session { get; } = session;
+
+    public CancellationTokenSource Cancellation { get; } = new();
+
     public TaskCompletionSource Drained { get; } =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Data plane: claims the right to write into the session, handing over a task that
+    /// completes when it stops writing (successfully or not). Returns false once the control plane has
+    /// closed the session — which is what keeps a batch out of a session that is being aborted.</summary>
+    public bool TryBeginPump(Task pump)
+    {
+        lock (_gate)
+        {
+            if (_closed)
+            {
+                return false;
+            }
+
+            _pump = pump;
+            return true;
+        }
+    }
+
+    /// <summary>Control plane: closes the session to any further pumping and returns the pump already
+    /// running, or null if none ever claimed it. The caller must await what it gets back before
+    /// touching the session — the lock is what makes "either it started before I closed, or it can
+    /// never start" true.</summary>
+    public Task? Close()
+    {
+        lock (_gate)
+        {
+            _closed = true;
+            return _pump;
+        }
+    }
 }
 
 /// <summary>Mints and burns the single-use data-plane tickets.

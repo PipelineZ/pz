@@ -26,6 +26,18 @@ internal static class Program
     /// exits rather than lingering.</summary>
     private static readonly TimeSpan OrphanExitGrace = TimeSpan.FromSeconds(5);
 
+    /// <summary>How long the fixture waits for its FIRST control connection. A host that dies between
+    /// spawning the process and dialing it leaves a connector that has nothing to wait for and no
+    /// connection-close to notice, so idle-exit alone would leave it running forever. Twice the
+    /// handshake timeout: a host still within its own handshake budget has not failed yet.</summary>
+    private static readonly TimeSpan FirstConnectionDeadline = ProtocolConstants.HandshakeTimeout * 2;
+
+    /// <summary>Kept under <see cref="ProtocolConstants.ShutdownGrace"/>. The generic host defaults to
+    /// 30 s, which is three times the grace the host allows between the <c>Shutdown</c> RPC and a kill
+    /// — so on the default the fixture would be killed for being slow at something it was told to
+    /// do.</summary>
+    private static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(5);
+
     public static async Task<int> Main(string[] args)
     {
         if (OperatingSystem.IsWindows())
@@ -58,8 +70,18 @@ internal static class Program
         DeleteIfExists(options.SocketPath);
         DeleteIfExists(dataSocketPath);
 
-        var exit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var watch = new ControlConnectionWatch(OrphanExitGrace, () => exit.TrySetResult());
+        var exit = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var watch = new ControlConnectionWatch(
+            FirstConnectionDeadline,
+            OrphanExitGrace,
+            onNeverConnected: () =>
+            {
+                Console.Error.WriteLine(
+                    $"PcpFakeConnector: no control connection within {FirstConnectionDeadline.TotalSeconds:0}s " +
+                    "of the socket being served; the host never dialed. Exiting rather than orphaning.");
+                exit.TrySetResult(3);
+            },
+            onOrphaned: () => exit.TrySetResult(0));
         var tickets = new TicketRegistry();
 
         await using var dataPlane = DataPlaneListener.Start(dataSocketPath, tickets);
@@ -90,6 +112,7 @@ internal static class Program
             });
         }));
         builder.Services.AddGrpc();
+        builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = HostShutdownTimeout);
         builder.Services.AddSingleton(options);
         builder.Services.AddSingleton(tickets);
         // Singleton: the configured connector, its open plans and its write sessions are per-process
@@ -102,13 +125,15 @@ internal static class Program
         await app.StartAsync().ConfigureAwait(false);
         // Kestrel creates the socket file on bind, so this is the earliest point it can be locked down.
         SocketPermissions.RestrictToOwner(options.SocketPath);
+        // The first-connection clock starts now, not at process start: the host cannot dial before this.
+        watch.Start();
 
         // SIGINT/SIGTERM and the Shutdown RPC both land here, via IHostApplicationLifetime.
-        await using var stopping = app.Lifetime.ApplicationStopping.Register(() => exit.TrySetResult())
+        await using var stopping = app.Lifetime.ApplicationStopping.Register(() => exit.TrySetResult(0))
             .ConfigureAwait(false);
-        await exit.Task.ConfigureAwait(false);
+        var exitCode = await exit.Task.ConfigureAwait(false);
         await app.StopAsync().ConfigureAwait(false);
-        return 0;
+        return exitCode;
     }
 
     private static void DeleteIfExists(string path)
@@ -197,34 +222,30 @@ internal static class SocketPermissions
     }
 }
 
-/// <summary>Orphan prevention: counts live control-plane connections and fires once the last one has
-/// been gone for the grace period. Nothing fires before the first connection arrives, so a fixture the
-/// host has not dialed yet waits indefinitely.</summary>
-internal sealed class ControlConnectionWatch(TimeSpan grace, Action onOrphaned)
+/// <summary>Orphan prevention, on both sides of the first connection: fires
+/// <paramref name="onNeverConnected"/> if the host never dials within
+/// <paramref name="startupDeadline"/>, and <paramref name="onOrphaned"/> once the last control
+/// connection has been gone for <paramref name="idleGrace"/>. A host that dies before connecting and
+/// one that dies after leave the same orphan, and only the two timers together cover both.</summary>
+internal sealed class ControlConnectionWatch(
+    TimeSpan startupDeadline,
+    TimeSpan idleGrace,
+    Action onNeverConnected,
+    Action onOrphaned)
 {
     private readonly Lock _gate = new();
     private int _open;
     private bool _everConnected;
     private CancellationTokenSource? _countdown;
 
-    public void Opened()
-    {
-        lock (_gate)
-        {
-            _open++;
-            _everConnected = true;
-            _countdown?.Cancel();
-            _countdown?.Dispose();
-            _countdown = null;
-        }
-    }
-
-    public void Closed()
+    /// <summary>Starts the first-connection clock. Called once the socket is actually listening, so the
+    /// deadline measures the host's silence and not the fixture's own startup.</summary>
+    public void Start()
     {
         CancellationTokenSource countdown;
         lock (_gate)
         {
-            if (--_open > 0 || !_everConnected)
+            if (_everConnected)
             {
                 return;
             }
@@ -233,20 +254,54 @@ internal sealed class ControlConnectionWatch(TimeSpan grace, Action onOrphaned)
             _countdown = countdown;
         }
 
-        _ = CountdownAsync(countdown);
+        _ = CountdownAsync(countdown, startupDeadline, onNeverConnected);
     }
 
-    private async Task CountdownAsync(CancellationTokenSource countdown)
+    public void Opened()
+    {
+        lock (_gate)
+        {
+            _open++;
+            _everConnected = true;
+            ClearCountdown();
+        }
+    }
+
+    public void Closed()
+    {
+        CancellationTokenSource countdown;
+        lock (_gate)
+        {
+            if (--_open > 0)
+            {
+                return;
+            }
+
+            countdown = new CancellationTokenSource();
+            _countdown = countdown;
+        }
+
+        _ = CountdownAsync(countdown, idleGrace, onOrphaned);
+    }
+
+    private void ClearCountdown()
+    {
+        _countdown?.Cancel();
+        _countdown?.Dispose();
+        _countdown = null;
+    }
+
+    private static async Task CountdownAsync(CancellationTokenSource countdown, TimeSpan delay, Action onElapsed)
     {
         try
         {
-            await Task.Delay(grace, countdown.Token).ConfigureAwait(false);
+            await Task.Delay(delay, countdown.Token).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             return;
         }
 
-        onOrphaned();
+        onElapsed();
     }
 }

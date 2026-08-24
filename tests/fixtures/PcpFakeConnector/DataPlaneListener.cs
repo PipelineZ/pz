@@ -69,7 +69,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
 
     private async Task ServeAsync(Socket connection)
     {
-        using (connection)
+        try
         {
             try
             {
@@ -80,14 +80,24 @@ internal sealed class DataPlaneListener : IAsyncDisposable
                 {
                     // Unknown or already-burned ticket: close without writing. A protocol violation is
                     // never answered with data, and never with a diagnosis either -- the host learns
-                    // only that the peer hung up.
+                    // only that the peer hung up, before a single Arrow message, which no successful
+                    // read ever looks like.
                     return;
                 }
 
                 switch (entry)
                 {
                     case ReadTicket read:
-                        await ServeReadAsync(connection, stream, read).ConfigureAwait(false);
+                        try
+                        {
+                            await ServeReadAsync(connection, stream, read).ConfigureAwait(false);
+                        }
+                        catch
+                        {
+                            await SignalTruncatedAsync(stream).ConfigureAwait(false);
+                            throw;
+                        }
+
                         break;
                     case WriteTicket write:
                         await ServeWriteAsync(stream, write).ConfigureAwait(false);
@@ -96,17 +106,48 @@ internal sealed class DataPlaneListener : IAsyncDisposable
             }
             catch (Exception ex) when (ex is OperationCanceledException or IOException or SocketException)
             {
-                // The host hung up or the fixture is shutting down. A read stream's loss is the host's
-                // to observe; a write stream's loss already faulted its Drained gate below.
+                // The host hung up or the fixture is shutting down. A write stream's loss already
+                // faulted its Drained gate; a read stream's loss reaches the host as the truncated
+                // message written above.
             }
             catch (Exception ex)
             {
-                // The data plane carries no error frames, so a failure here would otherwise reach the
-                // host as an unexplained truncation. stderr is the diagnostics-of-last-resort channel
-                // for exactly this, and it is never protocol.
+                // stderr is the diagnostics-of-last-resort channel, and it is never protocol: the
+                // truncation tells the host the stream failed, this says why.
                 await Console.Error.WriteLineAsync(
                     $"PcpFakeConnector: data-plane connection failed: {ex}").ConfigureAwait(false);
             }
+        }
+        finally
+        {
+            connection.Dispose();
+        }
+    }
+
+    /// <summary>An Arrow IPC message header promising a body that never arrives — the deliberate
+    /// truncation a failed read must end with.
+    ///
+    /// <para>THIS IS THE ONLY TRUNCATION SIGNAL THIS TRANSPORT HAS, and getting it wrong loses rows
+    /// silently. An IPC reader treats a graceful close at a message boundary as end-of-stream, so
+    /// simply closing after a partition throws is indistinguishable from a successful short read.
+    /// Nor can the connection be reset instead: a unix socket has no RST — SO_LINGER 0 is accepted
+    /// and does nothing, close() delivers a plain EOF either way (measured; the host read a clean
+    /// end-of-stream) — and a named pipe has no reset either. Writing a header whose body cannot
+    /// follow forces the reader to fault at the exact point the data stopped, on every v1 transport.
+    /// The bytes are the IPC continuation token followed by a metadata length that will never be
+    /// satisfied.</para></summary>
+    private static readonly byte[] TruncationMarker = [0xFF, 0xFF, 0xFF, 0xFF, 0x10, 0x00, 0x00, 0x00];
+
+    private static async Task SignalTruncatedAsync(Stream stream)
+    {
+        try
+        {
+            await stream.WriteAsync(TruncationMarker).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException)
+        {
+            // The host is already gone, so it has already failed this read by other means.
         }
     }
 
@@ -135,16 +176,29 @@ internal sealed class DataPlaneListener : IAsyncDisposable
     private async Task ServeWriteAsync(Stream stream, WriteTicket write)
     {
         var state = write.Session;
+        var pump = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!state.TryBeginPump(pump.Task))
+        {
+            // The control plane already closed this session (aborted, or committed). Writing into it
+            // now would be a use-after-abort, so the connection just dies.
+            state.Drained.TrySetException(new InvalidOperationException(
+                $"write session '{state.SessionId}' was closed before its data stream opened"));
+            return;
+        }
+
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            _stopping.Token, state.Cancellation.Token);
+        var ct = linked.Token;
         try
         {
             using var reader = new ArrowStreamReader(stream, leaveOpen: true);
-            while (await reader.ReadNextRecordBatchAsync(_stopping.Token).ConfigureAwait(false) is { } batch)
+            while (await reader.ReadNextRecordBatchAsync(ct).ConfigureAwait(false) is { } batch)
             {
                 // Batches read off the wire are ours; ISinkWriteSession must not retain them past the
                 // call, exactly as in-proc.
                 using (batch)
                 {
-                    await state.Session.WriteBatchAsync(batch, _stopping.Token).ConfigureAwait(false);
+                    await state.Session.WriteBatchAsync(batch, ct).ConfigureAwait(false);
                 }
             }
 
@@ -153,10 +207,16 @@ internal sealed class DataPlaneListener : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            // A torn or rejected write stream must fail the commit rather than silently commit a
-            // prefix, so the control plane's awaiter observes the same exception.
+            // A torn, cancelled or rejected write stream must fail the commit rather than silently
+            // commit a prefix, so the control plane's awaiter observes the same exception.
             state.Drained.TrySetException(ex);
             throw;
+        }
+        finally
+        {
+            // Unconditional: the control plane waits on this before it commits, aborts or disposes the
+            // session, so it must complete however the pump ended.
+            pump.TrySetResult();
         }
     }
 
