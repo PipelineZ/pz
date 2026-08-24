@@ -17,6 +17,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Pz.Connectors.Protocol\Pz.Connectors.Protocol.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
   </ItemGroup>
 
 </Project>
