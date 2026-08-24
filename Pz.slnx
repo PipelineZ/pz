@@ -12,6 +12,7 @@
   <Folder Name="/src/">
     <Project Path="src/Pz.Cli/Pz.Cli.csproj" />
     <Project Path="src/Pz.Connectors.Abstractions/Pz.Connectors.Abstractions.csproj" />
+    <Project Path="src/Pz.Connectors.Protocol/Pz.Connectors.Protocol.csproj" />
     <Project Path="src/Pz.Connectors.TestKit/Pz.Connectors.TestKit.csproj" />
     <Project Path="src/Pz.Connectors.Toolkit/Pz.Connectors.Toolkit.csproj" />
     <Project Path="src/Pz.Core/Pz.Core.csproj" />
@@ -35,6 +36,7 @@
     <Project Path="tests/Pz.Connector.Sqlite.Tests/Pz.Connector.Sqlite.Tests.csproj" />
     <Project Path="tests/Pz.Connector.SqlServer.Tests/Pz.Connector.SqlServer.Tests.csproj" />
     <Project Path="tests/Pz.Connectors.Abstractions.Tests/Pz.Connectors.Abstractions.Tests.csproj" />
+    <Project Path="tests/Pz.Connectors.Protocol.Tests/Pz.Connectors.Protocol.Tests.csproj" />
     <Project Path="tests/Pz.Connectors.TestKit.Tests/Pz.Connectors.TestKit.Tests.csproj" />
     <Project Path="tests/Pz.Connectors.Toolkit.Tests/Pz.Connectors.Toolkit.Tests.csproj" />
     <Project Path="tests/Pz.Core.Tests/Pz.Core.Tests.csproj" />

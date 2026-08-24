@@ -1,0 +1,190 @@
+syntax = "proto3";
+package pz.connector.v1;
+option csharp_namespace = "Pz.Connectors.Protocol.V1";
+
+import "google/protobuf/struct.proto";
+
+service PzConnector {
+  // identity + config
+  rpc Handshake(HandshakeRequest) returns (Hello);
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+  rpc Validate(ValidateRequest) returns (ValidationResultMsg); // offline, no network
+  rpc CheckConnection(CheckRequest) returns (ConnectionCheckMsg);
+
+  // source
+  rpc GetSchema(GetSchemaRequest) returns (DatasetSchemaMsg);
+  rpc TryNativeScan(NativeScanRequest) returns (NativeScanResponse);
+  rpc PlanRead(PlanReadRequest) returns (stream PartitionMsg);
+  rpc OpenReadStream(OpenReadRequest) returns (ReadStreamTicket);
+
+  // sink
+  rpc TryNativeCopy(NativeCopyRequest) returns (NativeCopyResponse);
+  rpc BeginWrite(BeginWriteRequest) returns (WriteSessionTicket);
+  rpc CommitWrite(SessionRef) returns (WriteResultMsg);
+  rpc AbortWrite(SessionRef) returns (AbortResponse);
+
+  // cross-cutting
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+  rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
+
+  // reverse channel: host services the connector consumes
+  rpc HostChannel(stream HostChannelUp) returns (stream HostChannelDown);
+}
+
+message HandshakeRequest {
+  int32 protocol_major = 1;
+  HostInfo host_info = 2;
+}
+message HostInfo {
+  string pz_version = 1;
+  // transports the host can open; v1 defines "pipe" (Arrow IPC over UDS/named pipe).
+  repeated string transports = 2;
+}
+message Hello {
+  ConnectorInfoMsg info = 1;
+  int64 capabilities = 2; // ConnectorCapabilities flags value, verbatim
+  string connection_config_schema = 3;
+  string dataset_config_schema = 4;
+  // transports the connector serves; host picks the first common one ("pipe" in v1).
+  repeated string transports = 5;
+}
+message ConnectorInfoMsg {
+  string name = 1;
+  string version = 2;
+  int32 protocol_major = 3;
+}
+
+message ConfigureRequest {
+  string instance_id = 1; // named connection in connections.yml
+  google.protobuf.Struct config = 2; // env-interpolated ConnectorConfig.Values
+}
+message ConfigureResponse {}
+
+message ValidateRequest { google.protobuf.Struct config = 1; }
+message ValidationResultMsg { repeated string errors = 1; } // aggregate, never throw-per-error
+message CheckRequest { google.protobuf.Struct config = 1; }
+message ConnectionCheckMsg { bool ok = 1; optional string message = 2; }
+
+message DatasetSpecMsg {
+  string source = 1;
+  string dataset = 2;
+  google.protobuf.Struct options = 3;
+  optional string watermark_cursor = 4;
+  optional string watermark_value = 5;      // canonical Watermark string form
+  optional string watermark_upper_bound = 6;
+  bool watermark_lower_inclusive = 7;
+  optional string prior_sync_state = 8;     // opaque
+  bool change_capture = 9;
+  optional string change_capture_slot = 10;
+}
+message ReadHintsMsg {
+  repeated string columns = 1;
+  bool columns_set = 2;      // distinguishes null from empty projection
+  optional string predicate_sql = 3;
+  optional int64 limit = 4;
+}
+message BatchOptionsMsg {
+  int32 target_batch_bytes = 1;
+  int32 max_rows_per_batch = 2;
+}
+message GetSchemaRequest { string op_id = 1; DatasetSpecMsg spec = 2; }
+message DatasetSchemaMsg { bytes arrow_schema_ipc = 1; } // Arrow IPC schema message, never a type list
+
+message NativeScanRequest { string op_id = 1; DatasetSpecMsg spec = 2; }
+message NativeScanResponse {
+  bool found = 1; // false → universal path
+  string sql_fragment = 2;
+  repeated string setup_statements = 3;
+  optional string mechanism = 4;
+  bool schema_inferred = 5;
+  optional string sniff_fragment = 6;
+}
+
+message PlanReadRequest { string op_id = 1; DatasetSpecMsg spec = 2; ReadHintsMsg hints = 3; }
+message PartitionMsg {
+  string partition_id = 1;   // stable iff StablePartitionIds declared; else host-side ordinal
+  bool checkpointing = 2;    // partition implements ICheckpointingPartition
+  bool sync_state = 3;       // partition implements ISyncStatePartition
+}
+message OpenReadRequest {
+  string op_id = 1;
+  string partition_id = 2;
+  BatchOptionsMsg options = 3;
+  optional string resume_checkpoint = 4; // ICheckpointingPartition resume token
+}
+message ReadStreamTicket { bytes ticket = 1; } // exactly 16 random bytes, single-use
+
+message NativeCopyRequest { string op_id = 1; OutputSpecMsg spec = 2; }
+message NativeCopyResponse {
+  bool found = 1;
+  string copy_sql = 2;
+  repeated string setup_statements = 3;
+  optional string mechanism = 4;
+  repeated FileMoveMsg finalizations = 5;
+}
+message FileMoveMsg { string temp_path = 1; string final_path = 2; }
+
+message WriteAttemptMsg { string node = 1; string run = 2; int32 ordinal = 3; }
+message OutputSpecMsg {
+  string sink = 1;
+  string output = 2;
+  string mode = 3;
+  string schema_policy = 4;
+  google.protobuf.Struct options = 5;
+  repeated string keys = 6;
+  optional string on_delete = 7;
+  map<string, int64> max_text_lengths = 8;
+  bool max_text_lengths_set = 9; // distinguishes null map from empty map
+  optional WriteAttemptMsg attempt = 10;
+}
+message BeginWriteRequest {
+  string op_id = 1;
+  OutputSpecMsg spec = 2;
+  bytes arrow_schema_ipc = 3;
+}
+message WriteSessionTicket { string session_id = 1; bytes ticket = 2; }
+message SessionRef { string session_id = 1; }
+message WriteResultMsg { int64 rows_written = 1; int64 batches_written = 2; }
+message AbortResponse {}
+
+message CancelRequest { string op_id = 1; }
+message CancelResponse {}
+message ShutdownRequest {}
+message ShutdownResponse {}
+
+// Reverse channel. Checkpoint/sync-state ride here referencing batch ordinals
+// (Performance invariant 2: no per-batch round trips on the data plane).
+message HostChannelUp {
+  oneof msg {
+    GateAcquire gate_acquire = 1;
+    GateComplete gate_complete = 2;
+    GateBudget gate_budget = 3;
+    LogEvent log = 4;
+    WriteAck write_ack = 5;   // ICheckpointingSinkSession: acked prefix
+    ReadState read_state = 6; // ISyncStatePartition / ICheckpointingPartition token
+  }
+}
+message HostChannelDown {
+  oneof msg { GateGrant gate_grant = 1; }
+}
+message GateAcquire { string request_id = 1; string op_label = 2; bool idempotent = 3; }
+message GateGrant { string request_id = 1; }
+message GateComplete { string request_id = 1; optional PzErrorDetail transient_error = 2; }
+message GateBudget { int32 remaining = 1; int64 reset_at_unix_ms = 2; }
+message LogEvent {
+  int32 level = 1; // 0 trace .. 5 critical, matches Microsoft.Extensions.Logging.LogLevel
+  string message = 2;
+  map<string, string> fields = 3;
+}
+message ReadState { string op_id = 1; string token = 2; }
+message WriteAck { string session_id = 1; int64 acked_through_ordinal = 2; }
+
+// Rich error detail: serialized into gRPC trailing metadata under key "pz-error-bin".
+// The shim rethrows a real PzConnectorException from it.
+message PzErrorDetail {
+  string code = 1;   // PZ#### where the connector has one, else empty
+  string message = 2;
+  bool is_transient = 3;
+  int64 retry_after_ms = 4;
+  string hint = 5;
+}
