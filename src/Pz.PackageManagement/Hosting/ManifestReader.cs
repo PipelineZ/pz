@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pz.PackageManagement.Restore;
 
 namespace Pz.PackageManagement.Hosting;
 
@@ -10,10 +11,26 @@ namespace Pz.PackageManagement.Hosting;
 /// against the project rather than against the process working directory. Opt-in and defaulted false: a
 /// manifest that says nothing receives nothing, so the option can never collide with a
 /// <c>ConnectionConfigSchema</c> that does not declare it. A connector that opts in must declare
-/// <c>base_dir</c> in that schema.</para></summary>
+/// <c>base_dir</c> in that schema.</para>
+///
+/// <para><paramref name="Runtime"/> selects how the connector is hosted: null or <c>"dotnet"</c> means
+/// the existing in-process <c>ConnectorLoadContext</c> path (byte-identical behavior); <c>"process"</c>
+/// means an out-of-process host, spawned from the RID-selected entry in <paramref name="Entrypoints"/>
+/// (package-relative paths, resolved via <see cref="ManifestReader.ResolveEntrypoint"/>). Any other
+/// value is a runtime this host does not understand and is rejected at read time (PZ0354, "upgrade
+/// pz").</para></summary>
 public sealed record ConnectorManifest(
     string? Name, int ProtocolMajorMin, int ProtocolMajorMax, IReadOnlyList<string> Capabilities,
-    bool ProjectDirectoryAnchor = false);
+    bool ProjectDirectoryAnchor = false, string? Runtime = null,
+    IReadOnlyDictionary<string, string>? Entrypoints = null)
+{
+    /// <summary>RID → package-relative entrypoint path. Never null, even when <see cref="Runtime"/> is
+    /// null/<c>"dotnet"</c> (empty in that case) — callers never null-check it.</summary>
+    public IReadOnlyDictionary<string, string> Entrypoints { get; init; } = Entrypoints ?? EmptyEntrypoints;
+
+    private static readonly IReadOnlyDictionary<string, string> EmptyEntrypoints =
+        new Dictionary<string, string>();
+}
 
 /// <summary>Reads a connector package's <c>pz.connector.json</c> manifest, if any, WITHOUT loading any
 /// assembly — this is what lets <see cref="ConnectorHost.LoadFromDirectory"/> reject an
@@ -65,9 +82,46 @@ public static class ManifestReader
                 "fix the manifest's protocolMajorMin/protocolMajorMax ordering");
         }
 
+        if (dto.Runtime is not (null or "dotnet" or "process"))
+        {
+            throw new ConnectorHostException(
+                "PZ0354",
+                $"pz.connector.json at '{path}' declares unknown runtime '{dto.Runtime}'",
+                "upgrade pz to a version that understands this connector's runtime, or pin an older connector version");
+        }
+
+        if (dto.Runtime == "process" && (dto.Entrypoints is null || dto.Entrypoints.Count == 0))
+        {
+            throw new ConnectorHostException(
+                "PZ0354",
+                $"pz.connector.json at '{path}' declares runtime 'process' but no entrypoints",
+                "fix the manifest's entrypoints map (RID -> package-relative binary path), or rebuild the connector package");
+        }
+
         return new ConnectorManifest(
             dto.Name, dto.ProtocolMajorMin, dto.ProtocolMajorMax, dto.Capabilities ?? [],
-            dto.ProjectDirectoryAnchor);
+            dto.ProjectDirectoryAnchor, dto.Runtime, dto.Entrypoints);
+    }
+
+    /// <summary>Resolves <paramref name="rid"/> against <paramref name="manifest"/>'s <c>entrypoints</c>
+    /// map to an absolute binary path, walking <see cref="RuntimeIdentifierGraph"/>'s fallback ancestry
+    /// when there is no exact match (so a package shipping only <c>linux-x64</c> is still reachable from
+    /// <c>linux-musl-x64</c>). Throws <see cref="ConnectorHostException"/> PZ0354 when nothing in the
+    /// fallback chain has an entry.</summary>
+    public static string ResolveEntrypoint(ConnectorManifest manifest, string packageDir, string rid)
+    {
+        foreach (var candidate in RuntimeIdentifierGraph.Expand(rid))
+        {
+            if (manifest.Entrypoints.TryGetValue(candidate, out var relativePath))
+            {
+                return Path.Combine(packageDir, relativePath);
+            }
+        }
+
+        throw new ConnectorHostException(
+            "PZ0354",
+            $"connector package '{manifest.Name ?? packageDir}' ships no binary for RID '{rid}'",
+            $"this connector ships no binary for {rid}; add an entrypoints entry for it, or restore a build that supports this platform");
     }
 
     private sealed class ManifestDto
@@ -77,5 +131,7 @@ public static class ManifestReader
         public int ProtocolMajorMax { get; set; }
         public List<string>? Capabilities { get; set; }
         public bool ProjectDirectoryAnchor { get; set; }
+        public string? Runtime { get; set; }
+        public Dictionary<string, string>? Entrypoints { get; set; }
     }
 }

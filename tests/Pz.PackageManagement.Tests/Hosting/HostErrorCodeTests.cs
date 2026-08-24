@@ -11,6 +11,7 @@ public class HostErrorCodeTests
         Assert.Equal("PZ0305", PzErrorCode.ConnectorNotInstalled);
         Assert.Equal("PZ0306", PzErrorCode.ProtocolMismatch);
         Assert.Equal("PZ0307", PzErrorCode.NoConnectorEntryPoint);
+        Assert.Equal("PZ0354", PzErrorCode.ProcessEntrypointMissing);
     }
 
     // Restore/DriftChecker/ConnectorRegistryFactory raise RestoreException/PzValidationException

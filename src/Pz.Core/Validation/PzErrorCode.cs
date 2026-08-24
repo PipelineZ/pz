@@ -336,6 +336,13 @@ public static class PzErrorCode
     /// name. The connector reports it as a <c>PzConnectorException</c>; the planner attaches this code so it
     /// surfaces as an aggregated, exit-2 config error rather than an unexpected engine failure.</summary>
     public const string NativeScanContractMismatch = "PZ0353";
+
+    // A process-hosted connector's pz.connector.json cannot supply a usable entrypoint for this
+    // host: an unrecognized `runtime` value, a `runtime: "process"` manifest with no `entrypoints`,
+    // or no entry for the current RID (even after the RuntimeIdentifierGraph fallback walk). Raised
+    // by Pz.PackageManagement's ManifestReader as a hardcoded literal (that assembly must not
+    // reference Pz.Core -- see ConnectorHost's doc comment); pinned by HostErrorCodeTests.
+    public const string ProcessEntrypointMissing = "PZ0354";
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";
