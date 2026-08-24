@@ -343,6 +343,39 @@ public static class PzErrorCode
     // by Pz.PackageManagement's ManifestReader as a hardcoded literal (that assembly must not
     // reference Pz.Core -- see ConnectorHost's doc comment); pinned by HostErrorCodeTests.
     public const string ProcessEntrypointMissing = "PZ0354";
+
+    // Spawn of a process-hosted connector's executable failed at launch time (exec error, OSError,
+    // process did not start). Raised by the host spawn path; next step is to check the executable
+    // exists, is readable, and matches the target platform.
+    public const string ConnectorSpawnFailed = "PZ0355";
+
+    // Handshake between host and a process-hosted connector failed: timeout waiting for the Hello
+    // message, malformed Hello body (not JSON or wrong schema), or mismatch between manifest
+    // (ConnectorManifest) and Hello (ConnectorInfo) — capability flag disagreement, or name
+    // disagreement. Raised by the host handshake phase; next step depends on which part failed
+    // (check logs, connector readiness, and manifest/compiled capability consistency).
+    public const string ConnectorHandshakeFailed = "PZ0356";
+
+    // Protocol violation from a process-hosted connector during data-plane operations: bad or
+    // reused data-plane ticket issued by the planner, or malformed Arrow IPC stream from the
+    // connector's WriteBatchAsync reply. Raised at data-plane read/write time; next step is to
+    // check connector logs and confirm connector and host ABI versions are compatible.
+    public const string ProtocolViolation = "PZ0357";
+
+    // A process-hosted connector's executable died unexpectedly during an operation that was
+    // in flight. Raised by the host when an I/O or serialization failure reveals the process
+    // exited; next step is to check the connector's exit code and stderr logs, and confirm
+    // connector stability under the dataset being processed.
+    public const string ConnectorDiedMidOperation = "PZ0358";
+
+    // Planner refused the native-scan tier for a dataset because a packaged DuckDB extension
+    // (loaded into DuckDB for native scans) is unsigned and the source connection does not
+    // declare `allow_unsigned_extensions: true`. Unsigned extensions are inherently risky
+    // (no signature verification); the explicit allow gates them. Raised by ExecutionPlanner;
+    // next step is to sign the extension, or add `allow_unsigned_extensions: true` to the
+    // source connection's YAML config.
+    public const string UnsignedExtensionRefused = "PZ0359";
+
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";
