@@ -178,6 +178,68 @@ public sealed class DataPlaneTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Cancelled_read_connect_does_not_leak_the_socket()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
+        Skip.If(!Directory.Exists("/proc/self/fd"), "no /proc/self/fd fd-table introspection on this platform");
+
+        var socketDir = NewSocketDir();
+        Directory.CreateDirectory(socketDir);
+        var socketPath = Path.Combine(socketDir, "data.sock");
+        using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+        listener.Listen(32);
+
+        const int attempts = 25;
+        var before = Directory.GetFiles("/proc/self/fd").Length;
+        for (var i = 0; i < attempts; i++)
+        {
+            using var cts = new CancellationTokenSource();
+            await cts.CancelAsync();
+
+            // Pre-cancelled: connect (or the ticket write right after it) observes a token that is
+            // already cancelled, which is exactly the path that used to skip `socket.Dispose()` --
+            // `catch (Exception ex) when (ex is not OperationCanceledException)` never ran for a
+            // cancellation. ThrowsAnyAsync (not ThrowsAsync): Socket.ConnectAsync raises the
+            // OperationCanceledException subtype TaskCanceledException, and rethrowing it unwrapped --
+            // "as-is" -- is the point of the fix, not normalizing it to the exact base type.
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            {
+                await foreach (var batch in DataPlane.ReadStreamAsync(socketPath, new byte[16], cts.Token))
+                {
+                    batch.Dispose();
+                }
+            });
+        }
+
+        var after = Directory.GetFiles("/proc/self/fd").Length;
+
+        // A per-call socket leak grows this roughly linearly with `attempts`; ordinary fd churn
+        // elsewhere in this (possibly parallel-running) test process is bounded noise, so a wide slack
+        // still catches a real leak without the assertion being flaky.
+        Assert.True(
+            after - before < attempts,
+            $"fd count grew from {before} to {after} over {attempts} cancelled connects -- looks like a per-call socket leak");
+    }
+
+    [Fact]
+    public async Task Wrong_length_ticket_throws_ArgumentException_before_touching_the_wire()
+    {
+        // No socket needs to exist for this: the length check must fail fast before any I/O, so an
+        // unreachable path (a socket dir with no listener) still proves the guard fired first rather
+        // than the connect racing ahead of it.
+        var socketPath = Path.Combine(NewSocketDir(), "data.sock");
+
+        await Assert.ThrowsAsync<ArgumentException>(async () =>
+        {
+            await foreach (var batch in DataPlane.ReadStreamAsync(socketPath, new byte[15], CancellationToken.None))
+            {
+                batch.Dispose();
+            }
+        });
+    }
+
+    [SkippableFact]
     public async Task Truncated_stream_surfaces_as_PZ0357_not_a_clean_completion()
     {
         Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
@@ -236,6 +298,121 @@ public sealed class DataPlaneTests : IDisposable
         // fabricated or dropped silently) -- but the enumeration ends in a thrown exception, never in a
         // clean `await foreach` completion, which is the "not silently yielded as if complete" half of
         // the contract.
+        Assert.Single(seen);
+        Assert.Equal(2, seen[0].Length);
+        foreach (var batch in seen)
+        {
+            batch.Dispose();
+        }
+    }
+
+    [SkippableFact]
+    public async Task Crash_mid_stream_without_end_marker_surfaces_as_PZ0357()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
+
+        // Schema + one COMPLETE batch, then a plain close with no Arrow end-of-stream marker at all --
+        // the shape a SIGKILLed connector leaves behind between two well-formed messages. Apache.Arrow's
+        // reader cannot tell this apart from a legitimate WriteEndAsync-terminated stream on its own
+        // (ReadNextRecordBatchAsync returns null with a non-null Schema either way, verified against
+        // Apache.Arrow 23.0.0), which is exactly the silent-partial-read hazard this test pins.
+        var socketDir = NewSocketDir();
+        Directory.CreateDirectory(socketDir);
+        var socketPath = Path.Combine(socketDir, "data.sock");
+
+        var schema = new Schema.Builder()
+            .Field(f => f.Name("id").DataType(Int64Type.Default).Nullable(false))
+            .Build();
+
+        using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+        listener.Listen(1);
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var connection = await listener.AcceptAsync();
+            await using var stream = new NetworkStream(connection, ownsSocket: false);
+            var ticket = new byte[16];
+            await ReadExactlyAsync(stream, ticket);
+
+            using var writer = new ArrowStreamWriter(stream, schema, leaveOpen: true);
+            await writer.WriteStartAsync();
+            using var goodBatch = BuildBatch(schema, 0, 2);
+            await writer.WriteRecordBatchAsync(goodBatch);
+            await stream.FlushAsync();
+            // No WriteEndAsync, no truncation marker -- just stop. The connection closes (and sends its
+            // FIN) when `connection`/`stream` go out of scope below.
+        });
+
+        var seen = new List<RecordBatch>();
+        var ex = await Assert.ThrowsAsync<ConnectorHostException>(async () =>
+        {
+            await foreach (var batch in DataPlane.ReadStreamAsync(socketPath, new byte[16], CancellationToken.None))
+            {
+                seen.Add(batch);
+            }
+        });
+
+        await serverTask;
+
+        Assert.Equal("PZ0357", ex.Code);
+        Assert.Contains("end-of-stream marker", ex.Message, StringComparison.Ordinal);
+        // The one complete batch that DID arrive is still surfaced -- this never completes cleanly, but
+        // it also never fabricates or silently drops the data that genuinely made it across.
+        Assert.Single(seen);
+        Assert.Equal(2, seen[0].Length);
+        foreach (var batch in seen)
+        {
+            batch.Dispose();
+        }
+    }
+
+    [SkippableFact]
+    public async Task Proper_end_of_stream_marker_completes_cleanly()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
+
+        // The positive twin of Crash_mid_stream_without_end_marker_surfaces_as_PZ0357: the same schema
+        // and one complete batch, but terminated with a real WriteEndAsync -- proves the tail-marker
+        // check does not false-positive on a legitimately closed stream.
+        var socketDir = NewSocketDir();
+        Directory.CreateDirectory(socketDir);
+        var socketPath = Path.Combine(socketDir, "data.sock");
+
+        var schema = new Schema.Builder()
+            .Field(f => f.Name("id").DataType(Int64Type.Default).Nullable(false))
+            .Build();
+
+        using var listener = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(new UnixDomainSocketEndPoint(socketPath));
+        listener.Listen(1);
+
+        var serverTask = Task.Run(async () =>
+        {
+            using var connection = await listener.AcceptAsync();
+            await using var stream = new NetworkStream(connection, ownsSocket: false);
+            var ticket = new byte[16];
+            await ReadExactlyAsync(stream, ticket);
+
+            using var writer = new ArrowStreamWriter(stream, schema, leaveOpen: true);
+            await writer.WriteStartAsync();
+            using (var goodBatch = BuildBatch(schema, 0, 2))
+            {
+                await writer.WriteRecordBatchAsync(goodBatch);
+            }
+
+            await writer.WriteEndAsync();
+            await stream.FlushAsync();
+        });
+
+        var seen = new List<RecordBatch>();
+        await foreach (var batch in DataPlane.ReadStreamAsync(socketPath, new byte[16], CancellationToken.None))
+        {
+            seen.Add(batch);
+        }
+
+        await serverTask;
+
         Assert.Single(seen);
         Assert.Equal(2, seen[0].Length);
         foreach (var batch in seen)
