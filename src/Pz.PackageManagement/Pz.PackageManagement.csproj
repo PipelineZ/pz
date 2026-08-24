@@ -22,6 +22,10 @@
          Pz.Connectors.Protocol's ProjectReference too, but pinned explicitly here since this
          assembly calls into it, not just references generated types. -->
     <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <!-- DataPlane speaks Arrow IPC directly over the raw data-plane socket; flows transitively from
+         Pz.Connectors.Abstractions's ProjectReference too, but pinned explicitly here for the same
+         reason as Grpc.Net.Client above. -->
+    <PackageReference Include="Apache.Arrow" Version="23.0.0" />
   </ItemGroup>
 
 </Project>
