@@ -108,6 +108,49 @@ public sealed class HandshakeTests : IDisposable
         Assert.Equal(TimeSpan.FromMilliseconds(250), connectorEx.RetryAfter);
     }
 
+    [SkippableFact]
+    public async Task Caller_cancellation_during_handshake_throws_OperationCanceledException()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        // The connector never answers Handshake here, so the only thing that can end this call within
+        // the test's lifetime is the caller's own token -- the internal (default, 15s) handshake
+        // timeout is never in play. Proves the RpcException(Cancelled) that gRPC gives a cancelled
+        // caller token is rethrown as a plain OperationCanceledException, not wrapped as PZ0356.
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--hang-handshake"]);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", ConnectorConfig.Empty, cts.Token));
+    }
+
+    [SkippableFact]
+    public async Task MapRpcException_distinguishes_caller_cancellation_from_connector_side_cancel()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        var cancelledStatus = new RpcException(new Status(StatusCode.Cancelled, "cancelled"));
+
+        using var cancelledCts = new CancellationTokenSource();
+        await cancelledCts.CancelAsync();
+        var callerMapped = client.MapRpcException(cancelledStatus, cancelledCts.Token);
+        Assert.IsType<OperationCanceledException>(callerMapped);
+
+        // Same RpcException, but the caller's own token was never cancelled -- this reads as the
+        // connector cancelling on its own, which is still a protocol violation, not a caller-driven
+        // cancellation to swallow.
+        var connectorMapped = client.MapRpcException(cancelledStatus, CancellationToken.None);
+        var connectorEx = Assert.IsType<ConnectorHostException>(connectorMapped);
+        Assert.Equal("PZ0357", connectorEx.Code);
+    }
+
     private static ConnectorManifest LocalFilesManifest() => new(
         Name: "localfiles-pcp",
         ProtocolMajorMin: ProtocolVersion.Major,

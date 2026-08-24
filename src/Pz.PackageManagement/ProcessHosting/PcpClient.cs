@@ -22,6 +22,7 @@ public sealed class PcpClient : IAsyncDisposable
 {
     private readonly ConnectorProcess _process;
     private readonly GrpcChannel _channel;
+    private int _disposed;
 
     private PcpClient(ConnectorProcess process, GrpcChannel channel, Hello hello, PzConnector.PzConnectorClient grpc)
     {
@@ -57,7 +58,16 @@ public sealed class PcpClient : IAsyncDisposable
     /// advisory, the handshake is authoritative). A timeout, a connect failure, or either mismatch is a
     /// load error: <see cref="ConnectorHostException"/> PZ0356 with <see cref="ConnectorProcess.StderrTail"/>
     /// appended. Only once all of that agrees does <c>Configure{instance_id, config}</c> run; a Configure
-    /// failure is connector-originated and maps through <see cref="MapRpcException"/> instead.</para></summary>
+    /// failure is connector-originated and maps through <see cref="MapRpcException(RpcException, CancellationToken)"/>
+    /// instead.
+    ///
+    /// <para>Caller cancellation (<paramref name="ct"/>) is never a load/protocol error: gRPC surfaces a
+    /// cancelled caller token as <c>RpcException(StatusCode.Cancelled)</c>, not
+    /// <see cref="OperationCanceledException"/>, so both the handshake and the Configure call re-check
+    /// <c>ct.IsCancellationRequested</c> against the RPC's status code and rethrow a plain
+    /// <see cref="OperationCanceledException"/> instead of wrapping it as PZ0356/PZ0357/PZ0358. The
+    /// internal <paramref name="handshakeTimeout"/> firing is a different token (this method's own linked
+    /// <c>handshakeCts</c>, not the caller's) and still maps to PZ0356.</para></summary>
     public static async Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
         ConnectorConfig config, TimeSpan handshakeTimeout, CancellationToken ct)
@@ -125,6 +135,11 @@ public sealed class PcpClient : IAsyncDisposable
                 channel.Dispose();
                 throw HandshakeFailed(process, "handshake timed out waiting for Hello");
             }
+            catch (RpcException ex) when (IsCallerCancellation(ex, ct))
+            {
+                channel.Dispose();
+                throw new OperationCanceledException("connector handshake cancelled by caller", ex, ct);
+            }
             catch (RpcException ex)
             {
                 channel.Dispose();
@@ -164,13 +179,21 @@ public sealed class PcpClient : IAsyncDisposable
         catch (RpcException ex)
         {
             channel.Dispose();
-            throw client.MapRpcException(ex);
+            throw client.MapRpcException(ex, ct);
         }
 
         return client;
     }
 
     /// <summary>Rebuilds the failure a connector meant to report from an <see cref="RpcException"/>.
+    ///
+    /// <para>Caller cancellation first: when <paramref name="ct"/> is the token the caller cancelled AND
+    /// <paramref name="ex"/>'s status is <see cref="StatusCode.Cancelled"/>/<see cref="StatusCode.DeadlineExceeded"/>,
+    /// this was never a connector- or protocol-level failure at all — gRPC just reports a cancelled caller
+    /// token this way rather than as <see cref="OperationCanceledException"/>. Rethrow the plain
+    /// cancellation instead of wrapping it. A <c>Cancelled</c>/<c>DeadlineExceeded</c> status while
+    /// <paramref name="ct"/> is NOT cancelled is a genuinely connector-side cancel, which still falls
+    /// through to the protocol-violation mapping below — the caller asked for nothing here.</para>
     ///
     /// <para>THE TRAILER IS THE CONTRACT, not the gRPC status code: when
     /// <see cref="ProtocolConstants.ErrorDetailTrailerKey"/> is present, this is a connector-originated
@@ -184,8 +207,13 @@ public sealed class PcpClient : IAsyncDisposable
     /// surfaces as <see cref="ConnectorHostException"/> PZ0358 when the process has already exited
     /// (<see cref="ConnectorProcess.HasExited"/>), or PZ0357 otherwise, both with
     /// <see cref="ConnectorProcess.StderrTail"/> appended when non-empty.</para></summary>
-    public Exception MapRpcException(RpcException ex)
+    public Exception MapRpcException(RpcException ex, CancellationToken ct = default)
     {
+        if (IsCallerCancellation(ex, ct))
+        {
+            return new OperationCanceledException("connector RPC cancelled by caller", ex, ct);
+        }
+
         var trailer = ex.Trailers.FirstOrDefault(entry =>
             string.Equals(entry.Key, ProtocolConstants.ErrorDetailTrailerKey, StringComparison.Ordinal));
         if (trailer is not null)
@@ -211,9 +239,16 @@ public sealed class PcpClient : IAsyncDisposable
     /// <summary>Shutdown ladder's first two rungs: a best-effort Shutdown RPC (the connector's cue to stop
     /// itself gracefully, distinct from being killed), then the grace-kill. Never throws on a connector
     /// that is already dead, hung, or refuses to answer — Shutdown is a courtesy, not a dependency, and
-    /// the grace-kill below ends the process regardless.</summary>
+    /// the grace-kill below ends the process regardless. Idempotent (mirrors
+    /// <see cref="ConnectorProcess.DisposeAsync"/>'s pattern): a second call is a no-op rather than
+    /// re-sending Shutdown or re-running the kill ladder against an already-torn-down process.</summary>
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         try
         {
             using var shutdownCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -251,6 +286,15 @@ public sealed class PcpClient : IAsyncDisposable
             StringComparer.Ordinal);
 
     private static IEnumerable<string> Sorted(IEnumerable<string> names) => names.OrderBy(n => n, StringComparer.Ordinal);
+
+    /// <summary>True when <paramref name="ex"/> is the RpcException shape gRPC gives a cancelled CALLER
+    /// token (never <see cref="OperationCanceledException"/>) AND <paramref name="ct"/> -- the caller's
+    /// own token, not any internal deadline -- is the one that fired. A default/uncancelled
+    /// <paramref name="ct"/> always returns false, which is what lets an internal timeout (its own
+    /// unrelated token) and a genuinely connector-side cancel both keep falling through to the
+    /// protocol-violation mapping instead.</summary>
+    private static bool IsCallerCancellation(RpcException ex, CancellationToken ct) =>
+        ct.IsCancellationRequested && ex.StatusCode is StatusCode.Cancelled or StatusCode.DeadlineExceeded;
 
     /// <summary>Config crosses ONLY inside Configure's <c>google.protobuf.Struct</c> — never argv, env, or
     /// logs. Mirrors the fixture's reverse mapping (<c>StructMapping.ToDictionary</c>): string, bool,
