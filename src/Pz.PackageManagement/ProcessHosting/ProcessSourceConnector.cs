@@ -45,9 +45,14 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
     /// before any plan/read call). Nothing in this shim wraps its OWN RPC calls in it: the gated
     /// operations here are the CONNECTOR's own remote calls, reported over the reverse channel and
     /// serviced by <see cref="HostChannelPump"/>, which is what actually reads this property.</summary>
-    public IOperationGate? Gate { get; private set; }
+    // Written by the engine thread that calls UseOperationGate, read by the HostChannelPump's pump loop
+    // on a different thread -- same reasoning as PcpClient._lastErrorTransient: this handover needs a
+    // real memory barrier, not a plain auto-property.
+    private IOperationGate? _gate;
 
-    public void UseOperationGate(IOperationGate gate) => Gate = gate;
+    public IOperationGate? Gate => Volatile.Read(ref _gate);
+
+    public void UseOperationGate(IOperationGate gate) => Volatile.Write(ref _gate, gate);
 
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
@@ -66,6 +71,12 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
         catch (RpcException ex)
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Ahead of the catch-all below, which would otherwise blame the connector's payload for a
+            // channel a sibling operation's ladder disposed.
+            throw ProcessFailureMapping.Condemned(process);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -102,6 +113,10 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
             throw cts.IsCancellationRequested
                 ? ProcessFailureMapping.NativeOperationTimedOut("TryNativeScan")
                 : ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
         }
 
         if (!response.Found)
@@ -144,6 +159,10 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
         }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
+        }
 
         return partitions;
     }
@@ -185,6 +204,10 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
         catch (RpcException ex)
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
         }
 
         await using var enumerator = DataPlane
@@ -267,6 +290,10 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
         }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
+        }
     }
 
     public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
@@ -281,6 +308,10 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
         catch (RpcException ex)
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
         }
     }
 }
@@ -342,6 +373,23 @@ internal static class ProcessFailureMapping
         return mapped is ConnectorHostException { Code: "PZ0358" } hostEx
             ? new PzConnectorException(hostEx.Message, isTransient: client.LastErrorWasTransient != false)
             : mapped;
+    }
+
+    /// <summary>The instance was torn down underneath an operation that was still using it: a sibling
+    /// operation's cancellation ladder condemned the process and disposed the shared
+    /// <see cref="GrpcChannel"/>, so <see cref="PcpClient.Grpc"/> throws
+    /// <see cref="ObjectDisposedException"/> rather than any <see cref="RpcException"/> this file would
+    /// otherwise map. That raw exception must not cross the ABI boundary — the engine only understands
+    /// <see cref="PzConnectorException"/> here. Transient: nothing about the WORK failed, only the
+    /// instance carrying it, and a fresh instance would run it.</summary>
+    public static PzConnectorException Condemned(ConnectorProcess process)
+    {
+        var stderr = process.StderrTail;
+        var suffix = stderr.Length > 0 ? $"\nstderr:\n{stderr}" : string.Empty;
+        return new PzConnectorException(
+            "connector instance was shut down while this operation was in flight " +
+            $"(a cancellation ladder condemned the process){suffix}",
+            isTransient: true);
     }
 
     /// <summary>Same conversion for a data-plane failure that never went through an

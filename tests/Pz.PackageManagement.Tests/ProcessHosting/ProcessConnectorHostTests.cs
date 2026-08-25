@@ -161,11 +161,64 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Equal(ConnectorCapabilities.None, connector.Capabilities & ConnectorCapabilities.CheckpointableReads);
         Assert.Contains(warnings, warning => warning.Contains("CheckpointableReads", StringComparison.Ordinal));
 
-        // ... and still absent once a real handshake has happened and the shim is answering from Hello.
+        // The flag does not make the HANDSHAKE fail -- manifest and Hello agree about it, so a real
+        // spawn succeeds and the mask stays the host's own decision rather than a rejected connector.
+        // (What the post-handshake shim surface reports is asserted in
+        // ShimTests.Capabilities_the_shims_do_not_implement_are_masked_out_of_their_surface, which can
+        // reach a ProcessSourceConnector directly; this host only ever hands back an ISource.)
         var source = await ((ISourceConnector)connector).OpenAsync(
             new ConnectorConfig(new Dictionary<string, object?> { ["root"] = NewTempDir() }), CancellationToken.None);
         Assert.NotNull(source);
-        Assert.Equal(ConnectorCapabilities.None, connector.Capabilities & ConnectorCapabilities.CheckpointableReads);
+    }
+
+    // ---- cancellation, through the host's own wiring --------------------------------------------
+
+    [SkippableFact]
+    public async Task Host_wired_cancellation_ends_in_OperationCanceledException_and_dispose_reaps()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 200);
+        var socketRoot = NewTempDir();
+
+        // Graces compressed through the host's own injection point, which is what makes this a test of
+        // the HOST wiring (grace values reaching PcpClient) and not just of PcpClient in isolation.
+        var host = ProcessConnectorHost.LoadFromDirectory(
+            NewPackageLayout(extraArgs: ["--endless-read", "--ignore-cancel"]),
+            [new ConnectorPackageRef(PackageId, PackageVersion)],
+            socketRoot, warn: null, logSink: null,
+            cancelGrace: TimeSpan.FromMilliseconds(500), shutdownGrace: TimeSpan.FromMilliseconds(500));
+
+        var connector = (ISourceConnector)host.Get(ConnectorName);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        var source = await connector.OpenAsync(config, CancellationToken.None);
+        var socketDir = Assert.Single(Directory.GetDirectories(socketRoot));
+
+        var spec = new DatasetSpec("files", "orders", new Dictionary<string, object?>
+        {
+            ["path"] = "small.csv",
+            ["format"] = "csv",
+            ["columns"] = CsvColumns,
+        });
+        var partition = Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
+
+        using var cts = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(TargetBatchBytes: 2_000), cts.Token))
+            {
+                batch.Dispose();
+                await cts.CancelAsync();
+            }
+        });
+
+        // Whichever of dispose and the escalation wins the ladder, the child is gone and its socket dir
+        // with it by the time dispose returns. (That dispose also WAITS when the escalation is the one
+        // running the ladder is asserted at the client level, where the claim can be gated on --
+        // CancellationTests.Dispose_does_not_return_while_an_escalation_ladder_is_still_running.)
+        await host.DisposeAsync();
+        Assert.False(Directory.Exists(socketDir), "dispose left the connector's socket dir behind");
     }
 
     // ---- shared fixtures -----------------------------------------------------------------------

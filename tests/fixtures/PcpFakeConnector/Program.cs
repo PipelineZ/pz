@@ -154,19 +154,23 @@ internal sealed record FixtureOptions(
     bool DieImmediately,
     bool WrongProtocolMajor,
     bool MisreportCapabilities,
+    bool MisreportName,
     bool FailCheckTransient,
     bool ReportAbortSemanticsNone,
     bool UseGate,
     bool EndlessRead,
     bool IgnoreCancel,
+    bool IgnoreShutdown,
     bool DeclareCheckpointableReads)
 {
     public static FixtureOptions Parse(string[] args)
     {
         string? socketPath = null;
         bool hangHandshake = false, dieImmediately = false, wrongProtocolMajor = false;
-        bool misreportCapabilities = false, failCheckTransient = false, reportAbortSemanticsNone = false;
-        bool useGate = false, endlessRead = false, ignoreCancel = false, declareCheckpointableReads = false;
+        bool misreportCapabilities = false, misreportName = false;
+        bool failCheckTransient = false, reportAbortSemanticsNone = false;
+        bool useGate = false, endlessRead = false, ignoreCancel = false, ignoreShutdown = false;
+        bool declareCheckpointableReads = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -192,6 +196,9 @@ internal sealed record FixtureOptions(
                 case "--misreport-capabilities":
                     misreportCapabilities = true;
                     break;
+                case "--misreport-name":
+                    misreportName = true;
+                    break;
                 case "--fail-check-transient":
                     failCheckTransient = true;
                     break;
@@ -207,6 +214,9 @@ internal sealed record FixtureOptions(
                 case "--ignore-cancel":
                     ignoreCancel = true;
                     break;
+                case "--ignore-shutdown":
+                    ignoreShutdown = true;
+                    break;
                 case "--declare-checkpointable-reads":
                     declareCheckpointableReads = true;
                     break;
@@ -221,11 +231,13 @@ internal sealed record FixtureOptions(
             dieImmediately,
             wrongProtocolMajor,
             misreportCapabilities,
+            misreportName,
             failCheckTransient,
             reportAbortSemanticsNone,
             useGate,
             endlessRead,
             ignoreCancel,
+            ignoreShutdown,
             declareCheckpointableReads);
     }
 }

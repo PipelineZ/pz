@@ -109,7 +109,19 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
                     "run 'pz restore' or check the package's entrypoints for this platform");
             }
 
-            var name = manifest.Name ?? packageRef.PackageId;
+            // No falling back to the package id: an out-of-process connector's name is what its own
+            // handshake has to agree with (PZ0356, in PcpClient), so a manifest that names nothing
+            // leaves nothing to check the connector's claimed identity against. Same PZ0354 the manifest
+            // reader already uses for a runtime:"process" package that ships no entrypoints -- both are
+            // "declared runtime process, then left out something that runtime requires".
+            if (manifest.Name is not { Length: > 0 } name)
+            {
+                throw new ConnectorHostException(
+                    "PZ0354",
+                    $"connector package '{packageRef.PackageId}' declares runtime 'process' but no name",
+                    "add a 'name' to the package's pz.connector.json, or rebuild the connector package");
+            }
+
             var connector = new LazyProcessConnector(
                 name, packageRef, manifest, entrypoint, socketRootDir, logSink, cancelGrace, shutdownGrace);
 
@@ -163,7 +175,15 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
     {
         foreach (var connector in _connectorsByName.Values)
         {
-            await connector.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await connector.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // Swallow-and-continue, same as ConnectorHost's unload loop: one connector failing to
+                // tear down must not leave the REST of this host's children orphaned.
+            }
         }
 
         _connectorsByName.Clear();
@@ -262,9 +282,14 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         return sink;
     }
 
-    /// <summary>Spawn → handshake → Configure → open the reverse channel, in that order. A failure at
-    /// any rung reaps the process rather than leaving an orphan behind, and re-throws unchanged: the
-    /// PZ0355/PZ0356/PZ0357 taxonomy is already the right answer for each.
+    /// <summary>Spawn → handshake (identity, protocol and capability gates) → Configure → open the
+    /// reverse channel, in that order. Every gate lives inside
+    /// <see cref="PcpClient.ConnectAndConfigureAsync"/> so it runs BEFORE config values cross; this
+    /// method only re-throws what that raises, since the PZ0355/PZ0356/PZ0357 taxonomy is already the
+    /// right answer for each.
+    ///
+    /// <para>A failure at any rung reaps what exists: the client when one was built (its own ladder ends
+    /// the process), otherwise the bare process. Nothing here can leave an orphan behind.</para>
     ///
     /// <para><paramref name="track"/> false is a throwaway instance (Validate/CheckConnection), disposed
     /// by its caller the moment the call returns; true hands the lifetime to this host's own
@@ -274,24 +299,16 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         var ordinal = Interlocked.Increment(ref _opens);
         var socketDir = Path.Combine(_socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]);
         var process = ConnectorProcess.Spawn(_entrypoint, socketDir, _packageRef.PackageId);
+        PcpClient? client = null;
         ProcessInstance instance;
         try
         {
             var (instanceId, connectorConfig) = SplitInstanceId(config, ordinal);
-            var client = await PcpClient
+            client = await PcpClient
                 .ConnectAndConfigureAsync(process, _manifest, instanceId, connectorConfig, ct)
                 .ConfigureAwait(false);
             client.CancelGrace = _cancelGrace;
             client.ShutdownGrace = _shutdownGrace;
-
-            if (!string.Equals(client.Hello.Info.Name, Info.Name, StringComparison.Ordinal))
-            {
-                await client.DisposeAsync().ConfigureAwait(false);
-                throw new ConnectorHostException(
-                    "PZ0356",
-                    $"connector package '{_packageRef.PackageId}' introduced itself as '{client.Hello.Info.Name}' but its manifest registers the name '{Info.Name}'",
-                    "fix the connector's Hello, or the manifest's name, so the two agree");
-            }
 
             Volatile.Write(ref _connectionConfigSchema, client.Hello.ConnectionConfigSchema);
             Volatile.Write(ref _datasetConfigSchema, client.Hello.DatasetConfigSchema);
@@ -305,7 +322,18 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         }
         catch
         {
-            await process.DisposeAsync().ConfigureAwait(false);
+            // Disposing the client is what closes the channel AND ends the process; disposing the bare
+            // process would leave a live GrpcChannel behind (reachable when HostChannelPump.Start throws
+            // after the handshake already succeeded).
+            if (client is not null)
+            {
+                await client.DisposeAsync().ConfigureAwait(false);
+            }
+            else
+            {
+                await process.DisposeAsync().ConfigureAwait(false);
+            }
+
             throw;
         }
 
@@ -337,17 +365,25 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     /// in <c>connections.yml</c> — the registry layer sets it, and it never reaches the connector.</summary>
     internal const string InstanceIdKey = "__pz_instance";
 
-    /// <summary>Manifest capability NAMES → the flags value. An unrecognized name is ignored rather than
-    /// rejected: a newer connector naming a capability this host has never heard of is exactly the case
-    /// where "this host cannot offer it" is the right, quiet answer.</summary>
+    /// <summary>Manifest capability NAMES → the flags value. Names only, matched exactly against the
+    /// declared members: <see cref="Enum.TryParse{T}(string, bool, out T)"/> on its own would also accept
+    /// <c>"16384"</c> or <c>"NativeScan, Merge"</c>, letting a manifest smuggle in a capability whose
+    /// name it never spelled — and the manifest's capability list is what
+    /// <see cref="PcpClient.ConnectAndConfigureAsync"/> compares the handshake against, so it has to mean
+    /// exactly what it says. An unrecognized name is ignored rather than rejected: a newer connector
+    /// naming a capability this host has never heard of is exactly the case where "this host cannot offer
+    /// it" is the right, quiet answer.</summary>
+    private static readonly HashSet<string> KnownCapabilityNames =
+        new(Enum.GetNames<ConnectorCapabilities>(), StringComparer.Ordinal);
+
     private static ConnectorCapabilities ParseCapabilities(IReadOnlyList<string> names)
     {
         var flags = ConnectorCapabilities.None;
         foreach (var name in names)
         {
-            if (Enum.TryParse<ConnectorCapabilities>(name, ignoreCase: false, out var parsed))
+            if (KnownCapabilityNames.Contains(name))
             {
-                flags |= parsed;
+                flags |= Enum.Parse<ConnectorCapabilities>(name);
             }
         }
 
@@ -358,7 +394,14 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     {
         while (_instances.TryTake(out var instance))
         {
-            await instance.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await instance.DisposeAsync().ConfigureAwait(false);
+            }
+            catch
+            {
+                // One instance failing to tear down must not orphan the ones still in the bag.
+            }
         }
     }
 
@@ -373,9 +416,16 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
         public HostChannelPump? Pump { get; set; }
 
-        /// <summary>The opened shim, once <c>OpenAsync</c> has produced one. Only ever read for the
-        /// gate it is holding.</summary>
-        public IGatedShim? Shim { get; set; }
+        /// <summary>The opened shim, once <c>OpenAsync</c> has produced one. Only ever read for the gate
+        /// it is holding — and read from the pump's own thread while the opening thread writes it, so
+        /// the handover takes a real memory barrier (same reasoning as ProcessSource._gate).</summary>
+        private IGatedShim? _shim;
+
+        public IGatedShim? Shim
+        {
+            get => Volatile.Read(ref _shim);
+            set => Volatile.Write(ref _shim, value);
+        }
 
         public async ValueTask DisposeAsync()
         {

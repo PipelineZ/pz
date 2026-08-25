@@ -96,13 +96,49 @@ public sealed class CancellationTests : IDisposable
         Assert.Equal(CsvColumns.Keys, schema.Schema.FieldsList.Select(field => field.Name));
     }
 
-    private async Task<PcpClient> ConnectAsync(ConnectorProcess process)
+    [SkippableFact]
+    public async Task Dispose_does_not_return_while_an_escalation_ladder_is_still_running()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        // --ignore-shutdown widens the ladder's last rung to the full shutdown grace (the connector
+        // acknowledges Shutdown and keeps running, so only the kill ends it), which is what makes
+        // "dispose arrived mid-ladder" a state a test can actually sit in.
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp",
+            ["--endless-read", "--ignore-cancel", "--ignore-shutdown"]);
+
+        var client = await ConnectAsync(process, shutdownGrace: TimeSpan.FromSeconds(3));
+        var (_, _, partition) = await OpenEndlessPartitionAsync(client, process);
+
+        using var cts = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(TargetBatchBytes: 2_000), cts.Token))
+            {
+                batch.Dispose();
+                await cts.CancelAsync();
+            }
+        });
+
+        // Gate, not a sleep: this completes exactly when the escalation has claimed the ladder, so the
+        // dispose below is guaranteed to be the one that LOSES the claim -- the only case where the
+        // join is load-bearing.
+        await client.EscalationClaimedLadder.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await client.DisposeAsync();
+        Assert.True(
+            process.HasExited,
+            "DisposeAsync returned while a cancellation escalation was still reaping the child");
+    }
+
+    private async Task<PcpClient> ConnectAsync(ConnectorProcess process, TimeSpan? shutdownGrace = null)
     {
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = DataDirWithCsv() });
         var client = await PcpClient.ConnectAndConfigureAsync(
             process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
         client.CancelGrace = TestCancelGrace;
-        client.ShutdownGrace = TestShutdownGrace;
+        client.ShutdownGrace = shutdownGrace ?? TestShutdownGrace;
         return client;
     }
 

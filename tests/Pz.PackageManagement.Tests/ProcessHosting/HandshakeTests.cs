@@ -87,6 +87,33 @@ public sealed class HandshakeTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Name_mismatch_vs_manifest_is_PZ0356_and_never_reaches_Configure()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--misreport-name"]);
+        var exited = new TaskCompletionSource();
+        process.Exited += () => exited.TrySetResult();
+
+        // A real connection config, not ConnectorConfig.Empty: the point of this fact is that these
+        // values never cross to a connector that is not the one the manifest registers.
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+        var ex = await Assert.ThrowsAsync<ConnectorHostException>(() => PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None));
+
+        Assert.Equal("PZ0356", ex.Code);
+        Assert.Contains("localfiles-pcp-imposter", ex.Message, StringComparison.Ordinal);
+
+        // Waiting for the process to be gone is what makes the negative assertion sound: Exited fires
+        // only after stderr has finished draining, so a Configure that HAD run would have landed its
+        // marker by now rather than still being in flight.
+        await process.DisposeAsync();
+        await exited.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.DoesNotContain("Configure ran", process.StderrTail, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task Error_detail_maps_to_PzConnectorException()
     {
         Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");

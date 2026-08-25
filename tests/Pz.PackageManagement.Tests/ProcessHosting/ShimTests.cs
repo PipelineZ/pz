@@ -118,6 +118,41 @@ public sealed class ShimTests : IDisposable
         Assert.Contains("small.csv", scan.SqlFragment, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Capabilities_the_shims_do_not_implement_are_masked_out_of_their_surface()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        // Manifest and Hello AGREE that the connector has CheckpointableReads, so the handshake's own
+        // set-equality gate is satisfied -- this is not a misdeclaration. The shims still must not
+        // surface it: nothing here implements ICheckpointingPartition, and the planner would accept a
+        // checkpointed dataset and silently get a plain full read.
+        var declared = new LocalFilesConnector().Capabilities | ConnectorCapabilities.CheckpointableReads;
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--declare-checkpointable-reads"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = NewTempDir() });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(declared), "test-instance", config, CancellationToken.None);
+
+        // The connector really did claim it -- so the mask is the HOST's decision, not the connector
+        // failing to report the flag.
+        Assert.Equal(
+            (long)ConnectorCapabilities.CheckpointableReads,
+            client.Hello.Capabilities & (long)ConnectorCapabilities.CheckpointableReads);
+
+        var sourceConnector = new ProcessSourceConnector(client, process);
+        var sinkConnector = new ProcessSinkConnector(client, process);
+        Assert.Equal(
+            ConnectorCapabilities.None,
+            sourceConnector.Capabilities & ConnectorCapabilities.CheckpointableReads);
+        Assert.Equal(
+            ConnectorCapabilities.None,
+            sinkConnector.Capabilities & ConnectorCapabilities.CheckpointableReads);
+
+        // Everything the connector legitimately declares still crosses untouched.
+        Assert.Equal(new LocalFilesConnector().Capabilities, sourceConnector.Capabilities);
+    }
+
     // ---- Step 1: write path, through the shim end to end -------------------------------------
 
     [SkippableFact]
@@ -699,11 +734,11 @@ public sealed class ShimTests : IDisposable
         return new RecordBatch(schema, [idBuilder.Build(), nameBuilder.Build()], rows);
     }
 
-    private static ConnectorManifest LocalFilesManifest() => new(
+    private static ConnectorManifest LocalFilesManifest(ConnectorCapabilities? capabilities = null) => new(
         Name: "localfiles-pcp",
         ProtocolMajorMin: ProtocolVersion.Major,
         ProtocolMajorMax: ProtocolVersion.Major,
-        Capabilities: new LocalFilesConnector().Capabilities.ToString()
+        Capabilities: (capabilities ?? new LocalFilesConnector().Capabilities).ToString()
             .Split(", ", StringSplitOptions.RemoveEmptyEntries));
 
     /// <summary>Mirrors HandshakeTests/DataPlaneTests: the fixture builds to its own bin dir, a sibling

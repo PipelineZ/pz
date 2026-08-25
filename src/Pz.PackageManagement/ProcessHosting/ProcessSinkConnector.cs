@@ -35,9 +35,12 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
 {
     /// <summary>See <see cref="ProcessSource.Gate"/>'s identical doc: held for whoever constructs this
     /// shim's <see cref="HostChannelPump"/> to read, not used to wrap any RPC this shim itself makes.</summary>
-    public IOperationGate? Gate { get; private set; }
+    // See ProcessSource._gate: engine thread writes, pump loop reads.
+    private IOperationGate? _gate;
 
-    public void UseOperationGate(IOperationGate gate) => Gate = gate;
+    public IOperationGate? Gate => Volatile.Read(ref _gate);
+
+    public void UseOperationGate(IOperationGate gate) => Volatile.Write(ref _gate, gate);
 
     // ISink.AbortSemantics is per-sink in the ABI but genuinely only knowable once a write session's
     // ticket comes back (WriteSessionTicket.abort_semantics carries the wrapped sink's own
@@ -72,6 +75,10 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
                 ? ProcessFailureMapping.NativeOperationTimedOut("TryNativeCopy")
                 : ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
         }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
+        }
 
         if (!response.Found)
         {
@@ -103,6 +110,10 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
             catch (RpcException ex)
             {
                 throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+            }
+            catch (ObjectDisposedException)
+            {
+                throw ProcessFailureMapping.Condemned(process);
             }
         }
 
@@ -216,6 +227,10 @@ internal sealed class ProcessSinkWriteSession(
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
         }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
+        }
     }
 
     public async ValueTask AbortAsync(CancellationToken ct)
@@ -236,6 +251,13 @@ internal sealed class ProcessSinkWriteSession(
         catch (RpcException ex)
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+        }
+        catch (ObjectDisposedException)
+        {
+            // The likeliest way this shim meets a disposed channel: a SIBLING operation's ladder
+            // condemned the instance, and the engine's post-failure cleanup is aborting this session
+            // against a client that no longer has a wire.
+            throw ProcessFailureMapping.Condemned(process);
         }
     }
 

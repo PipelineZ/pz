@@ -23,6 +23,10 @@ public sealed class PcpClient : IAsyncDisposable
     private readonly ConnectorProcess _process;
     private readonly GrpcChannel _channel;
     private readonly ConcurrentDictionary<string, byte> _escalating = new(StringComparer.Ordinal);
+    private readonly ConcurrentBag<Task> _escalations = [];
+    private readonly TaskCompletionSource _ladderClaimedByEscalation =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private int _disposed;
 
     // 0 = unknown (no PzErrorDetail mapped yet), 1 = last mapped detail was transient, 2 = non-transient.
@@ -58,6 +62,13 @@ public sealed class PcpClient : IAsyncDisposable
     /// <see cref="ProtocolConstants.ShutdownGrace"/>; same seam as <see cref="CancelGrace"/>.</summary>
     internal TimeSpan ShutdownGrace { get; set; } = ProtocolConstants.ShutdownGrace;
 
+    /// <summary>Test seam only: completes once a cancellation escalation has WON the shutdown ladder —
+    /// i.e. the connector failed to acknowledge Cancel and this client is now being condemned on a
+    /// background task. Lets a test reach the exact state <see cref="DisposeAsync"/>'s join exists for
+    /// (dispose arriving mid-ladder) with a gate rather than a sleep. Never set outside that path, and
+    /// never awaited by production code.</summary>
+    internal Task EscalationClaimedLadder => _ladderClaimedByEscalation.Task;
+
     /// <summary>Transience of the last connector-reported <c>PzErrorDetail</c> this client has mapped
     /// from a trailer-carrying <see cref="RpcException"/> (see <see cref="MapRpcException"/>), or null
     /// if none has been mapped yet on this client. Additive tracking for the ISource/ISink shims
@@ -85,9 +96,12 @@ public sealed class PcpClient : IAsyncDisposable
     /// 15s <see cref="ProtocolConstants.HandshakeTimeout"/>.
     ///
     /// <para>Discipline: send <c>Handshake{protocol_major}</c>; the connector's Hello must echo an equal
-    /// protocol major, and — when <paramref name="manifest"/> declared a non-empty capability list —
-    /// Hello's reported capabilities must equal that list as a SET (order-insensitive; the manifest is
-    /// advisory, the handshake is authoritative). A timeout, a connect failure, or either mismatch is a
+    /// protocol major, must report the name <paramref name="manifest"/> registers (when it names one),
+    /// and — when <paramref name="manifest"/> declared a non-empty capability list — Hello's reported
+    /// capabilities must equal that list as a SET (order-insensitive; the manifest is advisory, the
+    /// handshake is authoritative). Every one of those gates runs BEFORE Configure, because Configure is
+    /// where config values cross and a connector that is not the declared one must never see them. A
+    /// timeout, a connect failure, or any of those mismatches is a
     /// load error: <see cref="ConnectorHostException"/> PZ0356 with <see cref="ConnectorProcess.StderrTail"/>
     /// appended. Only once all of that agrees does <c>Configure{instance_id, config}</c> run; a Configure
     /// failure is connector-originated and maps through <see cref="MapRpcException(RpcException, CancellationToken)"/>
@@ -185,6 +199,18 @@ public sealed class PcpClient : IAsyncDisposable
             throw HandshakeFailed(
                 process,
                 $"connector's Hello reported protocol major {hello.Info.ProtocolMajor} during handshake, but this host speaks {ProtocolVersion.Major}");
+        }
+
+        // Identity before configuration: a connector that is not the one the manifest registers must
+        // never receive this connection's config. Both this and the capability gate below therefore sit
+        // ahead of Configure -- the only place config values cross -- not after it.
+        if (manifest?.Name is { Length: > 0 } declaredName &&
+            !string.Equals(hello.Info.Name, declaredName, StringComparison.Ordinal))
+        {
+            channel.Dispose();
+            throw HandshakeFailed(
+                process,
+                $"connector introduced itself as '{hello.Info.Name}' but its manifest registers the name '{declaredName}'");
         }
 
         if (manifest is { Capabilities.Count: > 0 })
@@ -299,10 +325,16 @@ public sealed class PcpClient : IAsyncDisposable
             // reads registers its own callback on the same token.
             if (client._escalating.TryAdd(id, 0))
             {
-                _ = client.EscalateCancelAsync(id);
+                client.StartEscalation(id);
             }
         }, (this, opId));
     }
+
+    /// <summary>Starts one escalation and records it where <see cref="DisposeAsync"/> can join it.
+    /// Recording happens before the escalation can reach its <c>_disposed</c> claim — that claim sits
+    /// behind an awaited RPC, so control returns here (and the task lands in the bag) first, which is
+    /// what makes the join in <see cref="DisposeAsync"/> exhaustive rather than best-effort.</summary>
+    private void StartEscalation(string opId) => _escalations.Add(EscalateCancelAsync(opId));
 
     private async Task EscalateCancelAsync(string opId)
     {
@@ -329,13 +361,15 @@ public sealed class PcpClient : IAsyncDisposable
             return;
         }
 
+        _ladderClaimedByEscalation.TrySetResult();
         try
         {
             await ShutdownLadderAsync().ConfigureAwait(false);
         }
         catch
         {
-            // Nothing is awaiting this task; the ladder is already best-effort at every rung.
+            // DisposeAsync joins this task, but the ladder is best-effort at every rung and must not
+            // surface a teardown failure as the caller's exception.
         }
     }
 
@@ -345,15 +379,36 @@ public sealed class PcpClient : IAsyncDisposable
     /// the grace-kill below ends the process regardless. Idempotent (mirrors
     /// <see cref="ConnectorProcess.DisposeAsync"/>'s pattern): a second call is a no-op rather than
     /// re-sending Shutdown or re-running the kill ladder against an already-torn-down process — which is
-    /// also what keeps this and <see cref="AttachCancelLadder"/>'s escalation from running it twice.</summary>
+    /// also what keeps this and <see cref="AttachCancelLadder"/>'s escalation from running it twice.
+    ///
+    /// <para>Whoever LOST that race still waits here: a cancel escalation runs on a background task, and
+    /// returning from dispose while one is mid-ladder would let the host exit (Ctrl+C, run teardown)
+    /// with the uncooperative child still alive and unowned. This method does not return until every
+    /// escalation started on this client has finished.</para></summary>
     public async ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
-            return;
+            await ShutdownLadderAsync().ConfigureAwait(false);
         }
 
-        await ShutdownLadderAsync().ConfigureAwait(false);
+        await JoinEscalationsAsync().ConfigureAwait(false);
+    }
+
+    /// <summary>Joins every escalation started so far. The snapshot is safe to take once: an escalation
+    /// starting after it finds <c>_disposed</c> already claimed and a disposed channel, so it returns
+    /// without a ladder of its own rather than outliving this join.</summary>
+    private async Task JoinEscalationsAsync()
+    {
+        try
+        {
+            await Task.WhenAll(_escalations.ToArray()).ConfigureAwait(false);
+        }
+        catch
+        {
+            // EscalateCancelAsync never lets an exception escape (see its own catch-alls); this is
+            // defense in depth, not an expected path.
+        }
     }
 
     private async Task ShutdownLadderAsync()

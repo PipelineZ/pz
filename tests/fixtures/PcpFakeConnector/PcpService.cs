@@ -33,6 +33,15 @@ internal sealed class PcpService(
     /// parity test can name both in one project.</summary>
     public const string ConnectorName = "localfiles-pcp";
 
+    /// <summary>What <c>--misreport-name</c> introduces this connector as instead of
+    /// <see cref="ConnectorName"/>: a connector that is not the one the manifest registers.</summary>
+    private const string ImposterName = "localfiles-pcp-imposter";
+
+    /// <summary>Written to stderr from <see cref="Configure"/> — but ONLY under <c>--misreport-name</c>,
+    /// so no other fixture mode's stderr changes shape. A host-side test asserts this line never
+    /// appears, which is how it proves the identity gate ran BEFORE any config value crossed.</summary>
+    private const string ConfiguredMarker = "PcpFakeConnector: Configure ran";
+
     /// <summary>Static, connector-authored op label for every <c>--use-gate</c> partition read -- never
     /// a value derived from the dataset spec, per <c>IOperationGate</c>'s own contract.</summary>
     private const string GateOpLabel = "localfiles-pcp.read_partition";
@@ -64,7 +73,7 @@ internal sealed class PcpService(
         {
             Info = new ConnectorInfoMsg
             {
-                Name = ConnectorName,
+                Name = options.MisreportName ? ImposterName : ConnectorName,
                 Version = _connector.Info.Version,
                 ProtocolMajor = options.WrongProtocolMajor
                     ? ProtocolVersion.Major + 1
@@ -87,6 +96,12 @@ internal sealed class PcpService(
 
     public override Task<ConfigureResponse> Configure(ConfigureRequest request, ServerCallContext context)
     {
+        if (options.MisreportName)
+        {
+            // See ConfiguredMarker: this exists so a test can assert Configure was NOT reached.
+            Console.Error.WriteLine(ConfiguredMarker);
+        }
+
         _config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
 
         // One LogEvent per Configure, always -- fields carry the connection NAME (instance_id) and
@@ -374,6 +389,14 @@ internal sealed class PcpService(
 
     public override Task<ShutdownResponse> Shutdown(ShutdownRequest request, ServerCallContext context)
     {
+        if (options.IgnoreShutdown)
+        {
+            // Acknowledges and then keeps running: the host must fall through to the kill rung after
+            // its shutdown grace instead of trusting the acknowledgement. Widening that rung from
+            // microseconds to the full grace is what lets a test catch the ladder mid-flight.
+            return Task.FromResult(new ShutdownResponse());
+        }
+
         // Signal only: the host process stops gracefully after this response is on the wire, which is
         // what keeps Shutdown distinguishable from a crash on the host side.
         lifetime.StopApplication();
