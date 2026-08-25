@@ -8,13 +8,13 @@
 # localfiles logic reached out of process over PCP (the PcpFakeConnector fixture, staged as a
 # runtime:"process" package) also under engine.force_universal: true.
 #
-# The process-hosting throughput gate (spec invariant 7: process-hosted universal must stay >= 80% of
-# in-proc universal throughput) is about protocol shape -- per-row/per-batch wire cost -- not about
-# process startup, so it is measured MARGINALLY, not end to end: the universal and process_universal
-# variants each run twice, once at a tiny calibration row count and once at the full row count, and the
-# gate compares (full - tiny) on both sides. That difference cancels the one-time process-spawn +
+# The process-hosting throughput gate -- process-hosted universal throughput must stay >= 80% of
+# in-proc universal throughput -- is about protocol shape (per-row/per-batch wire cost), not process
+# startup, so it is measured MARGINALLY, not end to end: the universal and process_universal variants
+# each run twice, once at a tiny calibration row count and once at the full row count, and the gate
+# compares (full - tiny) on both sides. That difference cancels the one-time process-spawn +
 # control-channel handshake cost every fresh child pays regardless of how much data it moves, leaving
-# only the steady-state per-row cost the invariant actually governs. The fixed cost itself (tiny
+# only the steady-state per-row cost the 0.80 floor actually governs. The fixed cost itself (tiny
 # process_universal elapsed minus tiny universal elapsed) is printed for visibility but never asserted --
 # it is a real, dotnet-runtime-plus-control-channel-cold-start number, but it is a property of this
 # machine's process-spawn speed, not of the wire protocol, so there is nothing here to hold it to. The
@@ -22,6 +22,14 @@
 # reader can still see the number an actual single `pz run` would experience -- it just is not what gates
 # the script. A ratio below the marginal gate prints "BUDGET FAIL" and exits 1 -- process hosting exists
 # to move WHERE a connector runs, not to make its steady-state throughput slower than in-proc.
+#
+# Each of the four gated measurements (universal/process_universal x tiny/full) is a single `dotnet run`
+# elapsed-time sample, which is noise-sized next to the differences the gate computes -- scheduler
+# jitter, page-cache state, and JIT/tiering variance can each swing a single sample by hundreds of
+# milliseconds. One discarded warm-up run of the in-proc universal variant primes the OS file cache and
+# JIT/tiering state before any timed measurement, and every gated measurement then takes the MINIMUM of
+# 3 samples: min discards scheduler/IO interference, which only ever ADDS time relative to a run's true
+# steady-state cost, never subtracts it, so the minimum -- not the mean -- is the noise-robust estimate.
 #
 # Then runs a companion probe, scripts/gate-serialization-probe.cs, which quantifies the
 # DuckSession gate's serialization cost (the correctness fix from the full-suite-parallel-flake
@@ -171,6 +179,12 @@ EOF
 EOF
 }
 
+# Sets up one project tree ONCE, then runs `pz run` against it `samples` times and keeps the MINIMUM
+# elapsed time -- see the header comment for why min, not mean. Each sample's own `.pz/runs/<id>`
+# artifacts (staging.duckdb etc.) are cleared before the next sample so repeated sampling costs no more
+# disk than one run of the variant, only more wall time. `samples` defaults to 1 (native/floor stay
+# single-shot -- they are reported, not gated, so sampling noise there is cosmetic, not a correctness
+# risk for the gate).
 run_variant() {
     local variant_name="$1"
     local extra_engine_yaml="$2"
@@ -179,6 +193,7 @@ run_variant() {
     version: 0.1.0}"
     local is_process="${5:-false}"
     local row_count="${6:-${ROW_COUNT}}"
+    local samples="${7:-1}"
 
     local project_dir="${WORK_DIR}/${variant_name}"
     mkdir -p "${project_dir}"
@@ -200,42 +215,52 @@ EOF
         stage_process_package "${project_dir}"
     fi
 
-    local start_ns end_ns elapsed_s
-    start_ns=$(date +%s%N)
-    dotnet run -c Release --project "${ROOT_DIR}/src/Pz.Cli" --no-build -- run --project "${project_dir}" >"${project_dir}/run.log" 2>&1
-    end_ns=$(date +%s%N)
-    elapsed_s=$(awk -v s="${start_ns}" -v e="${end_ns}" 'BEGIN { printf "%.4f", (e - s) / 1000000000.0 }')
-    LAST_ELAPSED="${elapsed_s}"
+    local best_s="" sample_i start_ns end_ns elapsed_s
+    for ((sample_i = 1; sample_i <= samples; sample_i++)); do
+        start_ns=$(date +%s%N)
+        dotnet run -c Release --project "${ROOT_DIR}/src/Pz.Cli" --no-build -- run --project "${project_dir}" >"${project_dir}/run.log" 2>&1
+        end_ns=$(date +%s%N)
+        elapsed_s=$(awk -v s="${start_ns}" -v e="${end_ns}" 'BEGIN { printf "%.4f", (e - s) / 1000000000.0 }')
+
+        best_s=$(awk -v best="${best_s:-${elapsed_s}}" -v cur="${elapsed_s}" 'BEGIN { print (cur < best) ? cur : best }')
+        rm -rf "${project_dir}/.pz/runs"
+    done
+    LAST_ELAPSED="${best_s}"
 
     local rows_per_sec
-    rows_per_sec=$(awk -v rows="${row_count}" -v secs="${elapsed_s}" 'BEGIN { if (secs <= 0) { print "n/a" } else { printf "%.0f", rows / secs } }')
+    rows_per_sec=$(awk -v rows="${row_count}" -v secs="${LAST_ELAPSED}" 'BEGIN { if (secs <= 0) { print "n/a" } else { printf "%.0f", rows / secs } }')
 
-    echo "  ${variant_name}: ${elapsed_s}s elapsed, ~${rows_per_sec} rows/sec (${row_count} rows)"
+    echo "  ${variant_name}: ${LAST_ELAPSED}s elapsed (min of ${samples}), ~${rows_per_sec} rows/sec (${row_count} rows)"
 }
 
 PCP_CONNECTORS_YAML="  - package: ${PKG_ID}
     version: ${PKG_VERSION}"
 
-echo "-- Running pz run (native path: localfiles native_scan + native_copy) --"
+echo "-- Running pz run (native path: localfiles native_scan + native_copy) -- single-shot, not gated --"
 run_variant native ""
 NATIVE_S="${LAST_ELAPSED}"
 
-echo "-- Running pz run (engine.force_universal: true, calibration N=${TINY}) --"
-run_variant universal_tiny "  force_universal: true" "${WORK_DIR}/project_tiny" "" false "${TINY}"
+echo "-- Warm-up (discarded, in-proc universal variant): primes OS file cache + dotnet JIT/tiering before any timed measurement --"
+run_variant universal_warmup "  force_universal: true" > /dev/null
+echo "  (warm-up run discarded)"
+echo
+
+echo "-- Running pz run (engine.force_universal: true, calibration N=${TINY}, min of 3) --"
+run_variant universal_tiny "  force_universal: true" "${WORK_DIR}/project_tiny" "" false "${TINY}" 3
 UNIVERSAL_TINY_S="${LAST_ELAPSED}"
 
-echo "-- Running pz run (engine.force_universal: true) --"
-run_variant universal "  force_universal: true"
+echo "-- Running pz run (engine.force_universal: true, min of 3) --"
+run_variant universal "  force_universal: true" "${WORK_DIR}/project" "" false "${ROW_COUNT}" 3
 UNIVERSAL_S="${LAST_ELAPSED}"
 echo
 
-echo "-- Running pz run (process-hosted universal: localfiles-pcp over PCP, calibration N=${TINY}) --"
+echo "-- Running pz run (process-hosted universal: localfiles-pcp over PCP, calibration N=${TINY}, min of 3) --"
 run_variant process_universal_tiny "  force_universal: true" "${WORK_DIR}/project_pcp_tiny" \
-    "${PCP_CONNECTORS_YAML}" true "${TINY}"
+    "${PCP_CONNECTORS_YAML}" true "${TINY}" 3
 PROCESS_UNIVERSAL_TINY_S="${LAST_ELAPSED}"
 
-echo "-- Running pz run (process-hosted universal: localfiles-pcp over PCP, engine.force_universal: true) --"
-run_variant process_universal "  force_universal: true" "${WORK_DIR}/project_pcp" "${PCP_CONNECTORS_YAML}" true
+echo "-- Running pz run (process-hosted universal: localfiles-pcp over PCP, engine.force_universal: true, min of 3) --"
+run_variant process_universal "  force_universal: true" "${WORK_DIR}/project_pcp" "${PCP_CONNECTORS_YAML}" true "${ROW_COUNT}" 3
 PROCESS_UNIVERSAL_S="${LAST_ELAPSED}"
 echo
 
@@ -246,10 +271,10 @@ FIXED_OVERHEAD_S=$(awk -v pt="${PROCESS_UNIVERSAL_TINY_S}" -v ut="${UNIVERSAL_TI
     'BEGIN { printf "%.4f", pt - ut }')
 
 # Marginal throughput ratio: (full - tiny) elapsed on each side isolates the steady-state, per-row cost
-# from the one-time spawn/handshake cost both full-N runs also pay -- this is what spec invariant 7
-# actually governs. Guarded per the same "can only happen at absurdly small N" carve-out the brief gives
-# the raw-ratio zero-denominator case: a process_universal run that took no longer at full N than at
-# tiny N has no marginal cost to measure, so it trivially passes rather than dividing by <= 0.
+# from the one-time spawn/handshake cost both full-N runs also pay -- this is what the 0.80 floor
+# actually governs. Guarded the same way the raw-ratio zero-denominator case just below is: a
+# process_universal run that took no longer at full N than at tiny N has no marginal cost to measure, so
+# it trivially passes rather than dividing by <= 0.
 MARGINAL_LINE=$(awk -v uf="${UNIVERSAL_S}" -v ut="${UNIVERSAL_TINY_S}" -v pf="${PROCESS_UNIVERSAL_S}" -v pt="${PROCESS_UNIVERSAL_TINY_S}" 'BEGIN {
     denom = pf - pt;
     if (denom <= 0) { printf "1.0000 pass(denominator<=0)"; }
@@ -285,19 +310,19 @@ awk -v rows="${ROW_COUNT}" -v n="${NATIVE_S}" -v u="${UNIVERSAL_S}" -v pu="${PRO
     printf "  process universal:   %8.4fs  ~%d rows/sec\n", pu, rows / pu;
     printf "  fused floor:         %8.4fs  ~%d rows/sec\n", f, rows / f;
     printf "  max fusion win vs native: %.0f%%\n", (n - f) / n * 100;
-    printf "  marginal (steady-state) throughput ratio: %s [%s] (floor 0.80, spec invariant 7 -- GATED)\n", mr, mn;
+    printf "  marginal (steady-state) throughput ratio: %s [%s] (floor 0.80 -- GATED)\n", mr, mn;
     printf "  fixed process-hosting overhead: %ss (reported only, not gated -- process-spawn/handshake cold start)\n", fixed;
     printf "  raw end-to-end ratio: %s (includes the fixed overhead above, NOT gated)\n", rr;
 }'
 echo
 
-# Spec invariant 7 gate: process hosting's STEADY-STATE (marginal) throughput must not cost more than
-# 20% versus in-proc universal. Checked after the summary prints so a failure still leaves the full set
-# of numbers on screen. Deliberately gates the marginal ratio, not the raw one -- see the header comment.
+# Process hosting's STEADY-STATE (marginal) throughput must not cost more than 20% versus in-proc
+# universal. Checked after the summary prints so a failure still leaves the full set of numbers on
+# screen. Deliberately gates the marginal ratio, not the raw one -- see the header comment.
 RATIO_OK=$(awk -v r="${MARGINAL_RATIO}" 'BEGIN { print (r + 0 >= 0.80) ? "1" : "0" }')
 if [[ "${RATIO_OK}" != "1" ]]; then
     echo "BUDGET FAIL: marginal (steady-state) process-hosted universal throughput ratio ${MARGINAL_RATIO} is" \
-        "below the 0.80 floor (spec invariant 7) -- full-N universal ${UNIVERSAL_S}s -> process ${PROCESS_UNIVERSAL_S}s," \
+        "below the 0.80 floor -- full-N universal ${UNIVERSAL_S}s -> process ${PROCESS_UNIVERSAL_S}s," \
         "tiny-N (N=${TINY}) universal ${UNIVERSAL_TINY_S}s -> process ${PROCESS_UNIVERSAL_TINY_S}s" >&2
     exit 1
 fi

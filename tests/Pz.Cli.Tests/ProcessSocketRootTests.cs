@@ -11,7 +11,14 @@ namespace Pz.Cli.Tests;
 ///
 /// <para>Every owned root is deleted in the same fact that minted it, never at class teardown:
 /// <c>ProcessHostParityTests</c> asserts that no directory of this exact shape survives a
-/// <c>pz validate</c>, and that suite runs in a different process, concurrently with this one.</para></summary>
+/// <c>pz validate</c>, and that suite runs in a different process, concurrently with this one.</para>
+///
+/// <para>Joins "console-and-env-serialized" (see that collection's definition in
+/// <c>RestoreCommandTests.cs</c>) because <see cref="A_temp_root_too_deep_for_a_socket_is_refused_not_handed_back"/>
+/// mutates the process-global TMPDIR environment variable, which <c>Path.GetTempPath()</c> reads on
+/// every call across the whole assembly -- an uncollected class calling it concurrently would race the
+/// mutation.</para></summary>
+[Collection("console-and-env-serialized")]
 public sealed class ProcessSocketRootTests
 {
     [Fact]
@@ -66,9 +73,13 @@ public sealed class ProcessSocketRootTests
     /// GetTempPath() reads TMPDIR on every call (no caching to defeat), so setting it for the duration
     /// of this test is enough -- restored in `finally` so it never leaks into another test's temp
     /// directory resolution.</summary>
-    [Fact]
+    [SkippableFact]
     public void A_temp_root_too_deep_for_a_socket_is_refused_not_handed_back()
     {
+        // TMPDIR (and the /tmp literal below) is a POSIX convention; Path.GetTempPath() on Windows
+        // reads %TEMP%/%TMP% instead, so this drive would not exercise the guard there.
+        Skip.If(OperatingSystem.IsWindows(), "TMPDIR is a POSIX convention; Windows reads %TEMP%/%TMP%");
+
         var original = Environment.GetEnvironmentVariable("TMPDIR");
         var deepTemp = "/tmp/" + new string('t', 90);
         Environment.SetEnvironmentVariable("TMPDIR", deepTemp);

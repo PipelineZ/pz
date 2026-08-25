@@ -398,18 +398,18 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             return Universal(node, $"arrow stream: connector '{def.Source.Connector}' native path refused", declaredPartitions, readToken);
         }
 
-        // Unsigned packaged-extension gate (PZ0359): a native scan whose setup loads a packaged
-        // extension via a quoted filesystem path is not signature-verified, unlike a bare `LOAD <name>`
-        // resolved from DuckDB's own signed repository. This is a tier choice, not a capability gap --
-        // the universal path remains available -- so it falls back rather than failing the run
-        // (mirrors the "no native path" fallback just above, never added to `errors`). The reason
-        // string names the connection and the fix; it must never carry SetupStatements text (secret
-        // hygiene) so it does not quote the offending statement.
-        if (!def.Source.AllowUnsignedExtensions && scan!.SetupStatements.Any(IsUnsignedPackagedExtensionLoad))
+        // Unsigned packaged-extension gate (PZ0359): a native scan whose setup loads or installs a
+        // packaged extension via a quoted filesystem path is not signature-verified, unlike a bare
+        // `LOAD <name>`/`INSTALL <name>` resolved from DuckDB's own signed repository. This is a tier
+        // choice, not a capability gap -- the universal path remains available -- so it falls back
+        // rather than failing the run (mirrors the "no native path" fallback just above, never added to
+        // `errors`). The reason string names the connection and the fix; it must never carry
+        // SetupStatements text (secret hygiene) so it does not quote the offending statement.
+        if (!def.Source.AllowUnsignedExtensions && scan!.SetupStatements.Any(HasUnsignedPackagedExtension))
         {
             return Universal(node,
-                $"arrow stream: source '{def.Source.Name}' native path refused -- PZ0359 unsigned packaged " +
-                "extension in setup; set allow_unsigned_extensions: true on the connection to allow it",
+                $"arrow stream: source '{def.Source.Name}' native path refused -- {PzErrorCode.UnsignedExtensionRefused} " +
+                "unsigned packaged extension in setup; set allow_unsigned_extensions: true on the connection to allow it",
                 declaredPartitions, readToken);
         }
 
@@ -418,26 +418,74 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             $"native scan: connector '{def.Source.Connector}' provides {scan!.Mechanism} over {nativePath} ({readToken})");
     }
 
-    /// <summary>A `LOAD` setup statement whose argument is a single- or double-quoted filesystem path
-    /// (e.g. a packaged extension pz's own package manager placed under `.pz/packages/&lt;id&gt;/&lt;ver&gt;/…`)
-    /// loads an extension DuckDB never signature-verifies -- "packaged". A bare identifier (`LOAD delta`)
-    /// resolves through DuckDB's own signed extension repository and needs no consent -- "signed".
-    /// Purely syntactic (no execution, no path resolution), so it is safe to run at plan time on every
-    /// candidate statement.</summary>
-    private static bool IsUnsignedPackagedExtensionLoad(string statement)
+    /// <summary>An element of NativeScan/NativeCopy's SetupStatements may itself be several
+    /// `;`-separated SQL statements (a connector can hand back one string covering secrets AND an
+    /// extension load); true when ANY of them is a `LOAD`/`INSTALL` whose argument is a single- or
+    /// double-quoted filesystem path (e.g. a packaged extension pz's own package manager placed under
+    /// `.pz/packages/&lt;id&gt;/&lt;ver&gt;/…`) -- an extension DuckDB never signature-verifies,
+    /// "packaged". A bare identifier (`LOAD delta`, `INSTALL httpfs`) resolves through DuckDB's own
+    /// signed extension repository and needs no consent -- "signed". The property gated is "no unsigned
+    /// packaged extension without consent" over BOTH verbs: `INSTALL '&lt;path&gt;'` alone stages one on
+    /// disk even with no matching `LOAD` in the same setup, and a later bare `LOAD &lt;name&gt;` of an
+    /// already-installed unsigned extension would otherwise read as signed. Purely syntactic (split on
+    /// `;`, strip leading whitespace and `--` line comments, match the keyword followed by any
+    /// whitespace) -- no execution, no path resolution, no SQL parsing library, so it is safe and cheap
+    /// to run at plan time on every candidate statement. DuckDB's own parser (ISqlAstReader) is the
+    /// sanctioned escape hatch if this split ever proves insufficient -- not a pre-emptive next
+    /// step.</summary>
+    private static bool HasUnsignedPackagedExtension(string setupStatementsElement)
     {
-        var trimmed = statement.AsSpan().Trim();
-        if (!trimmed.StartsWith("LOAD ", StringComparison.OrdinalIgnoreCase))
+        foreach (var rawStatement in setupStatementsElement.Split(';'))
+        {
+            if (IsUnsignedPackagedExtensionStatement(rawStatement))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsUnsignedPackagedExtensionStatement(string statement)
+    {
+        var remaining = statement.AsSpan();
+
+        // Skip leading whitespace and any number of leading `--` line comments -- each consumes to the
+        // next newline, or to the end of the fragment for a comment with nothing after it.
+        while (true)
+        {
+            remaining = remaining.TrimStart();
+            if (!remaining.StartsWith("--", StringComparison.Ordinal))
+            {
+                break;
+            }
+
+            var newline = remaining.IndexOf('\n');
+            remaining = newline < 0 ? default : remaining[(newline + 1)..];
+        }
+
+        ReadOnlySpan<char> afterKeyword;
+        if (remaining.StartsWith("LOAD", StringComparison.OrdinalIgnoreCase))
+        {
+            afterKeyword = remaining[4..];
+        }
+        else if (remaining.StartsWith("INSTALL", StringComparison.OrdinalIgnoreCase))
+        {
+            afterKeyword = remaining[7..];
+        }
+        else
         {
             return false;
         }
 
-        var argument = trimmed[5..].Trim();
-        if (argument.Length > 0 && argument[^1] == ';')
+        // The keyword must end at a whitespace boundary -- "LOADED"/"INSTALLED" (unlikely, but not this
+        // keyword) is refused, and a bodyless "LOAD"/"INSTALL" has no argument to classify.
+        if (afterKeyword.Length == 0 || !char.IsWhiteSpace(afterKeyword[0]))
         {
-            argument = argument[..^1].TrimEnd();
+            return false;
         }
 
+        var argument = afterKeyword.Trim();
         return argument.Length > 0 && (argument[0] == '\'' || argument[0] == '"');
     }
 
@@ -578,11 +626,11 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             // Unsigned packaged-extension gate (PZ0359), sink-side mirror of the source-side gate in
             // PlanSourceLoadAsync above -- same tier-choice-not-capability-gap reasoning, same fallback
             // (never added to `errors`), same secret-hygiene reason string.
-            if (!def.Sink.AllowUnsignedExtensions && copy!.SetupStatements.Any(IsUnsignedPackagedExtensionLoad))
+            if (!def.Sink.AllowUnsignedExtensions && copy!.SetupStatements.Any(HasUnsignedPackagedExtension))
             {
                 return Universal(node,
-                    $"arrow stream: sink '{def.Sink.Name}' native path refused -- PZ0359 unsigned packaged " +
-                    "extension in setup; set allow_unsigned_extensions: true on the connection to allow it");
+                    $"arrow stream: sink '{def.Sink.Name}' native path refused -- {PzErrorCode.UnsignedExtensionRefused} " +
+                    "unsigned packaged extension in setup; set allow_unsigned_extensions: true on the connection to allow it");
             }
 
             return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,

@@ -228,8 +228,9 @@ public sealed class CliLocalFeedFixture : IDisposable
 /// <see cref="TestCommandTests"/>, <see cref="PlanCommandTests"/>, <see cref="RetryCommandTests"/>,
 /// <see cref="InitCommandTests"/>, <see cref="RestoreCommandTests"/>, <see cref="ConnectorRegistryFactoryTests"/>,
 /// <see cref="LsCommandTests"/> and <see cref="ConnectorsCommandTests"/>)
-/// and/or the DATA_DIR/OUT_DIR environment variables (<see cref="RunCommandTests"/>,
-/// <see cref="PlanCommandTests"/>, <see cref="CompileCommandTests"/>, <see cref="LsCommandTests"/>) -- into ONE xunit collection.
+/// and/or the DATA_DIR/OUT_DIR/TMPDIR environment variables (<see cref="RunCommandTests"/>,
+/// <see cref="PlanCommandTests"/>, <see cref="CompileCommandTests"/>, <see cref="LsCommandTests"/>,
+/// <see cref="ProcessSocketRootTests"/>) -- into ONE xunit collection.
 ///
 /// xunit only serializes test CLASSES within the SAME collection; it still runs different collections
 /// (and any uncollected class) concurrently with each other. Everything that swaps this process-global
