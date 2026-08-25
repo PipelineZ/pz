@@ -398,9 +398,47 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             return Universal(node, $"arrow stream: connector '{def.Source.Connector}' native path refused", declaredPartitions, readToken);
         }
 
+        // Unsigned packaged-extension gate (PZ0359): a native scan whose setup loads a packaged
+        // extension via a quoted filesystem path is not signature-verified, unlike a bare `LOAD <name>`
+        // resolved from DuckDB's own signed repository. This is a tier choice, not a capability gap --
+        // the universal path remains available -- so it falls back rather than failing the run
+        // (mirrors the "no native path" fallback just above, never added to `errors`). The reason
+        // string names the connection and the fix; it must never carry SetupStatements text (secret
+        // hygiene) so it does not quote the offending statement.
+        if (!def.Source.AllowUnsignedExtensions && scan!.SetupStatements.Any(IsUnsignedPackagedExtensionLoad))
+        {
+            return Universal(node,
+                $"arrow stream: source '{def.Source.Name}' native path refused -- PZ0359 unsigned packaged " +
+                "extension in setup; set allow_unsigned_extensions: true on the connection to allow it",
+                declaredPartitions, readToken);
+        }
+
         var nativePath = def.Dataset.Options.TryGetValue("path", out var p) ? p?.ToString() ?? def.Dataset.Name : def.Dataset.Name;
         return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1,
             $"native scan: connector '{def.Source.Connector}' provides {scan!.Mechanism} over {nativePath} ({readToken})");
+    }
+
+    /// <summary>A `LOAD` setup statement whose argument is a single- or double-quoted filesystem path
+    /// (e.g. a packaged extension pz's own package manager placed under `.pz/packages/&lt;id&gt;/&lt;ver&gt;/…`)
+    /// loads an extension DuckDB never signature-verifies -- "packaged". A bare identifier (`LOAD delta`)
+    /// resolves through DuckDB's own signed extension repository and needs no consent -- "signed".
+    /// Purely syntactic (no execution, no path resolution), so it is safe to run at plan time on every
+    /// candidate statement.</summary>
+    private static bool IsUnsignedPackagedExtensionLoad(string statement)
+    {
+        var trimmed = statement.AsSpan().Trim();
+        if (!trimmed.StartsWith("LOAD ", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var argument = trimmed[5..].Trim();
+        if (argument.Length > 0 && argument[^1] == ';')
+        {
+            argument = argument[..^1].TrimEnd();
+        }
+
+        return argument.Length > 0 && (argument[0] == '\'' || argument[0] == '"');
     }
 
     // Static (no connection) mirror of the postgres-style contract: a PartitionedRead-capable connector
@@ -537,6 +575,16 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         if (sink.TryGetNativeCopy(spec, out var copy))
         {
+            // Unsigned packaged-extension gate (PZ0359), sink-side mirror of the source-side gate in
+            // PlanSourceLoadAsync above -- same tier-choice-not-capability-gap reasoning, same fallback
+            // (never added to `errors`), same secret-hygiene reason string.
+            if (!def.Sink.AllowUnsignedExtensions && copy!.SetupStatements.Any(IsUnsignedPackagedExtensionLoad))
+            {
+                return Universal(node,
+                    $"arrow stream: sink '{def.Sink.Name}' native path refused -- PZ0359 unsigned packaged " +
+                    "extension in setup; set allow_unsigned_extensions: true on the connection to allow it");
+            }
+
             return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,
                 $"native copy: connector '{def.Sink.Connector}' provides {copy.Mechanism}");
         }

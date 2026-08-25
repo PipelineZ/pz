@@ -292,13 +292,15 @@ public sealed class ConnectorConfigValidatorTests
     }
 
     /// <summary>pz owns connector/entities/max_concurrency/
-    /// rate_limit/retry at connection level, so a connector declaring one could never receive it.</summary>
+    /// rate_limit/retry/allow_unsigned_extensions at connection level, so a connector declaring one
+    /// could never receive it.</summary>
     [Theory]
     [InlineData("retry")]
     [InlineData("entities")]
     [InlineData("max_concurrency")]
     [InlineData("rate_limit")]
     [InlineData("connector")]
+    [InlineData("allow_unsigned_extensions")]
     public async Task A_connector_declaring_a_reserved_property_is_PZ0345(string reserved)
     {
         var registry = new ConnectorRegistry();

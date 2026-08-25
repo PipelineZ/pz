@@ -130,7 +130,7 @@ public static class ConnectorConfigValidator
     /// <c>Pz.Core.Loading.ConnectionsLoader</c> because that type is internal to Pz.Core; the two lists
     /// are pinned equal by <c>ConnectorConfigValidatorTests</c>.</summary>
     private static readonly string[] ReservedConnectionKeys =
-        ["connector", "entities", "max_concurrency", "rate_limit", "retry"];
+        ["connector", "entities", "max_concurrency", "rate_limit", "retry", "allow_unsigned_extensions"];
 
     /// <summary>A connector whose ConnectionConfigSchema declares a property pz owns could never receive
     /// that key -- the loader strips reserved keys out of connector config before the connector ever
@@ -185,7 +185,7 @@ public static class ConnectorConfigValidator
                         $"'{property.Name}', which pz owns at connection level.",
                         connection.FilePath, null,
                         "rename the connector's property -- pz reserves connector, entities, " +
-                        "max_concurrency, rate_limit, and retry"));
+                        "max_concurrency, rate_limit, retry, and allow_unsigned_extensions"));
                 }
             }
         }
