@@ -346,7 +346,11 @@ public static class PzErrorCode
 
     // Spawn of a process-hosted connector's executable failed at launch time (exec error, OSError,
     // process did not start). Raised by the host spawn path; next step is to check the executable
-    // exists, is readable, and matches the target platform.
+    // exists, is readable, and matches the target platform. Also raised earlier, before any spawn is
+    // attempted, when the temp directory a runless verb would host a control socket under
+    // (ProcessSocketRoot's fallback) is itself too deep to leave room for the socket path -- the same
+    // "nothing a user could act on" failure a bind error from inside the child would otherwise be, but
+    // caught at the one point that can still name the cause (point TMPDIR/TEMP at a shorter directory).
     public const string ConnectorSpawnFailed = "PZ0355";
 
     // Handshake between host and a process-hosted connector failed: timeout waiting for the Hello

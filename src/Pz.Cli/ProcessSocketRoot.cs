@@ -1,4 +1,6 @@
 using Pz.Engine.Execution;
+using Pz.PackageManagement.Hosting;
+using Pz.Core.Validation;
 
 namespace Pz.Cli;
 
@@ -37,6 +39,20 @@ internal static class ProcessSocketRoot
         // spending path budget on a descriptive name would defeat it.
         var temp = Path.Combine(
             Path.GetTempPath(), "pz-" + Guid.NewGuid().ToString("N")[..8]);
+        if (temp.Length > MaxRootLength)
+        {
+            // The run-scoped root already failed this same budget above, and now the fallback -- whose
+            // own name is as short as the scheme allows -- fails it too, which only happens when
+            // Path.GetTempPath() itself (TMPDIR/TEMP) is unusually deep. Refused before
+            // Directory.CreateDirectory, so there is nothing to leak: a bind failure surfacing from
+            // inside the spawned child would give the user nothing to act on, so this is caught at the
+            // one point that can still name the cause.
+            throw new ConnectorHostException(PzErrorCode.ConnectorSpawnFailed,
+                $"temp directory '{Path.GetTempPath()}' is too deep to host a connector's control socket " +
+                $"(a unix domain socket path is capped around 104 bytes)",
+                "point TMPDIR (or TEMP on Windows) at a shorter directory and retry");
+        }
+
         Directory.CreateDirectory(temp);
         if (!OperatingSystem.IsWindows())
         {

@@ -1,4 +1,6 @@
 using Pz.Cli;
+using Pz.Core.Validation;
+using Pz.PackageManagement.Hosting;
 
 namespace Pz.Cli.Tests;
 
@@ -54,6 +56,34 @@ public sealed class ProcessSocketRootTests
         finally
         {
             Delete(root);
+        }
+    }
+
+    /// <summary>The guard the too-long-run-directory fact above proves the run-scoped side of: when
+    /// <c>Path.GetTempPath()</c> itself (TMPDIR) is too deep to leave room for the socket path even for
+    /// the fallback's short "pz-&lt;8 hex&gt;" name, Resolve refuses loudly (PZ0355) instead of handing
+    /// back an unbindable root a spawned child would fail to bind with nothing a user could act on.
+    /// GetTempPath() reads TMPDIR on every call (no caching to defeat), so setting it for the duration
+    /// of this test is enough -- restored in `finally` so it never leaks into another test's temp
+    /// directory resolution.</summary>
+    [Fact]
+    public void A_temp_root_too_deep_for_a_socket_is_refused_not_handed_back()
+    {
+        var original = Environment.GetEnvironmentVariable("TMPDIR");
+        var deepTemp = "/tmp/" + new string('t', 90);
+        Environment.SetEnvironmentVariable("TMPDIR", deepTemp);
+        try
+        {
+            var ex = Assert.Throws<ConnectorHostException>(() => ProcessSocketRoot.Resolve("/tmp/proj", runId: null));
+
+            Assert.Equal(PzErrorCode.ConnectorSpawnFailed, ex.Code);
+            Assert.Contains(deepTemp, ex.Message, StringComparison.Ordinal);
+            Assert.Contains("TMPDIR", ex.Hint, StringComparison.Ordinal);
+            Assert.False(Directory.Exists(deepTemp)); // refused before Directory.CreateDirectory -- nothing to leak
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TMPDIR", original);
         }
     }
 
