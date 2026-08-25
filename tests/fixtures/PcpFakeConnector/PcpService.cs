@@ -253,6 +253,9 @@ internal sealed class PcpService(
             {
                 SessionId = state.SessionId,
                 Ticket = ByteString.CopyFrom(tickets.Mint(new WriteTicket(state))),
+                // Without this every PCP sink looks like DiscardsAll to the host, whatever it actually
+                // wraps -- the wrapped sink's own declaration crosses verbatim.
+                AbortSemantics = SpecMapping.ToAbortSemanticsMsg(sink.AbortSemantics),
             };
         });
 
@@ -644,4 +647,12 @@ internal static class SpecMapping
         : new BatchOptions(
             options.TargetBatchBytes > 0 ? options.TargetBatchBytes : BatchOptions.Default.TargetBatchBytes,
             options.MaxRowsPerBatch > 0 ? options.MaxRowsPerBatch : BatchOptions.Default.MaxRowsPerBatch);
+
+    public static AbortSemanticsMsg ToAbortSemanticsMsg(AbortSemantics semantics) => semantics switch
+    {
+        AbortSemantics.DiscardsAll => AbortSemanticsMsg.AbortSemanticsDiscardsAll,
+        AbortSemantics.BestEffort => AbortSemanticsMsg.AbortSemanticsBestEffort,
+        AbortSemantics.None => AbortSemanticsMsg.AbortSemanticsNone,
+        _ => throw new ArgumentOutOfRangeException(nameof(semantics), semantics, "unrecognized AbortSemantics"),
+    };
 }

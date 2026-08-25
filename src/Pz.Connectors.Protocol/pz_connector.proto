@@ -142,7 +142,19 @@ message BeginWriteRequest {
   OutputSpecMsg spec = 2;
   bytes arrow_schema_ipc = 3;
 }
-message WriteSessionTicket { string session_id = 1; bytes ticket = 2; }
+// Mirrors Pz.Connectors.Abstractions.AbortSemantics by ordinal (DiscardsAll=0/BestEffort=1/None=2).
+enum AbortSemanticsMsg {
+  ABORT_SEMANTICS_DISCARDS_ALL = 0;
+  ABORT_SEMANTICS_BEST_EFFORT = 1;
+  ABORT_SEMANTICS_NONE = 2;
+}
+message WriteSessionTicket {
+  string session_id = 1;
+  bytes ticket = 2;
+  // What AbortAsync actually achieves for the session this ticket opens (ISink.AbortSemantics).
+  // Without this every PCP sink looks like DiscardsAll to the host regardless of what it wraps.
+  AbortSemanticsMsg abort_semantics = 3;
+}
 message SessionRef { string session_id = 1; }
 message WriteResultMsg { int64 rows_written = 1; int64 batches_written = 2; }
 message AbortResponse {}

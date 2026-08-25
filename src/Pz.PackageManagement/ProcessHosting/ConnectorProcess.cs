@@ -50,7 +50,12 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// <see cref="ProtocolConstants.DataSocketSuffix"/>, never computed independently by a caller.</summary>
     public string DataSocketPath { get; }
 
-    public bool HasExited => _process.HasExited;
+    /// <summary>True once the child is gone. Safe to read at any point in this instance's lifetime,
+    /// including after <see cref="DisposeAsync"/>: that method's own contract is to have the process
+    /// exited before it detaches the underlying <see cref="Process"/> handle, so once disposed this
+    /// always reads true instead of forwarding to <see cref="Process.HasExited"/> on a handle that would
+    /// throw <see cref="InvalidOperationException"/> rather than answer the question.</summary>
+    public bool HasExited => Interlocked.CompareExchange(ref _disposed, 0, 0) != 0 || _process.HasExited;
 
     /// <summary>Last <see cref="StderrTailCapBytes"/> of the child's stderr, oldest-truncated. Meant
     /// for failure diagnostics attached to thrown exceptions -- there is no guarantee it captures a
@@ -218,10 +223,16 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// <summary>Shutdown ladder's second rung: the caller sends the Shutdown RPC first (control-plane
     /// concern, outside this type), then awaits this for <paramref name="grace"/> before killing the
     /// whole process group. A process that exits on its own within the grace window short-circuits
-    /// the kill.</summary>
+    /// the kill.
+    ///
+    /// <para>Also safe to call after <see cref="DisposeAsync"/> already ran (e.g. a caller that killed
+    /// this <see cref="ConnectorProcess"/> directly while <see cref="PcpClient"/> still held it, then let
+    /// <see cref="PcpClient.DisposeAsync"/> run its own shutdown ladder over the same instance) --
+    /// <see cref="HasExited"/> reads true once disposed rather than throwing on the detached handle, so
+    /// this short-circuits exactly as it would for a process that was already confirmed gone.</para></summary>
     public async Task KillAfterGraceAsync(TimeSpan grace, CancellationToken ct)
     {
-        if (_process.HasExited)
+        if (HasExited)
         {
             return;
         }

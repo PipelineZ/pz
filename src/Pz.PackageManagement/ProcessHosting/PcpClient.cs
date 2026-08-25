@@ -40,6 +40,15 @@ public sealed class PcpClient : IAsyncDisposable
     /// later control-plane call (Validate, CheckConnection, GetSchema, ...) goes through this.</summary>
     public PzConnector.PzConnectorClient Grpc { get; }
 
+    /// <summary>Transience of the last connector-reported <c>PzErrorDetail</c> this client has mapped
+    /// from a trailer-carrying <see cref="RpcException"/> (see <see cref="MapRpcException"/>), or null
+    /// if none has been mapped yet on this client. Additive tracking for the ISource/ISink shims
+    /// (ProcessSourceConnector/ProcessSinkConnector): a process that dies immediately after reporting a
+    /// NON-transient failure must not have that death independently reclassified as transient just
+    /// because it looks like a mid-operation crash — a crash right after "this is permanent" is not a
+    /// new transient fact.</summary>
+    public bool? LastErrorWasTransient { get; private set; }
+
     /// <summary>Dials <paramref name="process"/>'s control socket, performs the Handshake/Configure
     /// sequence under <see cref="ProtocolConstants.HandshakeTimeout"/>, and returns a ready client.
     /// See the <see cref="TimeSpan"/> overload for the full discipline.</summary>
@@ -220,6 +229,7 @@ public sealed class PcpClient : IAsyncDisposable
         {
             var detail = PzErrorDetail.Parser.ParseFrom(trailer.ValueBytes);
             TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
+            LastErrorWasTransient = detail.IsTransient;
             return new PzConnectorException(detail.Message, detail.IsTransient, retryAfter);
         }
 
