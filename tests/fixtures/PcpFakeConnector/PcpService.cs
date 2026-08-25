@@ -70,9 +70,14 @@ internal sealed class PcpService(
                     ? ProtocolVersion.Major + 1
                     : _connector.Info.ProtocolMajor,
             },
-            Capabilities = options.MisreportCapabilities
-                ? capabilities | (long)ConnectorCapabilities.Merge
-                : capabilities,
+            // --declare-checkpointable-reads stages a connector that claims a capability the
+            // out-of-process shims do not implement, so a host test can prove the flag is masked out
+            // rather than handed to the planner. Kept separate from --misreport-capabilities, which
+            // stages a manifest/handshake DISAGREEMENT (a handshake failure) rather than an agreed
+            // declaration the host must refuse to surface.
+            Capabilities = capabilities
+                | (options.MisreportCapabilities ? (long)ConnectorCapabilities.Merge : 0)
+                | (options.DeclareCheckpointableReads ? (long)ConnectorCapabilities.CheckpointableReads : 0),
             ConnectionConfigSchema = _connector.ConnectionConfigSchema,
             DatasetConfigSchema = _connector.DatasetConfigSchema,
         };
@@ -226,11 +231,12 @@ internal sealed class PcpService(
             }
 
             // Wraps the checkpoint-resolved partition, not the other way around: checkpoint resume
-            // targets the REAL partition's ICheckpointingPartition, which the gate wrapper does not
-            // (and must not) implement.
+            // targets the REAL partition's ICheckpointingPartition, which neither wrapper below does
+            // (or must) implement.
+            var readPartition = options.EndlessRead ? new EndlessReadPartition(partition) : partition;
             IDatasetPartition ticketPartition = options.UseGate
-                ? new GatedReadPartition(partition, _gatePeer, GateOpLabel)
-                : partition;
+                ? new GatedReadPartition(readPartition, _gatePeer, GateOpLabel)
+                : readPartition;
 
             var ticket = tickets.Mint(new ReadTicket(
                 plan.Schema, ticketPartition, SpecMapping.ToBatchOptions(request.Options), OpToken(request.OpId)));
@@ -341,6 +347,13 @@ internal sealed class PcpService(
 
     public override async Task<CancelResponse> Cancel(CancelRequest request, ServerCallContext context)
     {
+        if (options.IgnoreCancel)
+        {
+            // Never answers and never stops the op: the host's ladder must escalate on a deadline of
+            // its own rather than trusting a connector to acknowledge a cancel.
+            await Task.Delay(Timeout.InfiniteTimeSpan, context.CancellationToken).ConfigureAwait(false);
+        }
+
         if (_ops.TryGetValue(request.OpId, out var cts))
         {
             await cts.CancelAsync().ConfigureAwait(false);
@@ -695,6 +708,29 @@ internal sealed class HostChannelPeer
         {
             // Logging is best-effort: a channel that closed between Attach and this flush loses the
             // line, same as any other logging path racing a shutdown.
+        }
+    }
+}
+
+/// <summary>Replays <paramref name="inner"/> forever, so a read has no natural end and the only thing
+/// that can stop it is cancellation -- the shape a host-side cancellation test needs, since every
+/// honest dataset this fixture serves finishes in milliseconds. The pause between passes keeps the
+/// stream from spinning the CPU while a test waits to cancel it.</summary>
+internal sealed class EndlessReadPartition(IDatasetPartition inner) : IDatasetPartition
+{
+    private static readonly TimeSpan PassInterval = TimeSpan.FromMilliseconds(20);
+
+    public async IAsyncEnumerable<RecordBatch> ReadAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        while (true)
+        {
+            await foreach (var batch in inner.ReadAsync(options, ct).WithCancellation(ct).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+
+            await Task.Delay(PassInterval, ct).ConfigureAwait(false);
         }
     }
 }

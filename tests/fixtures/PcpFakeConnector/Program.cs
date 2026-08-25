@@ -156,14 +156,17 @@ internal sealed record FixtureOptions(
     bool MisreportCapabilities,
     bool FailCheckTransient,
     bool ReportAbortSemanticsNone,
-    bool UseGate)
+    bool UseGate,
+    bool EndlessRead,
+    bool IgnoreCancel,
+    bool DeclareCheckpointableReads)
 {
     public static FixtureOptions Parse(string[] args)
     {
         string? socketPath = null;
         bool hangHandshake = false, dieImmediately = false, wrongProtocolMajor = false;
         bool misreportCapabilities = false, failCheckTransient = false, reportAbortSemanticsNone = false;
-        bool useGate = false;
+        bool useGate = false, endlessRead = false, ignoreCancel = false, declareCheckpointableReads = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -198,6 +201,15 @@ internal sealed record FixtureOptions(
                 case "--use-gate":
                     useGate = true;
                     break;
+                case "--endless-read":
+                    endlessRead = true;
+                    break;
+                case "--ignore-cancel":
+                    ignoreCancel = true;
+                    break;
+                case "--declare-checkpointable-reads":
+                    declareCheckpointableReads = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -211,7 +223,10 @@ internal sealed record FixtureOptions(
             misreportCapabilities,
             failCheckTransient,
             reportAbortSemanticsNone,
-            useGate);
+            useGate,
+            endlessRead,
+            ignoreCancel,
+            declareCheckpointableReads);
     }
 }
 

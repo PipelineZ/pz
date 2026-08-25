@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using Grpc.Core;
 using Grpc.Net.Client;
@@ -21,6 +22,7 @@ public sealed class PcpClient : IAsyncDisposable
 {
     private readonly ConnectorProcess _process;
     private readonly GrpcChannel _channel;
+    private readonly ConcurrentDictionary<string, byte> _escalating = new(StringComparer.Ordinal);
     private int _disposed;
 
     // 0 = unknown (no PzErrorDetail mapped yet), 1 = last mapped detail was transient, 2 = non-transient.
@@ -44,6 +46,17 @@ public sealed class PcpClient : IAsyncDisposable
     /// <summary>The generated gRPC client, open for the lifetime of this <see cref="PcpClient"/>. Every
     /// later control-plane call (Validate, CheckConnection, GetSchema, ...) goes through this.</summary>
     public PzConnector.PzConnectorClient Grpc { get; }
+
+    /// <summary>How long <see cref="AttachCancelLadder"/> waits for the connector to acknowledge a
+    /// <c>Cancel</c> before condemning the instance. Defaults to
+    /// <see cref="ProtocolConstants.CancelGrace"/>; the setter is a test/host-construction seam for
+    /// compressing the window, never a protocol knob a connector can influence.</summary>
+    internal TimeSpan CancelGrace { get; set; } = ProtocolConstants.CancelGrace;
+
+    /// <summary>How long the shutdown ladder waits for the process to exit on its own after the
+    /// <c>Shutdown</c> RPC before killing the process tree. Defaults to
+    /// <see cref="ProtocolConstants.ShutdownGrace"/>; same seam as <see cref="CancelGrace"/>.</summary>
+    internal TimeSpan ShutdownGrace { get; set; } = ProtocolConstants.ShutdownGrace;
 
     /// <summary>Transience of the last connector-reported <c>PzErrorDetail</c> this client has mapped
     /// from a trailer-carrying <see cref="RpcException"/> (see <see cref="MapRpcException"/>), or null
@@ -256,12 +269,83 @@ public sealed class PcpClient : IAsyncDisposable
                 "check connector logs and confirm the connector and host ABI versions are compatible");
     }
 
+    /// <summary>Arms the cancellation ladder for one in-flight operation: when <paramref name="ct"/>
+    /// fires, the connector is told <c>Cancel{opId}</c> and — if it does not answer within
+    /// <see cref="CancelGrace"/> — condemned through the shutdown ladder (<c>Shutdown</c>,
+    /// <see cref="ShutdownGrace"/>, kill the process tree). Dispose the returned registration when the
+    /// operation ends so a completed operation cannot be escalated later.
+    ///
+    /// <para>Escalation runs OFF the caller's path on purpose: a cancelled caller must get its
+    /// <see cref="OperationCanceledException"/> back promptly (the engine's cooperative-cancel
+    /// contract), not wait out both grace windows while an uncooperative connector is reaped. The
+    /// operation's own RPC/stream still unwinds as cancellation — nothing here converts it into a
+    /// PZ03xx failure.</para>
+    ///
+    /// <para>Acknowledgement, not observed quiescence, is the escalation test: the host cancels its own
+    /// side of a read the moment the token fires, so whether the connector actually STOPPED is not
+    /// observable from here. A connector that answers Cancel is presumed to be cooperating; one that
+    /// does not answer is presumed hung, and a hung connector instance is not reusable.</para></summary>
+    internal CancellationTokenRegistration AttachCancelLadder(string opId, CancellationToken ct)
+    {
+        if (!ct.CanBeCanceled)
+        {
+            return default;
+        }
+
+        return ct.Register(static state =>
+        {
+            var (client, id) = ((PcpClient, string))state!;
+            // One ladder per op id: several partitions of one PlanRead share it, and each of their
+            // reads registers its own callback on the same token.
+            if (client._escalating.TryAdd(id, 0))
+            {
+                _ = client.EscalateCancelAsync(id);
+            }
+        }, (this, opId));
+    }
+
+    private async Task EscalateCancelAsync(string opId)
+    {
+        try
+        {
+            using var cancelCts = new CancellationTokenSource(CancelGrace);
+            await Grpc.CancelAsync(new CancelRequest { OpId = opId }, cancellationToken: cancelCts.Token)
+                .ConfigureAwait(false);
+            return;
+        }
+        catch (ObjectDisposedException)
+        {
+            // The channel is already gone because the caller disposed this client first; the shutdown
+            // ladder it ran is exactly what escalation would have done here.
+            return;
+        }
+        catch
+        {
+            // No acknowledgement within the grace (or none possible at all): fall through and condemn.
+        }
+
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await ShutdownLadderAsync().ConfigureAwait(false);
+        }
+        catch
+        {
+            // Nothing is awaiting this task; the ladder is already best-effort at every rung.
+        }
+    }
+
     /// <summary>Shutdown ladder's first two rungs: a best-effort Shutdown RPC (the connector's cue to stop
     /// itself gracefully, distinct from being killed), then the grace-kill. Never throws on a connector
     /// that is already dead, hung, or refuses to answer — Shutdown is a courtesy, not a dependency, and
     /// the grace-kill below ends the process regardless. Idempotent (mirrors
     /// <see cref="ConnectorProcess.DisposeAsync"/>'s pattern): a second call is a no-op rather than
-    /// re-sending Shutdown or re-running the kill ladder against an already-torn-down process.</summary>
+    /// re-sending Shutdown or re-running the kill ladder against an already-torn-down process — which is
+    /// also what keeps this and <see cref="AttachCancelLadder"/>'s escalation from running it twice.</summary>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -269,6 +353,11 @@ public sealed class PcpClient : IAsyncDisposable
             return;
         }
 
+        await ShutdownLadderAsync().ConfigureAwait(false);
+    }
+
+    private async Task ShutdownLadderAsync()
+    {
         try
         {
             using var shutdownCts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
@@ -280,7 +369,7 @@ public sealed class PcpClient : IAsyncDisposable
         }
 
         _channel.Dispose();
-        await _process.KillAfterGraceAsync(ProtocolConstants.ShutdownGrace, CancellationToken.None).ConfigureAwait(false);
+        await _process.KillAfterGraceAsync(ShutdownGrace, CancellationToken.None).ConfigureAwait(false);
         await _process.DisposeAsync().ConfigureAwait(false);
     }
 

@@ -38,7 +38,7 @@ public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess pr
         ValueTask.FromResult<ISource>(new ProcessSource(client, process));
 }
 
-internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) : ISource, IOperationGateAware
+internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) : ISource, IOperationGateAware, IGatedShim
 {
     /// <summary>Holds whatever gate the engine hands this instance -- see
     /// <see cref="IOperationGateAware"/>'s own contract (called once, after <c>OpenAsync</c> returns,
@@ -51,7 +51,9 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
 
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var request = new GetSchemaRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        var opId = NewOpId();
+        var request = new GetSchemaRequest { OpId = opId, Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        using var ladder = client.AttachCancelLadder(opId, ct);
         try
         {
             var response = await client.Grpc.GetSchemaAsync(request, cancellationToken: ct).ConfigureAwait(false);
@@ -75,6 +77,9 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
     public bool TryGetNativeScan(
         DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
     {
+        // No cancel ladder: this call carries no caller token to escalate on, and its own deadline
+        // firing already surfaces as a transient PzConnectorException. Condemning the whole instance
+        // because a planner probe was slow would be a far bigger hammer than that failure warrants.
         var request = new NativeScanRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         NativeScanResponse response;
@@ -124,6 +129,7 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
         // connector-wide declaration (Hello.Capabilities), not a per-partition choice.
         var stableIds = client.Hello.Capabilities.HasCapability(ConnectorCapabilities.StablePartitionIds);
         var partitions = new List<IDatasetPartition>();
+        using var ladder = client.AttachCancelLadder(opId, ct);
         try
         {
             using var call = client.Grpc.PlanRead(request, cancellationToken: ct);
@@ -160,6 +166,11 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
     private async IAsyncEnumerable<RecordBatch> ReadCoreAsync(
         BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
+        // Armed for the WHOLE drain, not just the OpenReadStream RPC: a partition read is the one
+        // operation long enough for a caller to cancel mid-flight, and the connector only learns of it
+        // through Cancel{opId} -- the host tearing down its end of the data socket is not a signal the
+        // connector is required to interpret.
+        using var ladder = client.AttachCancelLadder(opId, ct);
         ReadStreamTicket ticket;
         try
         {
@@ -236,7 +247,8 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
 {
     public ConnectorInfo Info => MessageMapping.ToConnectorInfo(client.Hello.Info);
 
-    public ConnectorCapabilities Capabilities => (ConnectorCapabilities)unchecked((int)client.Hello.Capabilities);
+    public ConnectorCapabilities Capabilities =>
+        ProcessCapabilities.Mask((ConnectorCapabilities)unchecked((int)client.Hello.Capabilities));
 
     public string ConnectionConfigSchema => client.Hello.ConnectionConfigSchema;
 
@@ -271,6 +283,34 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
         }
     }
+}
+
+/// <summary>What an ISource/ISink shim over a PCP connector is allowed to claim it can do.
+///
+/// <para>The shims forward the wrapped connector's Hello capability flags verbatim, including flags
+/// whose ABI interfaces they do not implement -- there is no PCP wiring behind
+/// <see cref="ICheckpointingPartition"/>, <see cref="ICheckpointingSinkSession"/>,
+/// <see cref="ISyncStatePartition"/>, or change capture, and the reverse channel's WriteAck/ReadState
+/// messages are read and dropped. Surfacing those flags unmasked would make the planner accept a
+/// checkpointed / sync-state / cdc dataset on this connector and then silently degrade it to a plain
+/// full read. Masking them here is what makes the planner REFUSE such a dataset (PZ0319/PZ0338/...)
+/// instead, which is the correct answer until each one is actually implemented over the wire.</para></summary>
+internal static class ProcessCapabilities
+{
+    private const ConnectorCapabilities Unimplemented =
+        ConnectorCapabilities.CheckpointableReads | ConnectorCapabilities.CheckpointableWrites |
+        ConnectorCapabilities.SyncState | ConnectorCapabilities.ChangeCapture;
+
+    public static ConnectorCapabilities Mask(ConnectorCapabilities declared) => declared & ~Unimplemented;
+}
+
+/// <summary>What the host's deferred gate reads off an opened shim: the <see cref="IOperationGate"/>
+/// the engine handed it through <see cref="IOperationGateAware"/>, or null before it did. Exists
+/// because <see cref="HostChannelPump"/> is opened right after Configure -- before OpenAsync has even
+/// returned the shim the engine will later gate.</summary>
+internal interface IGatedShim
+{
+    IOperationGate? Gate { get; }
 }
 
 /// <summary>Where every shim method (source and sink alike) turns a failed RPC or data-plane read into

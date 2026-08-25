@@ -31,7 +31,7 @@ public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess proc
         ValueTask.FromResult<ISink>(new ProcessSink(client, process));
 }
 
-internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : ISink, IOperationGateAware
+internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : ISink, IOperationGateAware, IGatedShim
 {
     /// <summary>See <see cref="ProcessSource.Gate"/>'s identical doc: held for whoever constructs this
     /// shim's <see cref="HostChannelPump"/> to read, not used to wrap any RPC this shim itself makes.</summary>
@@ -85,21 +85,25 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
+        var opId = ProcessSource.NewOpId();
         var request = new BeginWriteRequest
         {
-            OpId = ProcessSource.NewOpId(),
+            OpId = opId,
             Spec = MessageMapping.ToOutputSpecMsg(spec),
             ArrowSchemaIpc = await MessageMapping.SerializeSchemaAsync(schema, ct).ConfigureAwait(false),
         };
 
         WriteSessionTicket ticket;
-        try
+        using (client.AttachCancelLadder(opId, ct))
         {
-            ticket = await client.Grpc.BeginWriteAsync(request, cancellationToken: ct).ConfigureAwait(false);
-        }
-        catch (RpcException ex)
-        {
-            throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+            try
+            {
+                ticket = await client.Grpc.BeginWriteAsync(request, cancellationToken: ct).ConfigureAwait(false);
+            }
+            catch (RpcException ex)
+            {
+                throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+            }
         }
 
         _abortSemantics = MessageMapping.ToAbortSemantics(ticket.AbortSemantics);
@@ -111,6 +115,15 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
                 .OpenWriteStreamAsync(process.DataSocketPath, ticket.Ticket.Memory, schema, ct)
                 .ConfigureAwait(false);
         }
+        catch (OperationCanceledException)
+        {
+            // Same abandoned session as below, reached by a different route: the caller cancelled
+            // between BeginWrite succeeding connector-side and the writer existing here. Cleanup must
+            // not be skipped just because the failure was a cancellation, but the cancellation itself
+            // still has to reach the caller unchanged.
+            await TryAbortAbandonedSessionAsync(ticket.SessionId).ConfigureAwait(false);
+            throw;
+        }
         catch (ConnectorHostException ex)
         {
             // BeginWrite already succeeded connector-side -- the session exists there, keyed by
@@ -121,7 +134,7 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
             throw ProcessFailureMapping.ToPzConnectorException(client, process, ex.Message);
         }
 
-        return new ProcessSinkWriteSession(client, process, ticket.SessionId, writer);
+        return new ProcessSinkWriteSession(client, process, opId, ticket.SessionId, writer);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -153,10 +166,14 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
 /// engine's own call ordering onto <see cref="CommitAsync"/>/<see cref="AbortAsync"/> -- nothing extra
 /// is asserted or added here.</summary>
 internal sealed class ProcessSinkWriteSession(
-    PcpClient client, ConnectorProcess process, string sessionId, IDataPlaneWriter writer) : ISinkWriteSession
+    PcpClient client, ConnectorProcess process, string opId, string sessionId, IDataPlaneWriter writer)
+    : ISinkWriteSession
 {
     public async ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
     {
+        // The session's op id, not a fresh one: the connector's write pump reads from the host rather
+        // than from the op's own path, so Cancel{opId} is the only thing that reaches it.
+        using var ladder = client.AttachCancelLadder(opId, ct);
         try
         {
             await writer.WriteBatchAsync(batch, ct).ConfigureAwait(false);
@@ -173,6 +190,7 @@ internal sealed class ProcessSinkWriteSession(
 
     public async ValueTask<WriteResult> CommitAsync(CancellationToken ct)
     {
+        using var ladder = client.AttachCancelLadder(opId, ct);
         try
         {
             // Arrow EOS + half-close, THEN the RPC: CommitWrite (fixture and spec alike) blocks on
@@ -202,6 +220,10 @@ internal sealed class ProcessSinkWriteSession(
 
     public async ValueTask AbortAsync(CancellationToken ct)
     {
+        // No cancel ladder here, unlike every other session call: abort IS the cleanup path, and
+        // escalating a cancelled abort to a process kill would take away the connector's chance to
+        // finish the best-effort work AbortSemantics promised the engine.
+        //
         // Abandon the data socket first (no CompleteAsync -- no Arrow EOS: the drain AbortWrite would
         // otherwise wait for was never coming), then AbortWrite, which cancels whatever pump is
         // mid-flight connector-side rather than waiting on a drain.
