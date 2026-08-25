@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using Google.Protobuf;
@@ -31,11 +33,16 @@ internal sealed class PcpService(
     /// parity test can name both in one project.</summary>
     public const string ConnectorName = "localfiles-pcp";
 
+    /// <summary>Static, connector-authored op label for every <c>--use-gate</c> partition read -- never
+    /// a value derived from the dataset spec, per <c>IOperationGate</c>'s own contract.</summary>
+    private const string GateOpLabel = "localfiles-pcp.read_partition";
+
     private readonly LocalFilesConnector _connector = new();
     private readonly SemaphoreSlim _openGate = new(1, 1);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ops = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, PlannedRead> _plans = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, WriteSessionState> _sessions = new(StringComparer.Ordinal);
+    private readonly HostChannelPeer _gatePeer = new();
 
     private ConnectorConfig? _config;
     private ISource? _source;
@@ -76,6 +83,17 @@ internal sealed class PcpService(
     public override Task<ConfigureResponse> Configure(ConfigureRequest request, ServerCallContext context)
     {
         _config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
+
+        // One LogEvent per Configure, always -- fields carry the connection NAME (instance_id) and
+        // this connector's own identity, never a config VALUE (credentials, paths, etc. never appear
+        // here). The reverse channel is not open yet at this point in the RPC sequence (HostChannel is
+        // opened by the host only after Configure returns), so this is buffered and flushed the moment
+        // HostChannel attaches -- see HostChannelPeer.QueueConfiguredLog.
+        var configured = new LogEvent { Level = 2, Message = "connector configured" }; // 2 = Information
+        configured.Fields["instance_id"] = request.InstanceId;
+        configured.Fields["connector"] = ConnectorName;
+        _gatePeer.QueueConfiguredLog(configured);
+
         return Task.FromResult(new ConfigureResponse());
     }
 
@@ -207,8 +225,15 @@ internal sealed class PcpService(
                 checkpointing.TryResumeFrom(checkpoint);
             }
 
+            // Wraps the checkpoint-resolved partition, not the other way around: checkpoint resume
+            // targets the REAL partition's ICheckpointingPartition, which the gate wrapper does not
+            // (and must not) implement.
+            IDatasetPartition ticketPartition = options.UseGate
+                ? new GatedReadPartition(partition, _gatePeer, GateOpLabel)
+                : partition;
+
             var ticket = tickets.Mint(new ReadTicket(
-                plan.Schema, partition, SpecMapping.ToBatchOptions(request.Options), OpToken(request.OpId)));
+                plan.Schema, ticketPartition, SpecMapping.ToBatchOptions(request.Options), OpToken(request.OpId)));
             return Task.FromResult(new ReadStreamTicket { Ticket = ByteString.CopyFrom(ticket) });
         });
 
@@ -343,26 +368,35 @@ internal sealed class PcpService(
     }
 
     public override async Task HostChannel(
-        IAsyncStreamReader<HostChannelUp> requestStream,
-        IServerStreamWriter<HostChannelDown> responseStream,
+        IAsyncStreamReader<HostChannelDown> requestStream,
+        IServerStreamWriter<HostChannelUp> responseStream,
         ServerCallContext context)
     {
-        // LocalFiles consumes no host service, so the fixture holds the reverse channel open and
-        // silent. Draining it still matters: the host's pump must see a well-formed channel that ends
-        // only when the host ends it -- or when the fixture does. Without the ApplicationStopping link
-        // this loop outlives a graceful shutdown and holds it open until the host's shutdown timeout,
-        // which is precisely the Shutdown-inside-the-grace budget it must not spend.
+        // Without --use-gate, LocalFiles consumes no host service and this fixture holds the reverse
+        // channel open and silent: draining it still matters, since the host's pump must see a
+        // well-formed channel that ends only when the host ends it -- or when the fixture does.
+        // Without the ApplicationStopping link this loop outlives a graceful shutdown and holds it open
+        // until the host's shutdown timeout, which is precisely the Shutdown-inside-the-grace budget it
+        // must not spend.
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             context.CancellationToken, lifetime.ApplicationStopping);
+        _gatePeer.Attach(responseStream);
         try
         {
             while (await requestStream.MoveNext(linked.Token).ConfigureAwait(false))
             {
+                // The only HostChannelDown case is GateGrant -- see the proto's own comment on why the
+                // host writes this half and the connector writes everything else.
+                _gatePeer.OnGateGrant(requestStream.Current.GateGrant.RequestId);
             }
         }
         catch (OperationCanceledException)
         {
             // The host closed the channel, the call deadline passed, or the fixture is shutting down.
+        }
+        finally
+        {
+            _gatePeer.Detach();
         }
     }
 
@@ -509,6 +543,229 @@ internal sealed class PcpService(
         var trailers = new Metadata { { ProtocolConstants.ErrorDetailTrailerKey, detail.ToByteArray() } };
         var status = new Status(ex.IsTransient ? StatusCode.Unavailable : StatusCode.FailedPrecondition, ex.Message);
         return new RpcException(status, trailers);
+    }
+}
+
+/// <summary>The connector side of the PCP reverse channel: the fixture's own client for the host's
+/// operation gate. One instance per <see cref="PcpService"/> (a fixture serves one connector instance
+/// for the process's lifetime), reused across however many <c>HostChannel</c> calls the host makes
+/// (there is normally exactly one, held open for the process's lifetime).
+///
+/// <para>Single-attempt only: a real connector SDK wrapping <c>IOperationGate</c>'s idempotent retry
+/// semantics would loop -- wait for another <c>GateGrant</c> on the SAME request id if the host decides
+/// to retry a transient failure -- but this fixture never exercises host-driven retry (nothing here
+/// fails transiently), so <see cref="RunGatedAsync"/> sends exactly one <c>GateAcquire</c>/
+/// <c>GateComplete</c> pair per call. Tracked as a fixture limitation, not a protocol one.</para></summary>
+internal sealed class HostChannelPeer
+{
+    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly ConcurrentDictionary<string, TaskCompletionSource> _pendingGrants = new(StringComparer.Ordinal);
+    private readonly Lock _attachGate = new();
+    private IServerStreamWriter<HostChannelUp>? _writer;
+    private LogEvent? _bufferedLog;
+
+    /// <summary>Called once per <c>HostChannel</c> RPC, right as it starts serving. Flushes a
+    /// <see cref="QueueConfiguredLog"/> call that arrived before any channel was open (the normal
+    /// case: Configure always runs before the host opens its pump).</summary>
+    public void Attach(IServerStreamWriter<HostChannelUp> writer)
+    {
+        LogEvent? toFlush;
+        lock (_attachGate)
+        {
+            _writer = writer;
+            toFlush = _bufferedLog;
+            _bufferedLog = null;
+        }
+
+        if (toFlush is not null)
+        {
+            _ = SendBestEffortAsync(new HostChannelUp { Log = toFlush });
+        }
+    }
+
+    public void Detach()
+    {
+        lock (_attachGate)
+        {
+            _writer = null;
+        }
+    }
+
+    /// <summary>Sends immediately if the channel is already open, otherwise buffers for the next
+    /// <see cref="Attach"/> -- Configure always runs before the host's pump connects, so the buffered
+    /// path is the one this fixture actually exercises.</summary>
+    public void QueueConfiguredLog(LogEvent log)
+    {
+        IServerStreamWriter<HostChannelUp>? writer;
+        lock (_attachGate)
+        {
+            writer = _writer;
+            if (writer is null)
+            {
+                _bufferedLog = log;
+            }
+        }
+
+        if (writer is not null)
+        {
+            _ = SendBestEffortAsync(new HostChannelUp { Log = log });
+        }
+    }
+
+    public void OnGateGrant(string requestId)
+    {
+        if (_pendingGrants.TryRemove(requestId, out var tcs))
+        {
+            tcs.TrySetResult();
+        }
+    }
+
+    /// <summary>Runs <paramref name="body"/> gated behind one <c>GateAcquire</c>/<c>GateGrant</c>/
+    /// <c>GateComplete</c> round trip. A transient <see cref="PzConnectorException"/> from
+    /// <paramref name="body"/> is reported in <c>GateComplete.transient_error</c> (the host-side gate op
+    /// throws it back out, per the host's own <c>HostChannelPump</c>); any other failure still gets a
+    /// (error-free) <c>GateComplete</c> sent -- so the host's pending gate wait always resolves -- before
+    /// the original exception is rethrown.</summary>
+    public async Task RunGatedAsync(string opLabel, Func<CancellationToken, Task> body, CancellationToken ct)
+    {
+        var requestId = Guid.NewGuid().ToString("n");
+        var granted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _pendingGrants[requestId] = granted;
+        try
+        {
+            await SendAsync(new HostChannelUp
+            {
+                GateAcquire = new GateAcquire { RequestId = requestId, OpLabel = opLabel, Idempotent = false },
+            }, ct).ConfigureAwait(false);
+
+            await granted.Task.WaitAsync(ct).ConfigureAwait(false);
+
+            Exception? failure = null;
+            try
+            {
+                await body(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failure = ex;
+            }
+
+            var complete = new HostChannelUp { GateComplete = new GateComplete { RequestId = requestId } };
+            if (failure is PzConnectorException { IsTransient: true } transient)
+            {
+                complete.GateComplete.TransientError = new PzErrorDetail
+                {
+                    Code = string.Empty,
+                    Message = transient.Message,
+                    IsTransient = true,
+                    RetryAfterMs = (long)(transient.RetryAfter?.TotalMilliseconds ?? 0),
+                    Hint = string.Empty,
+                };
+            }
+
+            await SendAsync(complete, ct).ConfigureAwait(false);
+
+            if (failure is not null)
+            {
+                ExceptionDispatchInfo.Capture(failure).Throw();
+            }
+        }
+        finally
+        {
+            _pendingGrants.TryRemove(requestId, out _);
+        }
+    }
+
+    private async Task SendAsync(HostChannelUp msg, CancellationToken ct)
+    {
+        var writer = _writer ?? throw new InvalidOperationException(
+            "HostChannel is not connected; cannot send a gate/log message");
+        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await writer.WriteAsync(msg).ConfigureAwait(false);
+        }
+        finally
+        {
+            _writeLock.Release();
+        }
+    }
+
+    private async Task SendBestEffortAsync(HostChannelUp msg)
+    {
+        try
+        {
+            await SendAsync(msg, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Logging is best-effort: a channel that closed between Attach and this flush loses the
+            // line, same as any other logging path racing a shutdown.
+        }
+    }
+}
+
+/// <summary>Wraps one already-planned partition so its ENTIRE drain (open through end-of-stream) runs
+/// under one <see cref="HostChannelPeer.RunGatedAsync"/> call -- "one GateAcquire/GateComplete per
+/// partition read". Batches still flow through as the inner partition produces them (no buffering): the
+/// gate's own "op" is a start/finish handshake running concurrently with the actual drain below, not the
+/// drain itself.</summary>
+internal sealed class GatedReadPartition(IDatasetPartition inner, HostChannelPeer peer, string opLabel)
+    : IDatasetPartition
+{
+    public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
+        ReadCoreAsync(options, ct);
+
+    private async IAsyncEnumerable<RecordBatch> ReadCoreAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gated = peer.RunGatedAsync(opLabel, async ct2 =>
+        {
+            started.TrySetResult();
+            await finished.Task.WaitAsync(ct2).ConfigureAwait(false);
+        }, ct);
+
+        await started.Task.ConfigureAwait(false);
+
+        var enumerator = inner.ReadAsync(options, ct).GetAsyncEnumerator(ct);
+        try
+        {
+            while (true)
+            {
+                RecordBatch? batch;
+                try
+                {
+                    batch = await enumerator.MoveNextAsync().ConfigureAwait(false) ? enumerator.Current : null;
+                }
+                catch (PzConnectorException ex) when (ex.IsTransient)
+                {
+                    finished.TrySetException(ex);
+                    throw;
+                }
+                catch
+                {
+                    finished.TrySetResult();
+                    throw;
+                }
+
+                if (batch is null)
+                {
+                    break;
+                }
+
+                yield return batch;
+            }
+
+            finished.TrySetResult();
+        }
+        finally
+        {
+            await enumerator.DisposeAsync().ConfigureAwait(false);
+        }
+
+        await gated.ConfigureAwait(false);
     }
 }
 

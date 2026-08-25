@@ -27,8 +27,17 @@ service PzConnector {
   rpc Cancel(CancelRequest) returns (CancelResponse);
   rpc Shutdown(ShutdownRequest) returns (ShutdownResponse);
 
-  // reverse channel: host services the connector consumes
-  rpc HostChannel(stream HostChannelUp) returns (stream HostChannelDown);
+  // reverse channel: host services the connector consumes. The connector -- not the host -- is the
+  // semantic client of this exchange: it authors every GateAcquire/GateComplete/GateBudget/LogEvent
+  // (HostChannelUp), while the host only ever sends GateGrant (HostChannelDown), the sole message it
+  // has standing to author. gRPC's request/response stream direction is fixed to "whoever calls the
+  // RPC writes the request type" -- and every other RPC here is host-initiated -- so this is the one
+  // method where request/response are swapped relative to that pattern: the host is still the one
+  // who calls HostChannel (dials the connector, same as every other RPC), but it does so to WRITE
+  // HostChannelDown (its own, GateGrant-only outbox) and READ HostChannelUp (the connector's outbox),
+  // which is what lets the connector -- the only side that knows an op_label or when its own remote
+  // call finished -- actually be the one sending that content.
+  rpc HostChannel(stream HostChannelDown) returns (stream HostChannelUp);
 }
 
 message HandshakeRequest {

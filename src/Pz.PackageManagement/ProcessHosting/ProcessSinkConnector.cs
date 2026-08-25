@@ -31,8 +31,14 @@ public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess proc
         ValueTask.FromResult<ISink>(new ProcessSink(client, process));
 }
 
-internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : ISink
+internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : ISink, IOperationGateAware
 {
+    /// <summary>See <see cref="ProcessSource.Gate"/>'s identical doc: held for whoever constructs this
+    /// shim's <see cref="HostChannelPump"/> to read, not used to wrap any RPC this shim itself makes.</summary>
+    public IOperationGate? Gate { get; private set; }
+
+    public void UseOperationGate(IOperationGate gate) => Gate = gate;
+
     // ISink.AbortSemantics is per-sink in the ABI but genuinely only knowable once a write session's
     // ticket comes back (WriteSessionTicket.abort_semantics carries the wrapped sink's own
     // declaration -- see pz_connector.proto). DiscardsAll (the ABI's own default) until a session has

@@ -38,8 +38,17 @@ public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess pr
         ValueTask.FromResult<ISource>(new ProcessSource(client, process));
 }
 
-internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) : ISource
+internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) : ISource, IOperationGateAware
 {
+    /// <summary>Holds whatever gate the engine hands this instance -- see
+    /// <see cref="IOperationGateAware"/>'s own contract (called once, after <c>OpenAsync</c> returns,
+    /// before any plan/read call). Nothing in this shim wraps its OWN RPC calls in it: the gated
+    /// operations here are the CONNECTOR's own remote calls, reported over the reverse channel and
+    /// serviced by <see cref="HostChannelPump"/>, which is what actually reads this property.</summary>
+    public IOperationGate? Gate { get; private set; }
+
+    public void UseOperationGate(IOperationGate gate) => Gate = gate;
+
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var request = new GetSchemaRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };

@@ -155,13 +155,15 @@ internal sealed record FixtureOptions(
     bool WrongProtocolMajor,
     bool MisreportCapabilities,
     bool FailCheckTransient,
-    bool ReportAbortSemanticsNone)
+    bool ReportAbortSemanticsNone,
+    bool UseGate)
 {
     public static FixtureOptions Parse(string[] args)
     {
         string? socketPath = null;
         bool hangHandshake = false, dieImmediately = false, wrongProtocolMajor = false;
         bool misreportCapabilities = false, failCheckTransient = false, reportAbortSemanticsNone = false;
+        bool useGate = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -193,6 +195,9 @@ internal sealed record FixtureOptions(
                 case "--report-abort-semantics-none":
                     reportAbortSemanticsNone = true;
                     break;
+                case "--use-gate":
+                    useGate = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -205,7 +210,8 @@ internal sealed record FixtureOptions(
             wrongProtocolMajor,
             misreportCapabilities,
             failCheckTransient,
-            reportAbortSemanticsNone);
+            reportAbortSemanticsNone,
+            useGate);
     }
 }
 
