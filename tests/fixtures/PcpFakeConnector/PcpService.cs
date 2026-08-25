@@ -561,56 +561,42 @@ internal sealed class HostChannelPeer
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource> _pendingGrants = new(StringComparer.Ordinal);
     private readonly Lock _attachGate = new();
-    private IServerStreamWriter<HostChannelUp>? _writer;
-    private LogEvent? _bufferedLog;
 
-    /// <summary>Called once per <c>HostChannel</c> RPC, right as it starts serving. Flushes a
-    /// <see cref="QueueConfiguredLog"/> call that arrived before any channel was open (the normal
-    /// case: Configure always runs before the host opens its pump).</summary>
+    // The single buffer-until-attach mechanism for EVERY outgoing message (log or gate): a TCS that
+    // resolves once a HostChannel call is actually being served. Replaced with a fresh, unresolved one
+    // on Detach so a message queued after the channel drops waits for the NEXT attach rather than
+    // racing a disposed writer. Before this, only QueueConfiguredLog buffered -- RunGatedAsync's sends
+    // threw synchronously on a not-yet-attached channel, which left GatedReadPartition.ReadCoreAsync
+    // awaiting `started` forever whenever a read was dispatched before the host's pump call landed.
+    private TaskCompletionSource<IServerStreamWriter<HostChannelUp>> _attached =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>Called once per <c>HostChannel</c> RPC, right as it starts serving. Unblocks every send
+    /// (log or gate) that was already waiting on this channel to open.</summary>
     public void Attach(IServerStreamWriter<HostChannelUp> writer)
     {
-        LogEvent? toFlush;
+        TaskCompletionSource<IServerStreamWriter<HostChannelUp>> signal;
         lock (_attachGate)
         {
-            _writer = writer;
-            toFlush = _bufferedLog;
-            _bufferedLog = null;
+            signal = _attached;
         }
 
-        if (toFlush is not null)
-        {
-            _ = SendBestEffortAsync(new HostChannelUp { Log = toFlush });
-        }
+        signal.TrySetResult(writer);
     }
 
     public void Detach()
     {
         lock (_attachGate)
         {
-            _writer = null;
+            _attached = new TaskCompletionSource<IServerStreamWriter<HostChannelUp>>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
         }
     }
 
-    /// <summary>Sends immediately if the channel is already open, otherwise buffers for the next
-    /// <see cref="Attach"/> -- Configure always runs before the host's pump connects, so the buffered
-    /// path is the one this fixture actually exercises.</summary>
-    public void QueueConfiguredLog(LogEvent log)
-    {
-        IServerStreamWriter<HostChannelUp>? writer;
-        lock (_attachGate)
-        {
-            writer = _writer;
-            if (writer is null)
-            {
-                _bufferedLog = log;
-            }
-        }
-
-        if (writer is not null)
-        {
-            _ = SendBestEffortAsync(new HostChannelUp { Log = log });
-        }
-    }
+    /// <summary>Sends once the channel is attached -- immediately if it already is, otherwise once
+    /// <see cref="Attach"/> next runs. Configure always runs before the host's pump connects, so the
+    /// buffered path is the one this fixture actually exercises for a Configure-time log.</summary>
+    public void QueueConfiguredLog(LogEvent log) => _ = SendBestEffortAsync(new HostChannelUp { Log = log });
 
     public void OnGateGrant(string requestId)
     {
@@ -678,8 +664,16 @@ internal sealed class HostChannelPeer
 
     private async Task SendAsync(HostChannelUp msg, CancellationToken ct)
     {
-        var writer = _writer ?? throw new InvalidOperationException(
-            "HostChannel is not connected; cannot send a gate/log message");
+        TaskCompletionSource<IServerStreamWriter<HostChannelUp>> signal;
+        lock (_attachGate)
+        {
+            signal = _attached;
+        }
+
+        // Buffer-until-attach, not a synchronous throw: a message queued (GateAcquire, or a log) before
+        // HostChannel's server method has run Attach() waits here instead of failing the caller outright.
+        var writer = await signal.Task.WaitAsync(ct).ConfigureAwait(false);
+
         await _writeLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
@@ -763,9 +757,32 @@ internal sealed class GatedReadPartition(IDatasetPartition inner, HostChannelPee
         finally
         {
             await enumerator.DisposeAsync().ConfigureAwait(false);
-        }
 
-        await gated.ConfigureAwait(false);
+            // Unconditional, not just on the success path: RunGatedAsync must be joined whether the
+            // drain above succeeded or threw, so GateComplete is always flushed and `gated` is always
+            // observed -- an unawaited faulted Task here would otherwise go unobserved on every
+            // exception path (the transient-retry path aside, where it carries the exact exception
+            // already being rethrown from this same finally's enclosing try -- see JoinGatedAsync).
+            await JoinGatedAsync(gated).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Awaits <paramref name="gated"/> purely to observe it -- never to surface a NEW failure
+    /// from this <c>finally</c> block, which would replace whatever exception the read loop above is
+    /// already propagating (or, on the transient-retry path, would just be that identical exception
+    /// again, since RunGatedAsync rethrows the same instance it was handed). A failure here that is
+    /// genuinely new (e.g. GateComplete itself failed to send on a torn channel) has no better place to
+    /// go from a fixture's read path than being dropped after being observed.</summary>
+    private static async Task JoinGatedAsync(Task gated)
+    {
+        try
+        {
+            await gated.ConfigureAwait(false);
+        }
+        catch
+        {
+            // See summary above.
+        }
     }
 }
 
