@@ -43,18 +43,24 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var request = new GetSchemaRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
-        DatasetSchemaMsg response;
         try
         {
-            response = await client.Grpc.GetSchemaAsync(request, cancellationToken: ct).ConfigureAwait(false);
+            var response = await client.Grpc.GetSchemaAsync(request, cancellationToken: ct).ConfigureAwait(false);
+            // Deserialization stays inside this try: a malformed arrow_schema_ipc payload is just as
+            // much an operational failure as the RPC itself, and must cross the ABI boundary as
+            // PzConnectorException, not a raw Apache.Arrow/IO exception.
+            var schema = await MessageMapping.DeserializeSchemaAsync(response.ArrowSchemaIpc, ct).ConfigureAwait(false);
+            return new DatasetSchema(schema);
         }
         catch (RpcException ex)
         {
             throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
         }
-
-        var schema = await MessageMapping.DeserializeSchemaAsync(response.ArrowSchemaIpc, ct).ConfigureAwait(false);
-        return new DatasetSchema(schema);
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            throw ProcessFailureMapping.ToPzConnectorException(
+                client, process, $"malformed schema from connector: {ex.Message}");
+        }
     }
 
     public bool TryGetNativeScan(
@@ -74,7 +80,14 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
         }
         catch (RpcException ex)
         {
-            throw ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
+            // The internal deadline firing looks identical to any other cancelled call to
+            // MapControlPlane (ct is CancellationToken.None here, so IsCallerCancellation never
+            // matches, and there is no error trailer for a client-side cancel) -- it would otherwise
+            // fall through to PZ0357 "protocol violation", which is wrong for a connector that is
+            // merely slow, not broken.
+            throw cts.IsCancellationRequested
+                ? ProcessFailureMapping.NativeOperationTimedOut("TryNativeScan")
+                : ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
         }
 
         if (!response.Found)
@@ -259,6 +272,13 @@ internal static class ProcessFailureMapping
     /// CancellationToken to forward -- so this bounds the blocking RPC call they make instead, so a
     /// hung connector cannot hang the planner forever.</summary>
     public static readonly TimeSpan NativeOperationTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>The RPC that produced <paramref name="ex"/> never had a caller CancellationToken to
+    /// answer "was this me?" with -- <see cref="NativeOperationTimeout"/> firing is the only source of
+    /// cancellation on that call, so the exception is unambiguously a hung connector, not a protocol
+    /// violation. Transient: nothing here says the connector is broken, only slow.</summary>
+    public static PzConnectorException NativeOperationTimedOut(string rpcName) =>
+        new($"connector did not answer {rpcName} within {NativeOperationTimeout}", isTransient: true);
 
     /// <summary>Rebuilds the exception a control-plane RPC failure should surface as.
     /// <see cref="PcpClient.MapRpcException"/>'s own PZ0358 (mid-operation death, no error trailer) is

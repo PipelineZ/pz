@@ -58,7 +58,13 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
         }
         catch (RpcException ex)
         {
-            throw ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
+            // See ProcessSource.TryGetNativeScan's identical guard: the internal deadline is the only
+            // source of cancellation on this call, so it must not fall through to MapControlPlane's
+            // PZ0357 "protocol violation" -- that's the wrong diagnosis for a connector that is merely
+            // slow to answer.
+            throw cts.IsCancellationRequested
+                ? ProcessFailureMapping.NativeOperationTimedOut("TryNativeCopy")
+                : ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
         }
 
         if (!response.Found)
@@ -101,6 +107,11 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
         }
         catch (ConnectorHostException ex)
         {
+            // BeginWrite already succeeded connector-side -- the session exists there, keyed by
+            // ticket.SessionId -- but the local data-plane connect failed before any ISinkWriteSession
+            // came back for the engine to call AbortAsync on. Nobody else will ever tell the connector
+            // to clean this session up, so this is the one chance to.
+            await TryAbortAbandonedSessionAsync(ticket.SessionId).ConfigureAwait(false);
             throw ProcessFailureMapping.ToPzConnectorException(client, process, ex.Message);
         }
 
@@ -108,6 +119,25 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    /// <summary>Best-effort only: the <see cref="ConnectorHostException"/> already caught by the caller
+    /// is the failure that matters, and swallowing whatever this does here (including the connector
+    /// having already reaped an abandoned session on its own) keeps that the only thing reported.
+    /// CancellationToken.None mirrors SinkWriteExecutor's own post-failure abort -- cleanup must not be
+    /// skipped just because the token that caused the failure was itself cancelled.</summary>
+    private async ValueTask TryAbortAbandonedSessionAsync(string sessionId)
+    {
+        try
+        {
+            await client.Grpc
+                .AbortWriteAsync(new SessionRef { SessionId = sessionId }, cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // best-effort; see summary above
+        }
+    }
 }
 
 /// <summary>One open write session: batches forward straight to the data-plane writer (serialized
@@ -125,8 +155,12 @@ internal sealed class ProcessSinkWriteSession(
         {
             await writer.WriteBatchAsync(batch, ct).ConfigureAwait(false);
         }
-        catch (ConnectorHostException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // DataPlaneWriter.WriteBatchAsync wraps nothing of its own -- a connector killed mid-write
+            // surfaces as a raw broken-pipe IOException/SocketException off the underlying socket, not
+            // a ConnectorHostException. The ABI still promises PzConnectorException here (transient,
+            // stderr tail) regardless of which concrete exception the socket happened to throw.
             throw ProcessFailureMapping.ToPzConnectorException(client, process, ex.Message);
         }
     }
@@ -140,8 +174,10 @@ internal sealed class ProcessSinkWriteSession(
             // optimization.
             await writer.CompleteAsync(ct).ConfigureAwait(false);
         }
-        catch (ConnectorHostException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // Same gap as WriteBatchAsync above: CompleteAsync's WriteEndAsync/socket shutdown can
+            // throw a raw IOException/SocketException on a dead connector, not a ConnectorHostException.
             throw ProcessFailureMapping.ToPzConnectorException(client, process, ex.Message);
         }
 

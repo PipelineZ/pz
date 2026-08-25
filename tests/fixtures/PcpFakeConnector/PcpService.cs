@@ -254,8 +254,12 @@ internal sealed class PcpService(
                 SessionId = state.SessionId,
                 Ticket = ByteString.CopyFrom(tickets.Mint(new WriteTicket(state))),
                 // Without this every PCP sink looks like DiscardsAll to the host, whatever it actually
-                // wraps -- the wrapped sink's own declaration crosses verbatim.
-                AbortSemantics = SpecMapping.ToAbortSemanticsMsg(sink.AbortSemantics),
+                // wraps -- the wrapped sink's own declaration crosses verbatim. --report-abort-semantics-none
+                // is a test switch (LocalFiles itself is always DiscardsAll) proving the field genuinely
+                // crosses the wire rather than the host merely echoing its own default back.
+                AbortSemantics = options.ReportAbortSemanticsNone
+                    ? AbortSemanticsMsg.AbortSemanticsNone
+                    : SpecMapping.ToAbortSemanticsMsg(sink.AbortSemantics),
             };
         });
 

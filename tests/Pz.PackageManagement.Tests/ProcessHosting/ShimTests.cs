@@ -159,7 +159,12 @@ public sealed class ShimTests : IDisposable
             Assert.Equal(2, result.BatchesWritten);
         }
 
-        Assert.True(Directory.Exists(Path.Combine(dataDir, "out")), "committed write should have landed a file");
+        // Same path Abort_path_leaves_no_destination_file asserts absent -- BeginWriteAsync creates the
+        // parent `out/` directory itself before any row is written, so asserting the directory alone
+        // would pass for an aborted write too. The FILE is what committing (vs. aborting) actually
+        // decides.
+        Assert.True(
+            File.Exists(Path.Combine(dataDir, "out", "out.parquet")), "committed write should have landed a file");
     }
 
     [SkippableFact]
@@ -255,6 +260,92 @@ public sealed class ShimTests : IDisposable
         }
 
         await process.DisposeAsync();
+    }
+
+    [SkippableFact]
+    public async Task Killing_the_process_mid_write_surfaces_a_transient_PzConnectorException()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var dataDir = NewTempDir();
+        var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSinkConnector(client, process);
+        await using var sink = await connector.OpenAsync(config, CancellationToken.None);
+
+        var schema = BuildSchema();
+        var outputSpec = new OutputSpec("lake", "out", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["path"] = "out", ["format"] = "parquet" });
+
+        var session = await sink.BeginWriteAsync(outputSpec, schema, CancellationToken.None);
+        try
+        {
+            using (var batch1 = BuildBatch(schema, 0, 3))
+            {
+                await session.WriteBatchAsync(batch1, CancellationToken.None);
+            }
+
+            // Kill the connector process, then keep writing: WriteBatchAsync forwards straight to
+            // DataPlaneWriter, which wraps nothing of its own, so the write side of the crash-detection
+            // gap (mirrors Killing_the_process_mid_read_... above) is a raw broken-pipe
+            // IOException/SocketException off the socket rather than any PCP-level exception -- a
+            // handful of attempts covers the write that lands after the peer's fd is actually gone
+            // rather than merely buffered by the OS.
+            await process.DisposeAsync();
+
+            var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            {
+                for (var i = 0; i < 5; i++)
+                {
+                    using var batch = BuildBatch(schema, 3 + i, 1);
+                    await session.WriteBatchAsync(batch, CancellationToken.None);
+                }
+            });
+
+            Assert.True(ex.IsTransient, "a mid-write process death should retry, not permanently fail the node");
+        }
+        finally
+        {
+            // Local-only cleanup (no RPC): safe to run against an already-dead connector.
+            await session.DisposeAsync();
+        }
+    }
+
+    // ---- Step 1/7: AbortSemantics genuinely crosses the wire, not the shim's own default -----
+
+    [SkippableFact]
+    public async Task AbortSemantics_surfaces_the_connectors_reported_value_not_the_shims_default()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var dataDir = NewTempDir();
+        // The wrapped LocalFilesConnector is always DiscardsAll -- the same value ProcessSink defaults
+        // to before any session opens -- so asserting DiscardsAll after BeginWriteAsync can't tell "the
+        // field crossed the wire" apart from "the shim's hardcoded default was never overwritten". This
+        // fixture switch reports AbortSemantics.None instead (unrelated to what LocalFiles actually is),
+        // so only a genuine wire round trip can make the assertion below pass.
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--report-abort-semantics-none"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSinkConnector(client, process);
+        await using var sink = await connector.OpenAsync(config, CancellationToken.None);
+
+        Assert.Equal(AbortSemantics.DiscardsAll, sink.AbortSemantics);
+
+        var schema = BuildSchema();
+        var outputSpec = new OutputSpec("lake", "out", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["path"] = "out", ["format"] = "parquet" });
+        await using var session = await sink.BeginWriteAsync(outputSpec, schema, CancellationToken.None);
+
+        Assert.Equal(AbortSemantics.None, sink.AbortSemantics);
+
+        await session.AbortAsync(CancellationToken.None);
     }
 
     // ---- Step 4: MessageMapping round trips, both directions, every record -------------------

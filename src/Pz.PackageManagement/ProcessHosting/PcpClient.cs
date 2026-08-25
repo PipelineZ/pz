@@ -1,5 +1,4 @@
 using System.Net.Sockets;
-using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Grpc.Net.Client;
 using Pz.Connectors.Abstractions;
@@ -24,6 +23,12 @@ public sealed class PcpClient : IAsyncDisposable
     private readonly GrpcChannel _channel;
     private int _disposed;
 
+    // 0 = unknown (no PzErrorDetail mapped yet), 1 = last mapped detail was transient, 2 = non-transient.
+    // Written from MapRpcException, read from ProcessFailureMapping on shim call sites -- concurrent
+    // partition reads share one PcpClient/Grpc client, so this needs a real memory barrier, not a plain
+    // bool? field (a torn or stale read here would misclassify a crash's transience).
+    private int _lastErrorTransient;
+
     private PcpClient(ConnectorProcess process, GrpcChannel channel, Hello hello, PzConnector.PzConnectorClient grpc)
     {
         _process = process;
@@ -47,7 +52,12 @@ public sealed class PcpClient : IAsyncDisposable
     /// NON-transient failure must not have that death independently reclassified as transient just
     /// because it looks like a mid-operation crash — a crash right after "this is permanent" is not a
     /// new transient fact.</summary>
-    public bool? LastErrorWasTransient { get; private set; }
+    public bool? LastErrorWasTransient => Volatile.Read(ref _lastErrorTransient) switch
+    {
+        1 => true,
+        2 => false,
+        _ => null,
+    };
 
     /// <summary>Dials <paramref name="process"/>'s control socket, performs the Handshake/Configure
     /// sequence under <see cref="ProtocolConstants.HandshakeTimeout"/>, and returns a ready client.
@@ -182,7 +192,7 @@ public sealed class PcpClient : IAsyncDisposable
         var client = new PcpClient(process, channel, hello, grpc);
         try
         {
-            var configureRequest = new ConfigureRequest { InstanceId = instanceId, Config = ToStruct(config.Values) };
+            var configureRequest = new ConfigureRequest { InstanceId = instanceId, Config = MessageMapping.ToStruct(config.Values) };
             await grpc.ConfigureAsync(configureRequest, cancellationToken: ct).ConfigureAwait(false);
         }
         catch (RpcException ex)
@@ -229,7 +239,7 @@ public sealed class PcpClient : IAsyncDisposable
         {
             var detail = PzErrorDetail.Parser.ParseFrom(trailer.ValueBytes);
             TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
-            LastErrorWasTransient = detail.IsTransient;
+            Volatile.Write(ref _lastErrorTransient, detail.IsTransient ? 1 : 2);
             return new PzConnectorException(detail.Message, detail.IsTransient, retryAfter);
         }
 
@@ -305,33 +315,4 @@ public sealed class PcpClient : IAsyncDisposable
     /// protocol-violation mapping instead.</summary>
     private static bool IsCallerCancellation(RpcException ex, CancellationToken ct) =>
         ct.IsCancellationRequested && ex.StatusCode is StatusCode.Cancelled or StatusCode.DeadlineExceeded;
-
-    /// <summary>Config crosses ONLY inside Configure's <c>google.protobuf.Struct</c> — never argv, env, or
-    /// logs. Mirrors the fixture's reverse mapping (<c>StructMapping.ToDictionary</c>): string, bool,
-    /// numeric (proto3 Struct has only <c>double</c>, so every number narrows through it), null, list, and
-    /// nested map are the whole shape <see cref="ConnectorConfig.Values"/> is ever built from.</summary>
-    private static Struct ToStruct(IReadOnlyDictionary<string, object?> values)
-    {
-        var result = new Struct();
-        foreach (var (key, value) in values)
-        {
-            result.Fields[key] = ToValue(value);
-        }
-
-        return result;
-    }
-
-    private static Value ToValue(object? value) => value switch
-    {
-        null => Value.ForNull(),
-        bool b => Value.ForBool(b),
-        string s => Value.ForString(s),
-        IReadOnlyDictionary<string, object?> map => Value.ForStruct(ToStruct(map)),
-        IReadOnlyDictionary<string, string> strings => Value.ForStruct(
-            ToStruct(strings.ToDictionary(pair => pair.Key, object? (pair) => pair.Value, StringComparer.Ordinal))),
-        sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal =>
-            Value.ForNumber(Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture)),
-        IEnumerable<object?> list => Value.ForList([.. list.Select(ToValue)]),
-        _ => Value.ForString(value.ToString() ?? string.Empty),
-    };
 }

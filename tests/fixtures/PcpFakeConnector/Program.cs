@@ -154,13 +154,14 @@ internal sealed record FixtureOptions(
     bool DieImmediately,
     bool WrongProtocolMajor,
     bool MisreportCapabilities,
-    bool FailCheckTransient)
+    bool FailCheckTransient,
+    bool ReportAbortSemanticsNone)
 {
     public static FixtureOptions Parse(string[] args)
     {
         string? socketPath = null;
         bool hangHandshake = false, dieImmediately = false, wrongProtocolMajor = false;
-        bool misreportCapabilities = false, failCheckTransient = false;
+        bool misreportCapabilities = false, failCheckTransient = false, reportAbortSemanticsNone = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -189,6 +190,9 @@ internal sealed record FixtureOptions(
                 case "--fail-check-transient":
                     failCheckTransient = true;
                     break;
+                case "--report-abort-semantics-none":
+                    reportAbortSemanticsNone = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -200,7 +204,8 @@ internal sealed record FixtureOptions(
             dieImmediately,
             wrongProtocolMajor,
             misreportCapabilities,
-            failCheckTransient);
+            failCheckTransient,
+            reportAbortSemanticsNone);
     }
 }
 
