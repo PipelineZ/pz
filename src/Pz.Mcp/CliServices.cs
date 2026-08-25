@@ -12,7 +12,7 @@ namespace Pz.Mcp;
 /// the real Pz.Cli implementations — tests/Pz.Mcp.Tests references Pz.Cli for exactly this.</summary>
 public sealed class CliServices
 {
-    public required Func<PzProject, string, CancellationToken, Task<(ConnectorRegistry Registry, ConnectorHost? Host)>>
+    public required Func<PzProject, string, CancellationToken, Task<(ConnectorRegistry Registry, ConnectorHosts? Hosts)>>
         CreateRegistryAsync { get; init; }
 
     /// <summary>Resolves this project's state backend (local/HTTP/SQL Server per project.yml's

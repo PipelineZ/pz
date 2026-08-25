@@ -267,10 +267,11 @@ internal static class RunCommand
         await duck.ExecuteAsync("create schema if not exists staging", ct);
 
         ConnectorRegistry registry;
-        ConnectorHost? host;
+        ConnectorHosts? host;
         try
         {
-            (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck, ct);
+            (registry, host) = await ConnectorRegistryFactory.CreateAsync(
+                project, projectDir, noLockCheck, ct, runId);
         }
         catch (PzValidationException ex)
         {

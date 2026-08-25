@@ -1,5 +1,8 @@
+using System.Runtime.InteropServices;
+using System.Text.Json;
 using Pz.Core.Loading;
 using Pz.Core.Validation;
+using Pz.PackageManagement.Restore;
 
 namespace Pz.Cli.Tests;
 
@@ -104,6 +107,78 @@ public sealed class ConnectorRegistryFactoryTests(CliLocalFeedFixture feed) : ID
 
         Assert.Equal(ExitCodes.Ok, exit);
         Assert.Contains("warning: note: 'FakeSourceConnector' ships no pz.connector.json", stderr);
+    }
+
+    /// <summary>Neither host can see the other's package set, so each one's own PZ0305 duplicate-name
+    /// check passes and the collision only exists in the merged registry. Nothing is spawned: the
+    /// refusal happens at registration, so the process package's entrypoint only has to exist.</summary>
+    [Fact]
+    public async Task Connector_name_registered_by_both_hosts_is_error_PZ0305()
+    {
+        Directory.CreateDirectory(_work);
+        File.WriteAllText(Path.Combine(_work, "project.yml"), """
+            name: cross_host_collider_test
+            version: 0.1.0
+
+            connectors:
+              - package: FakeSourceConnector
+                version: 1.2.3
+            """);
+
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+
+        // Declared after the restore that produced the lock, then folded into that lock by hand: no
+        // feed can serve a process package yet, and what is under test is the registry's merge, not
+        // restore.
+        File.AppendAllText(Path.Combine(_work, "project.yml"), """
+
+              - package: FakeSourcePcp
+                version: 1.0.0
+            """);
+        WriteProcessPackageClaiming("fakesource");
+
+        var project = ProjectLoader.Load(_work, new Dictionary<string, string>());
+
+        var ex = await Assert.ThrowsAsync<PzValidationException>(() =>
+            ConnectorRegistryFactory.CreateAsync(project, _work, noLockCheck: false, CancellationToken.None));
+
+        var error = Assert.Single(ex.Errors);
+        Assert.Equal(PzErrorCode.ConnectorNotInstalled, error.Code);
+        Assert.Contains("fakesource", error.Message);
+        Assert.Contains("out-of-process", error.Message);
+        Assert.NotNull(error.Hint);
+    }
+
+    private void WriteProcessPackageClaiming(string connectorName)
+    {
+        const string packageId = "FakeSourcePcp";
+        const string version = "1.0.0";
+        var packageDir = Path.Combine(_work, ".pz", "packages", packageId, version);
+        Directory.CreateDirectory(packageDir);
+        File.WriteAllText(Path.Combine(packageDir, "connector"), "never executed by this test");
+        File.WriteAllText(Path.Combine(packageDir, "pz.connector.json"), JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["name"] = connectorName,
+                ["protocolMajorMin"] = 1,
+                ["protocolMajorMax"] = 1,
+                ["capabilities"] = Array.Empty<string>(),
+                ["runtime"] = "process",
+                ["entrypoints"] = new Dictionary<string, string>
+                {
+                    [RuntimeInformation.RuntimeIdentifier] = "connector",
+                },
+            }));
+
+        var lockPath = Path.Combine(_work, "pz.lock.json");
+        var existing = LockFileWriter.Read(lockPath)!;
+        LockFileWriter.Write(
+            existing with
+            {
+                Packages = [.. existing.Packages,
+                    new LockedPackage(packageId, version, "sha512-cross-host-fixture", new LockedAssets([], []))],
+            },
+            lockPath);
     }
 
     private static string RunAndCaptureStderr(string[] args)

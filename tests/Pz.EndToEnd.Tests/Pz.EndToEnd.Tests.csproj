@@ -26,6 +26,10 @@
     <ProjectReference Include="..\..\src\Pz.Cli\Pz.Cli.csproj" />
     <ProjectReference Include="..\..\src\Pz.DuckDb\Pz.DuckDb.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
+    <!-- Build-order only (ReferenceOutputAssembly=false): ProcessHostParityTests spawns the fixture's
+         apphost off disk as a connector package's entrypoint, so it must exist before this suite runs;
+         nothing here references its assembly. -->
+    <ProjectReference Include="..\fixtures\PcpFakeConnector\PcpFakeConnector.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

@@ -129,7 +129,7 @@ internal static class ConnectorsCommand
     /// cref="ConnectorRegistryFactory"/>), not which restored package registered it, so this names the
     /// sole declared non-builtin package when there is exactly one (the common case), mirroring
     /// <c>ConnectorRegistryFactory.DescribePackages</c>'s same-ambiguity precedent.</summary>
-    private static string DescribeHostedPackage(PzProject project, ConnectorHost? host)
+    private static string DescribeHostedPackage(PzProject project, ConnectorHosts? host)
     {
         if (host is null)
         {

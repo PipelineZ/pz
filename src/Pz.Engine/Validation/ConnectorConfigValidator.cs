@@ -195,6 +195,17 @@ public static class ConnectorConfigValidator
         string kind, string name, string blockLabel, string filePath, List<PzError> errors,
         HashSet<string> flaggedKeys, HashSet<string> requiredFlaggedKeys)
     {
+        // An empty schema text is "this connector declares no schema for this block", not a malformed
+        // one: an out-of-process connector carries its schemas in its handshake, so one that has not been
+        // spawned yet has none to offer, and JsonSchema.FromText would fail on the empty document rather
+        // than say so. Deliberately NOT a reason to spawn a connector during validation -- the
+        // connector's own ValidateAsync (ValidateCrossFieldAsync below) is where it still gets its say
+        // about a config it has actually been handed.
+        if (string.IsNullOrEmpty(schemaText))
+        {
+            return;
+        }
+
         var schema = JsonSchema.FromText(schemaText);
         var node = YamlToJson.Convert(new Dictionary<string, object?>(values));
         var element = JsonSerializer.Deserialize<JsonElement>(node);

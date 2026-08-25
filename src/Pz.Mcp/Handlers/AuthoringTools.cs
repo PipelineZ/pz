@@ -502,7 +502,7 @@ internal static class AuthoringTools
         // connector package still resolves) but scopes validation to exactly the proposed connection.
         var probeProject = project with { Connections = [probeConnection] };
 
-        (ConnectorRegistry Registry, ConnectorHost? Host) resolved;
+        (ConnectorRegistry Registry, ConnectorHosts? Hosts) resolved;
         try
         {
             resolved = await services.CreateRegistryAsync(probeProject, projectDir, ct).ConfigureAwait(false);
