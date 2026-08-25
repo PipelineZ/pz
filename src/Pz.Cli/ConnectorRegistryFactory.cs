@@ -102,12 +102,23 @@ internal static class ConnectorRegistryFactory
                     packagesDir, outOfProcessRefs, socketRoot, warn: Warn);
             }
         }
-        catch (ConnectorHostException ex)
+        catch (Exception ex)
         {
-            // The second host failing does not un-load the first: reclaim whatever did get built (and
-            // the socket root created for it) through the composite that would otherwise have owned it.
+            // Catch-all, not just ConnectorHostException: the second host failing does not un-load the
+            // first, and resolving the socket root touches the filesystem (IOException,
+            // UnauthorizedAccessException). Reclaim whatever did get built — and the temp root created
+            // for it — through the composite that would otherwise have owned it.
             await new ConnectorHosts(host, processHost, ownedSocketRoot).DisposeAsync().ConfigureAwait(false);
-            throw new PzValidationException([new PzError(ex.Code, ex.Message, null, null, ex.Hint)]);
+            if (ex is ConnectorHostException hostFailure)
+            {
+                throw new PzValidationException([
+                    new PzError(hostFailure.Code, hostFailure.Message, null, null, hostFailure.Hint),
+                ]);
+            }
+
+            // Rethrown as-is: a cancellation is not a config error, and a bare `throw` keeps the
+            // original stack for anything that reaches the CLI's fatal handler.
+            throw;
         }
 
         var hosts = new ConnectorHosts(host, processHost, ownedSocketRoot);

@@ -29,6 +29,9 @@ public sealed class ProcessHostParityTests : IDisposable
 
     private readonly List<string> _dirs = [];
 
+    /// <summary>An operation gate that was handed to a shim but never asked to execute anything.</summary>
+    private const string ZeroOps = "\"ops\":{\"executed\":0,\"retried\":0,\"throttle_wait_ms\":0}";
+
     /// <summary>Default tiers: LocalFiles offers a native path for a <c>columns:</c>-contracted csv read
     /// and a parquet write, and the process host must offer the same two — the connector's native SQL
     /// fragment crosses the wire and DuckDB executes it in the host either way. Strict parity: no
@@ -73,18 +76,37 @@ public sealed class ProcessHostParityTests : IDisposable
         // (IOperationGateAware), so the engine records an ops object for them, and the counts are zero
         // because a connector that never issues a GateAcquire never routes an operation through it.
         // LocalFiles is not gate-aware and records no ops key at all.
+        //
+        // Both of the process run's ops objects (SourceLoad and SinkWrite) are pinned, not just one:
+        // removing every occurrence of the all-zero literal must leave NO ops key behind, so a
+        // non-zero counter on either node fails here instead of being erased by OpsPattern below.
         Assert.DoesNotContain("\"ops\":", builtin.Results, StringComparison.Ordinal);
-        Assert.Contains(
-            "\"ops\":{\"executed\":0,\"retried\":0,\"throttle_wait_ms\":0}",
-            process.Results, StringComparison.Ordinal);
+        Assert.Contains(ZeroOps, process.Results, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "\"ops\":",
+            process.Results.Replace(ZeroOps, "", StringComparison.Ordinal),
+            StringComparison.Ordinal);
+
+        // TimingsPattern erases these below; without a presence check, a process side that stopped
+        // reporting channel stalls altogether would still pass.
+        Assert.Contains("\"timings\":", builtin.Results, StringComparison.Ordinal);
+        Assert.Contains("\"timings\":", process.Results, StringComparison.Ordinal);
 
         AssertParity(builtin, process, universalTier: true);
     }
 
-    /// <summary>A verb with no run directory still opens connectors — <c>pz validate</c> spawns one to
-    /// ask it about the connection config. Its sockets therefore go to a host-owned temp root, which
-    /// <c>ConnectorHosts</c> removes when the hosts are disposed, and nothing about the process path
-    /// leaves a run directory behind in a project that never ran.</summary>
+    /// <summary>A verb with no run directory still opens connectors — <c>pz validate</c> spawns one
+    /// per process-hosted connection to run its cross-field <c>ValidateAsync</c>. Those sockets have no
+    /// run to be scoped to, so <c>ProcessSocketRoot</c> hands the host a temp root it OWNS, and
+    /// <c>ConnectorHosts</c> deletes it on disposal.
+    ///
+    /// <para>Both halves of that contract are checked. A connector was spawned and therefore had a
+    /// socket root somewhere; no run directory exists, so it was not the run-scoped one; and no
+    /// owned-root-shaped temp directory survives the verb, so whatever was created was removed. Only
+    /// ADDITIONS are asserted on, and only for the exact <c>pz-</c> + 8 lowercase hex shape
+    /// <see cref="ProcessSocketRoot"/> mints: a temp directory some other suite happened to remove
+    /// during this window is not this test's business, and fixed-name temp directories are not this
+    /// shape.</para></summary>
     [SkippableFact]
     public void Validate_opens_a_process_connector_with_no_run_directory()
     {
@@ -92,10 +114,17 @@ public sealed class ProcessHostParityTests : IDisposable
 
         var dir = NewProjectDir();
         WriteProject(dir, ProcessConnector, forceUniversal: false);
+        var before = OwnedSocketRoots();
 
         Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["validate", "--project", dir]).Invoke());
+
         Assert.False(Directory.Exists(Path.Combine(dir, ".pz", "runs")));
+        Assert.Empty(OwnedSocketRoots().Except(before, StringComparer.Ordinal));
     }
+
+    private static IReadOnlyList<string> OwnedSocketRoots() =>
+        [.. Directory.GetDirectories(Path.GetTempPath(), "pz-????????")
+            .Where(d => Path.GetFileName(d)[3..].All(char.IsAsciiHexDigitLower))];
 
     private static void AssertParity(RunArtifacts builtin, RunArtifacts process, bool universalTier = false)
     {
