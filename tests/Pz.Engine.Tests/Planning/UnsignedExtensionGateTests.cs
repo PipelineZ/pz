@@ -226,4 +226,83 @@ public sealed class UnsignedExtensionGateTests
         var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SinkWrite);
         Assert.Equal(EdgeStrategy.NativeCopy, node.Strategy);
     }
+
+    // -- Block comments: a `--` line comment was already stripped before the keyword and around its
+    // argument (see the tab/newline/comment cases above); `/* ... */` needs the same treatment in both
+    // positions, because DuckDB's own tokenizer treats a block comment as just another token boundary --
+    // "LOAD/*c*/'x'" is exactly as legal to DuckDB as "LOAD 'x'".
+
+    [Fact]
+    public async Task A_load_preceded_by_a_block_comment_is_still_caught()
+    {
+        var sink = new StubConfigurableSetupStatementsSink(
+            "/* block comment */LOAD '/abs/path/inside/.pz/packages/x/1.0/ext.duckdb_extension'");
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSinkSetup(sink, allowUnsignedExtensions: false);
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, CancellationToken.None);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SinkWrite);
+        Assert.Equal(EdgeStrategy.ArrowStream, node.Strategy);
+        Assert.Contains(PzErrorCode.UnsignedExtensionRefused, node.Reason);
+        Assert.DoesNotContain(".pz/packages", node.Reason);
+        Assert.DoesNotContain("ext.duckdb_extension", node.Reason);
+    }
+
+    [Fact]
+    public async Task A_load_separated_from_its_argument_by_a_block_comment_is_still_caught()
+    {
+        var sink = new StubConfigurableSetupStatementsSink(
+            "LOAD/*c*/'/abs/path/inside/.pz/packages/x/1.0/ext.duckdb_extension'");
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSinkSetup(sink, allowUnsignedExtensions: false);
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, CancellationToken.None);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SinkWrite);
+        Assert.Equal(EdgeStrategy.ArrowStream, node.Strategy);
+        Assert.Contains(PzErrorCode.UnsignedExtensionRefused, node.Reason);
+        Assert.DoesNotContain(".pz/packages", node.Reason);
+        Assert.DoesNotContain("ext.duckdb_extension", node.Reason);
+    }
+
+    [Fact]
+    public async Task A_signed_load_with_a_block_comment_before_its_argument_still_passes()
+    {
+        var sink = new StubConfigurableSetupStatementsSink("LOAD /*c*/ delta");
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSinkSetup(sink, allowUnsignedExtensions: false);
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, CancellationToken.None);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SinkWrite);
+        Assert.Equal(EdgeStrategy.NativeCopy, node.Strategy);
+    }
+
+    [Fact]
+    public async Task A_nested_block_comment_before_the_keyword_is_still_caught()
+    {
+        var sink = new StubConfigurableSetupStatementsSink(
+            "/* outer /* inner */ still outer */LOAD '/abs/path/inside/.pz/packages/x/1.0/ext.duckdb_extension'");
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSinkSetup(sink, allowUnsignedExtensions: false);
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, CancellationToken.None);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SinkWrite);
+        Assert.Equal(EdgeStrategy.ArrowStream, node.Strategy);
+        Assert.Contains(PzErrorCode.UnsignedExtensionRefused, node.Reason);
+    }
+
+    /// <summary>An unparseable statement (a `/*` with no matching `*/`) must never fail open -- there is
+    /// no safe way to classify text a syntactic scanner cannot fully consume, so the gate refuses the
+    /// native tier rather than guess it is signed.</summary>
+    [Fact]
+    public async Task An_unterminated_block_comment_fails_closed()
+    {
+        var sink = new StubConfigurableSetupStatementsSink("/* never closed\nLOAD delta");
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSinkSetup(sink, allowUnsignedExtensions: false);
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, CancellationToken.None);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SinkWrite);
+        Assert.Equal(EdgeStrategy.ArrowStream, node.Strategy);
+        Assert.Contains(PzErrorCode.UnsignedExtensionRefused, node.Reason);
+    }
 }

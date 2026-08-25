@@ -428,9 +428,9 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
     /// packaged extension without consent" over BOTH verbs: `INSTALL '&lt;path&gt;'` alone stages one on
     /// disk even with no matching `LOAD` in the same setup, and a later bare `LOAD &lt;name&gt;` of an
     /// already-installed unsigned extension would otherwise read as signed. Purely syntactic (split on
-    /// `;`, strip leading whitespace and `--` line comments, match the keyword followed by any
-    /// whitespace) -- no execution, no path resolution, no SQL parsing library, so it is safe and cheap
-    /// to run at plan time on every candidate statement. DuckDB's own parser (ISqlAstReader) is the
+    /// `;`, strip whitespace and comment trivia, match the keyword followed by any non-identifier
+    /// boundary) -- no execution, no path resolution, no SQL parsing library, so it is safe and cheap to
+    /// run at plan time on every candidate statement. DuckDB's own parser (ISqlAstReader) is the
     /// sanctioned escape hatch if this split ever proves insufficient -- not a pre-emptive next
     /// step.</summary>
     private static bool HasUnsignedPackagedExtension(string setupStatementsElement)
@@ -446,22 +446,18 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         return false;
     }
 
+    /// <summary>A `LOAD`/`INSTALL` whose argument is a quoted filesystem path never reaches DuckDB
+    /// without consent, regardless of comment trivia between the statement's start, the keyword, and its
+    /// argument -- comments are not a way to smuggle a packaged extension load past this gate. Trivia
+    /// that cannot be parsed (an unterminated `/*`) fails CLOSED: an unparseable statement is treated as
+    /// packaged rather than silently waved through, because a gate that can be defeated by malformed
+    /// input is not a gate.</summary>
     private static bool IsUnsignedPackagedExtensionStatement(string statement)
     {
         var remaining = statement.AsSpan();
-
-        // Skip leading whitespace and any number of leading `--` line comments -- each consumes to the
-        // next newline, or to the end of the fragment for a comment with nothing after it.
-        while (true)
+        if (!TryStripLeadingTrivia(ref remaining))
         {
-            remaining = remaining.TrimStart();
-            if (!remaining.StartsWith("--", StringComparison.Ordinal))
-            {
-                break;
-            }
-
-            var newline = remaining.IndexOf('\n');
-            remaining = newline < 0 ? default : remaining[(newline + 1)..];
+            return true;
         }
 
         ReadOnlySpan<char> afterKeyword;
@@ -478,15 +474,90 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             return false;
         }
 
-        // The keyword must end at a whitespace boundary -- "LOADED"/"INSTALLED" (unlikely, but not this
-        // keyword) is refused, and a bodyless "LOAD"/"INSTALL" has no argument to classify.
-        if (afterKeyword.Length == 0 || !char.IsWhiteSpace(afterKeyword[0]))
+        // The keyword ends wherever an identifier could NOT continue -- "LOADED"/"INSTALLED" is refused
+        // (still an identifier character), while whitespace, a `--`/`/* */` comment, or the argument's
+        // own opening quote all end the keyword token the same way DuckDB's own tokenizer would.
+        if (afterKeyword.Length > 0 && (char.IsLetterOrDigit(afterKeyword[0]) || afterKeyword[0] == '_'))
         {
             return false;
         }
 
+        if (!TryStripLeadingTrivia(ref afterKeyword))
+        {
+            return true;
+        }
+
         var argument = afterKeyword.Trim();
         return argument.Length > 0 && (argument[0] == '\'' || argument[0] == '"');
+    }
+
+    /// <summary>Strips whitespace, `--` line comments, and `/* ... */` block comments from the front of
+    /// <paramref name="remaining"/>, repeating until none remain. Block comments nest (DuckDB follows
+    /// Postgres here: an inner `/*` requires its own matching `*/` before the outer one closes) --
+    /// tracked with a depth counter, not a naive first-`*/`-wins scan, so a nested comment cannot end the
+    /// strip early and leave real SQL text mistaken for more trivia. Returns false, leaving
+    /// <paramref name="remaining"/> unspecified, when a `/*` is never closed -- the caller's contract is
+    /// to fail closed on that, never to guess.</summary>
+    private static bool TryStripLeadingTrivia(ref ReadOnlySpan<char> remaining)
+    {
+        while (true)
+        {
+            remaining = remaining.TrimStart();
+
+            if (remaining.StartsWith("--", StringComparison.Ordinal))
+            {
+                var newline = remaining.IndexOf('\n');
+                remaining = newline < 0 ? default : remaining[(newline + 1)..];
+                continue;
+            }
+
+            if (remaining.StartsWith("/*", StringComparison.Ordinal))
+            {
+                if (!TrySkipBlockComment(ref remaining))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>Skips exactly one (possibly nested) `/* ... */` block comment. <paramref name="span"/>
+    /// must already start with `/*`. False, leaving <paramref name="span"/> unspecified, when depth never
+    /// returns to zero before the text runs out.</summary>
+    private static bool TrySkipBlockComment(ref ReadOnlySpan<char> span)
+    {
+        var depth = 0;
+        var i = 0;
+        while (i < span.Length)
+        {
+            if (i + 1 < span.Length && span[i] == '/' && span[i + 1] == '*')
+            {
+                depth++;
+                i += 2;
+                continue;
+            }
+
+            if (i + 1 < span.Length && span[i] == '*' && span[i + 1] == '/')
+            {
+                depth--;
+                i += 2;
+                if (depth == 0)
+                {
+                    span = span[i..];
+                    return true;
+                }
+
+                continue;
+            }
+
+            i++;
+        }
+
+        return false;
     }
 
     // Static (no connection) mirror of the postgres-style contract: a PartitionedRead-capable connector
