@@ -59,7 +59,7 @@ if [[ ! -d "${SIBLING_REPO}" ]]; then
     echo "  this benchmark compares deltalake-rs (in this repo) against Pz.Connector.DeltaLake" >&2
     echo "  (a separate repo), so both need to be checked out." >&2
     echo "  clone it:" >&2
-    echo "    git clone git@github.com:coccor/pz-connector-deltalake.git '${SIBLING_REPO}'" >&2
+    echo "    git clone git@github.com:PipelineZ/pz-connector-deltalake.git '${SIBLING_REPO}'" >&2
     echo "  or point PZ_DELTALAKE_DOTNET_REPO at wherever you already have it checked out." >&2
     exit 2
 fi

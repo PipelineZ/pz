@@ -39,7 +39,7 @@ nuget.org via [trusted publishing](https://learn.microsoft.com/en-us/nuget/nuget
 (OIDC) -- no long-lived API key is stored in this repo.
 
 `Directory.Build.props`'s `RepositoryUrl` points at the real repository
-(`https://github.com/coccor/pz`), so packed nuspecs ship a resolving repository link; if the
+(`https://github.com/PipelineZ/pz`), so packed nuspecs ship a resolving repository link; if the
 repository is ever renamed, update it in the same change.
 
 **One-time manual prerequisites** (see comments at the top of `release.yml` for the same list):
@@ -49,7 +49,7 @@ repository is ever renamed, update it in the same change.
    so there is no policy-per-package. The whole form, case-insensitively:
    - **Policy Name**: anything you'll recognize later, e.g. `pz-release`
    - **Package Owner**: the nuget.org user or organization that will own the packages
-   - **Repository Owner**: `coccor`
+   - **Repository Owner**: `PipelineZ`
    - **Repository**: `pz`
    - **Workflow File**: `release.yml`, the filename only, never the `.github/workflows/` path
    - **Environment**: `release`, matching `release.yml`'s `environment: release`, which restricts

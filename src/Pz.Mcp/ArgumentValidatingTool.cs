@@ -53,7 +53,7 @@ internal sealed class ArgumentValidatingTool(McpServerTool inner) : McpServerToo
         $"'{ProtocolTool.Name}' failed: {ex.GetType().Name}: {ex.Message}",
         null, null,
         "this is a pz defect, not a bad argument -- re-check the arguments against the tool's input " +
-        "schema, and report it at https://github.com/coccor/pz/issues with this message");
+        "schema, and report it at https://github.com/PipelineZ/pz/issues with this message");
 
     private void Validate(IDictionary<string, JsonElement>? arguments)
     {
