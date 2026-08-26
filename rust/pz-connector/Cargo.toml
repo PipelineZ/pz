@@ -10,7 +10,6 @@ tonic = "0.12"
 prost = "0.13"
 prost-types = "0.13"
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["io"] }
 tokio-stream = "0.1"
 arrow = { version = "53", default-features = false, features = ["ipc"] }
 async-trait = "0.1"
@@ -18,7 +17,6 @@ serde_json = { version = "1", features = ["preserve_order"] }
 getrandom = "0.2"
 anyhow = "1"
 thiserror = "1"
-futures = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

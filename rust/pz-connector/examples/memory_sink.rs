@@ -1,8 +1,8 @@
 //! A tiny in-memory `SinkConnector`, used both to exercise the SDK during development and as the
-//! target `rust/scripts/rust-conformance.sh` runs the host's `pz connector test` black-box protocol
-//! checks against. Every write's batches accumulate under its output name in memory (nothing is ever
-//! actually persisted -- there is no destination); `commit` reports the row/batch counts the
-//! conformance suite checks, and `abort` simply drops whatever was buffered.
+//! target `scripts/rust-conformance.sh` runs the host's `pz connector test` black-box protocol checks
+//! against. Every write's batches accumulate under its output name in memory (nothing is ever actually
+//! persisted -- there is no destination); `commit` reports the row/batch counts the conformance suite
+//! checks, and `abort` simply drops whatever was buffered.
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
@@ -38,6 +38,12 @@ impl SinkConnector for MemorySinkConnector {
     }
 }
 
+/// The exact output name `pz connector test`'s `transient-error-shape` vector probes with, mirrored
+/// from `Pz.PackageManagement.ProcessHosting.Conformance.ConformanceSuite`'s own `missingName` constant.
+/// Rejecting it here (rather than accepting any output name unconditionally) is what lets that vector
+/// actually observe a decoded `pz-error-bin` trailer end-to-end instead of reporting a vacuous pass.
+const CONFORMANCE_PROBE_MISSING_OUTPUT: &str = "__pz_conformance_probe_missing__";
+
 struct MemorySink;
 
 #[async_trait]
@@ -47,6 +53,16 @@ impl Sink for MemorySink {
         spec: OutputSpec,
         schema: SchemaRef,
     ) -> Result<Box<dyn WriteSession>, PzError> {
+        if spec.output == CONFORMANCE_PROBE_MISSING_OUTPUT {
+            return Err(PzError::transient(
+                format!(
+                    "no output named '{}' -- the memory sink only accepts the output its probe config names",
+                    spec.output
+                ),
+                250,
+            ));
+        }
+
         Ok(Box::new(MemoryWriteSession {
             output: spec.output,
             schema,

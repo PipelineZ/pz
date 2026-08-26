@@ -23,10 +23,24 @@ pub(crate) struct TicketRegistry {
 }
 
 impl TicketRegistry {
-    pub(crate) fn mint(&self, entry: TicketEntry) -> [u8; TICKET_LENGTH] {
+    /// 16 cryptographically random bytes, not yet registered anywhere. Split out from
+    /// [`insert`](Self::insert) so a caller that needs the ticket value embedded in the entry it is
+    /// about to register (`SessionState` records its own ticket so `commit`/`abort` can revoke it) can
+    /// generate it first and build that entry around it.
+    pub(crate) fn generate() -> [u8; TICKET_LENGTH] {
         let mut ticket = [0u8; TICKET_LENGTH];
         getrandom::getrandom(&mut ticket).expect("system randomness source unavailable");
+        ticket
+    }
+
+    pub(crate) fn insert(&self, ticket: [u8; TICKET_LENGTH], entry: TicketEntry) {
         self.entries.lock().unwrap().insert(ticket, entry);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mint(&self, entry: TicketEntry) -> [u8; TICKET_LENGTH] {
+        let ticket = Self::generate();
+        self.insert(ticket, entry);
         ticket
     }
 
@@ -35,6 +49,17 @@ impl TicketRegistry {
     pub(crate) fn burn(&self, ticket: &[u8]) -> Option<TicketEntry> {
         let ticket: &[u8; TICKET_LENGTH] = ticket.try_into().ok()?;
         self.entries.lock().unwrap().remove(ticket)
+    }
+
+    /// Removes a ticket whether or not it was ever presented -- the counterpart to a session finishing
+    /// (committed or aborted) through the control plane before its data connection ever burned the
+    /// ticket itself. Without this, a session that finishes control-plane-first (or whose data
+    /// connection never opens at all, e.g. the premature-commit case) leaves its ticket live forever:
+    /// a later connection presenting it would resolve the very `SessionState` that was already finalized
+    /// and taken apart. A no-op when the ticket was already burned (the common case, since the data
+    /// connection usually opens and finishes well before commit/abort runs).
+    pub(crate) fn revoke(&self, ticket: &[u8; TICKET_LENGTH]) {
+        self.entries.lock().unwrap().remove(ticket);
     }
 }
 
@@ -82,5 +107,33 @@ mod tests {
     fn a_malformed_length_ticket_is_rejected() {
         let registry = TicketRegistry::default();
         assert!(registry.burn(&[1, 2, 3]).is_none());
+    }
+
+    /// The mechanism `commit_write`/`abort_write` use to close the "session finished, ticket never
+    /// presented" window: a ticket revoked before its data connection ever arrived must never resolve
+    /// afterward, exactly as if it had been burned.
+    #[test]
+    fn a_revoked_ticket_is_refused_even_if_never_burned() {
+        let registry = TicketRegistry::default();
+        let ticket = TicketRegistry::generate();
+        registry.insert(ticket, dummy_entry());
+
+        registry.revoke(&ticket);
+
+        assert!(
+            registry.burn(&ticket).is_none(),
+            "a revoked ticket must never resolve, the same as an already-burned one"
+        );
+    }
+
+    #[test]
+    fn revoking_an_already_burned_ticket_is_a_harmless_no_op() {
+        let registry = TicketRegistry::default();
+        let ticket = registry.mint(dummy_entry());
+        assert!(registry.burn(&ticket).is_some());
+
+        // Does not panic; the common case is that the data connection already burned the ticket
+        // before commit/abort ever runs.
+        registry.revoke(&ticket);
     }
 }

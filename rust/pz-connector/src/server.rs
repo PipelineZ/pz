@@ -19,7 +19,7 @@ use crate::data_plane;
 use crate::error::{to_status, PzError};
 use crate::pb;
 use crate::pb::pz_connector_server::{PzConnector, PzConnectorServer};
-use crate::ticket::{TicketEntry, TicketRegistry};
+use crate::ticket::{TicketEntry, TicketRegistry, TICKET_LENGTH};
 
 /// Protocol major this SDK speaks, mirrored from `Pz.Connectors.Abstractions.ProtocolVersion.Major`.
 const PROTOCOL_MAJOR: i32 = 1;
@@ -154,25 +154,39 @@ pub enum ServeExit {
 /// not); `CommitWrite` awaits it before ever touching `write_session`.
 pub(crate) struct SessionState {
     pub(crate) op_id: String,
+    /// The single-use data-plane ticket minted for this session, recorded here (not just handed to the
+    /// host) so `commit_write`/`abort_write` can revoke it -- see `TicketRegistry::revoke`'s doc for why
+    /// a session that finishes before its ticket is ever presented would otherwise leave that ticket
+    /// live forever.
+    ticket: [u8; TICKET_LENGTH],
     write_session: AsyncMutex<Option<Box<dyn WriteSession>>>,
     drained_tx: StdMutex<Option<oneshot::Sender<Result<(), PzError>>>>,
     drained_rx: AsyncMutex<Option<oneshot::Receiver<Result<(), PzError>>>>,
     /// A clone of the connected data-plane socket, attached once the pump claims it. `AbortWrite`/
-    /// `Cancel` use it to force a blocking read to fail, unblocking a pump that would otherwise wait
-    /// forever for bytes the host is never going to send.
+    /// `Cancel`/a `Shutdown`-triggered sweep use it to force a blocking read to fail, unblocking a pump
+    /// that would otherwise wait forever for bytes the host is never going to send.
     data_conn: StdMutex<Option<StdUnixStream>>,
 }
 
 impl SessionState {
-    fn new(op_id: String, session: Box<dyn WriteSession>) -> Arc<Self> {
+    fn new(
+        op_id: String,
+        ticket: [u8; TICKET_LENGTH],
+        session: Box<dyn WriteSession>,
+    ) -> Arc<Self> {
         let (tx, rx) = oneshot::channel();
         Arc::new(SessionState {
             op_id,
+            ticket,
             write_session: AsyncMutex::new(Some(session)),
             drained_tx: StdMutex::new(Some(tx)),
             drained_rx: AsyncMutex::new(Some(rx)),
             data_conn: StdMutex::new(None),
         })
+    }
+
+    pub(crate) fn ticket(&self) -> [u8; TICKET_LENGTH] {
+        self.ticket
     }
 
     #[cfg(test)]
@@ -193,7 +207,11 @@ impl SessionState {
             }
         }
 
-        SessionState::new("test-op".to_string(), Box::new(NullSession))
+        SessionState::new(
+            "test-op".to_string(),
+            TicketRegistry::generate(),
+            Box::new(NullSession),
+        )
     }
 
     /// Data plane: forwards one batch into the open session, or fails if the session was already
@@ -256,7 +274,10 @@ struct PzConnectorService<C: SinkConnector> {
     /// connector, but `BeginWrite` needs this) -- and cached, since `SinkConnector::open` is meant to
     /// run once per connector instance, exactly as the in-process ABI's `ISinkConnector.OpenAsync` does.
     sink: AsyncMutex<Option<Arc<dyn Sink>>>,
-    sessions: StdMutex<HashMap<String, Arc<SessionState>>>,
+    /// `Arc`-wrapped (not owned outright) so `serve_sink_inner` can keep its own clone: once `Shutdown`
+    /// stops the accept loop, it still needs to reach every live session to force-unblock its data
+    /// connection -- see the doc on the shutdown sweep in `serve_sink_inner`.
+    sessions: Arc<StdMutex<HashMap<String, Arc<SessionState>>>>,
     tickets: Arc<TicketRegistry>,
     shutdown_tx: tokio::sync::watch::Sender<bool>,
     /// A `HostChannel` call is a long-lived bidirectional stream the host may hold open for this
@@ -303,8 +324,20 @@ type HostChannelStream =
 impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
     async fn handshake(
         &self,
-        _request: Request<pb::HandshakeRequest>,
+        request: Request<pb::HandshakeRequest>,
     ) -> Result<Response<pb::Hello>, Status> {
+        let host_major = request.into_inner().protocol_major;
+        if host_major != PROTOCOL_MAJOR {
+            // Refused here rather than silently answering with our own major and letting the host
+            // discover the mismatch some other way: the host's own `PcpClient` already treats a
+            // disagreeing `Hello.Info.ProtocolMajor` as a load error, but a connector that noticed the
+            // SAME disagreement from its own side of the handshake should say so plainly too, not
+            // pretend to be compatible.
+            return Err(Status::failed_precondition(format!(
+                "host speaks protocol major {host_major}, this connector (pz-connector Rust SDK) speaks major {PROTOCOL_MAJOR}"
+            )));
+        }
+
         Ok(Response::new(pb::Hello {
             info: Some(pb::ConnectorInfoMsg {
                 name: self.decl.name.to_string(),
@@ -424,16 +457,21 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             .map_err(|e| to_status(&e))?;
 
         let session_id = Self::new_session_id();
-        let state = SessionState::new(msg.op_id, session);
+        // Generated before the entry is built, not via `TicketRegistry::mint`: the ticket has to be
+        // baked into `SessionState` itself (see its `ticket` field's doc) so `commit_write`/
+        // `abort_write` can revoke it later, and that means the bytes have to exist before the `Arc`
+        // the registry entry wraps does.
+        let ticket_bytes = TicketRegistry::generate();
+        let state = SessionState::new(msg.op_id, ticket_bytes, session);
         self.sessions
             .lock()
             .unwrap()
             .insert(session_id.clone(), state.clone());
-        let ticket = self.tickets.mint(TicketEntry::Write(state));
+        self.tickets.insert(ticket_bytes, TicketEntry::Write(state));
 
         Ok(Response::new(pb::WriteSessionTicket {
             session_id,
-            ticket: ticket.to_vec(),
+            ticket: ticket_bytes.to_vec(),
             // The trait surface this SDK exposes has no way for a connector author to declare anything
             // else yet -- DiscardsAll is the ABI's own default, and every PCP sink looks like it until
             // this is threaded through.
@@ -451,6 +489,13 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             sessions.get(&session_id).cloned()
         }
         .ok_or_else(|| unknown_session(&session_id))?;
+
+        // Revoked as soon as the control plane claims this session for finalization, whether or not the
+        // data connection ever burned it itself (the premature-commit case: no data connection ever
+        // opened at all). Without this a session that finishes control-plane-first leaves its ticket
+        // live forever -- a later connection presenting it would reach a `SessionState` already taken
+        // apart. See `TicketRegistry::revoke`'s doc.
+        self.tickets.revoke(&state.ticket());
 
         // Not removed from `sessions` until the drain actually completes: a cancelled/dropped commit
         // attempt (client deadline, caller cancellation) must leave the session exactly as abortable as
@@ -490,6 +535,10 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             sessions.remove(&session_id)
         }
         .ok_or_else(|| unknown_session(&session_id))?;
+
+        // See commit_write's identical revoke: a session that finishes control-plane-first must not
+        // leave a live ticket a later connection could still present.
+        self.tickets.revoke(&state.ticket());
 
         // No drain wait: abort exists precisely for a stream that never completed. Force-unblock first
         // so a pump stuck reading the data socket cannot make this wait forever.
@@ -658,12 +707,16 @@ async fn serve_sink_inner<C: SinkConnector>(
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     let tickets = Arc::new(TicketRegistry::default());
+    // Kept here (not just inside `service`) so the shutdown sweep below can still reach every live
+    // session's data connection after `service` itself has been moved into the server builder.
+    let sessions: Arc<StdMutex<HashMap<String, Arc<SessionState>>>> =
+        Arc::new(StdMutex::new(HashMap::new()));
     let service = PzConnectorService {
         decl,
         connector,
         config: StdMutex::new(None),
         sink: AsyncMutex::new(None),
-        sessions: StdMutex::new(HashMap::new()),
+        sessions: sessions.clone(),
         tickets: tickets.clone(),
         shutdown_tx: shutdown_tx.clone(),
         shutdown_rx: shutdown_rx.clone(),
@@ -686,6 +739,16 @@ async fn serve_sink_inner<C: SinkConnector>(
     // Whatever stopped the control-plane serve loop (Shutdown RPC or the server future itself ending)
     // also stops the data-plane accept loop -- both listeners' lifetimes are tied together.
     let _ = shutdown_tx.send(true);
+
+    // A pump parked in a blocking read on its data connection (host mid-write, or simply never getting
+    // around to half-closing) would otherwise pin this process past the shutdown grace: the accept loop
+    // stopping does nothing for a connection it already handed off to a spawn_blocking thread. Force
+    // every live session's data connection closed so each pump unblocks (with a failed drain -- correct,
+    // since a write cut short by a forced shutdown is not a completed one) before waiting for the
+    // data-plane task to actually finish.
+    for state in sessions.lock().unwrap().values() {
+        state.force_unblock();
+    }
     let _ = data_plane_task.await;
 
     serve_result.map_err(|e| anyhow::anyhow!("control-plane server failed: {e}"))?;
