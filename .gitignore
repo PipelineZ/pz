@@ -12,3 +12,6 @@ artifacts/
 # binaries, not a library published to crates.io, so the lockfile is part of what makes a build
 # reproducible).
 rust/target/
+
+# Superpowers planning scratch (plans/specs) -- local only, never committed
+docs/superpowers/
