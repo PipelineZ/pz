@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["pz-connector"]
+members = ["pz-connector", "pz-connector-deltalake"]
 
 [workspace.package]
 edition = "2021"
