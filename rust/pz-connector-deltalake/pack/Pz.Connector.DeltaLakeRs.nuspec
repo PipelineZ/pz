@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Packed by scripts/pack-deltalake-rs.sh, which fills in <version> and stages the files this
+     <files> block lists before zipping. Not consumed by a `nuget pack`/`dotnet pack` invocation:
+     no `nuget` CLI is assumed to be on PATH, so the script builds the .nupkg itself via NuGet.Packaging's
+     PackageBuilder (the same library src/Pz.PackageManagement's restore path reads .nupkg files with),
+     which makes this file the human-readable record of what that build produces, kept in lockstep with it. -->
+<package xmlns="http://schemas.microsoft.com/packaging/2013/05/nuspec.xsd">
+  <metadata>
+    <id>Pz.Connector.DeltaLakeRs</id>
+    <version>0.1.0</version>
+    <authors>pz</authors>
+    <description>Delta Lake sink connector for PipelineZ, built on delta-rs and served out-of-process over the pz-connector Rust SDK's connector protocol (PCP). Connector name on the wire: deltalake-rs. Ships a linux-x64 binary only; see rust/pz-connector-deltalake/README.md.</description>
+    <projectUrl>https://pipelinez.dev</projectUrl>
+    <license type="expression">MIT</license>
+  </metadata>
+  <files>
+    <!-- Package root: read by ManifestReader.TryRead before any process is ever spawned. -->
+    <file src="pz.connector.json" target="pz.connector.json" />
+    <!-- runtimes/(rid)/native/ is NuGet's own native-asset convention: it is what makes
+         NuGetResolver.SelectNativeAssets recognize this binary as a RID-specific asset to resolve and
+         lock at restore time. PackageMaterializer then flattens it to (packageDir)/native/pz-deltalake,
+         which is why pz.connector.json's entrypoints value above names that flattened path rather than
+         this archive one. -->
+    <file src="runtimes/linux-x64/native/pz-deltalake" target="runtimes/linux-x64/native/pz-deltalake" />
+  </files>
+</package>

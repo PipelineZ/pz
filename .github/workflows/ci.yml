@@ -64,3 +64,44 @@ jobs:
       # next connector cannot silently break the release path. RUNNER_TEMP keeps the zip out of the
       # working tree. `zip` is present on the ubuntu runner image; the script fails loudly if not.
       - run: scripts/make-release-bundle.sh "${RUNNER_TEMP}/release-bundle"
+
+  # The Rust workspace's own gate: absent from build-test/pack-and-verify above so a contributor
+  # without cargo still gets a green build-test (the whole point of PZ_DELTALAKE_RS_NUPKG being unset
+  # everywhere else -- see DeltaRsRestoreTests's doc comment). fmt/clippy/test cover rust/ itself;
+  # the two conformance scripts and the pack->restore->run proof cover the boundary with the .NET
+  # host, which nothing else in this workflow exercises.
+  rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      # tonic-build (rust/pz-connector/build.rs) shells out to protoc to compile the PCP .proto
+      # contract; nothing here vendors a protoc binary.
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - run: cargo fmt --all -- --check
+        working-directory: rust
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: rust
+      - run: cargo test --workspace
+        working-directory: rust
+      - run: scripts/rust-conformance.sh
+      - run: scripts/rust-conformance-deltalake.sh
+      # The packaging + restore proof itself: pack the deltalake-rs binary as a NuGet package, then
+      # point the gated test at it. PZ_DELTALAKE_RS_NUPKG stays unset in every other job/leg, which is
+      # what keeps `dotnet test Pz.slnx` green there without cargo. The nupkg's exact file name
+      # carries the version scripts/pack-deltalake-rs.sh read out of Cargo.toml, which this step does
+      # not re-derive -- it globs the one file the pack step just produced instead, so a version bump
+      # there can never desync this from what actually got packed.
+      - run: |
+          scripts/pack-deltalake-rs.sh "${RUNNER_TEMP}/deltalake-rs-nupkg"
+          nupkg="$(ls "${RUNNER_TEMP}"/deltalake-rs-nupkg/Pz.Connector.DeltaLakeRs.*.nupkg)"
+          echo "PZ_DELTALAKE_RS_NUPKG=${nupkg}" >> "${GITHUB_ENV}"
+      - run: dotnet test tests/Pz.EndToEnd.Tests -c Release --filter "FullyQualifiedName~DeltaRsRestore"

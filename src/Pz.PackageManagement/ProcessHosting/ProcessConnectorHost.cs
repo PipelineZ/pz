@@ -109,6 +109,8 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
                     "run 'pz restore' or check the package's entrypoints for this platform");
             }
 
+            EnsureExecutable(entrypoint);
+
             // No falling back to the package id: an out-of-process connector's name is what its own
             // handshake has to agree with (PZ0356, in PcpClient), so a manifest that names nothing
             // leaves nothing to check the connector's claimed identity against. Same PZ0354 the manifest
@@ -143,6 +145,29 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
         }
 
         return new ProcessConnectorHost(connectorsByName);
+    }
+
+    /// <summary>A restored package's entrypoint often reaches disk with the Unix executable bit
+    /// missing: a <c>.nupkg</c> is a zip archive, and neither <c>NuGet.Packaging.PackageBuilder</c> nor
+    /// a plain zip writer sets the Unix executable permission in an entry's external attributes unless
+    /// a packer goes out of its way to (the same reason `dotnet tool install` has always had to chmod
+    /// its own tool binaries after extraction). <see cref="File.Exists"/> above already proved the file
+    /// is there; this is the one place that proves it is runnable before <c>ConnectorProcess.Spawn</c>
+    /// ever tries. Idempotent (only writes when a bit is actually missing) and a no-op on Windows,
+    /// which has no such concept.</summary>
+    private static void EnsureExecutable(string entrypoint)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var mode = File.GetUnixFileMode(entrypoint);
+        var executable = mode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+        if (executable != mode)
+        {
+            File.SetUnixFileMode(entrypoint, executable);
+        }
     }
 
     /// <summary>Looks up a registered connector by name. Returns the lazy shim — nothing spawns here.</summary>
