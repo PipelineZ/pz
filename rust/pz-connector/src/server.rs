@@ -1,16 +1,21 @@
 use std::collections::HashMap;
+use std::io;
 use std::net::Shutdown;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
+use std::task::{Context, Poll};
+use std::time::Duration;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use tokio_stream::Stream;
+use tonic::transport::server::Connected;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 
@@ -652,6 +657,217 @@ fn deserialize_schema(bytes: &[u8]) -> Result<SchemaRef, arrow::error::ArrowErro
 }
 
 // ---------------------------------------------------------------------------------------------
+// Orphan prevention (SDK-internal)
+// ---------------------------------------------------------------------------------------------
+//
+// The spec makes it normative that a connector exits when the control socket closes or the host
+// dies -- a SIGKILLed host can never orphan this process. This mirrors the reference fixture that
+// proves the design out-of-process in C#, `ControlConnectionWatch` in
+// `tests/fixtures/PcpFakeConnector/Program.cs`: two timers, not one, because a host that dies before
+// ever dialing and one that dies after leave the same orphan, and a connection-close event alone
+// only covers the second.
+
+/// Mirrored from `Pz.Connectors.Protocol.ProtocolConstants.HandshakeTimeout`.
+const HANDSHAKE_TIMEOUT_SECS: u64 = 15;
+
+/// How long this process waits for its first control connection before deciding the host died (or
+/// was killed) before ever dialing it. Twice the handshake timeout: a host still inside its own
+/// handshake budget has not failed yet. Mirrors `FirstConnectionDeadline` in the reference fixture.
+const FIRST_CONNECTION_DEADLINE: Duration = Duration::from_secs(HANDSHAKE_TIMEOUT_SECS * 2);
+
+/// How long this process keeps running with no control connection open before deciding it has been
+/// orphaned. A host that means to keep the connector alive keeps its control connection open and
+/// ends the process with the `Shutdown` RPC; anything else -- a crashed host, a killed host process
+/// -- leaves this process with no one to serve, and it exits rather than lingering. Mirrors
+/// `OrphanExitGrace` in the reference fixture.
+const ORPHAN_EXIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Trips `shutdown_tx` if the host never dials the control socket within [`FIRST_CONNECTION_DEADLINE`]
+/// of it being served, and again once the last open control connection has been closed for
+/// [`ORPHAN_EXIT_GRACE`]. The countdown only ever runs while the open-connection count is zero, so a
+/// connection the host is holding open but not currently using -- idle between RPCs, exactly the
+/// normal case for a long-lived control channel -- never trips it: only a close does, never mere
+/// inactivity on a live connection.
+struct ControlConnectionWatch {
+    state: StdMutex<WatchState>,
+    startup_deadline: Duration,
+    idle_grace: Duration,
+    shutdown_tx: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Default)]
+struct WatchState {
+    open: usize,
+    ever_connected: bool,
+    /// Dropping (or sending on) this cancels whichever countdown -- startup or idle -- is currently
+    /// running, if any: the paired `tokio::select!` in `spawn_countdown` takes its cancellation
+    /// branch instead of firing the timeout.
+    cancel: Option<oneshot::Sender<()>>,
+}
+
+impl ControlConnectionWatch {
+    fn new(
+        startup_deadline: Duration,
+        idle_grace: Duration,
+        shutdown_tx: tokio::sync::watch::Sender<bool>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            state: StdMutex::new(WatchState::default()),
+            startup_deadline,
+            idle_grace,
+            shutdown_tx,
+        })
+    }
+
+    /// Starts the first-connection clock. Called once the control socket is actually being served,
+    /// so the deadline measures the host's silence and not this process's own startup.
+    fn start(self: &Arc<Self>) {
+        let mut state = self.state.lock().unwrap();
+        if state.ever_connected {
+            return;
+        }
+        let cancel_rx = Self::arm(&mut state);
+        drop(state);
+        self.spawn_countdown(self.startup_deadline, cancel_rx);
+    }
+
+    /// One control connection was accepted.
+    fn opened(self: &Arc<Self>) {
+        let mut state = self.state.lock().unwrap();
+        state.open += 1;
+        state.ever_connected = true;
+        // A connection just arrived, so whichever countdown was running -- the startup deadline, or
+        // an idle-grace countdown left over from a previous connection dropping to zero -- no longer
+        // applies.
+        state.cancel = None;
+    }
+
+    /// One control connection closed. Starts the idle-grace countdown only when this was the last one
+    /// open.
+    fn closed(self: &Arc<Self>) {
+        let mut state = self.state.lock().unwrap();
+        state.open = state.open.saturating_sub(1);
+        if state.open > 0 {
+            return;
+        }
+        let cancel_rx = Self::arm(&mut state);
+        drop(state);
+        self.spawn_countdown(self.idle_grace, cancel_rx);
+    }
+
+    /// Replaces `state.cancel` with a fresh channel and returns its receiver. Any countdown
+    /// previously armed is dropped (and thereby cancelled) as part of the replacement.
+    fn arm(state: &mut WatchState) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        state.cancel = Some(tx);
+        rx
+    }
+
+    fn spawn_countdown(self: &Arc<Self>, delay: Duration, cancel: oneshot::Receiver<()>) {
+        let watch = self.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep(delay) => {
+                    let _ = watch.shutdown_tx.send(true);
+                }
+                _ = cancel => {}
+            }
+        });
+    }
+}
+
+/// Wraps an accepted control connection so [`ControlConnectionWatch`] learns about its lifetime:
+/// [`ControlConnectionWatch::opened`] fires when this is constructed (right after accept), and
+/// [`ControlConnectionWatch::closed`] fires on drop -- whenever tonic tears the connection down, for
+/// any reason (peer closed, protocol error, or this process's own graceful shutdown).
+struct WatchedUnixStream {
+    inner: tokio::net::UnixStream,
+    watch: Arc<ControlConnectionWatch>,
+}
+
+impl WatchedUnixStream {
+    fn new(inner: tokio::net::UnixStream, watch: Arc<ControlConnectionWatch>) -> Self {
+        watch.opened();
+        Self { inner, watch }
+    }
+}
+
+impl Drop for WatchedUnixStream {
+    fn drop(&mut self) {
+        self.watch.closed();
+    }
+}
+
+impl Connected for WatchedUnixStream {
+    type ConnectInfo = <tokio::net::UnixStream as Connected>::ConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.inner.connect_info()
+    }
+}
+
+impl AsyncRead for WatchedUnixStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for WatchedUnixStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+}
+
+/// Wraps the control socket's accept stream so every connection tonic ends up serving is a
+/// [`WatchedUnixStream`] -- the only place in this codebase that turns "a `UnixStream` got accepted"
+/// into an orphan-watch event.
+struct WatchedIncoming {
+    inner: tokio_stream::wrappers::UnixListenerStream,
+    watch: Arc<ControlConnectionWatch>,
+}
+
+impl Stream for WatchedIncoming {
+    type Item = io::Result<WatchedUnixStream>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        Pin::new(&mut this.inner).poll_next(cx).map(|item| {
+            item.map(|accepted| {
+                accepted.map(|stream| WatchedUnixStream::new(stream, this.watch.clone()))
+            })
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Process entry point
 // ---------------------------------------------------------------------------------------------
 
@@ -725,15 +941,26 @@ async fn serve_sink_inner<C: SinkConnector>(
     let data_plane_task =
         tokio::spawn(data_plane::run(data_listener, tickets, shutdown_rx.clone()));
 
+    // Orphan prevention: this process stops on its own if the host that spawned it can never come
+    // back to say so, whether it dies before ever dialing the control socket or after -- see
+    // `ControlConnectionWatch`'s doc.
+    let watch = ControlConnectionWatch::new(
+        FIRST_CONNECTION_DEADLINE,
+        ORPHAN_EXIT_GRACE,
+        shutdown_tx.clone(),
+    );
+    watch.start();
+    let incoming = WatchedIncoming {
+        inner: tokio_stream::wrappers::UnixListenerStream::new(control_listener),
+        watch: watch.clone(),
+    };
+
     let mut server_shutdown = shutdown_rx.clone();
     let serve_result = Server::builder()
         .add_service(PzConnectorServer::new(service))
-        .serve_with_incoming_shutdown(
-            tokio_stream::wrappers::UnixListenerStream::new(control_listener),
-            async move {
-                let _ = server_shutdown.wait_for(|stopped| *stopped).await;
-            },
-        )
+        .serve_with_incoming_shutdown(incoming, async move {
+            let _ = server_shutdown.wait_for(|stopped| *stopped).await;
+        })
         .await;
 
     // Whatever stopped the control-plane serve loop (Shutdown RPC or the server future itself ending)
@@ -786,7 +1013,219 @@ fn restrict_to_owner(path: &Path) -> Result<(), anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt;
+
     use super::*;
+
+    fn test_watch(
+        startup_deadline: Duration,
+        idle_grace: Duration,
+    ) -> (
+        Arc<ControlConnectionWatch>,
+        tokio::sync::watch::Receiver<bool>,
+    ) {
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        (
+            ControlConnectionWatch::new(startup_deadline, idle_grace, tx),
+            rx,
+        )
+    }
+
+    /// Advances the paused clock and gives every spawned countdown task a chance to actually run and
+    /// observe it. Yields before advancing too: a task spawned just before this call has not been
+    /// polled even once yet, so it has not created its `tokio::time::sleep` future -- advancing the
+    /// clock before that first poll would jump past a deadline that does not exist yet. `advance`
+    /// itself only moves the clock; it does not poll tasks parked on that time, so a settling loop
+    /// follows it as well.
+    async fn advance_and_settle(by: Duration) {
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::advance(by).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn no_connection_within_the_startup_deadline_trips_shutdown() {
+        let (watch, shutdown_rx) = test_watch(Duration::from_millis(100), Duration::from_secs(30));
+        watch.start();
+
+        advance_and_settle(Duration::from_millis(150)).await;
+
+        assert!(
+            *shutdown_rx.borrow(),
+            "a host that never dials the control socket must not leave the connector running forever"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_before_the_startup_deadline_cancels_it() {
+        let (watch, shutdown_rx) = test_watch(Duration::from_millis(100), Duration::from_secs(30));
+        watch.start();
+
+        watch.opened();
+        advance_and_settle(Duration::from_millis(150)).await;
+
+        assert!(
+            !*shutdown_rx.borrow(),
+            "a control connection accepted before the startup deadline must cancel it"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_last_connection_closing_trips_shutdown_after_the_idle_grace() {
+        let (watch, shutdown_rx) = test_watch(Duration::from_secs(30), Duration::from_millis(100));
+        watch.start();
+        watch.opened();
+
+        watch.closed();
+        assert!(
+            !*shutdown_rx.borrow(),
+            "shutdown must not trip before the idle grace has elapsed"
+        );
+
+        advance_and_settle(Duration::from_millis(150)).await;
+
+        assert!(
+            *shutdown_rx.borrow(),
+            "the last control connection closing, and staying closed, must eventually stop the process"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reconnect_during_the_idle_grace_cancels_the_pending_exit() {
+        let (watch, shutdown_rx) = test_watch(Duration::from_secs(30), Duration::from_millis(100));
+        watch.start();
+        watch.opened();
+        watch.closed();
+
+        advance_and_settle(Duration::from_millis(50)).await; // still within the grace period
+        watch.opened(); // the host reconnected before the grace period ran out
+
+        advance_and_settle(Duration::from_secs(1)).await; // well past the original deadline
+
+        assert!(
+            !*shutdown_rx.borrow(),
+            "a reconnect within the grace period must cancel the pending orphan exit"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closing_one_of_several_open_connections_does_not_trip_shutdown() {
+        let (watch, shutdown_rx) = test_watch(Duration::from_secs(30), Duration::from_millis(100));
+        watch.start();
+        watch.opened();
+        watch.opened();
+
+        watch.closed(); // one of the two closes; the other is still open
+        advance_and_settle(Duration::from_secs(1)).await;
+
+        assert!(
+            !*shutdown_rx.borrow(),
+            "shutdown must wait for every open control connection to close, not just one"
+        );
+    }
+
+    /// End-to-end over a real Unix socket: accepts through the same `WatchedUnixStream` production
+    /// code wraps every control connection in, then proves that connecting, then dropping, the only
+    /// client -- with nothing else ever dialing back in -- is what makes the watch's shutdown signal
+    /// trip.
+    ///
+    /// Time is left running for the connect/accept/drop dance and only paused afterward, right
+    /// before the deterministic part: a paused clock auto-advances to the earliest pending timer
+    /// whenever the executor would otherwise have nothing to do, and that auto-advance cannot tell a
+    /// real socket operation that is about to complete from one that never will -- pausing while a
+    /// real accept/read is still in flight risks the clock jumping ahead of it. By the time this
+    /// pauses, the connection is fully established and no timer is armed, so there is nothing left
+    /// for a premature auto-advance to race against.
+    #[tokio::test]
+    async fn dropping_the_only_real_control_connection_eventually_trips_shutdown() {
+        let dir = tempfile::tempdir().expect("failed to create a scratch dir for the test socket");
+        let socket_path = dir.path().join("control.sock");
+        let listener =
+            tokio::net::UnixListener::bind(&socket_path).expect("failed to bind test socket");
+
+        let (watch, shutdown_rx) = test_watch(Duration::from_secs(30), Duration::from_millis(100));
+        watch.start();
+
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let watch_for_accept = watch.clone();
+        let accept_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept failed");
+            let mut conn = WatchedUnixStream::new(stream, watch_for_accept);
+            let _ = accepted_tx.send(());
+            // Mirrors what the real transport does: block on a read until the peer goes away. The
+            // client in this test never writes anything -- it only connects and disconnects.
+            let mut buf = [0u8; 1];
+            let _ = conn.read(&mut buf).await;
+        });
+
+        let client = tokio::net::UnixStream::connect(&socket_path)
+            .await
+            .expect("connect failed");
+        accepted_rx
+            .await
+            .expect("the accept task never registered the connection");
+        assert!(
+            !*shutdown_rx.borrow(),
+            "a live control connection must not trigger shutdown"
+        );
+
+        tokio::time::pause();
+
+        drop(client);
+        accept_task.await.expect("accept task panicked");
+
+        advance_and_settle(Duration::from_millis(150)).await;
+
+        assert!(
+            *shutdown_rx.borrow(),
+            "an orphaned connector (no control connection, none reopened) must stop serving"
+        );
+    }
+
+    /// A control connection that simply has nothing to do right now -- no RPC in flight, no traffic
+    /// at all -- must never be treated as orphaned. Only a close (or never having connected at all)
+    /// starts either countdown. Time is paused only after the connection is established, for the same
+    /// reason `dropping_the_only_real_control_connection_eventually_trips_shutdown` does.
+    #[tokio::test]
+    async fn a_long_idle_but_still_open_connection_is_never_treated_as_orphaned() {
+        let dir = tempfile::tempdir().expect("failed to create a scratch dir for the test socket");
+        let socket_path = dir.path().join("control.sock");
+        let listener =
+            tokio::net::UnixListener::bind(&socket_path).expect("failed to bind test socket");
+
+        let (watch, shutdown_rx) = test_watch(Duration::from_secs(30), Duration::from_millis(50));
+        watch.start();
+
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let watch_for_accept = watch.clone();
+        let _accept_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept failed");
+            let conn = WatchedUnixStream::new(stream, watch_for_accept);
+            let _ = accepted_tx.send(());
+            // Never reads, never drops -- exactly a live connection sitting idle between RPCs.
+            std::future::pending::<()>().await;
+            drop(conn);
+        });
+
+        let _client = tokio::net::UnixStream::connect(&socket_path)
+            .await
+            .expect("connect failed");
+        accepted_rx
+            .await
+            .expect("the accept task never registered the connection");
+
+        tokio::time::pause();
+        advance_and_settle(Duration::from_secs(3600)).await;
+
+        assert!(
+            !*shutdown_rx.borrow(),
+            "a long-idle but still-open connection must never be treated as orphaned"
+        );
+    }
 
     #[test]
     fn parses_the_socket_path() {

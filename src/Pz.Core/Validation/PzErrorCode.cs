@@ -337,47 +337,52 @@ public static class PzErrorCode
     /// surfaces as an aggregated, exit-2 config error rather than an unexpected engine failure.</summary>
     public const string NativeScanContractMismatch = "PZ0353";
 
-    // A process-hosted connector's pz.connector.json cannot supply a usable entrypoint for this
-    // host: an unrecognized `runtime` value, a `runtime: "process"` manifest with no `entrypoints`,
-    // or no entry for the current RID (even after the RuntimeIdentifierGraph fallback walk). Raised
-    // by Pz.PackageManagement's ManifestReader as a hardcoded literal (that assembly must not
-    // reference Pz.Core -- see ConnectorHost's doc comment); pinned by HostErrorCodeTests.
+    /// <summary>A process-hosted connector's <c>pz.connector.json</c> (or the host's own check of it)
+    /// leaves this host with no usable entrypoint to spawn: an unrecognized <c>runtime</c> value, a
+    /// <c>runtime: "process"</c> manifest with no <c>entrypoints</c> or none for the current RID (even
+    /// after the RuntimeIdentifierGraph fallback walk), an entrypoint path the manifest names but that
+    /// does not exist on disk, a manifest whose declared <c>runtime</c> disagrees with the out-of-process
+    /// host that is trying to load it, or a <c>runtime: "process"</c> manifest with no <c>name</c>.
+    /// Raised both by Pz.PackageManagement's <c>ManifestReader</c> (as a hardcoded literal — that
+    /// assembly must not reference Pz.Core, see <c>ConnectorHost</c>'s doc comment) and by
+    /// <c>ProcessConnectorHost</c> itself; pinned by HostErrorCodeTests.</summary>
     public const string ProcessEntrypointMissing = "PZ0354";
 
-    // Spawn of a process-hosted connector's executable failed at launch time (exec error, OSError,
-    // process did not start). Raised by the host spawn path; next step is to check the executable
-    // exists, is readable, and matches the target platform. Also raised earlier, before any spawn is
-    // attempted, when the temp directory a runless verb would host a control socket under
-    // (ProcessSocketRoot's fallback) is itself too deep to leave room for the socket path -- the same
-    // "nothing a user could act on" failure a bind error from inside the child would otherwise be, but
-    // caught at the one point that can still name the cause (point TMPDIR/TEMP at a shorter directory).
+    /// <summary>Spawn of a process-hosted connector's executable failed at launch time (exec error,
+    /// OSError, process did not start). Raised by the host spawn path; next step is to check the
+    /// executable exists, is readable, and matches the target platform. Also raised earlier, before any
+    /// spawn is attempted, when the temp directory a runless verb would host a control socket under
+    /// (<c>ProcessSocketRoot</c>'s fallback) is itself too deep to leave room for the socket path -- the
+    /// same "nothing a user could act on" failure a bind error from inside the child would otherwise be,
+    /// but caught at the one point that can still name the cause (point TMPDIR/TEMP at a shorter
+    /// directory).</summary>
     public const string ConnectorSpawnFailed = "PZ0355";
 
-    // Handshake between host and a process-hosted connector failed: timeout waiting for the Hello
-    // message, malformed Hello body (not JSON or wrong schema), or mismatch between manifest
-    // (ConnectorManifest) and Hello (ConnectorInfo) — capability flag disagreement, or name
-    // disagreement. Raised by the host handshake phase; next step depends on which part failed
-    // (check logs, connector readiness, and manifest/compiled capability consistency).
+    /// <summary>Handshake between host and a process-hosted connector failed: timeout waiting for the
+    /// Hello message, malformed Hello body (not JSON or wrong schema), or mismatch between manifest
+    /// (<c>ConnectorManifest</c>) and Hello (<c>ConnectorInfo</c>) — capability flag disagreement, or name
+    /// disagreement. Raised by the host handshake phase; next step depends on which part failed (check
+    /// logs, connector readiness, and manifest/compiled capability consistency).</summary>
     public const string ConnectorHandshakeFailed = "PZ0356";
 
-    // Protocol violation from a process-hosted connector during data-plane operations: bad or
-    // reused data-plane ticket issued by the planner, or malformed Arrow IPC stream from the
-    // connector's WriteBatchAsync reply. Raised at data-plane read/write time; next step is to
-    // check connector logs and confirm connector and host ABI versions are compatible.
+    /// <summary>Protocol violation from a process-hosted connector during data-plane operations: bad or
+    /// reused data-plane ticket issued by the planner, or malformed Arrow IPC stream from the connector's
+    /// WriteBatchAsync reply. Raised at data-plane read/write time; next step is to check connector logs
+    /// and confirm connector and host ABI versions are compatible.</summary>
     public const string ProtocolViolation = "PZ0357";
 
-    // A process-hosted connector's executable died unexpectedly during an operation that was
-    // in flight. Raised by the host when an I/O or serialization failure reveals the process
-    // exited; next step is to check the connector's exit code and stderr logs, and confirm
-    // connector stability under the dataset being processed.
+    /// <summary>A process-hosted connector's executable died unexpectedly during an operation that was in
+    /// flight. Raised by the host when an I/O or serialization failure reveals the process exited; next
+    /// step is to check the connector's exit code and stderr logs, and confirm connector stability under
+    /// the dataset being processed.</summary>
     public const string ConnectorDiedMidOperation = "PZ0358";
 
-    // Planner refused the native-scan tier for a dataset because a packaged DuckDB extension
-    // (loaded into DuckDB for native scans) is unsigned and the source connection does not
-    // declare `allow_unsigned_extensions: true`. Unsigned extensions are inherently risky
-    // (no signature verification); the explicit allow gates them. Raised by ExecutionPlanner;
-    // next step is to sign the extension, or add `allow_unsigned_extensions: true` to the
-    // source connection's YAML config.
+    /// <summary>Planner refused the native-scan tier for a dataset because a packaged DuckDB extension
+    /// (loaded into DuckDB for native scans) is unsigned and the source connection does not declare
+    /// <c>allow_unsigned_extensions: true</c>. Unsigned extensions are inherently risky (no signature
+    /// verification); the explicit allow gates them. Raised by ExecutionPlanner; next step is to sign the
+    /// extension, or add <c>allow_unsigned_extensions: true</c> to the source connection's YAML
+    /// config.</summary>
     public const string UnsignedExtensionRefused = "PZ0359";
 
     public const string SqlDryCompile = "PZ0401";

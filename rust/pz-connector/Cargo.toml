@@ -26,6 +26,11 @@ thiserror = "1"
 
 [dev-dependencies]
 tempfile = "3"
+# test-util (tokio::time::pause/advance) is deliberately not enabled in [dependencies] -- it changes
+# the runtime's own clock behavior, and no code this crate ships to connector authors may depend on
+# that. Tests get it because Cargo unifies feature sets across dependency/dev-dependency edges of the
+# same crate for test builds only.
+tokio = { version = "1", features = ["test-util"] }
 
 [build-dependencies]
 tonic-build = "0.12"

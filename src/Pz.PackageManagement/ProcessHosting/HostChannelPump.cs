@@ -73,8 +73,9 @@ public sealed class HostChannelPump : IAsyncDisposable
             }
 
             // The connector ended its half of the channel on its own -- never expected on a live
-            // connector (Task 5's fixture holds it open until ApplicationStopping/host shutdown) -- so
-            // any gate request still waiting on THIS channel will never see its GateComplete.
+            // connector (a well-behaved connector holds it open until ApplicationStopping/host
+            // shutdown) -- so any gate request still waiting on THIS channel will never see its
+            // GateComplete.
             FailAllPending(ProcessFailureMapping.ToPzConnectorException(
                 _client, _process, "connector ended the reverse channel while a gated operation was pending"));
         }

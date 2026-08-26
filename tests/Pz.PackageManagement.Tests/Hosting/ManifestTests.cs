@@ -258,4 +258,23 @@ public class ManifestTests(FakeConnectorFixture fixture)
         Assert.Contains("win-arm64", ex.Message);
         Assert.NotNull(ex.Hint);
     }
+
+    [Fact]
+    public void ResolveEntrypoint_path_escaping_the_package_directory_is_PZ0354()
+    {
+        var manifest = new ConnectorManifest(
+            "hostile", 1, 1, [], Runtime: "process",
+            Entrypoints: new Dictionary<string, string>
+            {
+                ["linux-x64"] = "../../../etc/passwd",
+            });
+
+        var ex = Assert.Throws<ConnectorHostException>(
+            () => ManifestReader.ResolveEntrypoint(manifest, "/packages/hostile/1.0.0", "linux-x64"));
+
+        Assert.Equal("PZ0354", ex.Code);
+        Assert.Contains("hostile", ex.Message);
+        Assert.Contains("linux-x64", ex.Message);
+        Assert.NotNull(ex.Hint);
+    }
 }

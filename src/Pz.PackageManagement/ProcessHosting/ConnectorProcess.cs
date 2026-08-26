@@ -7,9 +7,9 @@ namespace Pz.PackageManagement.ProcessHosting;
 
 /// <summary>Owns one spawned connector child process end to end: the run-scoped socket directory it
 /// listens on, its stderr for failure diagnostics, and the shutdown ladder that gets it (and anything
-/// it forked) gone. One instance per connector instance; the control-plane handshake (Task 7's
-/// <c>PcpClient</c>) and data-plane transfers (Task 8) both dial the sockets this type computes but
-/// never own the process itself -- disposal here is the only place the child is killed.</summary>
+/// it forked) gone. One instance per connector instance; the control-plane handshake (<c>PcpClient</c>)
+/// and data-plane transfers both dial the sockets this type computes but never own the process itself
+/// -- disposal here is the only place the child is killed.</summary>
 public sealed class ConnectorProcess : IAsyncDisposable
 {
     /// <summary>Env vars ever copied from the host into a connector child. Deliberately minimal:
@@ -42,8 +42,10 @@ public sealed class ConnectorProcess : IAsyncDisposable
         DataSocketPath = socketPath + ProtocolConstants.DataSocketSuffix;
     }
 
-    /// <summary>Path of the control-plane unix socket (named pipe on windows) the child was told to
-    /// listen on via <c>--pz-socket</c>.</summary>
+    /// <summary>Path of the control-plane Unix domain socket the child was told to listen on via
+    /// <c>--pz-socket</c>. UDS-only: <see cref="PcpClient"/> dials it with
+    /// <see cref="System.Net.Sockets.UnixDomainSocketEndPoint"/>, and no named-pipe transport exists on
+    /// this path today.</summary>
     public string SocketPath { get; }
 
     /// <summary>Data-plane socket path; always <see cref="SocketPath"/> plus

@@ -107,7 +107,9 @@ public static class ManifestReader
     /// map to an absolute binary path, walking <see cref="RuntimeIdentifierGraph"/>'s fallback ancestry
     /// when there is no exact match (so a package shipping only <c>linux-x64</c> is still reachable from
     /// <c>linux-musl-x64</c>). Throws <see cref="ConnectorHostException"/> PZ0354 when nothing in the
-    /// fallback chain has an entry.
+    /// fallback chain has an entry, or when the resolved path escapes <paramref name="packageDir"/> — a
+    /// manifest is package-supplied content, and an absolute or <c>..</c>-laden entrypoint path would
+    /// otherwise let it name (and this method's caller then chmod +x) a file anywhere on disk.
     ///
     /// <para>Every caller that resolves an entrypoint needs it to actually be spawnable — the process
     /// host, before its first <c>OpenAsync</c>, and <c>pz connector test</c>'s own target resolution —
@@ -119,7 +121,15 @@ public static class ManifestReader
         {
             if (manifest.Entrypoints.TryGetValue(candidate, out var relativePath))
             {
-                var entrypoint = Path.Combine(packageDir, relativePath);
+                var entrypoint = Path.GetFullPath(Path.Combine(packageDir, relativePath));
+                if (!IsWithinPackageDirectory(packageDir, entrypoint))
+                {
+                    throw new ConnectorHostException(
+                        "PZ0354",
+                        $"connector package '{manifest.Name ?? packageDir}' declares an entrypoint '{relativePath}' for RID '{candidate}' that resolves outside the package directory",
+                        "fix the manifest's entrypoints map to use package-relative paths only, or rebuild the connector package");
+                }
+
                 EnsureExecutable(entrypoint);
                 return entrypoint;
             }
@@ -129,6 +139,19 @@ public static class ManifestReader
             "PZ0354",
             $"connector package '{manifest.Name ?? packageDir}' ships no binary for RID '{rid}'",
             $"this connector ships no binary for {rid}; add an entrypoints entry for it, or restore a build that supports this platform");
+    }
+
+    /// <summary>Whether <paramref name="fullPath"/> resolves to a location at or under
+    /// <paramref name="packageDir"/> — both compared as full paths so a manifest's <c>..</c> segments or
+    /// an outright absolute path cannot resolve to something outside the package this manifest came
+    /// from.</summary>
+    private static bool IsWithinPackageDirectory(string packageDir, string fullPath)
+    {
+        var root = Path.GetFullPath(packageDir);
+        var rootWithSeparator = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return fullPath.StartsWith(rootWithSeparator, comparison);
     }
 
     /// <summary>A restored package's entrypoint often reaches disk with the Unix executable bit

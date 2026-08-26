@@ -156,10 +156,10 @@ public sealed class PcpClient : IAsyncDisposable
                         }
                     }
                 },
-                // Measured in Task 5: the default idle reaper kills the pooled UDS connection out from
-                // under a long-idle control plane (e.g. between a PlanRead and its matching
-                // OpenReadStream), which then reads as the connector having died. There is exactly one
-                // logical connection per instance, so pooling it forever costs nothing.
+                // The default idle reaper would kill the pooled UDS connection out from under a
+                // long-idle control plane (e.g. between a PlanRead and its matching OpenReadStream),
+                // which then reads as the connector having died. There is exactly one logical
+                // connection per instance, so pooling it forever costs nothing.
                 PooledConnectionIdleTimeout = Timeout.InfiniteTimeSpan,
             },
         });

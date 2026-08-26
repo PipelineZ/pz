@@ -456,9 +456,9 @@ public static class ConformanceSuite
         if (failure is null)
         {
             // TestKit precedent (Transient_failures_carry_is_transient): a connector that never fails
-            // this probe gives the mechanism nothing to check the shape of -- a vacuous pass, not a
-            // vector this suite has any way to force.
-            return VectorVerdict.Pass(
+            // this probe gives the mechanism nothing to check the shape of -- this vector tested
+            // nothing, so it must report Skip, not a Pass that admits it verified no trailer at all.
+            return VectorVerdict.Skip(
                 "connector accepted an unknown dataset/output name without an error; the pz-error-bin " +
                 "trailer's shape could not be observed");
         }
