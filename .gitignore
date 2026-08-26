@@ -8,3 +8,7 @@ samples/*/out/
 .superpowers/
 BenchmarkDotNet.Artifacts/
 artifacts/
+# Rust SDK (rust/pz-connector): build output only -- Cargo.lock is committed (this workspace builds
+# binaries, not a library published to crates.io, so the lockfile is part of what makes a build
+# reproducible).
+rust/target/
