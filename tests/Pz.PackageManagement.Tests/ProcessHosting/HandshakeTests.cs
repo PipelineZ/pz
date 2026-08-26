@@ -10,7 +10,7 @@ using Pz.PackageManagement.ProcessHosting;
 namespace Pz.PackageManagement.Tests.ProcessHosting;
 
 /// <summary>Drives <see cref="PcpClient"/> against the real out-of-process <c>PcpFakeConnector</c>
-/// fixture (Task 5) via <see cref="ConnectorProcess"/> (Task 6) -- these tests are the wire-level proof
+/// fixture via <see cref="ConnectorProcess"/> -- these tests are the wire-level proof
 /// that the handshake discipline and error mapping documented on <see cref="PcpClient"/> hold against an
 /// actual peer, not a mock of one.
 ///

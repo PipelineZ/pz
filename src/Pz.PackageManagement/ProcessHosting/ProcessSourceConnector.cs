@@ -10,7 +10,7 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// <summary>The <see cref="ISourceConnector"/> shim over one PCP connector instance: every method here
 /// forwards to a control-plane RPC (via <paramref name="client"/>'s <see cref="PcpClient.Grpc"/>) or a
 /// data-plane socket (<see cref="DataPlane"/>) against <paramref name="process"/>. Constructed from an
-/// already-connected, already-Configure()'d client (Task 7's <c>PcpClient.ConnectAndConfigureAsync</c>)
+/// already-connected, already-Configure()'d client (<c>PcpClient.ConnectAndConfigureAsync</c>)
 /// -- <see cref="OpenAsync"/> makes no RPC of its own, since PCP has no separate "open" call: the
 /// wrapped connector opens lazily, connector-side, on its first source-specific RPC.</summary>
 public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess process) : ISourceConnector
