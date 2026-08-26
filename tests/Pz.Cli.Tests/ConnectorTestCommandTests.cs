@@ -76,6 +76,27 @@ public sealed class ConnectorTestCommandTests : IDisposable
         Assert.Contains("PZ0354", stderr, StringComparison.Ordinal);
     }
 
+    /// <summary>A missing/mistyped --config path must be a PZ-coded exit 2, not YamlMapper's raw
+    /// FileNotFoundException escaping as an unhandled exception under exit 1 -- exit 1 is reserved for
+    /// "a vector failed", which never even started here.</summary>
+    [SkippableFact]
+    public void Connector_test_exits_2_with_a_pz_coded_error_for_an_unknown_config_path()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project);
+        var missingConfig = Path.Combine(project, "does-not-exist.yml");
+
+        var stderr = RunAndCaptureStderr(["connector", "test", packageDir, "--config", missingConfig], out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0101", stderr, StringComparison.Ordinal);
+        Assert.Contains(missingConfig, stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("System.IO", stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("   at ", stderr, StringComparison.Ordinal);
+    }
+
     // --- fixture staging (mirrors ProcessHostParityTests.WriteProcessPackage) -------------------
 
     /// <summary><paramref name="extraFixtureArgs"/> is baked into the wrapper script itself, appended

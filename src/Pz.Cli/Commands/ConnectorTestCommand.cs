@@ -109,6 +109,16 @@ internal static class ConnectorTestCommand
 
             return report.AnyFailed ? ExitCodes.NodeFailures : ExitCodes.Ok;
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Final safety net: every failure mode this verb itself knows about (bad target, bad
+            // --config, a setup-time ConnectorHostException) is already handled above and returns
+            // before reaching here. Anything else escaping -- a bug in the suite, an unexpected
+            // exception type -- must never surface as a raw stack trace under exit code 1 (reserved for
+            // "a vector failed"); PZ0500 fatal is the same catch-all RunCommand uses for the same reason.
+            Console.Error.WriteLine($"error {PzErrorCode.UnexpectedEngineFailure}: unexpected failure — {ex.Message}");
+            return ExitCodes.Fatal;
+        }
         finally
         {
             if (ownsSocketRoot)
@@ -192,6 +202,15 @@ internal static class ConnectorTestCommand
             return (ConnectorConfig.Empty, null, null);
         }
 
+        // Guarded the same way ConnectionsLoader/ProjectLoader guard their own YamlMapper.LoadFile
+        // calls: a missing/mistyped path must surface as a PZ-coded config error, never as
+        // YamlMapper's raw FileNotFoundException (which would exit 1 -- "vector failed" -- instead of
+        // the config/usage exit 2 a bad --config path actually is).
+        if (!File.Exists(configPath))
+        {
+            throw ConfigShapeError(configPath, $"--config file '{configPath}' does not exist", "check the --config path and retry");
+        }
+
         var root = YamlMapper.LoadFile(configPath, configPath);
         var connection = new ConnectorConfig(AsMap(root.GetValueOrDefault("connection")));
 
@@ -224,8 +243,9 @@ internal static class ConnectorTestCommand
         return (connection, read, write);
     }
 
-    private static PzConfigException ConfigShapeError(string configPath, string message) =>
-        new(new PzError(PzErrorCode.YamlShape, message, configPath, null, "see the --config file's read:/write: shape"));
+    private static PzConfigException ConfigShapeError(
+        string configPath, string message, string hint = "see the --config file's read:/write: shape") =>
+        new(new PzError(PzErrorCode.YamlShape, message, configPath, null, hint));
 
     private static Dictionary<string, object?> AsMap(object? value) =>
         value as Dictionary<string, object?> ?? new Dictionary<string, object?>(StringComparer.Ordinal);
