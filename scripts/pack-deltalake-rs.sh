@@ -65,17 +65,28 @@ trap 'rm -rf "${STAGE_DIR}"' EXIT
 
 mkdir -p "${STAGE_DIR}/runtimes/linux-x64/native"
 cp "${BINARY}" "${STAGE_DIR}/runtimes/linux-x64/native/pz-deltalake"
-chmod +x "${STAGE_DIR}/runtimes/linux-x64/native/pz-deltalake"
+# No `chmod +x` here: a .nupkg is a zip archive, and PackageBuilder.Save() (like a plain zip writer)
+# does not carry the source file's Unix executable bit into the entry's external attributes -- so
+# setting it on this staged copy would be a no-op that could not survive being zipped anyway. The
+# restored package's entrypoint is instead made executable at resolve time, in
+# ManifestReader.ResolveEntrypoint (src/Pz.PackageManagement/Hosting/ManifestReader.cs), which is the
+# one place every caller that spawns a process-runtime connector's binary goes through.
 cp "${PACK_DIR}/pz.connector.json" "${STAGE_DIR}/pz.connector.json"
 
 NUPKG_PATH="${OUT_DIR}/${PACKAGE_ID}.${VERSION}.nupkg"
 rm -f "${NUPKG_PATH}"
 
+# Not byte-reproducible: PackageBuilder.Save() stamps a random package/services/metadata/
+# core-properties/*.psmdcp GUID and the current time into every .nupkg it writes, the same as
+# `nuget pack` itself does -- pz's own "byte-stable .pz artifacts" determinism contract
+# (CLAUDE.md's Binding conventions) is about what pz WRITES, not about a third-party packaging
+# format's own OPC ceremony, so this is a bounded, deliberate exception rather than a gap in it.
 BUILDER_CS="${STAGE_DIR}/build-nupkg.cs"
 cat > "${BUILDER_CS}" <<'CSHARP'
 #:package NuGet.Packaging@7.6.0
 using System.Xml.Linq;
 using NuGet.Packaging;
+using NuGet.Packaging.Licenses;
 using NuGet.Versioning;
 
 // args: <stageDir> <nuspecPath> <version> <outputPath>
@@ -99,6 +110,23 @@ var builder = new PackageBuilder
 foreach (var author in metadata.Element(ns + "authors")!.Value.Split(',', StringSplitOptions.TrimEntries))
 {
     builder.Authors.Add(author);
+}
+
+// Every <metadata> child the nuspec declares beyond id/version/authors/description is carried
+// through too -- the nuspec's own claim to be "the human-readable record of what the build
+// produces" (its own header comment) is only true if nothing it lists is silently dropped here.
+if (metadata.Element(ns + "projectUrl") is { } projectUrlElement)
+{
+    builder.ProjectUrl = new Uri(projectUrlElement.Value);
+}
+
+if (metadata.Element(ns + "license") is { } licenseElement
+    && licenseElement.Attribute("type")?.Value == "expression")
+{
+    var expression = NuGetLicenseExpression.Parse(licenseElement.Value);
+    builder.LicenseMetadata = new LicenseMetadata(
+        LicenseType.Expression, licenseElement.Value, expression, warningsAndErrors: null,
+        LicenseMetadata.CurrentVersion);
 }
 
 foreach (var file in doc.Root.Element(ns + "files")!.Elements(ns + "file"))

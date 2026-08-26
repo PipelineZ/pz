@@ -72,7 +72,11 @@ jobs:
   # host, which nothing else in this workflow exercises.
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 60, not 30: this job cold-compiles deltalake+datafusion TWICE without a cache hit (debug, for
+    # clippy/test/the conformance scripts; release, for the pack step) plus a Release dotnet test
+    # build. The release leg alone measured ~23 minutes locally on this task's own verification run --
+    # 30 was sized for a .NET-only job and was never going to survive a first (cold-cache) run here.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
         with:
@@ -80,6 +84,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
+      # Caches ~/.cargo and rust/target keyed on Cargo.lock; every run after the first restores
+      # datafusion/deltalake's build output instead of recompiling it, which is the difference between
+      # this job finishing in minutes and re-paying the ~23 minute cold compile above every push.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'

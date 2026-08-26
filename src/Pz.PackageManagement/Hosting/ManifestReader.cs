@@ -107,14 +107,21 @@ public static class ManifestReader
     /// map to an absolute binary path, walking <see cref="RuntimeIdentifierGraph"/>'s fallback ancestry
     /// when there is no exact match (so a package shipping only <c>linux-x64</c> is still reachable from
     /// <c>linux-musl-x64</c>). Throws <see cref="ConnectorHostException"/> PZ0354 when nothing in the
-    /// fallback chain has an entry.</summary>
+    /// fallback chain has an entry.
+    ///
+    /// <para>Every caller that resolves an entrypoint needs it to actually be spawnable — the process
+    /// host, before its first <c>OpenAsync</c>, and <c>pz connector test</c>'s own target resolution —
+    /// so this is the one place both paths go through, and the one place that guarantees it, rather than
+    /// leaving each caller to remember.</para></summary>
     public static string ResolveEntrypoint(ConnectorManifest manifest, string packageDir, string rid)
     {
         foreach (var candidate in RuntimeIdentifierGraph.Expand(rid))
         {
             if (manifest.Entrypoints.TryGetValue(candidate, out var relativePath))
             {
-                return Path.Combine(packageDir, relativePath);
+                var entrypoint = Path.Combine(packageDir, relativePath);
+                EnsureExecutable(entrypoint);
+                return entrypoint;
             }
         }
 
@@ -122,6 +129,33 @@ public static class ManifestReader
             "PZ0354",
             $"connector package '{manifest.Name ?? packageDir}' ships no binary for RID '{rid}'",
             $"this connector ships no binary for {rid}; add an entrypoints entry for it, or restore a build that supports this platform");
+    }
+
+    /// <summary>A restored package's entrypoint often reaches disk with the Unix executable bit
+    /// missing: a <c>.nupkg</c> is a zip archive, and neither <c>NuGet.Packaging.PackageBuilder</c> nor
+    /// a plain zip writer sets the Unix executable permission in an entry's external attributes unless a
+    /// packer goes out of its way to (the same reason <c>dotnet tool install</c> has always had to chmod
+    /// its own tool binaries after extraction). Silent no-op when the path does not exist (yet) or on
+    /// Windows (no such concept) — callers still own reporting a missing entrypoint as PZ0354 themselves,
+    /// this only ever ACTS on a file that is actually there.
+    ///
+    /// <para>Owner-execute only: the cache entry a restored package's <c>native/</c> asset lives in
+    /// (<c>PackageMaterializer</c>'s content-addressed cache) is shared across every project that
+    /// restores the same package, but nothing needs group/other execute to run it — the pz process tree
+    /// always runs as the one user that did the restore.</para></summary>
+    private static void EnsureExecutable(string entrypoint)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(entrypoint))
+        {
+            return;
+        }
+
+        var mode = File.GetUnixFileMode(entrypoint);
+        var executable = mode | UnixFileMode.UserExecute;
+        if (executable != mode)
+        {
+            File.SetUnixFileMode(entrypoint, executable);
+        }
     }
 
     private sealed class ManifestDto

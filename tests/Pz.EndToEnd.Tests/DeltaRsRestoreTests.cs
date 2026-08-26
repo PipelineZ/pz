@@ -19,7 +19,15 @@ namespace Pz.EndToEnd.Tests;
 /// own Delta reader, which needs a network download of its extension) and counts the LIVE parquet
 /// files' rows through DuckDB's built-in (no-extension, no-network) <c>read_parquet()</c> — offline in
 /// the same sense every other suite gated by <c>PZ_TESTS_OFFLINE=1</c> is, even though this particular
-/// suite is not itself gated by that variable (it has no network dependency to skip).</para></summary>
+/// suite is not itself gated by that variable (it has no network dependency to skip).</para>
+///
+/// <para>Joins "console-and-env-serialized" (the same collection name <c>Pz.Cli.Tests</c> uses for the
+/// same reason, defined locally below since xUnit collections are per-assembly): the single test here
+/// mutates the process-wide <c>PZ_CACHE_DIR</c> environment variable — <c>RestoreCommand</c> runs
+/// <c>pz restore</c> in-process via <see cref="CliApp"/> rather than as a child process, so there is no
+/// <c>ProcessStartInfo</c> to scope the variable to instead — and would otherwise race any other class
+/// in this assembly reading or setting it concurrently.</para></summary>
+[Collection("console-and-env-serialized")]
 public sealed class DeltaRsRestoreTests : IDisposable
 {
     private const string PackageId = "Pz.Connector.DeltaLakeRs";
@@ -48,9 +56,24 @@ public sealed class DeltaRsRestoreTests : IDisposable
         var lakeRoot = Path.Combine(projectDir, "lake");
         WriteProject(projectDir, version, lakeRoot);
 
-        Assert.Equal(
-            ExitCodes.Ok,
-            CliApp.Build().Parse(["restore", "--project", projectDir, "--feeds", feedDir]).Invoke());
+        // The default cache root (~/.pz/cache, RestoreCommand.CacheRoot) is a real, shared, persistent
+        // location -- restoring the ~186 MB deltalake-rs package into it every run would leave that
+        // much behind permanently with no cleanup. PZ_CACHE_DIR (honored at RestoreCommand.cs's
+        // CacheRoot()) redirects it into this test's own disposable temp tree instead.
+        var cacheDir = NewDir();
+        var originalCacheDir = Environment.GetEnvironmentVariable("PZ_CACHE_DIR");
+        Environment.SetEnvironmentVariable("PZ_CACHE_DIR", cacheDir);
+        try
+        {
+            Assert.Equal(
+                ExitCodes.Ok,
+                CliApp.Build().Parse(["restore", "--project", projectDir, "--feeds", feedDir]).Invoke());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PZ_CACHE_DIR", originalCacheDir);
+        }
+
         Assert.True(File.Exists(Path.Combine(projectDir, "pz.lock.json")), "restore did not write pz.lock.json");
         Assert.True(
             File.Exists(Path.Combine(projectDir, ".pz", "packages", PackageId, version, "pz.connector.json")),
@@ -180,3 +203,10 @@ public sealed class DeltaRsRestoreTests : IDisposable
         }
     }
 }
+
+/// <summary>Serializes every test in this assembly that mutates process-wide state (env vars,
+/// <c>Console.Out</c>/<c>Error</c> redirection) against each other. Named identically to
+/// <c>Pz.Cli.Tests</c>'s own collection of the same name for the same reason — xUnit collections are
+/// per-assembly, so this is a separate declaration, not a shared one.</summary>
+[CollectionDefinition("console-and-env-serialized")]
+public class ConsoleAndEnvSerializedCollection;
