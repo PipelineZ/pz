@@ -21,6 +21,7 @@ public static class CliApp
         root.Subcommands.Add(RetryCommand.Create());
         root.Subcommands.Add(LsCommand.Create());
         root.Subcommands.Add(ConnectorsCommand.Create());
+        root.Subcommands.Add(ConnectorTestCommand.Create());
         root.Subcommands.Add(CdcCommand.Create());
         root.Subcommands.Add(CleanCommand.Create());
         root.Subcommands.Add(StateCommand.Create());
