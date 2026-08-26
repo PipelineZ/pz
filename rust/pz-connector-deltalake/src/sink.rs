@@ -62,15 +62,36 @@ struct ConnectionSettings {
 }
 
 impl ConnectionSettings {
-    fn from_config(config: &Config) -> Result<Self, String> {
+    fn from_config(config: &Config) -> Result<Self, ConfigError> {
         let root = match config.0.get("root") {
             Some(serde_json::Value::String(s)) if !s.trim().is_empty() => s.trim(),
-            Some(serde_json::Value::String(_)) => return Err("'root' is empty".to_string()),
-            Some(_) => return Err("'root' must be a string".to_string()),
-            None => return Err("'root' is required (the table's root path or URI)".to_string()),
+            Some(serde_json::Value::String(_)) => {
+                return Err(ConfigError::simple("'root' is empty"))
+            }
+            Some(_) => return Err(ConfigError::simple("'root' must be a string")),
+            None => {
+                return Err(ConfigError::simple(
+                    "'root' is required (the table's root path or URI)",
+                ))
+            }
         };
 
-        let root_url = parse_root(root)?;
+        let root_url = parse_root(root).map_err(ConfigError::simple)?;
+
+        if let Some(feature) = unsupported_scheme_feature(root_url.scheme()) {
+            let scheme = root_url.scheme();
+            return Err(ConfigError::with_hint(
+                format!(
+                    "'root' uses the '{scheme}://' scheme, but this build of deltalake-rs was \
+                     compiled without the deltalake \"{feature}\" cargo feature -- it has no \
+                     {feature} object-store backend and cannot reach this location"
+                ),
+                format!(
+                    "rebuild pz-connector-deltalake with the \"{feature}\" feature enabled on \
+                     its deltalake dependency, or point root: at a location this build supports"
+                ),
+            ));
+        }
 
         let storage_options = match config.0.get("storage_options") {
             None | Some(serde_json::Value::Null) => HashMap::new(),
@@ -88,13 +109,72 @@ impl ConnectionSettings {
                 }
                 options
             }
-            Some(_) => return Err("'storage_options' must be a map of string values".to_string()),
+            Some(_) => {
+                return Err(ConfigError::simple(
+                    "'storage_options' must be a map of string values",
+                ))
+            }
         };
 
         Ok(ConnectionSettings {
             root_url,
             storage_options,
         })
+    }
+}
+
+/// A `ConnectionSettings::from_config` failure: a message, and an optional next-step hint (used so
+/// far only by the scheme guard above). Kept separate from [`PzError`] itself so this module has one
+/// place ([`ConfigError::into_pz_error`]) that redacts before either ever becomes user-facing --
+/// `validate`'s `Vec<String>` and `check`/`open`'s `PzError` are both built from this, never from an
+/// unredacted `String`/`format!` directly.
+struct ConfigError {
+    message: String,
+    hint: Option<String>,
+}
+
+impl ConfigError {
+    fn simple(message: impl Into<String>) -> Self {
+        ConfigError {
+            message: message.into(),
+            hint: None,
+        }
+    }
+
+    fn with_hint(message: impl Into<String>, hint: impl Into<String>) -> Self {
+        ConfigError {
+            message: message.into(),
+            hint: Some(hint.into()),
+        }
+    }
+
+    /// For `validate`, whose `Vec<String>` contract has no separate hint slot.
+    fn into_redacted_string(self) -> String {
+        match self.hint {
+            Some(hint) => redact(&format!("{} ({hint})", self.message)),
+            None => redact(&self.message),
+        }
+    }
+
+    fn into_pz_error(self) -> PzError {
+        PzError {
+            message: redact(&self.message),
+            hint: self.hint.map(|h| redact(&h)),
+            ..Default::default()
+        }
+    }
+}
+
+/// Schemes this build's `deltalake` dependency has no object_store backend for -- this crate's
+/// Cargo.toml enables only the `datafusion` feature, not `s3`/`azure`/`gcs`. Without this guard, a
+/// `root:` using one of these fails deep inside delta-rs with an opaque "Cannot infer storage
+/// location from: ..." that names neither cause nor next step.
+fn unsupported_scheme_feature(scheme: &str) -> Option<&'static str> {
+    match scheme {
+        "s3" | "s3a" => Some("s3"),
+        "az" | "abfs" | "abfss" | "adl" | "azure" => Some("azure"),
+        "gs" => Some("gcs"),
+        _ => None,
     }
 }
 
@@ -127,7 +207,7 @@ fn table_url_for_output(root: &Url, output: &str) -> Result<Url, PzError> {
     let mut url = root.clone();
     {
         let mut segments = url.path_segments_mut().map_err(|()| {
-            PzError::new(format!(
+            pz_error(format!(
                 "connection 'root' ('{root}') cannot be a Delta table location -- its scheme has no path segments"
             ))
         })?;
@@ -150,9 +230,9 @@ fn ensure_local_dir_exists(url: &Url) -> Result<(), PzError> {
 
     let path = url
         .to_file_path()
-        .map_err(|()| PzError::new(format!("'{url}' is not a valid file:// path")))?;
+        .map_err(|()| pz_error(format!("'{url}' is not a valid file:// path")))?;
     std::fs::create_dir_all(&path).map_err(|e| {
-        PzError::new(format!(
+        pz_error(format!(
             "failed to create local table directory '{}': {e}",
             path.display()
         ))
@@ -170,12 +250,13 @@ impl SinkConnector for DeltaSinkConnector {
     async fn validate(&self, config: &Config) -> Vec<String> {
         match ConnectionSettings::from_config(config) {
             Ok(_) => Vec::new(),
-            Err(e) => vec![e],
+            Err(e) => vec![e.into_redacted_string()],
         }
     }
 
     async fn check(&self, config: &Config) -> Result<(), PzError> {
-        let settings = ConnectionSettings::from_config(config).map_err(PzError::new)?;
+        let settings =
+            ConnectionSettings::from_config(config).map_err(ConfigError::into_pz_error)?;
         ensure_local_dir_exists(&settings.root_url)?;
         // `try_from_url_with_storage_options` already treats "no table there yet" as success (see
         // its own doc) -- an empty/uninitialized location is reachable, which is everything a
@@ -188,7 +269,8 @@ impl SinkConnector for DeltaSinkConnector {
     }
 
     async fn open(&self, config: Config) -> Result<Box<dyn Sink>, PzError> {
-        let settings = ConnectionSettings::from_config(&config).map_err(PzError::new)?;
+        let settings =
+            ConnectionSettings::from_config(&config).map_err(ConfigError::into_pz_error)?;
         Ok(Box::new(DeltaSink { settings }))
     }
 
@@ -228,7 +310,13 @@ impl Sink for DeltaSink {
 
         match spec.mode.as_str() {
             "append" => {
-                let writer = RecordBatchWriter::for_table(&table).map_err(map_delta_error)?;
+                // `with_commit_properties` is what carries `userMetadata` (the pzNode/pzRun/
+                // pzOrdinal breadcrumb) into `flush_and_commit`'s own commit -- append is the
+                // at-least-once delivery mode, so this breadcrumb is the one thing that lets a
+                // human or a later tool tell which attempt produced which table version.
+                let writer = RecordBatchWriter::for_table(&table)
+                    .map_err(map_delta_error)?
+                    .with_commit_properties(commit_properties);
                 Ok(Box::new(DeltaWriteSession::Append(Box::new(
                     AppendSession {
                         table,
@@ -256,7 +344,7 @@ impl Sink for DeltaSink {
             }
             "merge" => {
                 if spec.keys.is_empty() {
-                    return Err(PzError::new(
+                    return Err(pz_error(
                         "deltalake-rs merge mode requires at least one key column (write: { keys: [...] })",
                     ));
                 }
@@ -275,7 +363,7 @@ impl Sink for DeltaSink {
                     },
                 ))))
             }
-            other => Err(PzError::new(format!(
+            other => Err(pz_error(format!(
                 "deltalake-rs sink does not support write mode '{other}' (supported: append, replace, merge)"
             ))),
         }
@@ -298,11 +386,35 @@ async fn open_or_create_table(
         .await
         .map_err(map_delta_error)?;
 
+    let partition_cols = read_partition_by(&spec.options);
+
     if table.version().is_some() {
+        // partition_by: has no create-time meaning against a table that already has one -- Delta
+        // partitioning is fixed at creation, and delta-rs has no "repartition an existing table"
+        // operation. A DECLARED partition_by: that disagrees with the table's own is a silent-
+        // corruption risk left unchecked (the write would fail deep inside delta-rs with a
+        // `PartitionColumnMismatch` this connector never gets to explain, or in the replace path,
+        // silently take over the layout) -- checked here, once, rather than at every write path
+        // that happens to notice. Omitting partition_by: on a write to an already-partitioned
+        // table is NOT an error: the table's own partitioning is respected either way, matching
+        // delta-rs's own `WriteBuilder` semantics.
+        if !partition_cols.is_empty() {
+            let existing = table
+                .snapshot()
+                .map_err(map_delta_error)?
+                .metadata()
+                .partition_columns();
+            if *existing != partition_cols {
+                return Err(pz_error(format!(
+                    "write declares partition_by: {partition_cols:?}, but this table was already \
+                     created with partition_by: {existing:?} -- a table's partitioning cannot \
+                     change after it is created"
+                )));
+            }
+        }
         return Ok(table);
     }
 
-    let partition_cols = read_partition_by(&spec.options);
     let fields = arrow_schema_to_struct_fields(schema).map_err(map_delta_error)?;
     let mut builder = table
         .create()
@@ -516,6 +628,7 @@ impl WriteSession for DeltaWriteSession {
                             &session.stage,
                             &session.partition_cols,
                             session.commit_properties.clone(),
+                            &session.schema,
                         )
                         .await?
                     }
@@ -553,8 +666,18 @@ async fn commit_replace(
     stage: &Stage,
     partition_cols: &[String],
     commit_properties: CommitProperties,
+    schema: &SchemaRef,
 ) -> Result<(), PzError> {
-    let batches = read_staged_batches(stage).map_err(map_delta_error)?;
+    let mut batches = read_staged_batches(stage).map_err(map_delta_error)?;
+    if batches.is_empty() {
+        // A pipeline that legitimately produces zero rows in replace mode must leave the target
+        // EMPTY (a real truncation, its own new commit), not fail the SinkWrite node. delta-rs's
+        // `with_input_batches` treats an empty `Vec<RecordBatch>` as "no data source supplied" (an
+        // error) regardless of write mode -- one zero-row batch carrying the declared schema tells
+        // it "empty, but on purpose", so the overwrite still runs (removing every existing file,
+        // adding none) and the table version still advances.
+        batches.push(RecordBatch::new_empty(schema.clone()));
+    }
     let mut builder = table
         .write(batches)
         .with_save_mode(SaveMode::Overwrite)
@@ -605,7 +728,7 @@ async fn commit_merge(
         .iter()
         .map(|k| col(format!("target.{k}")).eq(col(format!("source.{k}"))))
         .reduce(|a, b| a.and(b))
-        .ok_or_else(|| PzError::new("merge requires at least one key column"))?;
+        .ok_or_else(|| pz_error("merge requires at least one key column"))?;
 
     let column_names: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
 
@@ -647,31 +770,19 @@ async fn commit_merge(
 // Error mapping
 // ---------------------------------------------------------------------------------------------
 
+/// The one place a plain (non-delta-rs-sourced) `PzError` gets built in this crate -- every call
+/// site that would otherwise write `PzError::new(format!(...))` with connector-controlled input
+/// (a `root:`, a URL, a path) goes through this instead, so redaction can never be forgotten at a
+/// new call site the way it was before this fix. `map_delta_error` (below) redacts separately, since
+/// it also needs the *unredacted* chain to classify transience first.
+fn pz_error(message: impl Into<String>) -> PzError {
+    PzError::new(redact(&message.into()))
+}
+
 /// How long the engine should wait before retrying a transient failure. Not tuned against a real
 /// object-store backoff schedule (out of scope for v1) -- picked to be clearly non-zero without
 /// being punitive for a local conformance/test run.
 const TRANSIENT_RETRY_AFTER_MS: i64 = 500;
-
-/// Substrings that mark a failure as the destination's problem right now, not the connector's
-/// config: request timeouts and the 5xx class an object store returns for its own overload/outage,
-/// plus the throttling language S3/Azure both use that does not always come back as a plain "429" or
-/// "503" in the message text.
-const TRANSIENT_MARKERS: &[&str] = &[
-    "timed out",
-    "timeout",
-    "connection reset",
-    "connection refused",
-    "temporarily unavailable",
-    "service unavailable",
-    "too many requests",
-    "throttl",
-    "slow down",
-    " 429",
-    " 500",
-    " 502",
-    " 503",
-    " 504",
-];
 
 fn map_delta_error(err: DeltaTableError) -> PzError {
     let raw = error_chain(&err);
@@ -696,15 +807,57 @@ fn error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     message
 }
 
+/// Single words that mark a failure as the destination's problem right now, not the connector's
+/// config: matched as a whole [`tokens`], never a raw substring -- `contains("timeout")` would also
+/// fire inside an echoed config value like `connect_timeout=30`, which is not evidence of anything
+/// transient.
+const TRANSIENT_WORDS: &[&str] = &["timeout", "429", "500", "502", "503", "504"];
+
+/// Token prefixes (`starts_with`, not exact-equal) -- covers `throttle`/`throttled`/`throttling`
+/// without also accepting `throttling_policy` as a false negative-turned-positive the way a suffix
+/// match would.
+const TRANSIENT_PREFIXES: &[&str] = &["throttl"];
+
+/// Multi-word phrases, matched as a contiguous run of [`tokens`] -- the throttling/overload language
+/// S3 and Azure both use that never comes back as a bare "429"/"503" in the message text.
+const TRANSIENT_PHRASES: &[&[&str]] = &[
+    &["timed", "out"],
+    &["connection", "reset"],
+    &["connection", "refused"],
+    &["temporarily", "unavailable"],
+    &["service", "unavailable"],
+    &["too", "many", "requests"],
+    &["slow", "down"],
+];
+
+/// Splits on anything that is not ASCII alphanumeric or `_` -- keeping `_` as a word character (not
+/// a boundary) is what keeps a config value like `connect_timeout=30` from tokenizing into a bare
+/// `timeout` token: it stays one token, `connect_timeout`, distinct from the word this function
+/// matches against.
+fn tokens(message: &str) -> Vec<&str> {
+    message
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 fn is_transient(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
-    TRANSIENT_MARKERS.iter().any(|m| lower.contains(m))
+    let toks = tokens(&lower);
+
+    toks.iter().any(|t| TRANSIENT_WORDS.contains(t))
+        || toks
+            .iter()
+            .any(|t| TRANSIENT_PREFIXES.iter().any(|p| t.starts_with(p)))
+        || TRANSIENT_PHRASES
+            .iter()
+            .any(|phrase| toks.windows(phrase.len()).any(|w| w == *phrase))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int64Array, StringArray};
+    use arrow::array::{Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field};
     use std::sync::Arc as StdArc;
     use tempfile::TempDir as TestTempDir;
@@ -713,6 +866,63 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let url = Url::from_directory_path(dir.path()).expect("file url");
         (dir, url)
+    }
+
+    /// The local filesystem directory backing `<root>/orders/` -- every test in this module writes
+    /// to the fixed `"orders"` output, so this mirrors `open_table_for_test`'s own convention.
+    fn table_dir_path(root: &Url) -> PathBuf {
+        table_url_for_output(root, "orders")
+            .expect("table url")
+            .to_file_path()
+            .expect("file path")
+    }
+
+    /// Every `_delta_log/*.json` commit file's raw text, concatenated -- good enough for a
+    /// substring proof (a distinctive token either appears in the log or it doesn't); F6's
+    /// partitionValues assertion below needs more precision than a substring check gives, so it
+    /// parses each commit line as JSON instead via [`read_delta_log_add_partition_values`].
+    fn read_delta_log_text(root: &Url) -> String {
+        let log_dir = table_dir_path(root).join("_delta_log");
+        let mut text = String::new();
+        for entry in std::fs::read_dir(&log_dir).expect("read _delta_log") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                text.push_str(&std::fs::read_to_string(&path).expect("read log file"));
+            }
+        }
+        text
+    }
+
+    /// Every `add` action's `partitionValues` map across every commit file -- used to prove a
+    /// partitioned write actually recorded a real partition VALUE (not just the partition COLUMN
+    /// name, which `metaData.partitionColumns` alone would already show even for an unpartitioned
+    /// write attempt that only declared partitioning without writing partitioned files).
+    fn read_delta_log_add_partition_values(
+        root: &Url,
+    ) -> Vec<serde_json::Map<String, serde_json::Value>> {
+        let log_dir = table_dir_path(root).join("_delta_log");
+        let mut result = Vec::new();
+        for entry in std::fs::read_dir(&log_dir).expect("read _delta_log") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).expect("read log file");
+            for line in content.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let value: serde_json::Value = serde_json::from_str(line).expect("parse log line");
+                if let Some(pv) = value
+                    .get("add")
+                    .and_then(|add| add.get("partitionValues"))
+                    .and_then(|pv| pv.as_object())
+                {
+                    result.push(pv.clone());
+                }
+            }
+        }
+        result
     }
 
     fn probe_schema() -> SchemaRef {
@@ -870,8 +1080,224 @@ mod tests {
         session.commit().await.expect("commit merge");
 
         let reopened = open_table_for_test(url).await;
+        let (_table, batches) = read_all_batches(reopened).await;
+        let pairs = extract_id_value_pairs(&batches);
+        assert_eq!(
+            pairs.len(),
+            3,
+            "one update + one unchanged + one insert = 3 rows"
+        );
+        assert_eq!(
+            pairs.iter().find(|(id, _)| *id == 1).map(|(_, v)| v.as_str()),
+            Some("updated"),
+            "id=1 must reflect merge's when_matched_update, not the original append value: {pairs:?}"
+        );
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(id, _)| *id == 2)
+                .map(|(_, v)| v.as_str()),
+            Some("b"),
+            "id=2 (not in the merge source) must be unchanged: {pairs:?}"
+        );
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(id, _)| *id == 3)
+                .map(|(_, v)| v.as_str()),
+            Some("new"),
+            "id=3 must reflect merge's when_not_matched_insert: {pairs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_commit_carries_user_metadata() {
+        let (_dir, url) = table_dir();
+        let connector = DeltaSinkConnector;
+        let sink = connector
+            .open(Config(serde_json::Map::from_iter([(
+                "root".to_string(),
+                serde_json::Value::String(url.to_string()),
+            )])))
+            .await
+            .expect("open sink");
+
+        let mut spec = output_spec("append", vec![]);
+        spec.attempt = Some(WriteAttempt {
+            node: "probe-node-xyz".to_string(),
+            run: "probe-run".to_string(),
+            ordinal: 1,
+        });
+        let mut session = sink
+            .begin_write(spec, probe_schema())
+            .await
+            .expect("begin write");
+        session
+            .write_batch(probe_batch(&[1], &["a"]))
+            .await
+            .expect("write batch");
+        session.commit().await.expect("commit");
+
+        let log_text = read_delta_log_text(&url);
+        assert!(
+            log_text.contains("userMetadata") && log_text.contains("probe-node-xyz"),
+            "an APPEND commit must carry pzNode in _delta_log's userMetadata: {log_text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_with_zero_batches_truncates_without_error() {
+        let (_dir, url) = table_dir();
+        let connector = DeltaSinkConnector;
+        let config = Config(serde_json::Map::from_iter([(
+            "root".to_string(),
+            serde_json::Value::String(url.to_string()),
+        )]));
+
+        // Seed the table with two rows via append.
+        let sink = connector.open(config.clone()).await.expect("open sink");
+        let mut session = sink
+            .begin_write(output_spec("append", vec![]), probe_schema())
+            .await
+            .expect("begin write");
+        session
+            .write_batch(probe_batch(&[1, 2], &["a", "b"]))
+            .await
+            .expect("write batch");
+        session.commit().await.expect("commit append");
+        let version_before = open_table_for_test(url.clone()).await.version();
+
+        // A replace mode write that never calls write_batch at all -- a pipeline that legitimately
+        // produced zero rows this run -- must truncate the table, not fail the SinkWrite node.
+        let sink = connector.open(config).await.expect("open sink");
+        let mut session = sink
+            .begin_write(output_spec("replace", vec![]), probe_schema())
+            .await
+            .expect("begin write");
+        let result = session.commit().await.expect("commit empty replace");
+        assert_eq!(result.rows_written, 0);
+
+        let reopened = open_table_for_test(url.clone()).await;
+        assert!(
+            reopened.version() > version_before,
+            "an empty replace must still advance the table version (a real truncation commit): \
+             before={version_before:?}, after={:?}",
+            reopened.version()
+        );
         let (_table, rows) = read_all_rows(reopened).await;
-        assert_eq!(rows, 3, "one update + one unchanged + one insert = 3 rows");
+        assert_eq!(rows, 0, "an empty replace must leave the table empty");
+    }
+
+    #[tokio::test]
+    async fn root_with_secrets_never_leaks_from_validate_or_open() {
+        let connector = DeltaSinkConnector;
+        // No scheme and not absolute -- refused by parse_root, whose message otherwise embeds
+        // `root` verbatim. Carries the exact shapes redact() targets: a query string and an
+        // AWS_SECRET_ACCESS_KEY-shaped pair.
+        let root = "relative/path?sig=SUPERSECRET&AWS_SECRET_ACCESS_KEY=hunter2";
+        let config = Config(serde_json::Map::from_iter([(
+            "root".to_string(),
+            serde_json::Value::String(root.to_string()),
+        )]));
+
+        let validate_errors = connector.validate(&config).await;
+        assert!(
+            !validate_errors.is_empty(),
+            "a relative root must be refused, not silently accepted"
+        );
+        for e in &validate_errors {
+            assert!(
+                !e.contains("SUPERSECRET"),
+                "validate() leaked a secret: {e}"
+            );
+            assert!(!e.contains("hunter2"), "validate() leaked a secret: {e}");
+        }
+
+        let open_err = match connector.open(config).await {
+            Err(e) => e,
+            Ok(_) => panic!("a relative root must be refused, not silently accepted"),
+        };
+        assert!(
+            !open_err.message.contains("SUPERSECRET"),
+            "open() leaked a secret: {}",
+            open_err.message
+        );
+        assert!(
+            !open_err.message.contains("hunter2"),
+            "open() leaked a secret: {}",
+            open_err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn s3_root_is_refused_with_a_clear_hint_in_this_build() {
+        let connector = DeltaSinkConnector;
+        let config = Config(serde_json::Map::from_iter([(
+            "root".to_string(),
+            serde_json::Value::String("s3://some-bucket/prefix".to_string()),
+        )]));
+
+        let err = match connector.open(config).await {
+            Err(e) => e,
+            Ok(_) => {
+                panic!("an s3:// root must be refused in this build (no s3 feature compiled in)")
+            }
+        };
+        assert!(
+            err.message.contains("s3"),
+            "the error should name the missing s3 support: {}",
+            err.message
+        );
+        assert!(
+            err.hint.is_some(),
+            "the scheme guard should populate PzError.hint with the next step"
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatched_partition_by_against_existing_table_is_refused() {
+        let (_dir, url) = table_dir();
+        let connector = DeltaSinkConnector;
+        let config = Config(serde_json::Map::from_iter([(
+            "root".to_string(),
+            serde_json::Value::String(url.to_string()),
+        )]));
+
+        // Create the table partitioned by "value".
+        let sink = connector.open(config.clone()).await.expect("open sink");
+        let mut spec = output_spec("append", vec![]);
+        spec.options.insert(
+            "partition_by".to_string(),
+            serde_json::Value::String("value".to_string()),
+        );
+        let mut session = sink
+            .begin_write(spec, probe_schema())
+            .await
+            .expect("begin write");
+        session
+            .write_batch(probe_batch(&[1], &["a"]))
+            .await
+            .expect("write batch");
+        session.commit().await.expect("commit");
+
+        // A second write declaring a DIFFERENT partition_by against the same (now-existing) table
+        // must be refused with a clear error, not silently ignored or left to fail deep inside
+        // delta-rs's own PartitionColumnMismatch.
+        let sink = connector.open(config).await.expect("open sink");
+        let mut spec = output_spec("append", vec![]);
+        spec.options.insert(
+            "partition_by".to_string(),
+            serde_json::Value::String("id".to_string()),
+        );
+        let err = match sink.begin_write(spec, probe_schema()).await {
+            Err(e) => e,
+            Ok(_) => panic!("a mismatched partition_by against an existing table must be refused"),
+        };
+        assert!(
+            err.message.contains("partition"),
+            "the error should name the partitioning conflict: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
@@ -953,21 +1379,73 @@ mod tests {
             .expect("write batch");
         session.commit().await.expect("commit");
 
-        let reopened = open_table_for_test(url).await;
+        let reopened = open_table_for_test(url.clone()).await;
         let metadata = reopened.snapshot().expect("snapshot").metadata();
         assert_eq!(
             metadata.partition_columns(),
             &vec!["value".to_string()],
             "the table's own metadata must record the partition column"
         );
+
+        // Metadata alone only proves the column NAME was declared -- a write that declared
+        // partitioning without actually laying files out that way would still pass the assertion
+        // above. Assert a real partition VALUE landed in an add action's `partitionValues`.
+        let partition_values = read_delta_log_add_partition_values(&url);
+        assert!(
+            partition_values.iter().any(|pv| {
+                matches!(
+                    pv.get("value").and_then(|v| v.as_str()),
+                    Some("east") | Some("west")
+                )
+            }),
+            "an add action's partitionValues must record the partitioned column's actual value: \
+             {partition_values:?}"
+        );
     }
 
-    async fn read_all_rows(table: DeltaTable) -> (DeltaTable, usize) {
+    async fn read_all_batches(table: DeltaTable) -> (DeltaTable, Vec<RecordBatch>) {
         let (table, stream) = table.scan_table().await.expect("scan");
         let batches: Vec<RecordBatch> = deltalake::operations::collect_sendable_stream(stream)
             .await
             .expect("collect");
+        (table, batches)
+    }
+
+    async fn read_all_rows(table: DeltaTable) -> (DeltaTable, usize) {
+        let (table, batches) = read_all_batches(table).await;
         let rows = batches.iter().map(|b| b.num_rows()).sum();
         (table, rows)
+    }
+
+    /// Reads the fixed two-column `probe_schema()` (`id: Int64, value: Utf8`) into `(id, value)`
+    /// pairs, for tests that need to assert an actual row VALUE, not just a row count.
+    fn extract_id_value_pairs(batches: &[RecordBatch]) -> Vec<(i64, String)> {
+        let mut pairs = Vec::new();
+        for batch in batches {
+            let ids = batch
+                .column_by_name("id")
+                .expect("id column present")
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("id column is Int64");
+            // Cast to plain Utf8 first rather than downcasting the raw column directly -- a merge
+            // (unlike a plain append) goes through DataFusion, which is free to hand back the
+            // string column as `LargeUtf8`/`Utf8View` rather than the `Utf8` this connector wrote,
+            // and this helper only cares about the values, not which physical string layout
+            // produced them.
+            let values_col = arrow::compute::cast(
+                batch.column_by_name("value").expect("value column present"),
+                &DataType::Utf8,
+            )
+            .expect("value column castable to Utf8");
+            let values = values_col
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("value column is Utf8 after cast");
+            for i in 0..batch.num_rows() {
+                pairs.push((ids.value(i), values.value(i).to_string()));
+            }
+        }
+        pairs
     }
 }

@@ -10,10 +10,17 @@ Read this before you point it at real data.
 
 Everything below was exercised by `cargo test -p pz-connector-deltalake` and
 `scripts/rust-conformance-deltalake.sh` against **local filesystem tables only** (a `tempfile`
-temp directory). Nothing here has been run against S3 or Azure -- `root:` accepts an `s3://`/`az://`
-URI and `storage_options:` is passed straight through to delta-rs's object_store backend, but that
-path is unverified in this repository. Anything needing cloud credentials is out of scope for this
-connector's own test suite; verify it yourself before trusting it against a real bucket.
+temp directory).
+
+**`s3://`/`az://`/`gs://` roots cannot work in this build, plainly, not just "unverified".** This
+crate's `Cargo.toml` enables only delta-rs's `datafusion` feature -- not `s3`/`azure`/`gcs` -- so no
+object-store backend for those schemes is compiled in. `validate`/`check`/`open` all refuse such a
+`root:` up front with a clear error and a `hint` naming the missing cargo feature, rather than
+letting the write fail deep inside delta-rs with an opaque "Cannot infer storage location from: ..."
+the first time anything actually tries to reach the store. Adding real S3/Azure support means
+enabling those features on the `deltalake` dependency, which roughly doubles the build's dependency
+footprint (`aws-sdk-*`/Azure SDK crates) -- out of scope here, since this task's own test requirement
+is local temp-dir tables only.
 
 | write mode | status |
 |---|---|
@@ -35,7 +42,7 @@ uses. There is no single table spanning multiple outputs.
 The `connection:` shape this connector's `Configure` RPC accepts is:
 
 ```yaml
-root: /abs/path/to/lake            # or s3://bucket/prefix, az://container/prefix (untested)
+root: /abs/path/to/lake            # an s3://, az:// or gs:// root is refused in this build -- see §1
 storage_options:                   # optional, passed verbatim to delta-rs's object_store backend
   AWS_REGION: us-east-1
 ```
@@ -55,8 +62,9 @@ writes to `<root>/orders/`.
 ## 3. Modes
 
 - **`append`** streams straight into delta-rs's own `RecordBatchWriter` -- batches flow to parquet
-  as they arrive, `commit` is one `flush_and_commit`. This is the memory-safest mode: nothing here
-  ever holds more than the batch currently in flight.
+  as they arrive, `commit` is one `flush_and_commit` carrying `spec.attempt` (when the host sent one)
+  as the commit's `userMetadata` (`{"pzNode":...,"pzRun":...,"pzOrdinal":...}`). This is the
+  memory-safest mode: nothing here ever holds more than the batch currently in flight.
 - **`replace`** and **`merge`** cannot use that writer (both need delta-rs APIs gated behind the
   `datafusion` feature, whose inputs are not "hand it one batch at a time" shaped). Instead every
   batch is staged to a local parquet file (never inside the table's own storage) as it arrives, and
@@ -64,24 +72,36 @@ writes to `<root>/orders/`.
   - `replace` re-reads every staged file into one `Vec<RecordBatch>` -- `DeltaTable::write(...)
     .with_save_mode(Overwrite)` has no lazy-scan input path in this delta-rs version, so commit-time
     memory here is genuinely O(dataset). A table too large to overwrite in memory needs `merge`
-    instead.
+    instead. A replace that stages zero batches (a pipeline that legitimately produced no rows this
+    run) still truncates the table via a real overwrite commit -- one zero-row batch carrying the
+    declared schema, since delta-rs treats a literally empty `Vec<RecordBatch>` as "no data source
+    supplied" (an error) regardless of write mode.
   - `merge` opens the staged directory as a DataFusion `DataFrame` (lazy scan), so its commit-time
     memory stays bounded regardless of how much was staged.
 
   See `src/sink.rs`'s `DeltaWriteSession` doc comment for the full reasoning.
 - **`partition_by`** (an output option, any mode) becomes the table's `partition_by` at creation
-  time, or is validated to already match on an existing table (delta-rs's own
-  `PartitionColumnMismatch` check).
+  time. Against an already-existing table, a *declared* `partition_by:` that disagrees with the
+  table's own partitioning is refused with a clear error before any write is attempted (this
+  connector's own check, in `open_or_create_table`) -- Delta partitioning is fixed at creation, and
+  delta-rs has no "repartition an existing table" operation. Omitting `partition_by:` on a write to
+  an already-partitioned table is not an error: the table's own partitioning is respected either way.
 - **abort** never touches delta-rs's commit path in any mode -- the table's version (and, for
   `replace`/`merge`, its storage too) is exactly as it was before the write session began.
 
 ## 4. Secret hygiene
 
 delta-rs/object_store error strings can embed the table's own URI complete with a presigned query
-string, or a bare `AWS_SECRET_ACCESS_KEY=...`-shaped credential. Every error this connector reports
+string, or a bare `AWS_SECRET_ACCESS_KEY=...`-shaped credential. `root:` itself can too, if someone
+puts a query string or a credential-shaped value directly in it. Every error this connector reports
 goes through `src/redact.rs` first: query strings are stripped to `?<redacted>`, and any
 `key=value`/`key: value` pair whose key looks credential-shaped has its value blanked. See that
-module's tests, including one proving a presigned-URL query string is redacted.
+module's tests, including one proving a presigned-URL query string is redacted, and `sink.rs`'s
+`root_with_secrets_never_leaks_from_validate_or_open` test, which proves neither `validate()`'s
+`Vec<String>` nor `open()`'s `PzError` leaks a secret embedded directly in `root:`. Every plain
+`PzError` this crate constructs goes through one `pz_error()` helper (or, for a `ConnectionSettings`
+parse failure specifically, `ConfigError::into_pz_error`/`into_redacted_string`) so redaction can't be
+forgotten at a new call site.
 
 ## 5. Building and running the conformance suite
 

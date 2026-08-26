@@ -11,12 +11,12 @@ prost = "0.13"
 prost-types = "0.13"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
-# Pinned to match deltalake 0.32's own arrow dependency (workspace.dependencies arrow = "58" in
-# delta-io/delta-rs at this tag) -- arrow-rs treats every release as a new major version, so two
-# different pins never unify in one Cargo.lock: the RecordBatch/SchemaRef types this crate's trait
-# surface exposes would silently stop being the same nominal type as the ones a delta-rs-based
-# connector produces. One pin for the whole workspace is what keeps `pz-connector-deltalake` (and
-# any future delta-rs-based connector) free of cross-version Arrow FFI bridging code.
+# arrow-rs treats every release as a new major version, so two different pins never unify in one
+# Cargo.lock: the RecordBatch/SchemaRef types this crate's trait surface exposes would silently
+# stop being the same nominal type as the ones a delta-rs-based connector produces. This pin must
+# equal whatever arrow major the deltalake dependency in rust/pz-connector-deltalake's Cargo.toml
+# resolves to -- one arrow version for the whole workspace is what keeps that connector (and any
+# future delta-rs-based one) free of cross-version Arrow FFI bridging code.
 arrow = { version = "58", default-features = false, features = ["ipc"] }
 async-trait = "0.1"
 serde_json = { version = "1", features = ["preserve_order"] }
