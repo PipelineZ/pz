@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Question or idea
-    url: https://github.com/coccor/pz/discussions
+    url: https://github.com/pipelinez/pz/discussions
     about: For "how do I...", design discussions, and ideas that aren't yet concrete requests.
   - name: Security report
-    url: https://github.com/coccor/pz/security/advisories/new
+    url: https://github.com/pipelinez/pz/security/advisories/new
     about: Please report vulnerabilities privately — see SECURITY.md.
