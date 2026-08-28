@@ -16,6 +16,7 @@
     <ProjectReference Include="..\..\connectors\Pz.Connector.SqlServer\Pz.Connector.SqlServer.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.AzureBlob\Pz.Connector.AzureBlob.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.Http\Pz.Connector.Http.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.Snowflake\Pz.Connector.Snowflake.csproj" />
   </ItemGroup>
 
   <ItemGroup>

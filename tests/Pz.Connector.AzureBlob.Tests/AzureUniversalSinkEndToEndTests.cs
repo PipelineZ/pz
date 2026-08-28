@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 using Parquet;
 using Pz.Connectors.Abstractions;
 using Pz.TestSupport;
@@ -98,7 +99,7 @@ public sealed class AzureUniversalSinkEndToEndTests(AzuriteFixture fixture)
         }
 
         var remainingUnderPrefix = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remainingUnderPrefix.Add(item.Name);
         }
@@ -131,7 +132,7 @@ public sealed class AzureUniversalSinkEndToEndTests(AzuriteFixture fixture)
         Assert.False((await finalBlob.ExistsAsync()).Value);
 
         var remainingUnderPrefix = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remainingUnderPrefix.Add(item.Name);
         }
@@ -178,7 +179,7 @@ public sealed class AzureUniversalSinkEndToEndTests(AzuriteFixture fixture)
         Assert.Equal(5, lines.Length);
 
         var remainingUnderPrefix = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remainingUnderPrefix.Add(item.Name);
         }
@@ -228,7 +229,7 @@ public sealed class AzureUniversalSinkEndToEndTests(AzuriteFixture fixture)
             text);
 
         var remainingUnderPrefix = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remainingUnderPrefix.Add(item.Name);
         }
@@ -262,7 +263,7 @@ public sealed class AzureUniversalSinkEndToEndTests(AzuriteFixture fixture)
         Assert.False((await finalBlob.ExistsAsync()).Value);
 
         var remainingUnderPrefix = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remainingUnderPrefix.Add(item.Name);
         }
@@ -376,7 +377,7 @@ public sealed class AzureUniversalSinkEndToEndTests(AzuriteFixture fixture)
 
         // Per-partition atomic: each folder promoted its own temp blob; none left dangling.
         var remaining = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remaining.Add(item.Name);
         }
@@ -425,7 +426,7 @@ public sealed class AzureUniversalSinkEndToEndTests(AzuriteFixture fixture)
 
         // Per-partition atomic: each folder promoted its own temp blob; none left dangling.
         var remaining = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remaining.Add(item.Name);
         }

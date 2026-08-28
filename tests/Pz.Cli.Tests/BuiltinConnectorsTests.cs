@@ -59,4 +59,18 @@ public class BuiltinConnectorsTests
         Assert.Contains("s3", registry.Sources.Keys);
         Assert.Contains("s3", registry.Sinks.Keys);
     }
+
+    [Fact]
+    public void Snowflake_is_registered_as_source_and_sink()
+    {
+        var registry = BuiltinConnectors.CreateRegistry();
+        Assert.Contains("snowflake", registry.Sources.Keys);
+        Assert.Contains("snowflake", registry.Sinks.Keys);
+    }
+
+    [Fact]
+    public void Snowflake_package_id_is_builtin()
+    {
+        Assert.Contains("Pz.Connector.Snowflake", BuiltinConnectors.PackageIds);
+    }
 }

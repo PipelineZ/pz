@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Azure.Storage.Blobs;
+using Azure.Storage.Blobs.Models;
 using Parquet;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit;
@@ -233,7 +234,7 @@ public sealed class AzureGateTests(AzuriteFixture fixture)
         // The temp blob is simply left behind -- delete_temp's failure was suppressed, not retried
         // to success by some other path.
         var remaining = new List<string>();
-        await foreach (var item in container.GetBlobsAsync(prefix: prefix))
+        await foreach (var item in container.GetBlobsAsync(traits: BlobTraits.None, states: BlobStates.All, prefix: prefix, cancellationToken: default))
         {
             remaining.Add(item.Name);
         }
