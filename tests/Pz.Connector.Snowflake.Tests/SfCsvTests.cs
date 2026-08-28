@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Snowflake.Tests;
 
@@ -80,5 +81,40 @@ public class SfCsvTests
         Assert.Equal("7,\"he\"\"llo\",TRUE,2026-03-27,2026-03-27 10:30:00.123000,5", lines[0]);
         Assert.Equal("\\N,\\N,\\N,\\N,\\N,6", lines[1]);
         Assert.Equal(7, next);
+    }
+
+    // double.ToString(InvariantCulture) spells these "NaN"/"Infinity"/"-Infinity", none of which
+    // Snowflake's CSV COPY parses for a FLOAT column -- it wants "nan"/"inf"/"-inf". With
+    // on_error = abort_statement (SfDdl.BuildCopyIntoStagingSql), an un-parseable field is a hard
+    // commit failure, not a dropped row.
+    [Theory]
+    [InlineData(double.NaN, "nan")]
+    [InlineData(double.PositiveInfinity, "inf")]
+    [InlineData(double.NegativeInfinity, "-inf")]
+    [InlineData(3.14, "3.14")]
+    public void Double_special_values_render_as_snowflake_understands_them(double value, string expected)
+    {
+        var schema = new Schema([new Field("d", DoubleType.Default, nullable: true)], null);
+        using var batch = new RecordBatch(schema, [new DoubleArray.Builder().Append(value).Build()], 1);
+        var sw = new StringWriter();
+        SfCsv.WriteBatch(batch, sw);
+        Assert.Equal(expected, sw.ToString().TrimEnd('\n'));
+    }
+
+    [Fact]
+    public void Decimal128_value_outside_clr_decimal_range_is_a_named_write_error()
+    {
+        // Decimal128(38, 0) can hold a 38-digit integer; System.Decimal's range tops out around
+        // 7.9e28 (~29 digits) -- Decimal128Array.GetValue throws a raw OverflowException widening a
+        // value at the top of the v0 matrix's precision, which the sink must catch and name.
+        var type = new Decimal128Type(38, 0);
+        var schema = new Schema([new Field("amount", type, nullable: true)], null);
+        using var batch = new RecordBatch(schema, [
+            new Decimal128Array.Builder(type).Append("99999999999999999999999999999999999999").Build(),
+        ], 1);
+        var sw = new StringWriter();
+        var ex = Assert.Throws<PzConnectorException>(() => SfCsv.WriteBatch(batch, sw));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("amount", ex.Message);
     }
 }

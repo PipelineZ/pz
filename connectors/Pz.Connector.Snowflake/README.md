@@ -149,7 +149,10 @@ split across files. `CommitAsync` is where everything server-side happens, in or
 Snowflake auto-commits DDL, so this sink never relies on a multi-statement transaction against the
 target — only step 6 touches it, which is what makes `Transactional` an honest declaration: `Abort`
 (before any connection opens) deletes the spool files and is a `DiscardsAll`; a failure at any step
-after that leaves the target exactly as it was, because no earlier step wrote to it.
+after that leaves the target's *rows* exactly as it was, because no earlier step wrote to it. One
+caveat: if step 1 had to create the target (it didn't already exist) and any later step then fails,
+that empty table is left behind — CREATE auto-commits the moment it runs, so there is no undoing it
+short of a later run's own `EnsureTargetAsync` finding it and proceeding normally against it.
 
 | Mode | Behavior | Delivery guarantee |
 |---|---|---|

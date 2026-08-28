@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Apache.Arrow;
+using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Snowflake;
@@ -12,8 +13,10 @@ namespace Pz.Connector.Snowflake;
 /// <c>""</c>-escaping, whatever its content, so an empty string is never confused with NULL; booleans
 /// are <c>TRUE</c>/<c>FALSE</c>; dates are <c>yyyy-MM-dd</c>; timestamps are naive UTC
 /// <c>yyyy-MM-dd HH:mm:ss.ffffff</c> (microsecond precision, matching the v0 matrix's Timestamp(us));
-/// every numeric renders with <see cref="CultureInfo.InvariantCulture"/>. Lines are terminated with a
-/// bare <c>\n</c> -- never <c>\r\n</c> -- so a spool file written on any platform is byte-identical.</summary>
+/// every numeric renders with <see cref="CultureInfo.InvariantCulture"/>, except a double's three
+/// special values, which InvariantCulture spells in a way Snowflake's COPY can't parse for FLOAT --
+/// see <see cref="FormatDouble"/>. Lines are terminated with a bare <c>\n</c> -- never <c>\r\n</c> --
+/// so a spool file written on any platform is byte-identical.</summary>
 internal static class SfCsv
 {
     /// <summary>The unquoted NULL marker written for a null cell, and the token
@@ -64,7 +67,7 @@ internal static class SfCsv
                     line.Append(',');
                 }
 
-                AppendCell(line, columns[col], row);
+                AppendCell(line, columns[col], row, batch.Schema.FieldsList[col].Name);
             }
 
             if (sequenceStart is not null)
@@ -80,7 +83,7 @@ internal static class SfCsv
         return sequence;
     }
 
-    private static void AppendCell(StringBuilder line, IArrowArray array, int row)
+    private static void AppendCell(StringBuilder line, IArrowArray array, int row, string columnName)
     {
         if (array.IsNull(row))
         {
@@ -97,10 +100,10 @@ internal static class SfCsv
                 line.Append(a.GetValue(row)!.Value.ToString(CultureInfo.InvariantCulture));
                 break;
             case DoubleArray a:
-                line.Append(a.GetValue(row)!.Value.ToString(CultureInfo.InvariantCulture));
+                line.Append(FormatDouble(a.GetValue(row)!.Value));
                 break;
             case Decimal128Array a:
-                line.Append(a.GetValue(row)!.Value.ToString(CultureInfo.InvariantCulture));
+                AppendDecimal(line, a, row, columnName);
                 break;
             case BooleanArray a:
                 line.Append(a.GetValue(row)!.Value ? "TRUE" : "FALSE");
@@ -139,5 +142,40 @@ internal static class SfCsv
         }
 
         line.Append('"');
+    }
+
+    /// <summary>double.ToString(InvariantCulture) renders the three special values as "NaN",
+    /// "Infinity", "-Infinity" -- none of which Snowflake's CSV COPY parses for a FLOAT column (it
+    /// accepts <c>nan</c>, <c>inf</c>, <c>-inf</c>, case-insensitively). With <c>on_error =
+    /// abort_statement</c> (see <see cref="BuildCopyIntoStagingSql"/> in SfDdl -- COPY always runs
+    /// with it), an un-parseable field is a hard commit failure, not a dropped row.</summary>
+    private static string FormatDouble(double value) => value switch
+    {
+        double.NaN => "nan",
+        double.PositiveInfinity => "inf",
+        double.NegativeInfinity => "-inf",
+        _ => value.ToString(CultureInfo.InvariantCulture),
+    };
+
+    /// <summary>Decimal128Array.GetValue widens the stored 128-bit value into a CLR
+    /// <see cref="decimal"/> (96-bit mantissa) and throws a raw <see cref="OverflowException"/> when
+    /// a NUMBER(p,s) value at the high end of the v0 matrix's precision (up to 38 digits) doesn't fit
+    /// -- caught here the same way <c>SnowflakeArrowReader</c>'s read-side decimal branch catches its
+    /// own overflow, naming the column, non-transient, with the matching hint.</summary>
+    private static void AppendDecimal(StringBuilder line, Decimal128Array array, int row, string columnName)
+    {
+        try
+        {
+            line.Append(array.GetValue(row)!.Value.ToString(CultureInfo.InvariantCulture));
+        }
+        catch (OverflowException ex)
+        {
+            var dec = (Decimal128Type)array.Data.DataType;
+            throw new PzConnectorException(
+                $"column '{columnName}': value exceeds decimal128({dec.Precision},{dec.Scale}) scale -- " +
+                "cast the column in the write query to a narrower NUMBER(p,s), or split it into its own " +
+                "varchar output",
+                isTransient: false, innerException: ex);
+        }
     }
 }
