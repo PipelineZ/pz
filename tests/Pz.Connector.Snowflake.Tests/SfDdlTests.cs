@@ -37,6 +37,12 @@ public class SfDdlTests
             SfDdl.BuildCreateTableSql("S", "T", TwoColSchema()));
 
     [Fact]
+    public void Insert_lists_columns_explicitly() =>
+        Assert.Equal(
+            "insert into \"S\".\"T\" (\"id\", \"name\") select \"id\", \"name\" from pz_load_x",
+            SfDdl.BuildInsertSql("S", "T", "pz_load_x", TwoColSchema()));
+
+    [Fact]
     public void InsertOverwrite_lists_columns_explicitly() =>
         Assert.Equal(
             "insert overwrite into \"S\".\"T\" (\"id\", \"name\") select \"id\", \"name\" from pz_load_x",
