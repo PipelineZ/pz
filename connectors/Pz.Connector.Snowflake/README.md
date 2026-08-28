@@ -223,8 +223,10 @@ malformed entity name (not `SCHEMA.TABLE` or `TABLE`), `schema_policy: evolve`.
 
 ## Platform notes
 
-- **Linux: glibc only.** `Snowflake.Data` does not support musl-based distros (Alpine) — run this
-  connector on a glibc Linux (Debian/Ubuntu/RHEL-family), not an Alpine container image.
+- **Linux: prefer glibc.** `Snowflake.Data`'s documented Linux support is glibc-based
+  (Debian/Ubuntu/RHEL-family); musl distros (Alpine) aren't officially validated, even though the
+  pinned 6.0.0 package does ship `linux-musl-x64`/`linux-musl-arm64` native assets — until Snowflake
+  documents musl support, run this connector on a glibc Linux rather than an Alpine container image.
 - **No GCP regional endpoint support.** The driver has no option analogous to other Snowflake
   connectors' regional-endpoint configuration for GCS-backed stages; this only matters for accounts
   hosted on GCP with a regional endpoint requirement.
