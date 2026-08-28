@@ -120,7 +120,7 @@ follow that no code can enforce, so they are checklist items for whoever runs th
   both ids — a machine with both installed globally has two packages claiming the `pz` shim, and the
   second install fails.
 
-**The eight builtin connectors deliberately do not publish.** `Pz.Cli` project-references them and
+**The nine builtin connectors deliberately do not publish.** `Pz.Cli` project-references them and
 registers them in-process (`BuiltinConnectors`), and `BuiltinConnectors.PackageIds` excludes them
 from NuGet resolution, the lock file, and drift checking, so a `project.yml` naming one downloads
 nothing. Nor can anything else host them: `ConnectorHost` lives in `Pz.PackageManagement`, which is
