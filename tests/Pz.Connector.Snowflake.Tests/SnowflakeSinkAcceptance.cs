@@ -9,8 +9,14 @@ namespace Pz.Connector.Snowflake.Tests;
 /// cref="SnowflakeSourceAcceptance"/> (<see cref="SnowflakeFacts"/>) -- no Snowflake container exists,
 /// so CI stays green (SKIP) without PZ_SNOWFLAKE_* set, and this repo's sandbox cannot exercise the
 /// live half at all. Unlike the source suite, every table this suite writes to is created on demand by
-/// the sink itself (SfDdl.EnsureTargetAsync) -- nothing needs manual seeding in the test account beyond
-/// the PZ_TESTKIT schema existing (the source suite's seeding SQL already creates it).
+/// the sink itself (SfDdl.EnsureTargetAsync); the only thing that must already exist in the test
+/// account is the schema itself (Snowflake's CREATE TABLE does not create a missing schema). Seed it
+/// once with, deliberately independent of the source suite's own setup:
+///
+/// <code>
+/// CREATE SCHEMA IF NOT EXISTS "PZ_TESTKIT";
+/// </code>
+///
 /// CheckpointOutput is left at its null default: the connector declares no CheckpointableWrites
 /// capability.</summary>
 public sealed class SnowflakeSinkAcceptance : SinkConnectorAcceptanceTests

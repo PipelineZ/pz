@@ -3,7 +3,8 @@ namespace Pz.Connector.Snowflake.Tests;
 /// <summary>Env-var gate for live Snowflake facts (no container exists for Snowflake, so the
 /// docker SKIP convention becomes an env-var SKIP convention). Required:
 /// PZ_SNOWFLAKE_ACCOUNT, PZ_SNOWFLAKE_USER, PZ_SNOWFLAKE_PRIVATE_KEY_PATH,
-/// PZ_SNOWFLAKE_DATABASE, PZ_SNOWFLAKE_WAREHOUSE. Optional: PZ_SNOWFLAKE_ROLE.</summary>
+/// PZ_SNOWFLAKE_DATABASE, PZ_SNOWFLAKE_WAREHOUSE. Optional: PZ_SNOWFLAKE_ROLE,
+/// PZ_SNOWFLAKE_PRIVATE_KEY_PASSPHRASE.</summary>
 internal static class SnowflakeFacts
 {
     private static readonly string[] Required =
@@ -29,6 +30,11 @@ internal static class SnowflakeFacts
         if (Environment.GetEnvironmentVariable("PZ_SNOWFLAKE_ROLE") is { Length: > 0 } role)
         {
             config["role"] = role;
+        }
+
+        if (Environment.GetEnvironmentVariable("PZ_SNOWFLAKE_PRIVATE_KEY_PASSPHRASE") is { Length: > 0 } passphrase)
+        {
+            config["private_key_passphrase"] = passphrase;
         }
 
         return config;
