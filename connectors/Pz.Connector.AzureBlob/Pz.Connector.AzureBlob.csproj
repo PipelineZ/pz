@@ -13,9 +13,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Azure.Storage.Blobs" Version="12.24.0" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.29.1" />
     <PackageReference Include="Azure.Storage.Files.DataLake" Version="12.22.0" />
-    <PackageReference Include="Azure.Identity" Version="1.14.0" />
+    <!-- Azure.Storage.Blobs 12.29.1 floors Azure.Core at 1.55.0, which now carries its own copies
+         (TypeForwardedFrom, not a real type-forward) of several Azure.Identity credential types;
+         Azure.Identity 1.14.0 still defines those same types itself, so the pair collides as
+         ambiguous references (CS0433) unless Azure.Identity is bumped past the point the SDK
+         resolved that duplication: verified 1.21.0 compiles clean against Azure.Core 1.55.0. -->
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
     <PackageReference Include="Parquet.Net" Version="6.0.3" />
     <PackageReference Include="Sylvan.Data.Csv" Version="1.4.4" />
   </ItemGroup>

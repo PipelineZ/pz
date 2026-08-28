@@ -281,7 +281,8 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
                 static (PathItem item) => item.IsDirectory != true ? item.Name : null,
                 loc.Container)
             : StreamNamesAsync(
-                AzureAuth.CreateBlobContainerClient(config, loc.Container).GetBlobsAsync(prefix: prefix, cancellationToken: ct),
+                AzureAuth.CreateBlobContainerClient(config, loc.Container).GetBlobsAsync(
+                    traits: BlobTraits.None, states: BlobStates.None, prefix: prefix, cancellationToken: ct),
                 static (BlobItem item) => item.Name,
                 loc.Container);
 

@@ -160,10 +160,13 @@ internal static class AzureAuth
     private static StorageSharedKeyCredential SharedKeyCredential(ConnectorConfig config) =>
         new(config.GetString("account_name"), config.GetString("account_key"));
 
+    // ManagedIdentityCredential(string, TokenCredentialOptions) is obsolete as of the Azure.Identity
+    // bump that came with Azure.Storage.Blobs 12.29.1's Azure.Core floor; ManagedIdentityId is the
+    // replacement shape, same client-id-or-system-assigned behavior.
     private static ManagedIdentityCredential ManagedIdentity(ConnectorConfig config) =>
-        config.GetString("client_id") is { Length: > 0 } clientId
-            ? new ManagedIdentityCredential(clientId)
-            : new ManagedIdentityCredential();
+        new(config.GetString("client_id") is { Length: > 0 } clientId
+            ? ManagedIdentityId.FromUserAssignedClientId(clientId)
+            : ManagedIdentityId.SystemAssigned);
 
     private static Uri BlobServiceUri(ConnectorConfig config) => ServiceUri(config, "blob");
 
