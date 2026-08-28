@@ -73,4 +73,54 @@ public class SfTypeMapTests
         Assert.Equal("NUMBER(10,2)", SfTypeMap.ToSnowflakeDdl(new Decimal128Type(10, 2)));
         Assert.Equal("TIMESTAMP_NTZ(6)", SfTypeMap.ToSnowflakeDdl(new TimestampType(TimeUnit.Microsecond, (string?)null)));
     }
+
+    [Theory]
+    [InlineData("number", 9, 0, ArrowTypeId.Int32)]
+    [InlineData("NUMBER", 9, 0, ArrowTypeId.Int32)]
+    [InlineData("NuMbEr", 9, 0, ArrowTypeId.Int32)]
+    [InlineData("timestamp_ntz", 0, 0, ArrowTypeId.Timestamp)]
+    [InlineData("TIMESTAMP_NTZ", 0, 0, ArrowTypeId.Timestamp)]
+    [InlineData("Timestamp_Ntz", 0, 0, ArrowTypeId.Timestamp)]
+    [InlineData("text", 0, 0, ArrowTypeId.String)]
+    [InlineData("TEXT", 0, 0, ArrowTypeId.String)]
+    [InlineData("TeXt", 0, 0, ArrowTypeId.String)]
+    public void Case_insensitive_type_name_resolution(string name, short p, short s, ArrowTypeId expected)
+    {
+        Assert.True(SfTypeMap.TryResolve(name, p, s, out var arrow));
+        Assert.Equal(expected, arrow!.TypeId);
+    }
+
+    [Theory]
+    [InlineData("NUMBER", 0, 0)]
+    [InlineData("FIXED", 0, 0)]
+    [InlineData("DECIMAL", 0, 0)]
+    [InlineData("NUMERIC", 0, 0)]
+    public void Unreported_precision_defaults_to_decimal128_with_precision_38(string name, short p, short s)
+    {
+        Assert.True(SfTypeMap.TryResolve(name, p, s, out var arrow));
+        var dec = (Decimal128Type)arrow!;
+        Assert.Equal(38, dec.Precision);
+        Assert.Equal(0, dec.Scale);
+    }
+
+    [Theory]
+    [InlineData(typeof(HalfFloatType))]
+    [InlineData(typeof(FloatType))]
+    public void Ddl_exception_on_unmapped_arrow_types(Type unmappedType)
+    {
+        var arrow = (IArrowType)Activator.CreateInstance(unmappedType)!;
+        var ex = Assert.Throws<PzConnectorException>(() => SfTypeMap.ToSnowflakeDdl(arrow));
+        Assert.False(ex.IsTransient);
+    }
+
+    [Theory]
+    [InlineData("NUMBER", 10, 0, ArrowTypeId.Int64)]
+    [InlineData("FIXED", 10, 0, ArrowTypeId.Int64)]
+    [InlineData("NUMBER", 19, 0, ArrowTypeId.Decimal128)]
+    [InlineData("FIXED", 19, 0, ArrowTypeId.Decimal128)]
+    public void Boundary_precision_edges_resolve_correctly(string name, short p, short s, ArrowTypeId expected)
+    {
+        Assert.True(SfTypeMap.TryResolve(name, p, s, out var arrow));
+        Assert.Equal(expected, arrow!.TypeId);
+    }
 }
