@@ -202,8 +202,10 @@ is no `columns:` write option on this connector to override sizing or type per c
 
 An unrecognized source type fails schema resolution loudly, naming the column and hinting a
 `query:`-side cast or a `columns:` exclusion, rather than falling back to a lossy default. On the
-sink side, a decimal value that overflows the target column's precision/scale is caught and reported
-as a named write error, not truncated silently.
+sink side, a `Decimal128` value at the high end of the v0 matrix's precision (up to 38 digits) can
+be too wide for the CLR `decimal` (96-bit) the CSV writer renders it through; that overflow is caught
+and reported as a named write error, not left to surface as a raw, columnless
+`OverflowException` — same pattern as the read side's own decimal128-overflow guard.
 
 ## Errors and retries
 
