@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Snowflake source and sink connector (typed Arrow reader, stage+COPY sink) for PipelineZ (pz).</Description>
+    <!-- Builtin connector, ships inside the Pz.Cli tool package: see the note in
+         Pz.Connector.LocalFiles.csproj for why a separate nupkg would be unconsumable. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Snowflake.Data" Version="6.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Connector.Snowflake.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same packaging note as Pz.Connector.Postgres: Pack+PackagePath only, no
+         CopyToOutputDirectory (all builtin connectors are bundled into the pz tool
+         package; output-relative copies would collide, NETSDK1152). -->
+    <None Include="pz.connector.json" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>
