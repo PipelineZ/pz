@@ -7,11 +7,7 @@ namespace Pz.Connector.Snowflake;
 
 /// <summary>Snowflake source + sink connector. Key-pair (JWT) authentication only -- no password
 /// auth surface. Registered under the logical name "snowflake". Connection options:
-/// account/user/private_key_path/database/warehouse required; private_key_passphrase/role optional.
-/// ISinkConnector.OpenAsync is wired in Task 7 (SnowflakeSink does not exist yet); until then it
-/// throws a non-transient PzConnectorException naming the gap, rather than a bare
-/// NotImplementedException, so a caller that reaches it sees pz's own error shape instead of an
-/// unhandled CLR exception.</summary>
+/// account/user/private_key_path/database/warehouse required; private_key_passphrase/role optional.</summary>
 public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
 {
     public ConnectorInfo Info => new("snowflake", "0.1.0", ProtocolVersion.Major);
@@ -53,7 +49,7 @@ public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
         new(new SnowflakeSource(BuildConnectionString(config)));
 
     ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        throw new PzConnectorException("snowflake sink not yet wired", isTransient: false);
+        new(new SnowflakeSink(BuildConnectionString(config)));
 
     /// <summary>Builds the Snowflake.Data key=value connection string. Key-pair (JWT) auth only;
     /// the driver has no builder class worth using for this shape. Public (not internal) so
