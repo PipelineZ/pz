@@ -74,6 +74,37 @@ public class SfTypeMapTests
         Assert.Equal("TIMESTAMP_NTZ(6)", SfTypeMap.ToSnowflakeDdl(new TimestampType(TimeUnit.Microsecond, (string?)null)));
     }
 
+    // Pins ToInformationSchemaDisplay for every v0-matrix mapping -- this is the load-bearing half of
+    // SfDdl.EnsureTargetAsync's schema_policy: fail_on_change drift check: a silent drift here would
+    // make the check compare against the wrong canonical spelling and either false-positive on an
+    // untouched target or (worse) false-negative past a real mismatch.
+    [Theory]
+    [InlineData(ArrowTypeId.Int64, "NUMBER(38,0)")]
+    [InlineData(ArrowTypeId.Int32, "NUMBER(38,0)")]
+    [InlineData(ArrowTypeId.Double, "FLOAT")]
+    [InlineData(ArrowTypeId.String, "TEXT")]
+    [InlineData(ArrowTypeId.Boolean, "BOOLEAN")]
+    [InlineData(ArrowTypeId.Date32, "DATE")]
+    public void InformationSchemaDisplay_maps_simple_types(ArrowTypeId id, string expected)
+    {
+        IArrowType t = id switch
+        {
+            ArrowTypeId.Int64 => Int64Type.Default, ArrowTypeId.Int32 => Int32Type.Default,
+            ArrowTypeId.Double => DoubleType.Default, ArrowTypeId.String => StringType.Default,
+            ArrowTypeId.Boolean => BooleanType.Default, ArrowTypeId.Date32 => Date32Type.Default,
+            _ => throw new InvalidOperationException(),
+        };
+        Assert.Equal(expected, SfTypeMap.ToInformationSchemaDisplay(t));
+    }
+
+    [Fact]
+    public void InformationSchemaDisplay_maps_decimal_and_timestamp()
+    {
+        Assert.Equal("NUMBER(10,2)", SfTypeMap.ToInformationSchemaDisplay(new Decimal128Type(10, 2)));
+        Assert.Equal("TIMESTAMP_NTZ(6)",
+            SfTypeMap.ToInformationSchemaDisplay(new TimestampType(TimeUnit.Microsecond, (string?)null)));
+    }
+
     [Theory]
     [InlineData("number", 9, 0, ArrowTypeId.Int32)]
     [InlineData("NUMBER", 9, 0, ArrowTypeId.Int32)]
