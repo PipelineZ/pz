@@ -20,8 +20,15 @@ public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["account","user","private_key_path","database","warehouse"], "properties": { "account": { "type": "string" }, "user": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "database": { "type": "string" }, "warehouse": { "type": "string" }, "role": { "type": "string" } }, "additionalProperties": false }""";
 
+    // "columns" is not read by SnowflakeSource today (its schema is always resolved from the
+    // driver's own reported metadata via SfTypeMap, never a declared contract), but the
+    // bounded-window trio (initial/max_window/until) needs a columns: contract to make its bounds
+    // computable before the first extraction (PZ0213) -- and ConnectorConfigValidator.MergeColumns
+    // folds a dataset's declared columns: into these same options ahead of validation, so without
+    // this property that contract would itself fail PZ0301, leaving the declared BoundedWindow
+    // capability unreachable.
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "query": { "type": "string" } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "query": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(ValidationResult.Success);
