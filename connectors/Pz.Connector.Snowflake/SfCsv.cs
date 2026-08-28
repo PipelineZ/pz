@@ -30,8 +30,20 @@ internal static class SfCsv
     /// <summary>Appends every row of <paramref name="batch"/> to <paramref name="writer"/> as CSV rows
     /// (no header -- the target column list is carried by the COPY statement, not the file). Columns
     /// are written in the batch's own order, which the caller (the sink) keeps aligned with the
-    /// COPY's explicit column list.</summary>
-    public static void WriteBatch(RecordBatch batch, TextWriter writer)
+    /// COPY's explicit column list.
+    ///
+    /// <para>When <paramref name="sequenceStart"/> is non-null, every row also gets one trailing,
+    /// unquoted, monotonically increasing integer column -- the sink's merge staging's
+    /// <c>_pz_seq</c> (see <c>SfDdl.StagingSequenceColumn</c>). This is a real value written into the
+    /// file, not left to a target-side autoincrement, because Snowflake's COPY can load a stage's
+    /// files in parallel: an autoincrement's fill order would not reliably track arrival (write)
+    /// order across files the way a value stamped into the CSV up front does, and
+    /// <c>SfDdl.BuildMergeSql</c>'s last-writer-wins dedup depends on that order being
+    /// trustworthy.</para></summary>
+    /// <returns>The next unused sequence value -- <paramref name="sequenceStart"/> plus the number of
+    /// rows written -- for the caller to pass into its next call across a session's batches/files.
+    /// Meaningless (and ignored) when <paramref name="sequenceStart"/> is null.</returns>
+    public static long WriteBatch(RecordBatch batch, TextWriter writer, long? sequenceStart = null)
     {
         var columnCount = batch.Schema.FieldsList.Count;
         var columns = new IArrowArray[columnCount];
@@ -40,6 +52,7 @@ internal static class SfCsv
             columns[col] = batch.Column(col);
         }
 
+        var sequence = sequenceStart ?? 0;
         var line = new StringBuilder();
         for (var row = 0; row < batch.Length; row++)
         {
@@ -54,9 +67,17 @@ internal static class SfCsv
                 AppendCell(line, columns[col], row);
             }
 
+            if (sequenceStart is not null)
+            {
+                line.Append(',').Append(sequence.ToString(CultureInfo.InvariantCulture));
+                sequence++;
+            }
+
             line.Append('\n');
             writer.Write(line.ToString());
         }
+
+        return sequence;
     }
 
     private static void AppendCell(StringBuilder line, IArrowArray array, int row)

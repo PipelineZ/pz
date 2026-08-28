@@ -75,6 +75,7 @@ internal enum SnowflakeSinkSessionState
     Open,
     Committed,
     Aborted,
+    Disposed,
 }
 
 /// <summary>One output's write session. Batches spool to disk (see <see cref="WriteBatchAsync"/>)
@@ -91,6 +92,7 @@ internal sealed class SnowflakeSinkWriteSession(
     /// batch is never split across files.</summary>
     private const long RollThresholdBytes = 100L * 1024 * 1024;
 
+    private readonly bool _isMerge = string.Equals(spec.Mode, "merge", StringComparison.Ordinal);
     private readonly List<string> _spoolFiles = [];
 
     private SnowflakeDbConnection? _connection;
@@ -100,6 +102,11 @@ internal sealed class SnowflakeSinkWriteSession(
     private GZipStream? _currentGzip;
     private StreamWriter? _currentWriter;
     private int _fileIndex;
+
+    /// <summary>Session-monotonic across every batch and every rolled spool file -- see
+    /// <see cref="SfCsv.WriteBatch"/>'s doc comment for why this must be a real written CSV column
+    /// rather than a target-side autoincrement. Meaningless (never read) outside merge mode.</summary>
+    private long _nextSequence;
 
     private long _rowsWritten;
     private long _batchesWritten;
@@ -112,8 +119,9 @@ internal sealed class SnowflakeSinkWriteSession(
         EnsureCurrentFile();
 
         // SfCsv.WriteBatch copies every value out of the (engine-owned, call-scoped) batch into the
-        // writer's own managed buffers -- nothing from `batch` is retained past this call.
-        SfCsv.WriteBatch(batch, _currentWriter!);
+        // writer's own managed buffers -- nothing from `batch` is retained past this call. For merge
+        // mode only, it also appends the trailing session-monotonic sequence column.
+        _nextSequence = SfCsv.WriteBatch(batch, _currentWriter!, _isMerge ? _nextSequence : null);
         await _currentWriter!.FlushAsync(ct).ConfigureAwait(false);
 
         _rowsWritten += batch.Length;
@@ -132,16 +140,19 @@ internal sealed class SnowflakeSinkWriteSession(
         await CloseCurrentFileAsync().ConfigureAwait(false);
 
         var tag = Guid.NewGuid().ToString("n")[..8];
-        var quotedStage = SfDdl.Quote($"pz_stage_{tag}");
-        var quotedStaging = SfDdl.Quote($"pz_load_{tag}");
-        var isMerge = string.Equals(spec.Mode, "merge", StringComparison.Ordinal);
+        var quotedSchema = SfDdl.Quote(sfSchema);
+        // Schema-qualified: the sink's connection string sets a default database (`db=`) but no
+        // default schema, so an unqualified temp stage/table would have no schema to resolve
+        // against.
+        var qualifiedStage = $"{quotedSchema}.{SfDdl.Quote($"pz_stage_{tag}")}";
+        var qualifiedStaging = $"{quotedSchema}.{SfDdl.Quote($"pz_load_{tag}")}";
 
         _connection = new SnowflakeDbConnection { ConnectionString = connectionString };
-        // Stashed before any DDL runs, so AbortAsync can name the right temp objects if it is ever
-        // reached with a connection already open -- see its doc comment for why that never happens
-        // via pz today.
-        _stageIdentifier = quotedStage;
-        _stagingTableIdentifier = quotedStaging;
+        // Stashed before any DDL runs, so AbortAsync can name the right (schema-qualified) temp
+        // objects if it is ever reached with a connection already open -- see its doc comment for why
+        // that never happens via pz today.
+        _stageIdentifier = qualifiedStage;
+        _stagingTableIdentifier = qualifiedStaging;
         try
         {
             await _connection.OpenAsync(ct).ConfigureAwait(false);
@@ -151,59 +162,45 @@ internal sealed class SnowflakeSinkWriteSession(
             throw Wrap(ex, "commit statement");
         }
 
-        // 1. Target table. schema_policy 'evolve' is not supported here -- this sink has no
-        // drift/ALTER machinery (unlike MsDdl/PgDdl's full column comparison), so pretending to honor
-        // it would silently skip real evolution. Every other policy (the default 'fail_on_change'
-        // included) runs the idempotent `create table if not exists`: it creates the target when
-        // missing and is a safe no-op when the target already exists -- exactly the create/skip split
-        // this step needs, without a separate existence probe.
-        if (string.Equals(spec.SchemaPolicy, "evolve", StringComparison.Ordinal))
+        // 1. Target table: create it if missing, or enforce schema_policy against what's already
+        // there. See SfDdl.EnsureTargetAsync's doc comment for exactly what 'evolve' and
+        // 'fail_on_change' mean here.
+        try
         {
-            throw new PzConnectorException(
-                $"output '{spec.Output}': schema_policy 'evolve' is not supported by the snowflake sink " +
-                "-- hint: use 'fail_on_change' (the default) and align the target schema by hand",
-                isTransient: false);
+            await SfDdl.EnsureTargetAsync(_connection, spec.SchemaPolicy, sfSchema, table, schema, spec.Output, ct)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
+        {
+            throw Wrap(ex, "commit statement");
         }
 
-        await ExecuteAsync(SfDdl.BuildCreateTableSql(sfSchema, table, schema), "commit statement", ct)
-            .ConfigureAwait(false);
+        // 2. Session-scoped temp stage, schema-qualified (see above). Dies with the connection, so
+        // AbortAsync/DisposeAsync need no explicit drop on the paths that never reach here.
+        await ExecuteAsync(SfDdl.BuildCreateStageSql(qualifiedStage), "commit statement", ct).ConfigureAwait(false);
 
-        // 2. Session-scoped temp stage -- dies with the connection, so AbortAsync/DisposeAsync need no
-        // explicit drop on the paths that never reach here.
-        await ExecuteAsync($"create temporary stage {quotedStage}", "commit statement", ct).ConfigureAwait(false);
-
-        // 3. One PUT per spool file. The file is already gzip-compressed (WriteBatchAsync), so
-        // auto_compress is off and source_compression tells the server what it already has.
+        // 3. One PUT per spool file.
         foreach (var file in _spoolFiles)
         {
-            await ExecuteAsync(
-                $"put file://{file} @{quotedStage} auto_compress = false source_compression = gzip",
-                "stage upload", ct).ConfigureAwait(false);
+            await ExecuteAsync(SfDdl.BuildPutSql(file, qualifiedStage), "stage upload", ct).ConfigureAwait(false);
         }
 
-        // 4. Temp staging table. Merge alone carries the sequence column (autoincrement), which the
-        // COPY below deliberately does not list, so it fills in load order -- SfDdl.BuildMergeSql's
-        // last-writer-wins dedup depends on it.
-        var loadColumns = string.Join(", ",
-            schema.FieldsList.Select(f => $"{SfDdl.Quote(f.Name)} {SfTypeMap.ToSnowflakeDdl(f.DataType)}"));
-        var seqColumn = isMerge ? $", {SfDdl.Quote(SfDdl.StagingSequenceColumn)} bigint autoincrement" : "";
+        // 4. Temp staging table, schema-qualified the same way.
         await ExecuteAsync(
-            $"create temporary table {quotedStaging} ({loadColumns}{seqColumn})", "commit statement", ct)
+            SfDdl.BuildCreateStagingTableSql(qualifiedStaging, schema, _isMerge), "commit statement", ct)
             .ConfigureAwait(false);
 
-        // 5. COPY only the data columns -- see the staging-table comment above.
-        var dataColumns = string.Join(", ", schema.FieldsList.Select(f => SfDdl.Quote(f.Name)));
+        // 5. COPY into staging.
         await ExecuteAsync(
-            $"copy into {quotedStaging} ({dataColumns}) from @{quotedStage} {SfCsv.FileFormatClause} " +
-            "on_error = abort_statement",
+            SfDdl.BuildCopyIntoStagingSql(qualifiedStaging, qualifiedStage, schema, _isMerge),
             "copy into staging", ct).ConfigureAwait(false);
 
         // 6. THE one statement that ever touches the target -- see the class doc comment.
         var targetSql = spec.Mode switch
         {
-            "append" => SfDdl.BuildInsertSql(sfSchema, table, quotedStaging, schema),
-            "replace" => SfDdl.BuildInsertOverwriteSql(sfSchema, table, quotedStaging, schema),
-            "merge" => SfDdl.BuildMergeSql(sfSchema, table, quotedStaging, schema, spec.Keys),
+            "append" => SfDdl.BuildInsertSql(sfSchema, table, qualifiedStaging, schema),
+            "replace" => SfDdl.BuildInsertOverwriteSql(sfSchema, table, qualifiedStaging, schema),
+            "merge" => SfDdl.BuildMergeSql(sfSchema, table, qualifiedStaging, schema, spec.Keys),
             _ => throw new InvalidOperationException("unreachable: mode validated in BeginWriteAsync"),
         };
         await ExecuteAsync(targetSql, "commit statement", ct).ConfigureAwait(false);
@@ -254,6 +251,16 @@ internal sealed class SnowflakeSinkWriteSession(
         }
 
         DeleteSpoolDir();
+
+        // Only move a still-Open session: Dispose after a successful Commit/Abort keeps that
+        // (already-accurate) terminal state, so EnsureOpen's message still names the real reason.
+        // A session disposed WITHOUT either -- an abnormal path -- must stop accepting calls too;
+        // leaving it Open would let a later WriteBatchAsync run past resources this method just
+        // disposed instead of failing with a clear, named InvalidOperationException.
+        if (_state == SnowflakeSinkSessionState.Open)
+        {
+            _state = SnowflakeSinkSessionState.Disposed;
+        }
     }
 
     private void EnsureCurrentFile()

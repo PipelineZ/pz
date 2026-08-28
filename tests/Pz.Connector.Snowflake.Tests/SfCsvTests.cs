@@ -42,4 +42,43 @@ public class SfCsvTests
         SfCsv.WriteBatch(batch, sw);
         Assert.DoesNotContain("\r", sw.ToString());
     }
+
+    [Fact]
+    public void FileFormatClause_is_pinned()
+    {
+        Assert.Equal(
+            "file_format = (type = csv field_optionally_enclosed_by = '\"' null_if = ('\\\\N') escape_unenclosed_field = none)",
+            SfCsv.FileFormatClause);
+    }
+
+    [Fact]
+    public void String_values_containing_backslash_or_literal_null_token_round_trip_as_quoted_data()
+    {
+        var schema = new Schema([new Field("s", StringType.Default, nullable: true)], null);
+        using var batch = new RecordBatch(schema, [
+            new StringArray.Builder().Append("C:\\temp\\file").Append("\\N").Build(),
+        ], 2);
+        var sw = new StringWriter();
+        SfCsv.WriteBatch(batch, sw);
+        var lines = sw.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        // Always quoted, whatever the content: a backslash is not an escape character in this format
+        // (only the enclosing `"` is, doubled), and the literal two-character string "\N" as DATA is
+        // unambiguous only because it is quoted -- the unquoted null marker never is.
+        Assert.Equal("\"C:\\temp\\file\"", lines[0]);
+        Assert.Equal("\"\\N\"", lines[1]);
+    }
+
+    [Fact]
+    public void Merge_sequence_column_appends_session_monotonic_counter()
+    {
+        using var batch = OneRow();
+        var sw = new StringWriter();
+        var next = SfCsv.WriteBatch(batch, sw, sequenceStart: 5);
+        var lines = sw.ToString().Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal("7,\"he\"\"llo\",TRUE,2026-03-27,2026-03-27 10:30:00.123000,5", lines[0]);
+        Assert.Equal("\\N,\\N,\\N,\\N,\\N,6", lines[1]);
+        Assert.Equal(7, next);
+    }
 }
