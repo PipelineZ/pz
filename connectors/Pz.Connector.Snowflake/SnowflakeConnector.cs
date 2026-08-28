@@ -58,27 +58,29 @@ public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
     ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
         new(new SnowflakeSink(BuildConnectionString(config)));
 
-    /// <summary>Builds the Snowflake.Data key=value connection string. Key-pair (JWT) auth only;
-    /// the driver has no builder class worth using for this shape. Public (not internal) so
-    /// CheckConnectionAsync's convention and Tasks 6-7's OpenAsync implementations share one
-    /// credential-resolution path.</summary>
+    /// <summary>Builds the Snowflake.Data connection string via the driver's own
+    /// <see cref="SnowflakeDbConnectionStringBuilder"/> (a plain <see cref="System.Data.Common.DbConnectionStringBuilder"/>
+    /// subclass) rather than hand-rolled <c>key=value;</c> concatenation -- a value containing a
+    /// <c>;</c> (a passphrase, for instance) would otherwise silently truncate and spawn a spurious
+    /// property. Key-pair (JWT) auth only. Public (not internal) so CheckConnectionAsync's convention
+    /// and Tasks 6-7's OpenAsync implementations share one credential-resolution path.</summary>
     public static string BuildConnectionString(ConnectorConfig config)
     {
         string Require(string key) => config.GetString(key) ??
             throw new PzConnectorException($"snowflake connection requires '{key}'", isTransient: false);
 
-        var parts = new List<string>
+        var builder = new SnowflakeDbConnectionStringBuilder
         {
-            $"account={Require("account")}",
-            $"user={Require("user")}",
-            "authenticator=snowflake_jwt",
-            $"private_key_file={Require("private_key_path")}",
-            $"db={Require("database")}",
-            $"warehouse={Require("warehouse")}",
-            "application=pz",
+            ["account"] = Require("account"),
+            ["user"] = Require("user"),
+            ["authenticator"] = "snowflake_jwt",
+            ["private_key_file"] = Require("private_key_path"),
+            ["db"] = Require("database"),
+            ["warehouse"] = Require("warehouse"),
+            ["application"] = "pz",
         };
-        if (config.GetString("private_key_passphrase") is { } pwd) { parts.Add($"private_key_pwd={pwd}"); }
-        if (config.GetString("role") is { } role) { parts.Add($"role={role}"); }
-        return string.Join(";", parts);
+        if (config.GetString("private_key_passphrase") is { } pwd) { builder["private_key_pwd"] = pwd; }
+        if (config.GetString("role") is { } role) { builder["role"] = role; }
+        return builder.ConnectionString;
     }
 }

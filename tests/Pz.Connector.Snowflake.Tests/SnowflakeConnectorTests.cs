@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Snowflake.Data.Client;
 
 namespace Pz.Connector.Snowflake.Tests;
 
@@ -11,16 +12,24 @@ public class SnowflakeConnectorTests
         ("account", "myorg-myacct"), ("user", "PZ_SVC"), ("private_key_path", "/keys/pz.p8"),
         ("database", "ANALYTICS"), ("warehouse", "PZ_WH"));
 
+    /// <summary>Parses the produced connection string back through the same
+    /// <see cref="SnowflakeDbConnectionStringBuilder"/> the connector builds it with, rather than
+    /// raw <c>Contains</c> -- the builder quotes a value containing <c>;</c>/<c>"</c>, so a
+    /// substring check on the raw string would be brittle (or wrong) exactly where quoting matters.</summary>
+    private static SnowflakeDbConnectionStringBuilder Parse(string connectionString) =>
+        new() { ConnectionString = connectionString };
+
     [Fact]
     public void Connection_string_uses_jwt_authenticator()
     {
         var cs = SnowflakeConnector.BuildConnectionString(Valid());
-        Assert.Contains("authenticator=snowflake_jwt", cs);
-        Assert.Contains("account=myorg-myacct", cs);
-        Assert.Contains("user=PZ_SVC", cs);
-        Assert.Contains("private_key_file=/keys/pz.p8", cs);
-        Assert.Contains("db=ANALYTICS", cs);
-        Assert.Contains("warehouse=PZ_WH", cs);
+        var parsed = Parse(cs);
+        Assert.Equal("snowflake_jwt", parsed["authenticator"]);
+        Assert.Equal("myorg-myacct", parsed["account"]);
+        Assert.Equal("PZ_SVC", parsed["user"]);
+        Assert.Equal("/keys/pz.p8", parsed["private_key_file"]);
+        Assert.Equal("ANALYTICS", parsed["db"]);
+        Assert.Equal("PZ_WH", parsed["warehouse"]);
     }
 
     [Fact]
@@ -29,9 +38,21 @@ public class SnowflakeConnectorTests
         var config = Config(
             ("account", "a"), ("user", "u"), ("private_key_path", "/k.p8"),
             ("database", "d"), ("warehouse", "w"), ("role", "LOADER"), ("private_key_passphrase", "pw"));
-        var cs = SnowflakeConnector.BuildConnectionString(config);
-        Assert.Contains("role=LOADER", cs);
-        Assert.Contains("private_key_pwd=pw", cs);
+        var parsed = Parse(SnowflakeConnector.BuildConnectionString(config));
+        Assert.Equal("LOADER", parsed["role"]);
+        Assert.Equal("pw", parsed["private_key_pwd"]);
+    }
+
+    [Fact]
+    public void Passphrase_containing_a_semicolon_round_trips_intact()
+    {
+        // The hand-rolled `key=value;` concatenation this replaced would truncate at the `;` and
+        // spawn a spurious property; SnowflakeDbConnectionStringBuilder quotes the value instead.
+        var config = Config(
+            ("account", "a"), ("user", "u"), ("private_key_path", "/k.p8"),
+            ("database", "d"), ("warehouse", "w"), ("private_key_passphrase", "sup;er;secret"));
+        var parsed = Parse(SnowflakeConnector.BuildConnectionString(config));
+        Assert.Equal("sup;er;secret", parsed["private_key_pwd"]);
     }
 
     [Theory]
