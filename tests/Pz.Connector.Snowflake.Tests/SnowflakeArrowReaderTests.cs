@@ -66,4 +66,25 @@ public class SnowflakeArrowReaderTests
 
         Assert.Equal(3, count);
     }
+
+    [Fact]
+    public async Task Narrow_fixed_precision_reads_int32_via_checked_cast_from_long()
+    {
+        // precision 9, scale 0: SfTypeMap resolves Int32Type, but the driver still hands back a
+        // boxed `long` for FIXED scale-0 -- the appender must read long and checked-cast to int.
+        var reader = new FakeDbDataReader(
+            [("c_narrow", "FIXED", typeof(long), 9, 0)],
+            [[42L], new object?[1]]);
+        var batches = new List<RecordBatch>();
+        await foreach (var b in SnowflakeArrowReader.ReadBatchesAsync(reader, BatchOptions.Default, CancellationToken.None))
+        {
+            batches.Add(b);
+        }
+
+        var batch = Assert.Single(batches);
+        var column = Assert.IsType<Int32Array>(batch.Column("c_narrow"));
+        Assert.Equal(42, column.GetValue(0));
+        Assert.True(column.IsNull(1));
+        batch.Dispose();
+    }
 }
