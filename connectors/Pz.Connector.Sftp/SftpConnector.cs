@@ -72,9 +72,41 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
             errors.Count == 0 ? ValidationResult.Success : ValidationResult.Failed([.. errors]));
     }
 
-    // Real probe lands in Task 10 alongside registration (needs SftpClientFactory from Task 2).
-    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
-        new(new ConnectionCheck(true));
+    /// <summary>Real probe: connects, authenticates, then lists the root (or login directory) --
+    /// cut after the first entry -- proving connect + auth + basic access in one round trip.
+    /// <see cref="SftpClientFactory.BuildAuth"/>'s failures (neither auth method declared, or a key
+    /// file that fails to load) are config-shape errors discovered before any network attempt;
+    /// mirroring AzureConnector's ConnectivityValidator convention, they are deliberately called
+    /// outside the try below and THROW rather than fold into a false ConnectionCheck. Everything the
+    /// try can throw -- connect, auth, and the listing itself -- is a genuine connectivity outcome,
+    /// folded into the message with the transient/permanent tag (the Azure/Postgres convention;
+    /// ConnectionCheck carries no separate transience field).</summary>
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
+    {
+        var settings = SftpConnectionSettings.Parse(config);
+        var auth = SftpClientFactory.BuildAuth(settings);
+        try
+        {
+            using var fs = SftpClientFactory.Connect(settings, auth);
+            try
+            {
+                _ = fs.ListFiles(settings.Root ?? ".", recursive: false).FirstOrDefault();
+            }
+            catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
+            {
+                // Same classify-any-raw-exception convention SftpGate/SftpSource use for a
+                // mid-operation SSH.NET failure.
+                throw SftpErrors.Map(ex, $"sftp host '{settings.Host}': list failed");
+            }
+
+            return new ValueTask<ConnectionCheck>(new ConnectionCheck(true));
+        }
+        catch (PzConnectorException ex)
+        {
+            return new ValueTask<ConnectionCheck>(new ConnectionCheck(false,
+                $"{(ex.IsTransient ? "transient" : "permanent")}: {ex.Message}"));
+        }
+    }
 
     ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
         new(new SftpSource(SftpConnectionSettings.Parse(config), s => SftpClientFactory.Open(s)));

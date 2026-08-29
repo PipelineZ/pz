@@ -54,4 +54,32 @@ public class SftpConnectorValidationTests
     public void Malformed_fingerprint_is_an_error() =>
         Assert.False(Validate(Config(("host", "h"), ("username", "u"), ("password", "p"),
             ("host_key_fingerprint", "md5:aa:bb"))).IsValid);
+
+    // CheckConnectionAsync: a key file that fails to load is a config-shape error discovered before
+    // any network attempt (SftpClientFactory.BuildAuth), not a connectivity outcome -- it must throw
+    // rather than fold into a false ConnectionCheck(false, ...). No live server is involved.
+    [Fact]
+    public async Task CheckConnectionAsync_throws_for_an_unreadable_key_file()
+    {
+        var config = Config(("host", "sftp.example"), ("username", "u"),
+            ("private_key_path", "/nonexistent/path/to/key"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await new SftpConnector().CheckConnectionAsync(config, CancellationToken.None));
+
+        Assert.Contains("cannot load private key", ex.Message, StringComparison.Ordinal);
+    }
+
+    // Same config-shape-before-network-attempt guarantee for the neither-password-nor-key case, which
+    // ValidateAsync rejects but a directly-constructed config can still reach CheckConnectionAsync with.
+    [Fact]
+    public async Task CheckConnectionAsync_throws_when_neither_auth_method_is_declared()
+    {
+        var config = Config(("host", "sftp.example"), ("username", "u"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await new SftpConnector().CheckConnectionAsync(config, CancellationToken.None));
+
+        Assert.Contains("requires 'password' or 'private_key_path'", ex.Message, StringComparison.Ordinal);
+    }
 }

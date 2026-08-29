@@ -10,9 +10,15 @@ namespace Pz.Connector.Sftp;
 /// fingerprints are public values, never key material.</summary>
 internal static class SftpClientFactory
 {
-    public static ISftpFileSystem Open(SftpConnectionSettings settings)
+    public static ISftpFileSystem Open(SftpConnectionSettings settings) => Connect(settings, BuildAuth(settings));
+
+    /// <summary>The connect-and-authenticate half of <see cref="Open"/>, split out so
+    /// <c>CheckConnectionAsync</c> can call <see cref="BuildAuth"/> on its own first -- config-shape
+    /// failures (neither auth method, or an unreadable/wrong-passphrase key file) surface before any
+    /// network attempt and must propagate uncaught, while everything this method can throw is a
+    /// genuine connect/auth outcome.</summary>
+    internal static ISftpFileSystem Connect(SftpConnectionSettings settings, AuthenticationMethod auth)
     {
-        var auth = BuildAuth(settings);
         var info = new ConnectionInfo(settings.Host, settings.Port, settings.Username, auth);
         var client = new SftpClient(info);
 
@@ -59,7 +65,7 @@ internal static class SftpClientFactory
         return new SftpFileSystem(client);
     }
 
-    private static AuthenticationMethod BuildAuth(SftpConnectionSettings s)
+    internal static AuthenticationMethod BuildAuth(SftpConnectionSettings s)
     {
         if (s.Password is not null)
         {
