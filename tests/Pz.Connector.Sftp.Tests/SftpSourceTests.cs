@@ -193,6 +193,118 @@ public class SftpSourceTests
         return stream.ToArray();
     }
 
+    // Positional binding: the engine binds a landed batch's columns to GetSchemaAsync's reported
+    // schema BY POSITION (SourceLoadExecutor -> IngestArrowAsync -> ArrowInterop), so a declared
+    // contract's order must win over the parquet file's own physical column order.
+    [Fact]
+    public async Task Parquet_declared_contract_delivers_batches_in_contract_order_not_footer_order()
+    {
+        // Physical footer order: b (varchar), a (int) -- the reverse of the contract's declared order.
+        var bField = new DataField("b", typeof(string), isNullable: true);
+        var aField = new DataField("a", typeof(int), isNullable: true);
+        var bytes = await BuildParquetBValuesThenAValuesAsync(bField, aField);
+
+        var fake = new FakeSftpFileSystem();
+        fake.Seed("/data/orders.parquet", bytes);
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("orders", ("format", "parquet"), ("columns", Columns(("a", "int"), ("b", "varchar"))));
+
+        var schema = (await source.GetSchemaAsync(spec, default)).Schema;
+        Assert.Equal(["a", "b"], schema.FieldsList.Select(f => f.Name));
+
+        var parts = await source.PlanReadAsync(spec, ReadHints.None, default);
+        var batches = await DrainAsync(parts[0]);
+
+        Assert.Equal(["a", "b"], batches[0].Schema.FieldsList.Select(f => f.Name));
+        Assert.Equal(10, ((Int32Array)batches[0].Column(0)).GetValue(0));
+        Assert.Equal("x", ((StringArray)batches[0].Column(1)).GetString(0));
+    }
+
+    private static async Task<byte[]> BuildParquetBValuesThenAValuesAsync(DataField bField, DataField aField)
+    {
+        var stream = new MemoryStream();
+        await using (var writer = await ParquetWriter.CreateAsync(new ParquetSchema([bField, aField]), stream))
+        {
+            using var rg = writer.CreateRowGroup();
+            string?[] bValues = ["x", "y"];
+            int?[] aValues = [10, 20];
+            await rg.WriteAsync(bField, bValues);
+            await rg.WriteAsync<int>(aField, aValues);
+        }
+
+        return stream.ToArray();
+    }
+
+    // Secondary case from the same review finding: two files in one windowed partition whose
+    // footers disagree on physical column order must not desync the window filter's cursor
+    // ordinal, which is computed once (off the first file's batch schema) and reused for every
+    // later file's batches.
+    [Fact]
+    public async Task Windowed_multi_file_parquet_partition_keeps_cursor_ordinal_consistent_across_differing_footer_orders()
+    {
+        var file1 = await BuildParquetTsValAsync(
+            tsFirst: true,
+            ts: [Utc(2026, 8, 27), Utc(2026, 8, 28)],
+            val: ["v27", "v28"]);
+        var file2 = await BuildParquetTsValAsync(
+            tsFirst: false,
+            ts: [Utc(2026, 8, 29)],
+            val: ["v29"]);
+
+        var fake = new FakeSftpFileSystem();
+        fake.Seed("/data/a.parquet", file1);
+        fake.Seed("/data/b.parquet", file2);
+        var source = NewSource(fake, root: "/data");
+        var columns = Columns(("ts", "timestamp"), ("val", "varchar"));
+        var spec = Spec("events",
+            ("format", "parquet"), ("path", "*.parquet"), ("files_per_partition", 2), ("columns", columns)) with
+        {
+            WatermarkCursor = "ts",
+            WatermarkValue = "2026-08-27T00:00:00",
+            WatermarkUpperBound = "2026-08-29T00:00:00",
+        };
+
+        var parts = await source.PlanReadAsync(spec, ReadHints.None, default);
+        Assert.Single(parts);
+
+        var batches = await DrainAsync(parts[0]);
+        var vals = batches
+            .SelectMany(b => Enumerable.Range(0, b.Length).Select(i => ((StringArray)b.Column(1)).GetString(i)))
+            .ToArray();
+
+        Assert.Equal(["v28", "v29"], vals);
+    }
+
+    private static DateTime Utc(int y, int m, int d) => new(y, m, d, 0, 0, 0, DateTimeKind.Utc);
+
+    private static async Task<byte[]> BuildParquetTsValAsync(bool tsFirst, DateTime[] ts, string[] val)
+    {
+        var tsField = new DateTimeDataField(
+            "ts", DateTimeFormat.DateAndTime, isAdjustedToUTC: true, unit: DateTimeTimeUnit.Micros, isNullable: true);
+        var valField = new DataField("val", typeof(string), isNullable: true);
+        var fields = tsFirst ? new DataField[] { tsField, valField } : new DataField[] { valField, tsField };
+
+        var stream = new MemoryStream();
+        await using (var writer = await ParquetWriter.CreateAsync(new ParquetSchema(fields), stream))
+        {
+            using var rg = writer.CreateRowGroup();
+            DateTime?[] tsValues = ts.Select(t => (DateTime?)t).ToArray();
+            string?[] valValues = val.Select(v => (string?)v).ToArray();
+            if (tsFirst)
+            {
+                await rg.WriteAsync<DateTime>(tsField, tsValues);
+                await rg.WriteAsync(valField, valValues);
+            }
+            else
+            {
+                await rg.WriteAsync(valField, valValues);
+                await rg.WriteAsync<DateTime>(tsField, tsValues);
+            }
+        }
+
+        return stream.ToArray();
+    }
+
     [Fact]
     public async Task Json_without_contract_reports_permanent_error()
     {
@@ -399,5 +511,91 @@ public class SftpSourceTests
         public void ReportBudget(int remaining, DateTimeOffset resetAt)
         {
         }
+    }
+
+    [Fact]
+    public async Task MidStream_failure_is_classified_and_redacted_via_SftpErrors_Map()
+    {
+        var fake = new FakeSftpFileSystem();
+        var csv = "id\n" + string.Concat(Enumerable.Range(1, 500).Select(i => $"{i}\n"));
+        fake.AddFile("/data/orders.csv", csv);
+
+        var source = new SftpSource(
+            new SftpConnectionSettings("host", 22, "user", "pw", null, null, null, Root: "/data"),
+            _ => new MidStreamFailureFileSystem(fake, "/data/orders.csv"));
+        var spec = Spec("orders", ("columns", Columns(("id", "int"))));
+
+        var parts = await source.PlanReadAsync(spec, ReadHints.None, default);
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => DrainAsync(parts[0]));
+
+        // IOException is one of SftpErrors.IsTransient's classified-transient shapes -- proves the
+        // exception was actually routed through SftpErrors.Map, not just an unclassified bubble-up
+        // (an un-mapped exception from ReadAsync would never surface as a PzConnectorException at all).
+        Assert.True(ex.IsTransient);
+        Assert.Contains("orders", ex.Message);
+        Assert.Contains("orders.csv", ex.Message);
+    }
+
+    /// <summary>Delegates every call to a real fake, except <see cref="OpenRead"/> for one path, whose
+    /// stream fails partway through being read -- simulating a dropped connection DURING streaming
+    /// (the fake's own FailOn hook only guards the OpenRead call itself, not the bytes read
+    /// afterward, so it cannot exercise this).</summary>
+    private sealed class MidStreamFailureFileSystem(FakeSftpFileSystem inner, string failPath) : ISftpFileSystem
+    {
+        public IEnumerable<string> ListFiles(string directory, bool recursive) => inner.ListFiles(directory, recursive);
+
+        public Stream OpenRead(string path)
+        {
+            var real = inner.OpenRead(path);
+            return path == failPath ? new ThrowingAfterBytesStream(real, okBytes: 6) : real;
+        }
+
+        public Stream OpenWrite(string path) => inner.OpenWrite(path);
+        public void Rename(string oldPath, string newPath) => inner.Rename(oldPath, newPath);
+        public void Delete(string path) => inner.Delete(path);
+        public bool FileExists(string path) => inner.FileExists(path);
+        public void CreateDirectories(string path) => inner.CreateDirectories(path);
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>Serves up to <paramref name="okBytes"/> bytes from <paramref name="inner"/>, then
+    /// throws <see cref="IOException"/> on every read after -- an unclassified, third-party-shaped
+    /// mid-read failure a real dropped SSH connection would produce.</summary>
+    private sealed class ThrowingAfterBytesStream(Stream inner, int okBytes) : Stream
+    {
+        private int _served;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override void Flush()
+        {
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_served >= okBytes)
+            {
+                throw new IOException("connection reset by peer");
+            }
+
+            var n = inner.Read(buffer, offset, Math.Min(count, okBytes - _served));
+            _served += n;
+            return n;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

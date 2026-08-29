@@ -265,7 +265,13 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
 /// one connection across concurrently-read partitions. Every emitted batch is routed through
 /// <see cref="SftpWindowFilter"/> when the dataset is windowed; the filter is built lazily off the
 /// first batch's own schema, so it works identically for all three formats without per-format
-/// plumbing.</summary>
+/// plumbing.
+///
+/// <paramref name="gate"/> is a snapshot of <c>SftpSource</c>'s gate field taken at
+/// <c>PlanReadAsync</c> time. That is safe only because of the ABI's own ordering guarantee
+/// (<c>IOperationGateAware.UseOperationGate</c>'s doc comment): the engine calls it exactly once,
+/// before any plan/read call, so the gate can never change out from under a partition created
+/// afterward.</summary>
 internal sealed class SftpFilePartition(
     SftpConnectionSettings settings,
     Func<SftpConnectionSettings, ISftpFileSystem> connect,
@@ -357,6 +363,13 @@ internal sealed class SftpFilePartition(
         _ => "varchar",
     };
 
+    /// <summary>Opens the file, then drives the format-specific batch stream by hand (rather than an
+    /// <c>await foreach</c>) so a mid-stream failure — a dropped SSH connection partway through a file,
+    /// not just a failure to open one — can be caught and classified through
+    /// <see cref="SftpErrors.Map"/> exactly like an open-time failure. C# forbids a <c>yield</c>
+    /// anywhere inside a <c>try</c> block that has a <c>catch</c>, so the catch is scoped to the single
+    /// <c>MoveNextAsync</c> call and the actual <c>yield return</c> sits outside it, in the surrounding
+    /// try/finally-only block.</summary>
     private async IAsyncEnumerable<RecordBatch> ReadFileAsync(
         ISftpFileSystem fs, string path, BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -364,30 +377,31 @@ internal sealed class SftpFilePartition(
         var stream = await SftpGate.OpenReadAsync(gate, fs, path, spec, ct).ConfigureAwait(false);
         try
         {
-            if (format == "json")
+            var inner = FormatBatchesAsync(stream, path, context, options, ct);
+            await using var enumerator = inner.GetAsyncEnumerator(ct);
+            while (true)
             {
-                await foreach (var batch in SftpJsonReader.ReadAsync(stream, columns!, context, options, ct).ConfigureAwait(false))
+                bool hasNext;
+                RecordBatch? batch = null;
+                try
                 {
-                    yield return batch;
+                    hasNext = await enumerator.MoveNextAsync().ConfigureAwait(false);
+                    if (hasNext)
+                    {
+                        batch = enumerator.Current;
+                    }
+                }
+                catch (Exception ex) when (ex is not PzConnectorException)
+                {
+                    throw SftpErrors.Map(ex, context);
                 }
 
-                yield break;
-            }
-
-            if (format == "parquet")
-            {
-                var projected = hints.Columns ?? columns?.Keys.ToArray();
-                await foreach (var batch in SftpParquetReader.ReadAsync(stream, projected, context, options, ct).ConfigureAwait(false))
+                if (!hasNext)
                 {
-                    yield return batch;
+                    yield break;
                 }
 
-                yield break;
-            }
-
-            await foreach (var batch in ReadCsvAsync(stream, path, options, ct).ConfigureAwait(false))
-            {
-                yield return batch;
+                yield return batch!;
             }
         }
         finally
@@ -396,80 +410,104 @@ internal sealed class SftpFilePartition(
         }
     }
 
+    private IAsyncEnumerable<RecordBatch> FormatBatchesAsync(
+        Stream stream, string path, string context, BatchOptions options, CancellationToken ct) => format switch
+    {
+        "json" => SftpJsonReader.ReadAsync(stream, columns!, context, options, ct),
+        "parquet" => SftpParquetReader.ReadAsync(stream, ParquetProjection(), context, options, ct),
+        _ => ReadCsvAsync(stream, path, options, ct),
+    };
+
+    /// <summary>The exact, ordered column list to hand the parquet reader — see
+    /// <see cref="SftpParquetReader.ReadAsync"/>'s doc comment: a non-null list is honored
+    /// POSITIONALLY, so it must already equal the order <c>SftpSource.GetSchemaAsync</c> reported for
+    /// this spec. A declared contract's own key order already IS that reported order, so a column hint
+    /// may safely narrow it (dropping entries, never reordering them). A contract-less schema's
+    /// reported order is the footer's own physical order, which this partition cannot know without
+    /// re-reading the footer — rather than risk emitting a hint-ordered (and therefore silently
+    /// mis-columned) batch, a contract-less parquet read ignores <see cref="ReadHints.Columns"/>
+    /// entirely and always reads the whole footer in footer order. SftpConnector does not declare
+    /// <see cref="ConnectorCapabilities.ColumnPushdown"/>, so this costs nothing but the (currently
+    /// unused) optimization.</summary>
+    private IReadOnlyList<string>? ParquetProjection()
+    {
+        if (columns is not { Count: > 0 })
+        {
+            return null;
+        }
+
+        if (hints.Columns is not { Count: > 0 })
+        {
+            return columns.Keys.ToArray();
+        }
+
+        var hinted = new HashSet<string>(hints.Columns, StringComparer.OrdinalIgnoreCase);
+        return columns.Keys.Where(hinted.Contains).ToArray();
+    }
+
     private async IAsyncEnumerable<RecordBatch> ReadCsvAsync(
         Stream stream, string path, BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
         using var textReader = new StreamReader(stream);
-        CsvDataReader csv;
-        try
+        using var csv = await CsvDataReader.CreateAsync(textReader, SftpSource.CsvOptions(), ct).ConfigureAwait(false);
+
+        string[] names;
+        string[] typeNames;
+        int[] ordinals;
+
+        if (columns is { Count: > 0 })
         {
-            csv = await CsvDataReader.CreateAsync(textReader, SftpSource.CsvOptions(), ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not PzConnectorException)
-        {
-            throw SftpErrors.Map(ex, SftpSource.FileContext(spec, path));
-        }
-
-        using (csv)
-        {
-            string[] names;
-            string[] typeNames;
-            int[] ordinals;
-
-            if (columns is { Count: > 0 })
-            {
-                names = columns.Keys.ToArray();
-                typeNames = columns.Values.ToArray();
-                ordinals = new int[names.Length];
-                for (var i = 0; i < names.Length; i++)
-                {
-                    int ordinal;
-                    try
-                    {
-                        ordinal = csv.GetOrdinal(names[i]);
-                    }
-                    catch (IndexOutOfRangeException)
-                    {
-                        ordinal = -1;
-                    }
-
-                    if (ordinal < 0)
-                    {
-                        throw new PzConnectorException(
-                            $"sftp csv file '{path}': missing declared column '{names[i]}' in header",
-                            isTransient: false);
-                    }
-
-                    ordinals[i] = ordinal;
-                }
-            }
-            else
-            {
-                // Contract-less: every header column, as-is, typed varchar (mirrors GetSchemaAsync).
-                names = new string[csv.FieldCount];
-                typeNames = new string[csv.FieldCount];
-                ordinals = new int[csv.FieldCount];
-                for (var i = 0; i < csv.FieldCount; i++)
-                {
-                    names[i] = csv.GetName(i);
-                    typeNames[i] = "varchar";
-                    ordinals[i] = i;
-                }
-            }
-
-            var fields = new Field[names.Length];
+            names = columns.Keys.ToArray();
+            typeNames = columns.Values.ToArray();
+            ordinals = new int[names.Length];
             for (var i = 0; i < names.Length; i++)
             {
-                fields[i] = SftpTypeNameMap.ToArrowField(names[i], typeNames[i]);
-            }
+                int ordinal;
+                try
+                {
+                    ordinal = csv.GetOrdinal(names[i]);
+                }
+                catch (IndexOutOfRangeException)
+                {
+                    ordinal = -1;
+                }
 
-            var schema = new Schema(fields, null);
-            await foreach (var batch in CsvArrowReader
-                .ReadAsync(csv, schema, typeNames, ordinals, path, options, rowNumberOffset: 0, ct)
-                .ConfigureAwait(false))
-            {
-                yield return batch;
+                if (ordinal < 0)
+                {
+                    throw new PzConnectorException(
+                        $"sftp csv file '{path}': missing declared column '{names[i]}' in header",
+                        isTransient: false);
+                }
+
+                ordinals[i] = ordinal;
             }
+        }
+        else
+        {
+            // Contract-less: every header column, as-is, typed varchar (mirrors GetSchemaAsync).
+            names = new string[csv.FieldCount];
+            typeNames = new string[csv.FieldCount];
+            ordinals = new int[csv.FieldCount];
+            for (var i = 0; i < csv.FieldCount; i++)
+            {
+                names[i] = csv.GetName(i);
+                typeNames[i] = "varchar";
+                ordinals[i] = i;
+            }
+        }
+
+        var fields = new Field[names.Length];
+        for (var i = 0; i < names.Length; i++)
+        {
+            fields[i] = SftpTypeNameMap.ToArrowField(names[i], typeNames[i]);
+        }
+
+        var schema = new Schema(fields, null);
+        await foreach (var batch in CsvArrowReader
+            .ReadAsync(csv, schema, typeNames, ordinals, path, options, rowNumberOffset: 0, ct)
+            .ConfigureAwait(false))
+        {
+            yield return batch;
         }
     }
 }

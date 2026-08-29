@@ -18,7 +18,14 @@ namespace Pz.Connector.Sftp;
 /// (parquet field → v0 type name → Arrow field); decimal is refused like the LocalFiles universal
 /// parquet WRITE path (<c>ParquetSinkWriteSession.BuildDataField</c>) refuses it — this reader runs
 /// row reads in managed code, unlike Azure/LocalFiles' footer-only readers, so there is no fallback
-/// once a decimal column is actually asked for.</summary>
+/// once a decimal column is actually asked for.
+///
+/// <paramref name="projectedColumns"/>'s order (see <see cref="ReadAsync"/>), when given, is
+/// authoritative over the footer's own physical column order: the engine binds a landed batch's
+/// columns to <c>SftpSource.GetSchemaAsync</c>'s reported schema BY POSITION, so a caller that
+/// passes a declared contract's column names MUST get them back in that same order regardless of
+/// where those columns physically sit in the file, or values silently land under the wrong
+/// column.</summary>
 internal static class SftpParquetReader
 {
     public static async Task<Schema> ReadSchemaAsync(Stream stream, string context, CancellationToken ct)
@@ -34,16 +41,7 @@ internal static class SftpParquetReader
     {
         await using var reader = await ParquetReader.CreateAsync(stream, leaveStreamOpen: true, cancellationToken: ct)
             .ConfigureAwait(false);
-        var fields = reader.Schema.GetDataFields()
-            .Where(f => projectedColumns is null ||
-                projectedColumns.Contains(f.Name, StringComparer.OrdinalIgnoreCase))
-            .ToArray();
-        if (fields.Length == 0)
-        {
-            throw new PzConnectorException(
-                $"{context}: none of the requested columns exist in the parquet file", isTransient: false);
-        }
-
+        var fields = SelectFields(reader.Schema.GetDataFields(), projectedColumns, context);
         var schema = BuildArrowSchema(fields, context);
         var builder = new ArrowBatchBuilder(schema, options.TargetBatchBytes, maxRowsPerBatch: options.MaxRowsPerBatch);
 
@@ -146,6 +144,51 @@ internal static class SftpParquetReader
         // any column is ever read, and already rejects every CLR type not handled above.
         throw new NotSupportedException(
             $"{context}: parquet column '{field.Name}' has unsupported type '{field.ClrType.Name}' for the sftp read path");
+    }
+
+    /// <summary>Which footer fields to read, and in what order. A null projection reads every field in
+    /// the footer's own physical order — the contract-less case, where that footer order literally IS
+    /// the schema <c>SftpSource.GetSchemaAsync</c> reported, so there is no order to preserve beyond it.
+    /// A non-null projection is honored POSITIONALLY — fields come back in <paramref
+    /// name="projectedColumns"/>'s own order, never the footer's — because the only caller that ever
+    /// passes one is projecting against a declared contract, whose order IS what GetSchemaAsync
+    /// reported; reverting to footer order here would silently land a reordered contract's values under
+    /// the wrong column names.</summary>
+    private static DataField[] SelectFields(
+        IReadOnlyList<DataField> footerFields, IReadOnlyList<string>? projectedColumns, string context)
+    {
+        DataField[] fields;
+        if (projectedColumns is null)
+        {
+            fields = footerFields.ToArray();
+        }
+        else
+        {
+            var byName = new Dictionary<string, DataField>(StringComparer.OrdinalIgnoreCase);
+            foreach (var field in footerFields)
+            {
+                byName.TryAdd(field.Name, field);
+            }
+
+            var ordered = new List<DataField>(projectedColumns.Count);
+            foreach (var name in projectedColumns)
+            {
+                if (byName.TryGetValue(name, out var field))
+                {
+                    ordered.Add(field);
+                }
+            }
+
+            fields = ordered.ToArray();
+        }
+
+        if (fields.Length == 0)
+        {
+            throw new PzConnectorException(
+                $"{context}: none of the requested columns exist in the parquet file", isTransient: false);
+        }
+
+        return fields;
     }
 
     private static Schema BuildArrowSchema(IReadOnlyList<DataField> fields, string context) =>
