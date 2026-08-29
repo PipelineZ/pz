@@ -2,9 +2,10 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Sftp;
 
-/// <summary>Parsed connection options. <see cref="Parse"/> assumes ValidateAsync's rules already
-/// held (host/username present, exactly one auth method) and throws the same clear permanent error
-/// if not, so a directly-constructed config still fails cleanly.</summary>
+/// <summary>Parsed connection options. <see cref="Parse"/> re-checks only the presence of
+/// host/username (throwing the same clear permanent error for a directly-constructed config);
+/// auth-method exclusivity, port range, and fingerprint shape are ValidateAsync's job and are
+/// not re-verified here.</summary>
 internal sealed record SftpConnectionSettings(
     string Host, int Port, string Username, string? Password,
     string? PrivateKeyPath, string? PrivateKeyPassphrase, string? HostKeyFingerprint, string? Root)
