@@ -61,8 +61,9 @@ internal static class SftpPaths
 
     /// <summary>Joins a root and a relative segment with a single '/'. A null/empty root leaves the
     /// relative segment untouched (so a caller-supplied absolute path is never mangled); a root already
-    /// ending in '/' is not doubled.</summary>
-    private static string Join(string? root, string relative) =>
+    /// ending in '/' is not doubled. Internal: also used by <c>SftpSink</c> to join the connection root
+    /// with a partition_by-rendered folder.</summary>
+    internal static string Join(string? root, string relative) =>
         string.IsNullOrEmpty(root) ? relative : root.EndsWith('/') ? root + relative : $"{root}/{relative}";
 
     /// <summary>Window-cover guard, same shape as S3Source.CoverKeys: narrows to

@@ -80,5 +80,5 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
         new(new SftpSource(SftpConnectionSettings.Parse(config), s => SftpClientFactory.Open(s)));
 
     ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        throw new NotImplementedException();  // Task 8
+        new(new SftpSink(SftpConnectionSettings.Parse(config), s => SftpClientFactory.Open(s)));
 }
