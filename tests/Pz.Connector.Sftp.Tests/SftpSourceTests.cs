@@ -536,18 +536,44 @@ public class SftpSourceTests
         Assert.Contains("orders.csv", ex.Message);
     }
 
+    // Codebase-wide convention (KindDispatchingExecutor's doc comment; every comparable catch in
+    // SourceLoadExecutor/SinkWriteExecutor): cancellation is NEVER wrapped into a permanent
+    // exception -- it must propagate raw so the dispatcher can tell cancellation apart from a
+    // genuine failure.
+    [Fact]
+    public async Task MidStream_cancellation_propagates_unwrapped_not_as_PzConnectorException()
+    {
+        var fake = new FakeSftpFileSystem();
+        var csv = "id\n" + string.Concat(Enumerable.Range(1, 500).Select(i => $"{i}\n"));
+        fake.AddFile("/data/orders.csv", csv);
+
+        var source = new SftpSource(
+            new SftpConnectionSettings("host", 22, "user", "pw", null, null, null, Root: "/data"),
+            _ => new MidStreamFailureFileSystem(fake, "/data/orders.csv", () => new OperationCanceledException()));
+        var spec = Spec("orders", ("columns", Columns(("id", "int"))));
+
+        var parts = await source.PlanReadAsync(spec, ReadHints.None, default);
+
+        // A raw OperationCanceledException, not a PzConnectorException -- ThrowsAsync requires an
+        // exact type match, so this fails the test if the mid-stream catch ever wraps it again.
+        await Assert.ThrowsAsync<OperationCanceledException>(() => DrainAsync(parts[0]));
+    }
+
     /// <summary>Delegates every call to a real fake, except <see cref="OpenRead"/> for one path, whose
-    /// stream fails partway through being read -- simulating a dropped connection DURING streaming
-    /// (the fake's own FailOn hook only guards the OpenRead call itself, not the bytes read
-    /// afterward, so it cannot exercise this).</summary>
-    private sealed class MidStreamFailureFileSystem(FakeSftpFileSystem inner, string failPath) : ISftpFileSystem
+    /// stream fails partway through being read -- simulating a dropped connection (or a cancellation)
+    /// DURING streaming (the fake's own FailOn hook only guards the OpenRead call itself, not the
+    /// bytes read afterward, so it cannot exercise this).</summary>
+    private sealed class MidStreamFailureFileSystem(FakeSftpFileSystem inner, string failPath, Func<Exception>? makeException = null)
+        : ISftpFileSystem
     {
         public IEnumerable<string> ListFiles(string directory, bool recursive) => inner.ListFiles(directory, recursive);
 
         public Stream OpenRead(string path)
         {
             var real = inner.OpenRead(path);
-            return path == failPath ? new ThrowingAfterBytesStream(real, okBytes: 6) : real;
+            return path == failPath
+                ? new ThrowingAfterBytesStream(real, okBytes: 6, makeException ?? (() => new IOException("connection reset by peer")))
+                : real;
         }
 
         public Stream OpenWrite(string path) => inner.OpenWrite(path);
@@ -561,9 +587,11 @@ public class SftpSourceTests
     }
 
     /// <summary>Serves up to <paramref name="okBytes"/> bytes from <paramref name="inner"/>, then
-    /// throws <see cref="IOException"/> on every read after -- an unclassified, third-party-shaped
-    /// mid-read failure a real dropped SSH connection would produce.</summary>
-    private sealed class ThrowingAfterBytesStream(Stream inner, int okBytes) : Stream
+    /// throws <paramref name="makeException"/>'s exception on every read after -- either an
+    /// unclassified, third-party-shaped mid-read failure a real dropped SSH connection would produce,
+    /// or (for the cancellation test) the shape SSH.NET/`Stream.ReadAsync` itself would throw when the
+    /// engine's `CancellationToken` fires mid-read.</summary>
+    private sealed class ThrowingAfterBytesStream(Stream inner, int okBytes, Func<Exception> makeException) : Stream
     {
         private int _served;
 
@@ -586,7 +614,7 @@ public class SftpSourceTests
         {
             if (_served >= okBytes)
             {
-                throw new IOException("connection reset by peer");
+                throw makeException();
             }
 
             var n = inner.Read(buffer, offset, Math.Min(count, okBytes - _served));

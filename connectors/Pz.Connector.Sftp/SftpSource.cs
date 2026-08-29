@@ -391,7 +391,7 @@ internal sealed class SftpFilePartition(
                         batch = enumerator.Current;
                     }
                 }
-                catch (Exception ex) when (ex is not PzConnectorException)
+                catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
                 {
                     throw SftpErrors.Map(ex, context);
                 }
@@ -528,7 +528,7 @@ internal static class SftpGate
             {
                 return Task.FromResult(SftpPaths.ListMatches(fs, pattern, spec));
             }
-            catch (Exception ex) when (ex is not PzConnectorException)
+            catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
             {
                 throw SftpErrors.Map(ex, $"dataset '{spec.Dataset}'");
             }
@@ -546,7 +546,7 @@ internal static class SftpGate
             {
                 return Task.FromResult(fs.OpenRead(path));
             }
-            catch (Exception ex) when (ex is not PzConnectorException)
+            catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
             {
                 throw SftpErrors.Map(ex, SftpSource.FileContext(spec, path));
             }
