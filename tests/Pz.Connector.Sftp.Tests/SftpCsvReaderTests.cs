@@ -55,29 +55,44 @@ id,name,ts
         Assert.Equal("Bob", nameArray.GetString(1));
         Assert.Equal("Charlie", nameArray.GetString(2));
 
-        // Verify ts column type
+        // Verify ts column type and values
         var tsArray = (TimestampArray)batch.Column(2);
         Assert.IsType<TimestampArray>(tsArray);
+
+        // Verify timestamp values (stored as microseconds since Unix epoch)
+        var expected1 = new DateTimeOffset(2024, 1, 1, 10, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds() * 1000;
+        var expected2 = new DateTimeOffset(2024, 1, 2, 11, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds() * 1000;
+        var expected3 = new DateTimeOffset(2024, 1, 3, 12, 0, 0, TimeSpan.Zero).ToUnixTimeMilliseconds() * 1000;
+
+        Assert.Equal(expected1, tsArray.GetValue(0));
+        Assert.Equal(expected2, tsArray.GetValue(1));
+        Assert.Equal(expected3, tsArray.GetValue(2));
     }
 
     [Fact]
-    public async Task EmptyCell_BecomesNull()
+    public async Task EmptyCell_BecomesNull_AllTypes()
     {
         var csv = """
-id,name
-1,Alice
-2,
-3,Charlie
+int_col,bigint_col,double_col,decimal_col,varchar_col,boolean_col,date_col,timestamp_col
+1,100,1.5,10.5,text,true,2024-01-01,2024-01-01T10:00:00Z
+,,,,,,
+3,300,3.5,30.5,text3,false,2024-01-03,2024-01-03T12:00:00Z
 """;
 
         var schema = new Schema(new List<Field>
         {
-            new("id", Int32Type.Default, nullable: true),
-            new("name", StringType.Default, nullable: true),
+            new("int_col", Int32Type.Default, nullable: true),
+            new("bigint_col", Int64Type.Default, nullable: true),
+            new("double_col", DoubleType.Default, nullable: true),
+            new("decimal_col", new Decimal128Type(38, 9), nullable: true),
+            new("varchar_col", StringType.Default, nullable: true),
+            new("boolean_col", BooleanType.Default, nullable: true),
+            new("date_col", Date32Type.Default, nullable: true),
+            new("timestamp_col", new TimestampType(TimeUnit.Microsecond, "+00:00"), nullable: true),
         }, new Dictionary<string, string>());
 
-        var typeNames = new[] { "int", "varchar" };
-        var ordinals = new[] { 0, 1 };
+        var typeNames = new[] { "int", "bigint", "double", "decimal", "varchar", "boolean", "date", "timestamp" };
+        var ordinals = new[] { 0, 1, 2, 3, 4, 5, 6, 7 };
         var path = "test.csv";
         var options = BatchOptions.Default;
         var rowNumberOffset = 0L;
@@ -91,24 +106,31 @@ id,name
 
         Assert.Single(batches);
         var batch = batches[0];
+        Assert.Equal(3, batch.Length);
 
-        // Verify name column has null at index 1
-        var nameArray = (StringArray)batch.Column(1);
-        Assert.Null(nameArray.GetString(1));
+        // Verify that row 1 (index 1) has all nulls across all types
+        Assert.Null(((Int32Array)batch.Column(0)).GetValue(1));
+        Assert.Null(((Int64Array)batch.Column(1)).GetValue(1));
+        Assert.Null(((DoubleArray)batch.Column(2)).GetValue(1));
+        Assert.Null(((Decimal128Array)batch.Column(3)).GetValue(1));
+        Assert.Null(((StringArray)batch.Column(4)).GetString(1));
+        Assert.Null(((BooleanArray)batch.Column(5)).GetValue(1));
+        Assert.Null(((Date32Array)batch.Column(6)).GetValue(1));
+        Assert.Null(((TimestampArray)batch.Column(7)).GetValue(1));
     }
 
     [Fact]
     public async Task MalformedCell_ThrowsWithFileLineColumnValue()
     {
         var csv = """
-id,name
+qty,name
 1,Alice
 abc,Bob
 """;
 
         var schema = new Schema(new List<Field>
         {
-            new("id", Int32Type.Default, nullable: true),
+            new("qty", Int32Type.Default, nullable: true),
             new("name", StringType.Default, nullable: true),
         }, new Dictionary<string, string>());
 
@@ -131,7 +153,7 @@ abc,Bob
         // Verify exception message contains file, line, column, and value
         Assert.Contains(path, ex.Message);
         Assert.Contains("line 2", ex.Message);
-        Assert.Contains("id", ex.Message);
+        Assert.Contains("'qty'", ex.Message);
         Assert.Contains("abc", ex.Message);
     }
 
