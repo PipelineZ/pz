@@ -4,6 +4,7 @@ using Pz.Connector.LocalFiles;
 using Pz.Connector.MySql;
 using Pz.Connector.S3;
 using Pz.Connector.Postgres;
+using Pz.Connector.Sftp;
 using Pz.Connector.Sqlite;
 using Pz.Connector.SqlServer;
 using Pz.Engine.Execution;
@@ -35,6 +36,7 @@ internal static class BuiltinConnectors
     {
         "Pz.Connector.LocalFiles", "Pz.Connector.S3", "Pz.Connector.Postgres", "Pz.Connector.SqlServer",
         "Pz.Connector.AzureBlob", "Pz.Connector.Http", "Pz.Connector.MySql", "Pz.Connector.Sqlite",
+        "Pz.Connector.Sftp",
     };
 
     public static ConnectorRegistry CreateRegistry()
@@ -64,6 +66,9 @@ internal static class BuiltinConnectors
         var sqlite = new SqliteConnector();
         registry.AddSource("sqlite", sqlite);
         registry.AddSink("sqlite", sqlite);
+        var sftp = new SftpConnector();
+        registry.AddSource("sftp", sftp);
+        registry.AddSink("sftp", sftp);
         return registry;
     }
 }
