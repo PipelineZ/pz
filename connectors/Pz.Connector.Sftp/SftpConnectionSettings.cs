@@ -44,4 +44,11 @@ internal sealed record SftpConnectionSettings(
         config.GetString(key) is { Length: > 0 } s
             ? s
             : throw new PzConnectorException($"sftp connection requires '{key}'", isTransient: false);
+
+    // The compiler-synthesized record ToString() prints every property, Password and
+    // PrivateKeyPassphrase included -- nothing may ever let those reach a log line or exception
+    // message by way of an implicit ToString() call (string interpolation, ${settings}, etc.), so
+    // this override is the only ToString() this type may ever have.
+    public override string ToString() =>
+        $"SftpConnectionSettings {{ Host = {Host}, Port = {Port}, Username = {Username}, Root = {Root} }}";
 }

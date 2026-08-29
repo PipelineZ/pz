@@ -35,6 +35,21 @@ public class FakeSftpFileSystemTests
     public void ListFiles_on_a_missing_directory_yields_nothing() =>
         Assert.Empty(new FakeSftpFileSystem().ListFiles("/nope", recursive: true));
 
+    // A pattern with no directory part (e.g. "*.csv" with no root:) resolves to an empty static
+    // prefix, which SftpPaths.ListMatches hands straight through to ListFiles -- "" is not a valid
+    // SFTP listing target, "." (login-relative current directory) is.
+    [Fact]
+    public void ListFiles_with_an_empty_directory_normalizes_to_the_login_directory()
+    {
+        var fake = new FakeSftpFileSystem();
+        fake.Seed("./a.csv", []);
+
+        var files = fake.ListFiles("", recursive: false).ToList();
+
+        Assert.Equal(["./a.csv"], files);
+        Assert.Contains("list:.", fake.Operations);
+    }
+
     [Fact]
     public void OpenWrite_content_is_visible_through_OpenRead_after_dispose()
     {
@@ -131,4 +146,39 @@ public class FakeSftpFileSystemTests
 
         Assert.Equal(["mkdir:/a/b/c", "mkdir:/a/b/c"], fake.Operations);
     }
+
+    // mkdir -p semantics: every intermediate level becomes a directory too, not just the leaf --
+    // otherwise DirectoryExists("/a/b") would disagree with a real server after CreateDirectories("/a/b/c").
+    [Fact]
+    public void CreateDirectories_records_every_intermediate_level()
+    {
+        var fake = new FakeSftpFileSystem();
+
+        fake.CreateDirectories("/a/b/c");
+
+        Assert.True(fake.DirectoryExists("/a"));
+        Assert.True(fake.DirectoryExists("/a/b"));
+        Assert.True(fake.DirectoryExists("/a/b/c"));
+    }
+
+    [Fact]
+    public void SeedDirectory_records_every_intermediate_level()
+    {
+        var fake = new FakeSftpFileSystem();
+
+        fake.SeedDirectory("/a/b/c");
+
+        Assert.True(fake.DirectoryExists("/a"));
+        Assert.True(fake.DirectoryExists("/a/b/c"));
+    }
+
+    [Fact]
+    public void DirectoryExists_on_an_unseeded_path_is_false() =>
+        Assert.False(new FakeSftpFileSystem().DirectoryExists("/nope"));
+
+    // The login directory always exists -- SftpConnector.ProbeRoot probes it when no `root:` is
+    // configured, and the fake must agree even with nothing seeded, the way a real server would.
+    [Fact]
+    public void DirectoryExists_on_the_login_directory_is_always_true() =>
+        Assert.True(new FakeSftpFileSystem().DirectoryExists("."));
 }

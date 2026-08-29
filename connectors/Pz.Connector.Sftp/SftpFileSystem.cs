@@ -6,11 +6,21 @@ namespace Pz.Connector.Sftp;
 
 /// <summary>Thin adapter from <see cref="ISftpFileSystem"/> onto a connected SSH.NET
 /// <see cref="SftpClient"/>. Owns the client's lifetime — <see cref="Dispose"/> disconnects and
-/// disposes it.</summary>
-internal sealed class SftpFileSystem(SftpClient client) : ISftpFileSystem
+/// disposes it — and, when given one, the <see cref="IDisposable"/> auth bundle
+/// (<see cref="SftpAuth"/>) the client was built with, since that is the only place left holding a
+/// reference to it once <see cref="SftpClientFactory.Connect"/> returns.</summary>
+internal sealed class SftpFileSystem(SftpClient client, IDisposable? auth = null) : ISftpFileSystem
 {
     public IEnumerable<string> ListFiles(string directory, bool recursive)
     {
+        // A bare glob pattern with no directory part (e.g. "*.csv") resolves to a static prefix with
+        // no '/', which SftpPaths.ListMatches then hands here as "" -- not a valid SFTP listing
+        // target. "." (the login-relative current directory) is the correct empty-prefix root.
+        if (directory.Length == 0)
+        {
+            directory = ".";
+        }
+
         var pending = new Queue<string>();
         pending.Enqueue(directory);
 
@@ -60,6 +70,9 @@ internal sealed class SftpFileSystem(SftpClient client) : ISftpFileSystem
     // this "does the FILE exist" rather than "does anything exist at this path".
     public bool FileExists(string path) => client.Exists(path) && client.Get(path).IsRegularFile;
 
+    // Mirror of FileExists's guard, inverted: Exists(path) alone answers true for regular files too.
+    public bool DirectoryExists(string path) => client.Exists(path) && client.Get(path).IsDirectory;
+
     public void CreateDirectories(string path)
     {
         var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
@@ -90,5 +103,6 @@ internal sealed class SftpFileSystem(SftpClient client) : ISftpFileSystem
         }
 
         client.Dispose();
+        auth?.Dispose();
     }
 }

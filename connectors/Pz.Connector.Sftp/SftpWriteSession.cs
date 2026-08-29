@@ -170,8 +170,9 @@ internal abstract class SftpWriteSessionBase(
         }
         finally
         {
-            // Only single-output sessions own the fs; a partitioned fan-out (Task 9) shares one fs
-            // across inner sessions and disposes it itself once, after every inner session is done.
+            // Only single-output sessions own the fs; a partitioned fan-out (SftpPartitionedWriteSession)
+            // shares one fs across inner sessions and disposes it itself once, after every inner
+            // session is done.
             if (ownsFileSystem)
             {
                 fs.Dispose();

@@ -311,6 +311,7 @@ public class SftpSinkTests
         public void Rename(string oldPath, string newPath) => inner.Rename(oldPath, newPath);
         public void Delete(string path) => inner.Delete(path);
         public bool FileExists(string path) => inner.FileExists(path);
+        public bool DirectoryExists(string path) => inner.DirectoryExists(path);
         public void CreateDirectories(string path) => inner.CreateDirectories(path);
         public void Dispose() => Disposed = true;
     }

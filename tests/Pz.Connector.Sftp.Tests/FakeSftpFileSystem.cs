@@ -22,10 +22,26 @@ internal sealed class FakeSftpFileSystem : ISftpFileSystem
 
     public void Seed(string path, byte[] content) => _files[path] = content;
 
-    public void SeedDirectory(string path) => _directories.Add(path);
+    // Records every intermediate level, not just the leaf -- mirrors CreateDirectories below, so a
+    // seeded "/a/b/c" also makes DirectoryExists("/a") and DirectoryExists("/a/b") true, the way a
+    // real SFTP server's directory tree does.
+    public void SeedDirectory(string path)
+    {
+        foreach (var level in DirectoryLevels(path))
+        {
+            _directories.Add(level);
+        }
+    }
 
     public IEnumerable<string> ListFiles(string directory, bool recursive)
     {
+        // Mirrors SftpFileSystem.ListFiles: a bare glob with no directory part resolves to "", which
+        // is not a valid SFTP listing target -- "." (the login-relative current directory) is.
+        if (directory.Length == 0)
+        {
+            directory = ".";
+        }
+
         Guard($"list:{directory}");
 
         var prefix = directory.EndsWith('/') ? directory : directory + "/";
@@ -95,10 +111,37 @@ internal sealed class FakeSftpFileSystem : ISftpFileSystem
         return _files.ContainsKey(path);
     }
 
+    // "." is the login directory, which always exists -- SftpConnector.CheckConnectionAsync probes
+    // it when no `root:` is configured, and a fake with nothing seeded must still answer true for it
+    // to agree with a real server.
+    public bool DirectoryExists(string path)
+    {
+        Guard($"dir-exists:{path}");
+        return path is "." || _directories.Contains(path);
+    }
+
     public void CreateDirectories(string path)
     {
         Guard($"mkdir:{path}");
-        _directories.Add(path);
+        foreach (var level in DirectoryLevels(path))
+        {
+            _directories.Add(level);
+        }
+    }
+
+    /// <summary>Every path prefix of <paramref name="path"/> at a '/' boundary, root to leaf -- e.g.
+    /// "/a/b/c" yields "/a", "/a/b", "/a/b/c". Shared by <see cref="SeedDirectory"/> and
+    /// <see cref="CreateDirectories"/> so both record intermediate levels the same way real SFTP
+    /// "mkdir -p" semantics create them.</summary>
+    private static IEnumerable<string> DirectoryLevels(string path)
+    {
+        var segments = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var current = path.StartsWith('/') ? "/" : "";
+        foreach (var segment in segments)
+        {
+            current = current is "" or "/" ? current + segment : $"{current}/{segment}";
+            yield return current;
+        }
     }
 
     public void Dispose()

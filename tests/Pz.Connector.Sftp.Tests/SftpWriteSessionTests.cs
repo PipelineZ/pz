@@ -262,6 +262,7 @@ public class SftpWriteSessionTests
         public void Rename(string oldPath, string newPath) => inner.Rename(oldPath, newPath);
         public void Delete(string path) => inner.Delete(path);
         public bool FileExists(string path) => inner.FileExists(path);
+        public bool DirectoryExists(string path) => inner.DirectoryExists(path);
         public void CreateDirectories(string path) => inner.CreateDirectories(path);
         public void Dispose() => Disposed = true;
     }
@@ -371,7 +372,7 @@ public class SftpWriteSessionTests
         Assert.NotEqual(a, b);
     }
 
-    // ---------- format round-trips (read the fake's committed bytes back with the Task 4-6 readers) ----------
+    // ---------- format round-trips (read the fake's committed bytes back with the csv/parquet/json readers) ----------
 
     [Fact]
     public async Task Csv_round_trips_through_the_fake()

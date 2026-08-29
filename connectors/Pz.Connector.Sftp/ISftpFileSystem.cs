@@ -17,5 +17,6 @@ internal interface ISftpFileSystem : IDisposable
     void Rename(string oldPath, string newPath);
     void Delete(string path);
     bool FileExists(string path);
+    bool DirectoryExists(string path);
     void CreateDirectories(string path);   // mkdir -p
 }

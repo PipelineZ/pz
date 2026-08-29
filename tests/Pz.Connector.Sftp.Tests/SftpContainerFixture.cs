@@ -57,7 +57,12 @@ public sealed class SftpContainerFixture : IAsyncLifetime
             await _container.DisposeAsync();
         }
 
-        File.Delete(PrivateKeyPath);
+        // An InitializeAsync failure before the key file is written (e.g. no docker) leaves
+        // PrivateKeyPath at its "" default; deleting "" would throw and mask the real failure.
+        if (PrivateKeyPath.Length > 0)
+        {
+            File.Delete(PrivateKeyPath);
+        }
     }
 
     /// <summary>ssh-rsa wire format: length-prefixed "ssh-rsa", mpint e, mpint n (leading 0x00

@@ -72,15 +72,17 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
             errors.Count == 0 ? ValidationResult.Success : ValidationResult.Failed([.. errors]));
     }
 
-    /// <summary>Real probe: connects, authenticates, then lists the root (or login directory) --
-    /// cut after the first entry -- proving connect + auth + basic access in one round trip.
-    /// <see cref="SftpClientFactory.BuildAuth"/>'s failures (neither auth method declared, or a key
-    /// file that fails to load) are config-shape errors discovered before any network attempt;
-    /// mirroring AzureConnector's ConnectivityValidator convention, they are deliberately called
-    /// outside the try below and THROW rather than fold into a false ConnectionCheck. Everything the
-    /// try can throw -- connect, auth, and the listing itself -- is a genuine connectivity outcome,
-    /// folded into the message with the transient/permanent tag (the Azure/Postgres convention;
-    /// ConnectionCheck carries no separate transience field).</summary>
+    /// <summary>Real probe: connects, authenticates, then stats the root (or login directory) --
+    /// proving connect + auth + basic access in one round trip. A stat, not a listing: `ListFiles`
+    /// treats a missing directory as "no entries" (the no-match error belongs to the dataset-aware
+    /// caller, not here), so listing a wrong `root:` would silently report the connection healthy --
+    /// this must instead see the missing root and fail. <see cref="SftpClientFactory.BuildAuth"/>'s
+    /// failures (neither auth method declared, or a key file that fails to load) are config-shape
+    /// errors discovered before any network attempt; mirroring AzureConnector's ConnectivityValidator
+    /// convention, they are deliberately called outside the try below and THROW rather than fold into
+    /// a false ConnectionCheck. Everything the try can throw -- connect, auth, and the stat itself --
+    /// is a genuine connectivity outcome, folded into the message with the transient/permanent tag
+    /// (the Azure/Postgres convention; ConnectionCheck carries no separate transience field).</summary>
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
     {
         var settings = SftpConnectionSettings.Parse(config);
@@ -88,24 +90,38 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
         try
         {
             using var fs = SftpClientFactory.Connect(settings, auth);
-            try
-            {
-                _ = fs.ListFiles(settings.Root ?? ".", recursive: false).FirstOrDefault();
-            }
-            catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
-            {
-                // Same classify-any-raw-exception convention SftpGate/SftpSource use for a
-                // mid-operation SSH.NET failure.
-                throw SftpErrors.Map(ex, $"sftp host '{settings.Host}': list failed");
-            }
-
-            return new ValueTask<ConnectionCheck>(new ConnectionCheck(true));
+            return new ValueTask<ConnectionCheck>(ProbeRoot(fs, settings));
         }
         catch (PzConnectorException ex)
         {
             return new ValueTask<ConnectionCheck>(new ConnectionCheck(false,
                 $"{(ex.IsTransient ? "transient" : "permanent")}: {ex.Message}"));
         }
+    }
+
+    /// <summary>The stat half of <see cref="CheckConnectionAsync"/>'s probe, split out so it can be
+    /// exercised directly against a fake <see cref="ISftpFileSystem"/> -- the surrounding connect/auth
+    /// round trip needs a live server, but the root-exists decision does not.</summary>
+    internal static ConnectionCheck ProbeRoot(ISftpFileSystem fs, SftpConnectionSettings settings)
+    {
+        var root = settings.Root ?? ".";
+        bool exists;
+        try
+        {
+            exists = fs.DirectoryExists(root);
+        }
+        catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
+        {
+            // Same classify-any-raw-exception convention SftpGate/SftpSource use for a
+            // mid-operation SSH.NET failure.
+            var mapped = SftpErrors.Map(ex, $"sftp host '{settings.Host}': stat failed");
+            return new ConnectionCheck(false, $"{(mapped.IsTransient ? "transient" : "permanent")}: {mapped.Message}");
+        }
+
+        return exists
+            ? new ConnectionCheck(true)
+            : new ConnectionCheck(false,
+                $"permanent: sftp host '{settings.Host}': root '{root}' does not exist or is not a directory");
     }
 
     ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>

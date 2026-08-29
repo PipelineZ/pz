@@ -195,7 +195,17 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         return null;
     }
 
-    internal static CsvDataReaderOptions CsvOptions() => new() { HasHeaders = true };
+    /// <summary>Sylvan's read buffer defaults to 16KiB and refuses any row wider than it -- sftp is
+    /// universal-tier only (no DuckDB-native scan to fall back to, unlike LocalFiles' CsvSource), so
+    /// that default would make any wide-row csv unreadable, failing the node with the library's own
+    /// "Row N was too large. Try increasing the MaxBufferSize setting." -- advice naming a knob pz
+    /// does not expose. Mirrors LocalFiles' CsvSource.MaxRowBytes: a CEILING, not a preallocation, so a
+    /// project of narrow rows pays nothing for the headroom. Both the schema peek (<see
+    /// cref="CsvSchemaAsync"/>) and the row read (<see cref="SftpFilePartition.ReadCsvAsync"/>) call
+    /// this one place, so they can never disagree on the ceiling.</summary>
+    private const int MaxRowBytes = 16 * 1024 * 1024;
+
+    internal static CsvDataReaderOptions CsvOptions() => new() { HasHeaders = true, MaxBufferSize = MaxRowBytes };
 
     private static int FilesPerPartition(DatasetSpec spec)
     {
@@ -427,7 +437,7 @@ internal sealed class SftpFilePartition(
     /// re-reading the footer — rather than risk emitting a hint-ordered (and therefore silently
     /// mis-columned) batch, a contract-less parquet read ignores <see cref="ReadHints.Columns"/>
     /// entirely and always reads the whole footer in footer order. SftpConnector does not declare
-    /// <see cref="ConnectorCapabilities.ColumnPushdown"/>, so this costs nothing but the (currently
+    /// <see cref="ConnectorCapabilities.ColumnPruning"/>, so this costs nothing but the (currently
     /// unused) optimization.</summary>
     private IReadOnlyList<string>? ParquetProjection()
     {

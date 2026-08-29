@@ -82,4 +82,47 @@ public class SftpConnectorValidationTests
 
         Assert.Contains("requires 'password' or 'private_key_path'", ex.Message, StringComparison.Ordinal);
     }
+
+    // SftpConnector.ProbeRoot is the stat half of CheckConnectionAsync's probe, split out so a missing
+    // `root:` (PZ0348-style wrong config, not a connectivity outage) can be proven false+permanent
+    // without a live server -- a listing-based probe would have missed this: ListFiles treats a
+    // missing directory as "no entries", which is indistinguishable from an empty-but-real directory.
+    [Fact]
+    public void ProbeRoot_with_a_missing_root_is_false_permanent_and_names_the_root()
+    {
+        var fake = new FakeSftpFileSystem();
+        var settings = new SftpConnectionSettings(
+            "sftp.example", 22, "u", "p", null, null, null, Root: "/no/such/dir");
+
+        var result = SftpConnector.ProbeRoot(fake, settings);
+
+        Assert.False(result.Ok);
+        Assert.StartsWith("permanent:", result.Message, StringComparison.Ordinal);
+        Assert.Contains("/no/such/dir", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProbeRoot_with_an_existing_root_is_true()
+    {
+        var fake = new FakeSftpFileSystem();
+        fake.SeedDirectory("/data");
+        var settings = new SftpConnectionSettings("sftp.example", 22, "u", "p", null, null, null, Root: "/data");
+
+        var result = SftpConnector.ProbeRoot(fake, settings);
+
+        Assert.True(result.Ok);
+    }
+
+    // No `root:` at all probes the login-relative current directory, "." -- which the fake (like a
+    // real server) always answers true for, since nothing needs to be seeded for it to exist.
+    [Fact]
+    public void ProbeRoot_with_no_configured_root_probes_the_login_directory()
+    {
+        var fake = new FakeSftpFileSystem();
+        var settings = new SftpConnectionSettings("sftp.example", 22, "u", "p", null, null, null, Root: null);
+
+        var result = SftpConnector.ProbeRoot(fake, settings);
+
+        Assert.True(result.Ok);
+    }
 }

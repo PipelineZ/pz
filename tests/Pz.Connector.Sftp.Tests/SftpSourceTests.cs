@@ -98,6 +98,29 @@ public class SftpSourceTests
         Assert.Equal(["c", "d"], vals);
     }
 
+    /// <summary>A row wider than Sylvan's default 16KiB read buffer must still read: sftp is
+    /// universal-tier only (no native-scan fallback to fall back to, unlike LocalFiles), so the
+    /// library's own "Row 1 was too large. Try increasing the MaxBufferSize setting." would make any
+    /// wide-row csv unreadable. Exercises both call sites that share <see cref="SftpSource.CsvOptions"/>
+    /// -- the schema peek and the row read -- against the same file.</summary>
+    [Fact]
+    public async Task Csv_row_wider_than_the_readers_default_buffer_round_trips()
+    {
+        var payload = new string('x', 20 * 1024);
+        var fake = new FakeSftpFileSystem();
+        fake.AddFile("/data/wide.csv", $"id,payload\n1,{payload}\n");
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("wide", ("columns", Columns(("id", "bigint"), ("payload", "varchar"))));
+
+        var schema = (await source.GetSchemaAsync(spec, default)).Schema;
+        Assert.Equal(["id", "payload"], schema.FieldsList.Select(f => f.Name));
+
+        var parts = await source.PlanReadAsync(spec, ReadHints.None, default);
+        var batches = await DrainAsync(parts[0]);
+
+        Assert.Equal(payload, ((StringArray)batches[0].Column(1)).GetString(0));
+    }
+
     [Fact]
     public async Task No_match_names_dataset_and_pattern()
     {
@@ -382,6 +405,7 @@ public class SftpSourceTests
         public void Rename(string oldPath, string newPath) => inner.Rename(oldPath, newPath);
         public void Delete(string path) => inner.Delete(path);
         public bool FileExists(string path) => inner.FileExists(path);
+        public bool DirectoryExists(string path) => inner.DirectoryExists(path);
         public void CreateDirectories(string path) => inner.CreateDirectories(path);
         public void Dispose()
         {
@@ -580,6 +604,7 @@ public class SftpSourceTests
         public void Rename(string oldPath, string newPath) => inner.Rename(oldPath, newPath);
         public void Delete(string path) => inner.Delete(path);
         public bool FileExists(string path) => inner.FileExists(path);
+        public bool DirectoryExists(string path) => inner.DirectoryExists(path);
         public void CreateDirectories(string path) => inner.CreateDirectories(path);
         public void Dispose()
         {
