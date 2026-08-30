@@ -36,9 +36,11 @@ internal static class ProcessSocketRoot
         }
 
         // Short on purpose: this is the fallback for a project directory that was already too deep, so
-        // spending path budget on a descriptive name would defeat it.
+        // spending path budget on a descriptive name would defeat it. The pid segment is what lets a
+        // leaked root be attributed to the pz process that minted it — concurrent pz processes (or a
+        // test asserting on its own additions) can otherwise not tell whose root is whose.
         var temp = Path.Combine(
-            Path.GetTempPath(), "pz-" + Guid.NewGuid().ToString("N")[..8]);
+            Path.GetTempPath(), $"pz-{Environment.ProcessId}-" + Guid.NewGuid().ToString("N")[..8]);
         if (temp.Length > MaxRootLength)
         {
             // The run-scoped root already failed this same budget above, and now the fallback -- whose

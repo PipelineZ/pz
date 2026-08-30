@@ -103,10 +103,11 @@ public sealed class ProcessHostParityTests : IDisposable
     /// <para>Both halves of that contract are checked. A connector was spawned and therefore had a
     /// socket root somewhere; no run directory exists, so it was not the run-scoped one; and no
     /// owned-root-shaped temp directory survives the verb, so whatever was created was removed. Only
-    /// ADDITIONS are asserted on, and only for the exact <c>pz-</c> + 8 lowercase hex shape
-    /// <see cref="ProcessSocketRoot"/> mints: a temp directory some other suite happened to remove
-    /// during this window is not this test's business, and fixed-name temp directories are not this
-    /// shape.</para></summary>
+    /// ADDITIONS are asserted on, and only for the exact <c>pz-&lt;this pid&gt;-</c> + 8 lowercase hex
+    /// shape <see cref="ProcessSocketRoot"/> mints — the pid filter is load-bearing: the verb under
+    /// test runs in THIS process, while concurrently running test hosts (other assemblies' bare verbs,
+    /// or suites minting <c>pz-</c>-prefixed temp dirs of their own) create same-shaped directories in
+    /// the shared temp root mid-window and must not fail this assertion.</para></summary>
     [SkippableFact]
     public void Validate_opens_a_process_connector_with_no_run_directory()
     {
@@ -123,8 +124,8 @@ public sealed class ProcessHostParityTests : IDisposable
     }
 
     private static IReadOnlyList<string> OwnedSocketRoots() =>
-        [.. Directory.GetDirectories(Path.GetTempPath(), "pz-????????")
-            .Where(d => Path.GetFileName(d)[3..].All(char.IsAsciiHexDigitLower))];
+        [.. Directory.GetDirectories(Path.GetTempPath(), $"pz-{Environment.ProcessId}-????????")
+            .Where(d => Path.GetFileName(d).Split('-')[2].All(char.IsAsciiHexDigitLower))];
 
     private static void AssertParity(RunArtifacts builtin, RunArtifacts process, bool universalTier = false)
     {
