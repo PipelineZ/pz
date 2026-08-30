@@ -29,7 +29,7 @@ Examples of unacceptable behavior:
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the maintainer at cornel.cocioaba89@gmail.com. All complaints will be
+reported at contact@pipelinez.dev. All complaints will be
 reviewed and investigated promptly and fairly, and the reporter's privacy will be
 respected. Maintainers who do not follow or enforce this Code of Conduct may be
 temporarily or permanently removed from the project.

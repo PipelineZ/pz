@@ -36,7 +36,7 @@
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <Authors>PipelineZ contributors</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/PipelineZ/pz</RepositoryUrl>
+    <RepositoryUrl>https://github.com/pipelinez/pz</RepositoryUrl>
     <!-- RepositoryUrl is the source link; PackageProjectUrl is what the gallery renders as the
          package's website, so it points at the documentation site rather than the repository. -->
     <PackageProjectUrl>https://pipelinez.dev</PackageProjectUrl>

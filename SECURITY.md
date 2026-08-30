@@ -10,9 +10,9 @@ minor of the current major is supported.
 Please **do not open a public issue** for anything security-sensitive.
 
 Report privately via GitHub's security advisories:
-[github.com/PipelineZ/pz/security/advisories/new](https://github.com/PipelineZ/pz/security/advisories/new)
+[github.com/pipelinez/pz/security/advisories/new](https://github.com/pipelinez/pz/security/advisories/new)
 (the "Report a vulnerability" button on the repository's Security tab). If that is
-unavailable to you, email cornel.cocioaba89@gmail.com with `[pz security]` in the
+unavailable to you, email contact@pipelinez.dev with `[pz security]` in the
 subject.
 
 You can expect an acknowledgement within a week. Please include a reproduction if
