@@ -31,28 +31,6 @@ public sealed class PostgresCdcSnapshotTests(PostgresCdcContainerFixture fixture
             PriorSyncState = null,
         };
 
-    // Pure helpers -- no container needed.
-    [Fact]
-    public void Slot_name_defaults_and_override()
-    {
-        // default: pz_{source}_{dataset} lowercased, non-[a-z0-9_] -> '_'
-        Assert.Equal("pz_pg_my_orders", PostgresCdc.SlotName(CdcSpec("My-Orders")));
-        // spec.ChangeCaptureSlot overrides verbatim
-        Assert.Equal("custom_slot", PostgresCdc.SlotName(CdcSpec("orders", slot: "custom_slot")));
-        // default publication: pz_{source} sanitized
-        Assert.Equal("pz_my_src", PostgresCdc.PublicationName(
-            new DatasetSpec("My.Src", "orders", new Dictionary<string, object?>())));
-    }
-
-    [Fact]
-    public void Lsn_canonical_forms_are_exact()
-    {
-        var lsn = (NpgsqlLogSequenceNumber)0x016B_3C48UL;
-        Assert.Equal("00000000016B3C48", PostgresCdc.FormatLsn(lsn));
-        Assert.Equal(lsn, PostgresCdc.ParseLsn("00000000016B3C48"));
-        Assert.Equal("00000000016B3C48", PostgresCdc.FormatLsn(PostgresCdc.ParseLsn("00000000016B3C48")));
-    }
-
     [SkippableFact]
     public async Task Prereqs_missing_publication_yields_one_create_publication_line()
     {
@@ -319,5 +297,39 @@ public sealed class PostgresCdcSnapshotTests(PostgresCdcContainerFixture fixture
             "select confirmed_flush_lsn::text from pg_replication_slots where slot_name = @name", conn);
         cmd.Parameters.AddWithValue("name", slot);
         return (string)(await cmd.ExecuteScalarAsync().ConfigureAwait(false))!;
+    }
+}
+
+/// <summary>Slot/publication naming and LSN formatting are pure functions -- no container, no fixture,
+/// so these run (not skip) on a docker-less machine.</summary>
+public sealed class PostgresCdcNamingTests
+{
+    private static DatasetSpec CdcSpec(string table, string? slot = null) =>
+        new("pg", table, new Dictionary<string, object?>())
+        {
+            ChangeCapture = true,
+            ChangeCaptureSlot = slot,
+            PriorSyncState = null,
+        };
+
+    [Fact]
+    public void Slot_name_defaults_and_override()
+    {
+        // default: pz_{source}_{dataset} lowercased, non-[a-z0-9_] -> '_'
+        Assert.Equal("pz_pg_my_orders", PostgresCdc.SlotName(CdcSpec("My-Orders")));
+        // spec.ChangeCaptureSlot overrides verbatim
+        Assert.Equal("custom_slot", PostgresCdc.SlotName(CdcSpec("orders", slot: "custom_slot")));
+        // default publication: pz_{source} sanitized
+        Assert.Equal("pz_my_src", PostgresCdc.PublicationName(
+            new DatasetSpec("My.Src", "orders", new Dictionary<string, object?>())));
+    }
+
+    [Fact]
+    public void Lsn_canonical_forms_are_exact()
+    {
+        var lsn = (NpgsqlLogSequenceNumber)0x016B_3C48UL;
+        Assert.Equal("00000000016B3C48", PostgresCdc.FormatLsn(lsn));
+        Assert.Equal(lsn, PostgresCdc.ParseLsn("00000000016B3C48"));
+        Assert.Equal("00000000016B3C48", PostgresCdc.FormatLsn(PostgresCdc.ParseLsn("00000000016B3C48")));
     }
 }
