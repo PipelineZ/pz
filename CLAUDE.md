@@ -93,7 +93,7 @@ DuckDB is the buffer manager — the .NET side only ever holds in-flight Arrow b
 | `src/Pz.Core` | project model, YAML/SQL parsing, Scriban templating, DAG compilation, validation |
 | `src/Pz.Engine` | dispatcher, node executors, retries, run artifacts, watermark state (`Pz.Engine/State`) |
 | `src/Pz.DuckDb` | DuckDB interop (Arrow ingest/export, query, EXPLAIN) behind an interface |
-| `src/Pz.PackageManagement` | in-proc NuGet resolution, `pz.lock.json`, the out-of-process connector host (PCP) and the legacy ALC host |
+| `src/Pz.PackageManagement` | in-proc NuGet resolution, `pz.lock.json`, the out-of-process connector host (PCP) |
 | `src/Pz.Connectors.Abstractions` | **the connector ABI — the contract of the ecosystem**; may reference Apache.Arrow only |
 | `src/Pz.Connectors.TestKit` | acceptance/contract test suite every connector runs against |
 | `src/Pz.Diagnostics` | typed events, ActivitySource, meters; console/NDJSON renderers over one event stream |
@@ -122,10 +122,10 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   worst bugs here, and the TestKit enforces the lifetime protocol.
 - **External (non-builtin) connectors are hosted out of process only (PZ0360).** A restored package
   must declare `runtime: "process"` (PCP); `"dotnet"` or a missing manifest is refused at registry
-  construction, never ALC-loaded — the process host is the trust and crash boundary for third-party
-  code, and builtins are the only in-process connectors. The collectible-ALC `ConnectorHost` (fixed
-  shared-assembly list; the reason Native AOT is ruled out for the CLI) is now unreachable from the
-  CLI and slated for removal in a follow-up.
+  construction — the process host is the trust and crash boundary for third-party code, and builtins
+  are the only in-process connectors. The collectible-ALC host is deleted; with no ALC in the CLI,
+  Native AOT is no longer architecturally ruled out (still unadopted — the tool ships
+  framework-dependent + ReadyToRun).
 - **DAG edges come from `ref()`/`source()`/`sink()` template calls at render time** (sandboxed
   Scriban, whitelisted functions only), never from parsing SQL. DuckDB still validates rendered SQL
   via EXPLAIN/PREPARE (validation tier 4). One narrow exception covers *derivation*, not edges:

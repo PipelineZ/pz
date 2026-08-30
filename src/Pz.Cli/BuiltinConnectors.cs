@@ -18,7 +18,7 @@ namespace Pz.Cli;
 /// <see cref="ConnectorRegistry"/> itself stays host-agnostic (name → instance), so
 /// <see cref="ConnectorRegistryFactory"/> only adds to, never replaces, this construction site:
 /// builtins are always registered; non-builtin connectors declared in project.yml additionally come
-/// from a <c>ConnectorHost</c> over restored <c>.pz/packages</c>.
+/// from a <c>ProcessConnectorHost</c> over restored <c>.pz/packages</c>.
 ///
 /// Note on <c>base_dir</c>: <see cref="LocalFilesConnector"/> keeps itself pure — it never assumes a
 /// project layout, resolving relative dataset/output <c>path</c>s only against a connection option

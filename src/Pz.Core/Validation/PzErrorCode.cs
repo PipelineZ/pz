@@ -344,7 +344,7 @@ public static class PzErrorCode
     /// does not exist on disk, a manifest whose declared <c>runtime</c> disagrees with the out-of-process
     /// host that is trying to load it, or a <c>runtime: "process"</c> manifest with no <c>name</c>.
     /// Raised both by Pz.PackageManagement's <c>ManifestReader</c> (as a hardcoded literal — that
-    /// assembly must not reference Pz.Core, see <c>ConnectorHost</c>'s doc comment) and by
+    /// assembly must not reference Pz.Core) and by
     /// <c>ProcessConnectorHost</c> itself; pinned by HostErrorCodeTests.</summary>
     public const string ProcessEntrypointMissing = "PZ0354";
 

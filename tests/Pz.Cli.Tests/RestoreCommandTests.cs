@@ -216,10 +216,6 @@ public sealed class CliLocalFeedFixture : IDisposable
         Directory.CreateDirectory(FeedDir);
         LocalFeed.Pack(FeedDir, "FakeTransitiveDep", version: null);
         LocalFeed.Pack(FeedDir, "FakeSourceConnector", "1.2.3", versionProperty: "FakeSourceConnectorVersion");
-        // A standalone fixture whose [assembly: PzConnector] name ("localfiles")
-        // collides with a builtin's registered name — used by ConnectorRegistryFactoryTests to prove the
-        // collision is rejected (PZ0305) rather than silently overwriting the trusted builtin.
-        LocalFeed.Pack(FeedDir, "FakeBuiltinCollider", version: null);
     }
 
     public void Dispose()

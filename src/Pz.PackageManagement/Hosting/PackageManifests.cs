@@ -10,9 +10,8 @@ public static class PackageManifests
     /// <paramref name="packagesDir"/> does not exist — a project whose packages are not restored yet
     /// simply finds no manifests, and nothing here fails without them.
     ///
-    /// <para>A broken manifest is skipped rather than thrown on: it IS an error, but
-    /// <see cref="ConnectorHost"/> owns reporting it with its own code and hint when it loads the
-    /// package. Failing here would replace that message with this one, raised earlier and explaining
+    /// <para>A broken manifest is skipped rather than thrown on: it IS an error, but the connector
+    /// host owns reporting it with its own code and hint when it loads the package. Failing here would replace that message with this one, raised earlier and explaining
     /// less.</para></summary>
     public static IReadOnlySet<string> AnchoredConnectorNames(string packagesDir)
     {

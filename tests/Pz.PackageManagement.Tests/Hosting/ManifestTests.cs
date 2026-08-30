@@ -1,124 +1,56 @@
-using Pz.Connectors.Abstractions;
 using Pz.PackageManagement.Hosting;
 
 namespace Pz.PackageManagement.Tests.Hosting;
 
-/// <summary>Exercises the pre-load protocol handshake: <see cref="ManifestReader"/> parsing
-/// <c>pz.connector.json</c> and <see cref="ConnectorHost.LoadFromDirectory"/>'s pre-assembly-load check.
-/// Manifests are written directly into <see cref="FakeConnectorFixture"/>'s already-built package
-/// directories (no repack needed) and removed again in a finally block, since the fixture and its
-/// on-disk packages are shared with <see cref="ConnectorHostTests"/> via the "fake-connectors"
-/// collection.</summary>
-[Collection("fake-connectors")]
-public class ManifestTests(FakeConnectorFixture fixture)
+/// <summary>Exercises <see cref="ManifestReader"/>: <c>pz.connector.json</c> parsing and
+/// entrypoint resolution. Manifests are written into a per-test temp package directory — no built
+/// connector package is involved, the reader never loads an assembly.</summary>
+public sealed class ManifestTests : IDisposable
 {
-    private static readonly ConnectorPackageRef A = new("FakeConnectorA", "1.0.0");
+    private readonly string _packageDir = Path.Combine(
+        Path.GetTempPath(), "pz-manifest-tests", Guid.NewGuid().ToString("N"));
 
-    private string ManifestPathFor(ConnectorPackageRef packageRef) =>
-        Path.Combine(fixture.PackagesRoot, packageRef.PackageId, packageRef.Version, "pz.connector.json");
+    public ManifestTests() => Directory.CreateDirectory(_packageDir);
 
-    private string PackageDirFor(ConnectorPackageRef packageRef) =>
-        Path.Combine(fixture.PackagesRoot, packageRef.PackageId, packageRef.Version);
-
-    [Fact]
-    public async Task Compatible_manifest_loads()
+    public void Dispose()
     {
-        var path = ManifestPathFor(A);
-        File.WriteAllText(path, """{"protocolMajorMin":1,"protocolMajorMax":1}""");
-        try
-        {
-            await using var host = ConnectorHost.LoadFromDirectory(fixture.PackagesRoot, [A]);
-            Assert.Equal("fakeA", host.Get("fakeA").Info.Name);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        try { Directory.Delete(_packageDir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
-    [Fact]
-    public void Incompatible_manifest_is_PZ0306_before_load()
-    {
-        var path = ManifestPathFor(A);
-        File.WriteAllText(path, """{"protocolMajorMin":99,"protocolMajorMax":99}""");
-
-        var contextsCreated = 0;
-        ConnectorHost.OnContextCreatedForTests = _ => contextsCreated++;
-        try
-        {
-            var ex = Assert.Throws<ConnectorHostException>(
-                () => ConnectorHost.LoadFromDirectory(fixture.PackagesRoot, [A]));
-
-            Assert.Equal("PZ0306", ex.Code);
-            Assert.Contains("99", ex.Message);
-            Assert.Contains(ProtocolVersion.Major.ToString(), ex.Message);
-            Assert.NotNull(ex.Hint);
-
-            // The seam-based proof: if the host created even one ConnectorLoadContext before raising
-            // PZ0306, this would be nonzero. A WeakReference/GC check could not distinguish "never
-            // created" from "created and already collected" - only the seam can.
-            Assert.Equal(0, contextsCreated);
-        }
-        finally
-        {
-            ConnectorHost.OnContextCreatedForTests = null;
-            File.Delete(path);
-        }
-    }
+    private void WriteManifest(string json) =>
+        File.WriteAllText(Path.Combine(_packageDir, "pz.connector.json"), json);
 
     [Fact]
-    public async Task Missing_manifest_warns_and_loads()
+    public void Missing_manifest_reads_as_null()
     {
-        var warnings = new List<string>();
-        await using var host = ConnectorHost.LoadFromDirectory(fixture.PackagesRoot, [A], warnings.Add);
-
-        Assert.Single(warnings);
-        Assert.Contains("FakeConnectorA", warnings[0]);
-        Assert.Equal("fakeA", host.Get("fakeA").Info.Name);
+        Assert.Null(ManifestReader.TryRead(_packageDir));
     }
 
     [Fact]
     public void Malformed_manifest_is_PZ0306()
     {
-        var path = ManifestPathFor(A);
-        File.WriteAllText(path, "{ not json");
-        try
-        {
-            var ex = Assert.Throws<ConnectorHostException>(
-                () => ConnectorHost.LoadFromDirectory(fixture.PackagesRoot, [A]));
+        WriteManifest("{ not json");
 
-            Assert.Equal("PZ0306", ex.Code);
-            Assert.Contains("pz.connector.json", ex.Message);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        var ex = Assert.Throws<ConnectorHostException>(() => ManifestReader.TryRead(_packageDir));
+
+        Assert.Equal("PZ0306", ex.Code);
+        Assert.Contains("pz.connector.json", ex.Message);
     }
 
     [Fact]
     public void Inverted_range_is_PZ0306()
     {
-        var path = ManifestPathFor(A);
-        File.WriteAllText(path, """{"protocolMajorMin":2,"protocolMajorMax":1}""");
-        try
-        {
-            var ex = Assert.Throws<ConnectorHostException>(
-                () => ConnectorHost.LoadFromDirectory(fixture.PackagesRoot, [A]));
+        WriteManifest("""{"protocolMajorMin":2,"protocolMajorMax":1}""");
 
-            Assert.Equal("PZ0306", ex.Code);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        var ex = Assert.Throws<ConnectorHostException>(() => ManifestReader.TryRead(_packageDir));
+
+        Assert.Equal("PZ0306", ex.Code);
     }
 
     [Fact]
     public void Runtime_process_with_entrypoints_parses()
     {
-        var path = ManifestPathFor(A);
-        File.WriteAllText(path, """
+        WriteManifest("""
             {
               "name": "deltalake",
               "protocolMajorMin": 1,
@@ -133,79 +65,54 @@ public class ManifestTests(FakeConnectorFixture fixture)
               }
             }
             """);
-        try
-        {
-            var manifest = ManifestReader.TryRead(PackageDirFor(A));
 
-            Assert.NotNull(manifest);
-            Assert.Equal("process", manifest!.Runtime);
-            Assert.Equal("runtimes/linux-x64/native/pz-deltalake", manifest.Entrypoints["linux-x64"]);
-            Assert.Equal("runtimes/win-x64/native/pz-deltalake.exe", manifest.Entrypoints["win-x64"]);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        var manifest = ManifestReader.TryRead(_packageDir);
+
+        Assert.NotNull(manifest);
+        Assert.Equal("process", manifest!.Runtime);
+        Assert.Equal("runtimes/linux-x64/native/pz-deltalake", manifest.Entrypoints["linux-x64"]);
+        Assert.Equal("runtimes/win-x64/native/pz-deltalake.exe", manifest.Entrypoints["win-x64"]);
     }
 
+    // An absent runtime field and an explicit "dotnet" parse identically — the reader reports what the
+    // manifest said (null vs "dotnet"); refusing them for an external package (PZ0360) is the
+    // registry's decision, not the reader's.
     [Fact]
-    public void Runtime_absent_or_dotnet_means_alc()
+    public void Runtime_absent_or_dotnet_parses()
     {
-        var path = ManifestPathFor(A);
-        try
-        {
-            File.WriteAllText(path, """{"protocolMajorMin":1,"protocolMajorMax":1}""");
-            var absent = ManifestReader.TryRead(PackageDirFor(A));
-            Assert.NotNull(absent);
-            Assert.Null(absent!.Runtime);
-            Assert.Empty(absent.Entrypoints);
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1}""");
+        var absent = ManifestReader.TryRead(_packageDir);
+        Assert.NotNull(absent);
+        Assert.Null(absent!.Runtime);
+        Assert.Empty(absent.Entrypoints);
 
-            File.WriteAllText(path, """{"protocolMajorMin":1,"protocolMajorMax":1,"runtime":"dotnet"}""");
-            var explicitDotnet = ManifestReader.TryRead(PackageDirFor(A));
-            Assert.NotNull(explicitDotnet);
-            Assert.Equal("dotnet", explicitDotnet!.Runtime);
-            Assert.Empty(explicitDotnet.Entrypoints);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1,"runtime":"dotnet"}""");
+        var explicitDotnet = ManifestReader.TryRead(_packageDir);
+        Assert.NotNull(explicitDotnet);
+        Assert.Equal("dotnet", explicitDotnet!.Runtime);
+        Assert.Empty(explicitDotnet.Entrypoints);
     }
 
     [Fact]
     public void Unknown_runtime_is_PZ0354_upgrade_pz()
     {
-        var path = ManifestPathFor(A);
-        File.WriteAllText(path, """{"protocolMajorMin":1,"protocolMajorMax":1,"runtime":"python"}""");
-        try
-        {
-            var ex = Assert.Throws<ConnectorHostException>(() => ManifestReader.TryRead(PackageDirFor(A)));
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1,"runtime":"python"}""");
 
-            Assert.Equal("PZ0354", ex.Code);
-            Assert.NotNull(ex.Hint);
-            Assert.Contains("upgrade pz", ex.Hint);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        var ex = Assert.Throws<ConnectorHostException>(() => ManifestReader.TryRead(_packageDir));
+
+        Assert.Equal("PZ0354", ex.Code);
+        Assert.NotNull(ex.Hint);
+        Assert.Contains("upgrade pz", ex.Hint);
     }
 
     [Fact]
     public void Process_runtime_without_entrypoints_is_PZ0354()
     {
-        var path = ManifestPathFor(A);
-        File.WriteAllText(path, """{"protocolMajorMin":1,"protocolMajorMax":1,"runtime":"process"}""");
-        try
-        {
-            var ex = Assert.Throws<ConnectorHostException>(() => ManifestReader.TryRead(PackageDirFor(A)));
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1,"runtime":"process"}""");
 
-            Assert.Equal("PZ0354", ex.Code);
-        }
-        finally
-        {
-            File.Delete(path);
-        }
+        var ex = Assert.Throws<ConnectorHostException>(() => ManifestReader.TryRead(_packageDir));
+
+        Assert.Equal("PZ0354", ex.Code);
     }
 
     [Fact]

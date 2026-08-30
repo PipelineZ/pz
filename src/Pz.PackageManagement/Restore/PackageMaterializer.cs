@@ -4,8 +4,8 @@ namespace Pz.PackageManagement.Restore;
 
 /// <summary>Populates a content-addressed cache (<c>&lt;cacheRoot&gt;/&lt;sha512&gt;/</c>) from resolved
 /// packages' downloaded .nupkg files, then links or copies each into <c>&lt;packagesDir&gt;/&lt;id&gt;/
-/// &lt;version&gt;</c> in the <c>ConnectorHost</c> layout (<c>lib/</c>, <c>native/</c>,
-/// <c>pz.connector.json</c> when present).
+/// &lt;version&gt;</c> in the on-disk package layout (<c>lib/</c>, <c>native/</c>,
+/// <c>pz.connector.json</c> when present) that <c>pz.lock.json</c> verifies.
 ///
 /// <para><b>Cache entry population is atomic</b>: extracted into <c>&lt;entry&gt;.tmp-&lt;guid&gt;</c>,
 /// then <see cref="Directory.Move(string, string)"/>d into place — a reader never observes a
@@ -24,19 +24,16 @@ namespace Pz.PackageManagement.Restore;
 /// been (same content address) — so the loser cleans up its now-redundant temp dir and returns
 /// successfully. Only a Move failure where the destination is still absent/invalid propagates.</para>
 ///
-/// <para><b>Root ("required") vs. library packages</b> (see <see cref="LockedPackage.Requested"/>): the
-/// ALC (<c>ConnectorHost</c>/<c>ConnectorLoadContext</c>) resolves a connector's private dependencies
-/// only from the connector package's OWN <c>lib/</c> directory — it never looks at a sibling package's
-/// directory. So a root package that has any transitive (non-root) dependencies in the resolved lock is
-/// always MATERIALIZED BY COPY (never symlinked), with every library package's <c>lib/*</c> AND
-/// <c>native/*</c> files also copied alongside its own — flattening the whole private dependency
-/// closure into the one directory the ALC actually probes (it resolves managed assemblies from that
-/// <c>lib/</c> and unmanaged ones from its sibling <c>native/</c>, never from another package's
-/// directory). Two packages contributing the same file name is refused with PZ0325 rather than letting
-/// one silently overwrite the other. This is a deliberate v0 simplification: <see cref="LockFile"/> does not
-/// track per-root dependency edges, so a root with ANY transitive deps in the lock gets ALL of them
-/// copied in, even ones a different root actually owns; harmless in practice because
-/// <c>ConnectorLoadContext.Load</c> only ever loads an assembly that is actually referenced by name.
+/// <para><b>Root ("required") vs. library packages</b> (see <see cref="LockedPackage.Requested"/>): a
+/// connector's private dependencies must all live in the connector package's OWN directory — nothing at
+/// runtime ever probes a sibling package's directory. So a root package that has any transitive
+/// (non-root) dependencies in the resolved lock is always MATERIALIZED BY COPY (never symlinked), with
+/// every library package's <c>lib/*</c> AND <c>native/*</c> files also copied alongside its own —
+/// flattening the whole private dependency closure into the one self-contained directory. Two packages
+/// contributing the same file name is refused with PZ0325 rather than letting one silently overwrite
+/// the other. This is a deliberate v0 simplification: <see cref="LockFile"/> does not track per-root
+/// dependency edges, so a root with ANY transitive deps in the lock gets ALL of them copied in, even
+/// ones a different root actually owns.
 /// A root with zero transitive deps in the whole lock is instead materialized by directory symlink
 /// (falling back to copy if symlink creation fails — untrusted/unsupported filesystem, no permission,
 /// etc.). Library (non-root) packages are always symlink-with-copy-fallback, since nothing needs to be
@@ -45,14 +42,14 @@ public static class PackageMaterializer
 {
     internal static readonly Func<string, string, bool> DefaultTrySymlink = TryCreateDirectorySymlink;
 
-    /// <summary>Test seam only (mirrors <c>ConnectorHost.OnContextCreatedForTests</c>): swap in a
+    /// <summary>Test seam only: swap in a
     /// delegate that always fails to exercise the copy fallback deterministically, regardless of what
     /// the current OS/filesystem actually supports. Reset to <see cref="DefaultTrySymlink"/> after use.</summary>
     internal static Func<string, string, bool> TrySymlink = DefaultTrySymlink;
 
     /// <summary>Extracts each resolved package into the content-addressed cache (idempotent; atomic
     /// temp+move population; corrupted entries re-extracted) and links/copies it to
-    /// <c>&lt;packagesDir&gt;/&lt;id&gt;/&lt;version&gt;</c> in the ConnectorHost layout (lib/, native/,
+    /// <c>&lt;packagesDir&gt;/&lt;id&gt;/&lt;version&gt;</c> in the on-disk package layout (lib/, native/,
     /// pz.connector.json when present). Returns per-package "cache hit" flags (true = the cache entry
     /// already existed and was valid; false = it was downloaded/extracted or re-extracted this call).
     /// Idempotent against a pre-existing <paramref name="packagesDir"/> entry: if
@@ -312,9 +309,9 @@ public static class PackageMaterializer
     }
 
     /// <summary>The transitive assets to flatten into a root package's own directory, by role. Native
-    /// assets are flattened for the same reason lib assets are: <c>ConnectorLoadContext</c> probes
-    /// <c>&lt;lib&gt;/../native</c> and nowhere else, so a native library owned by a dependency is
-    /// unreachable from the connector's load context unless it is placed there.</summary>
+    /// assets are flattened for the same reason lib assets are: a connector package must be
+    /// self-contained — a native library owned by a dependency is unreachable unless it is placed in
+    /// the root package's own <c>native/</c>.</summary>
     private sealed record FlattenedAssets(IReadOnlyList<string> Lib, IReadOnlyList<string> Native);
 
     /// <summary><paramref name="flattened"/> non-null means "always copy, then flatten these transitive
@@ -366,7 +363,7 @@ public static class PackageMaterializer
             var relative = Path.GetRelativePath(sourceDir, file);
             if (relative is "files.txt" or ".ok")
             {
-                continue; // cache bookkeeping only — not part of the ConnectorHost layout
+                continue; // cache bookkeeping only — not part of the materialized package layout
             }
 
             var dest = Path.Combine(destDir, relative);

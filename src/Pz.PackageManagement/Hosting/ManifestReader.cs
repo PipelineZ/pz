@@ -13,12 +13,12 @@ namespace Pz.PackageManagement.Hosting;
 /// <c>ConnectionConfigSchema</c> that does not declare it. A connector that opts in must declare
 /// <c>base_dir</c> in that schema.</para>
 ///
-/// <para><paramref name="Runtime"/> selects how the connector is hosted: null or <c>"dotnet"</c> means
-/// the existing in-process <c>ConnectorLoadContext</c> path (byte-identical behavior); <c>"process"</c>
-/// means an out-of-process host, spawned from the RID-selected entry in <paramref name="Entrypoints"/>
-/// (package-relative paths, resolved via <see cref="ManifestReader.ResolveEntrypoint"/>). Any other
-/// value is a runtime this host does not understand and is rejected at read time (PZ0354, "upgrade
-/// pz").</para></summary>
+/// <para><paramref name="Runtime"/> is what the package declares about its hosting: only
+/// <c>"process"</c> is hostable (spawned from the RID-selected entry in
+/// <paramref name="Entrypoints"/> — package-relative paths, resolved via
+/// <see cref="ManifestReader.ResolveEntrypoint"/>); null and <c>"dotnet"</c> parse but are refused
+/// for external packages at registry construction (PZ0360). Any other value is a runtime this pz does
+/// not understand and is rejected at read time (PZ0354, "upgrade pz").</para></summary>
 public sealed record ConnectorManifest(
     string? Name, int ProtocolMajorMin, int ProtocolMajorMax, IReadOnlyList<string> Capabilities,
     bool ProjectDirectoryAnchor = false, string? Runtime = null,
@@ -32,15 +32,14 @@ public sealed record ConnectorManifest(
         new Dictionary<string, string>();
 }
 
-/// <summary>Reads a connector package's <c>pz.connector.json</c> manifest, if any, WITHOUT loading any
-/// assembly — this is what lets <see cref="ConnectorHost.LoadFromDirectory"/> reject an
-/// incompatible-protocol package before creating an <see cref="ConnectorLoadContext"/> at all.</summary>
+/// <summary>Reads a connector package's <c>pz.connector.json</c> manifest, if any — one small JSON
+/// read, which is what lets the host reject an incompatible package before anything is spawned.</summary>
 public static class ManifestReader
 {
     private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
 
     /// <summary>Reads <c>&lt;packageDir&gt;/pz.connector.json</c>. Returns null when the file is absent
-    /// (the warn-and-attempt seam in <see cref="ConnectorHost"/> handles that case). A present-but-broken
+    /// (the caller owns deciding what an absent manifest means). A present-but-broken
     /// manifest — malformed JSON, or a <c>protocolMajorMin</c> greater than <c>protocolMajorMax</c> —
     /// signals a broken package and throws <see cref="ConnectorHostException"/> PZ0306 rather than
     /// silently ignoring it.</summary>
@@ -63,7 +62,7 @@ public static class ManifestReader
             throw new ConnectorHostException(
                 "PZ0306",
                 $"pz.connector.json at '{path}' is malformed: {ex.Message}",
-                "fix the manifest JSON, or remove the file to fall back to the no-manifest warn-and-load path");
+                "fix the manifest JSON, or rebuild the connector package");
         }
 
         if (dto is null)
@@ -71,7 +70,7 @@ public static class ManifestReader
             throw new ConnectorHostException(
                 "PZ0306",
                 $"pz.connector.json at '{path}' is malformed: empty or 'null' JSON document",
-                "fix the manifest JSON, or remove the file to fall back to the no-manifest warn-and-load path");
+                "fix the manifest JSON, or rebuild the connector package");
         }
 
         if (dto.ProtocolMajorMin > dto.ProtocolMajorMax)

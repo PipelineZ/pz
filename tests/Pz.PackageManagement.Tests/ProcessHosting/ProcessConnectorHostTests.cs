@@ -90,6 +90,36 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Equal("PZ0354", ex.Code);
     }
 
+    // Coverage for the reject-before-spawn protocol gate: an out-of-range protocol declaration is
+    // refused at load, never spawned.
+    [SkippableFact]
+    public void Package_outside_the_protocol_range_is_PZ0306_at_load()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var packagesRoot = NewPackageLayout();
+        File.WriteAllText(
+            Path.Combine(packagesRoot, PackageId, PackageVersion, "pz.connector.json"),
+            JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["name"] = ConnectorName,
+                ["protocolMajorMin"] = 99,
+                ["protocolMajorMax"] = 99,
+                ["capabilities"] = Array.Empty<string>(),
+                ["runtime"] = "process",
+                ["entrypoints"] = new Dictionary<string, string>
+                {
+                    [RuntimeInformation.RuntimeIdentifier] = "bin/connector",
+                },
+            }));
+
+        var ex = Assert.Throws<ConnectorHostException>(() => ProcessConnectorHost.LoadFromDirectory(
+            packagesRoot, [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir()));
+
+        Assert.Equal("PZ0306", ex.Code);
+        Assert.Contains("99", ex.Message);
+    }
+
     [SkippableFact]
     public void Missing_package_directory_is_PZ0304()
     {

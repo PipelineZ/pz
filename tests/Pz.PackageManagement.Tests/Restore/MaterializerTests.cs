@@ -24,7 +24,7 @@ public sealed class MaterializerTests(FeedFixture feed)
             [new ConnectorPackageRef("FakeTransitiveDep", "2.0.0")], [feed.FeedDir], "linux-x64", NewWorkDir());
 
     [Fact]
-    public async Task Materializes_connector_host_layout()
+    public async Task Materializes_package_layout()
     {
         var resolved = await ResolveFakeSourceConnector();
         var packagesDir = NewPackagesDir();
@@ -35,13 +35,9 @@ public sealed class MaterializerTests(FeedFixture feed)
         Assert.True(File.Exists(Path.Combine(packagesDir, "FakeSourceConnector", "1.2.3", "pz.connector.json")));
         Assert.True(File.Exists(Path.Combine(packagesDir, "FakeTransitiveDep", "2.0.0", "lib", "FakeTransitiveDep.dll")));
 
-        // The transitive dll must ALSO be materialized into the root package's own lib/ (the ALC only
-        // ever probes the connector package's own lib directory), or loading the connector fails.
+        // The transitive dll must ALSO be materialized into the root package's own lib/ — a connector
+        // package is self-contained, nothing at runtime probes a sibling package's directory.
         Assert.True(File.Exists(Path.Combine(packagesDir, "FakeSourceConnector", "1.2.3", "lib", "FakeTransitiveDep.dll")));
-
-        await using var host = ConnectorHost.LoadFromDirectory(
-            packagesDir, [new ConnectorPackageRef("FakeSourceConnector", "1.2.3")]);
-        Assert.Contains(host.Installed, i => i.Name == "fakesource");
     }
 
     [Fact]

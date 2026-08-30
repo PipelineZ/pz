@@ -122,7 +122,7 @@ internal static class ConnectorRegistryFactory
             // first, and resolving the socket root touches the filesystem (IOException,
             // UnauthorizedAccessException). Reclaim whatever did get built — and the temp root created
             // for it — through the composite that would otherwise have owned it.
-            await new ConnectorHosts(null, processHost, ownedSocketRoot).DisposeAsync().ConfigureAwait(false);
+            await new ConnectorHosts(processHost, ownedSocketRoot).DisposeAsync().ConfigureAwait(false);
             if (ex is ConnectorHostException hostFailure)
             {
                 throw new PzValidationException([
@@ -135,7 +135,7 @@ internal static class ConnectorRegistryFactory
             throw;
         }
 
-        var hosts = new ConnectorHosts(null, processHost, ownedSocketRoot);
+        var hosts = new ConnectorHosts(processHost, ownedSocketRoot);
         try
         {
             if (processHost is not null)
@@ -220,8 +220,8 @@ internal static class ConnectorRegistryFactory
     }
 
     /// <summary>Names the exact declared non-builtin package when it is the only one restored (the
-    /// common case, and the only one this can name with certainty — a <c>ConnectorHost</c> does not
-    /// expose which of several hosted packages registered a given connector name); otherwise lists every
+    /// common case, and the only one this can name with certainty — the host does not expose which of
+    /// several hosted packages registered a given connector name); otherwise lists every
     /// declared non-builtin package id as a candidate rather than guessing.</summary>
     private static string DescribePackages(IReadOnlyList<ConnectorRequirement> nonBuiltin) =>
         nonBuiltin.Count == 1

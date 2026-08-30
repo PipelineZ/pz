@@ -269,8 +269,8 @@ public static class NuGetResolver
         return range;
     }
 
-    /// <summary>Dependency ids the ALC unifies to the host copy (<see cref="SharedAssemblies.Names"/>)
-    /// plus platform ids (System.*, Microsoft.NETCore.*, NETStandard.*) are never resolved or materialized.</summary>
+    /// <summary>Dependency ids pz itself ships (<see cref="SharedAssemblies.Names"/>) plus platform
+    /// ids (System.*, Microsoft.NETCore.*, NETStandard.*) are never resolved or materialized.</summary>
     private static bool IsHostProvidedOrPlatform(string id) =>
         SharedAssemblies.Names.Contains(id) ||
         id.StartsWith("System.", StringComparison.OrdinalIgnoreCase) ||

@@ -86,7 +86,7 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
                 throw new ConnectorHostException(
                     "PZ0354",
                     $"connector package '{packageRef.PackageId}' declares runtime '{manifest.Runtime ?? "dotnet"}', which is not hosted out of process",
-                    "load this package through the in-process ConnectorHost, or fix the manifest's runtime");
+                    "external connectors are hosted out of process only; fix the manifest's runtime");
             }
 
             if (ProtocolVersion.Major < manifest.ProtocolMajorMin || ProtocolVersion.Major > manifest.ProtocolMajorMax)

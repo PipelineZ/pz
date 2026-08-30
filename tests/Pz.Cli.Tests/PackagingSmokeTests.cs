@@ -70,7 +70,7 @@ public class PackagingSmokeTests
     /// comment) -- this test proves the packed BYTES actually contain the entry, at the root, not just
     /// that the source file exists on disk. Without this, a future edit that changes `PackagePath` (e.g.
     /// to a subfolder) or swaps `<None Include>` for a `<Content Include>` that isn't `Pack="true"` would
-    /// silently ship a connector nupkg <see cref="Pz.PackageManagement.Hosting.ConnectorHost"/> can no
+    /// silently ship a connector nupkg the host can no
     /// longer manifest-check (PZ0306 handshake) -- nothing else in the suite packs these projects for
     /// real and opens the resulting archive.
     ///
