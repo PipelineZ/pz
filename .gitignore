@@ -6,5 +6,7 @@ obj/
 samples/*/out/
 *.user
 .superpowers/
+.playwright-mcp/
 BenchmarkDotNet.Artifacts/
 artifacts/
+docs/superpowers/
