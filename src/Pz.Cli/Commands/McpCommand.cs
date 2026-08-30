@@ -234,15 +234,15 @@ internal static class McpCommand
         entry["type"] = "local";
         entry["command"] = "pz";
         entry["args"] = ArgsArray(allowRun);
-        entry["tools"] = new JsonArray { "*" };
+        entry["tools"] = new JsonArray(JsonValue.Create("*"));
     }
 
     private static void WriteOpenCodeEntry(JsonObject entry, bool allowRun)
     {
-        var command = new JsonArray { "pz", "mcp" };
+        var command = new JsonArray(JsonValue.Create("pz"), JsonValue.Create("mcp"));
         if (allowRun)
         {
-            command.Add("--allow-run");
+            command.Add((JsonNode)JsonValue.Create("--allow-run"));
         }
 
         entry["type"] = "local";
@@ -252,10 +252,10 @@ internal static class McpCommand
 
     private static JsonArray ArgsArray(bool allowRun)
     {
-        var args = new JsonArray { "mcp" };
+        var args = new JsonArray(JsonValue.Create("mcp"));
         if (allowRun)
         {
-            args.Add("--allow-run");
+            args.Add((JsonNode)JsonValue.Create("--allow-run"));
         }
 
         return args;

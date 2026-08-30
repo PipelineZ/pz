@@ -58,12 +58,14 @@ repository is ever renamed, update it in the same change.
      versions", which cannot create an id that does not exist yet, and at `v0.1.0` every id is new.
      Leave "Unlist or relist package versions" unchecked: `release.yml` only pushes, and unlisting
      is a manual, occasional act better done from the website than granted to a workflow.
-   - **Packages**: the glob **`Pz.*`** *and* the exact id **`pz`**. The field is required (at least
-     one glob or package). The glob covers the three connector-author packages and any future
-     `Pz.`-prefixed id; the tool package publishes as a bare `pz`, which the glob does **not** match,
-     so it has to be listed in its own right (here, or in a second policy with the same repository,
-     workflow, environment, and scope). Omitting it fails the push for `pz` alone, after the other
-     three have already published.
+   - **Packages**: the glob **`Pz.*`**, the glob **`pz.*`**, *and* the exact id **`pz`**. The field
+     is required (at least one glob or package). `Pz.*` covers the three connector-author packages
+     and any future `Pz.`-prefixed id; the tool publishes as a bare `pz` (the pointer) plus one
+     `pz.<rid>` sub-package per platform (hybrid Native AOT packaging — see `Pz.Cli.csproj`), and
+     the case-sensitive `Pz.*` glob matches **neither**, so both must be listed in their own right
+     (here, or in a second policy with the same repository, workflow, environment, and scope).
+     Omitting them fails the push for the tool packages alone, after the others have already
+     published.
 
    Microsoft's [trusted publishing docs](https://learn.microsoft.com/en-us/nuget/nuget-org/trusted-publishing)
    still describe a policy as owner-wide, applying to "all packages owned by the selected owner",
@@ -109,9 +111,10 @@ Four ids publish, and each has a real consumer:
 `scripts/lib/packable-ids.sh` reads the override rather than assuming the two match. Two things
 follow that no code can enforce, so they are checklist items for whoever runs the release:
 
-- **The trusted publishing policy must cover `pz`.** The original policy is globbed `Pz.*`, which
-  does not match a bare `pz`; without a second policy (or a widened one) `release.yml`'s push fails
-  authentication for that package alone, after the other three have already gone out.
+- **The trusted publishing policy must cover `pz` and `pz.*`.** The original policy is globbed
+  `Pz.*` (case-sensitive), which matches neither the bare `pz` pointer nor the `pz.<rid>` Native AOT
+  sub-packages; without a widened (or second) policy `release.yml`'s pushes fail authentication for
+  the tool packages alone, after the others have already gone out.
 - **`Pz.Cli` stays deprecated, listed, and unreplaced.** It published `0.1.0` through `0.2.1` under
   the old id; `pz` picks up at `0.2.2`. That boundary is final, not a running total — the rule below
   is what freezes it, so no release ever has to revisit these numbers. Deprecate `Pz.Cli` on

@@ -51,10 +51,14 @@ dotnet test Pz.slnx -c Release --no-build  # zero failures required (skips OK wi
 dotnet test tests/Pz.Core.Tests -c Release
 dotnet test tests/Pz.Engine.Tests -c Release --filter "FullyQualifiedName~Watermark"
 
-# Packaging end-to-end proof (pack → tool install → pz init → pz run, offline).
-# Also a PR CI gate (ci.yml's pack-and-verify job); still worth running locally after
-# touching src/Pz.Cli, templates/, or any packable .csproj.
+# Packaging end-to-end proof (pack → tool install → pz init → pz run, offline; installs the
+# host-RID Native AOT sub-package). Also a PR CI gate (ci.yml's pack-and-verify job); still worth
+# running locally after touching src/Pz.Cli, templates/, or any packable .csproj.
 scripts/verify-tool-install.sh
+
+# Native AOT runtime proof (publish native image → init/run/restore/PZ0360/PCP-spawn/MCP).
+# Also a PR CI gate (ci.yml's verify-aot job). Linux only.
+scripts/verify-aot.sh
 ```
 
 `PZ_TESTS_OFFLINE=1` skips network-dependent tests. Benchmarks live in `tests/Pz.Benchmarks`
@@ -123,9 +127,12 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
 - **External (non-builtin) connectors are hosted out of process only (PZ0360).** A restored package
   must declare `runtime: "process"` (PCP); `"dotnet"` or a missing manifest is refused at registry
   construction — the process host is the trust and crash boundary for third-party code, and builtins
-  are the only in-process connectors. The collectible-ALC host is deleted; with no ALC in the CLI,
-  Native AOT is no longer architecturally ruled out (still unadopted — the tool ships
-  framework-dependent + ReadyToRun).
+  are the only in-process connectors. The collectible-ALC host is deleted, and the CLI ships
+  **Native AOT**: hybrid RID-specific tool packaging (`pz.<rid>` AOT sub-packages for
+  linux-x64/linux-arm64/win-x64/osx-arm64 + a CoreCLR `pz.any` fallback, pointer package `pz`).
+  First-party code stays at zero trim/AOT warnings (analyzers error); the six third-party
+  assemblies whose internals warn are runtime-proven by `scripts/verify-aot.sh` (a CI gate), which
+  drives init/run/restore/PZ0360/PCP-spawn/MCP against the native image.
 - **DAG edges come from `ref()`/`source()`/`sink()` template calls at render time** (sandboxed
   Scriban, whitelisted functions only), never from parsing SQL. DuckDB still validates rendered SQL
   via EXPLAIN/PREPARE (validation tier 4). One narrow exception covers *derivation*, not edges:

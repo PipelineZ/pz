@@ -61,9 +61,10 @@
          friction on the one command that has to work before any other. The project, assembly, and
          namespace stay Pz.Cli; only the id on nuget.org differs, and this is the single place the
          two names diverge. Two consequences to keep in mind:
-         (1) the nuget.org trusted publishing policy scopes ids by glob, and a bare `pz` does NOT
-             match "Pz.*". A policy naming `pz` too is a manual prerequisite; without it release.yml
-             fails authentication pushing this package alone. Its prerequisites block says so.
+         (1) the nuget.org trusted publishing policy scopes ids by glob, and neither a bare `pz` nor
+             the RID sub-packages (`pz.linux-x64`, ...) match "Pz.*". A policy covering `pz` AND
+             `pz.*` is a manual prerequisite; without it release.yml fails authentication pushing
+             these packages alone. Its prerequisites block says so.
          (2) `Pz.Cli` published 0.1.0 through 0.2.0 under the old id and is deprecated on nuget.org
              pointing here. NuGet has no redirect, so `dotnet tool update -g Pz.Cli` still resolves
              the old id, and a global install of the old package must be uninstalled before `pz`
@@ -74,17 +75,42 @@
          by the name people actually know it by. Naming the bundled connectors is not padding either,
          it is what someone searching "duckdb postgres etl" needs to see to recognize a match. -->
     <Description>PipelineZ (pz): a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline in plain SQL files. Bundles connectors for local files, S3, Azure Blob, Postgres, SQL Server, MySQL, SQLite and HTTP.</Description>
-    <!-- PublishReadyToRun is a "dotnet publish, targeting one RID" concept: it crossgens the entry
-         assembly ahead of time for a single specific runtime. "dotnet pack" and "dotnet tool install"
-         never publish for a RID; an installed .NET tool always runs as portable IL via the shim the
-         tool install machinery generates, so this flag has NO effect on the packaged tool NuGet or on
-         a tool install. It only matters if someone separately runs a self contained,
-         PublishReadyToRun-enabled publish of this project for a specific RID, outside the tool install
-         path entirely. Spelled out here so nobody reads this flag as meaning R2R applies to the
-         pack/install flow it does not affect. RollForward is intentionally omitted: the tool
-         targets net10.0 exactly (Global Constraints: TFM net10.0 everywhere), so there is no older
-         major runtime to roll forward from. -->
-    <PublishReadyToRun>true</PublishReadyToRun>
+    <!-- Hybrid Native AOT tool packaging (.NET 10 RID-specific tools). `dotnet pack` with no -r
+         produces the `pz` POINTER package that lists the RID sub-packages below; `dotnet pack -r
+         <rid>` produces that RID's self-contained Native AOT package and must run on a machine whose
+         OS matches the RID (AOT cannot cross-compile between OSes — release.yml runs one pack job
+         per OS); `dotnet pack -r any -p:PublishAot=false` produces the framework-dependent CoreCLR
+         fallback that serves every platform not in this list. Install is unchanged for users:
+         `dotnet tool install -g pz` picks the right sub-package, and RID sub-packages must all be
+         pushed BEFORE the pointer or installs fail in the gap. RollForward is intentionally omitted:
+         the `any` fallback targets net10.0 exactly (Global Constraints: TFM net10.0 everywhere), so
+         there is no older major runtime to roll forward from. -->
+    <ToolPackageRuntimeIdentifiers>linux-x64;linux-arm64;win-x64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
+    <PublishAot>true</PublishAot>
   </PropertyGroup>
+
+  <!-- Native AOT (RID-specific publishes/packs only; the `any` tool package stays CoreCLR).
+       First-party code is held to zero trim/AOT warnings by the compile-time analyzers under
+       TreatWarningsAsErrors; what is demoted here is only the ILC-stage per-assembly rollup
+       (IL2104/IL3053) for third-party libraries whose internals warn and cannot be fixed from this
+       repository. The reflection-risky ones are rooted so trimming cannot remove members they reach
+       dynamically; scripts/verify-aot.sh is the runtime proof for all of them. -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
+    <!-- The per-assembly rollup codes only; every other IL warning still errors, so a first-party
+         regression cannot hide behind this. MSBuildWarningsNotAsErrors is what reaches warnings the
+         ILC Exec task raises through the engine rather than the compiler. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
+    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053</MSBuildWarningsNotAsErrors>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <!-- NuGet's JSON layer is Newtonsoft reflection over its own DTOs; `pz restore` depends on it. -->
+    <TrimmerRootAssembly Include="Newtonsoft.Json" />
+    <TrimmerRootAssembly Include="NuGet.Protocol" />
+    <TrimmerRootAssembly Include="NuGet.Packaging" />
+    <!-- SqlClient reaches config/crypto members reflectively; the state backend and connector need it. -->
+    <TrimmerRootAssembly Include="Microsoft.Data.SqlClient" />
+    <TrimmerRootAssembly Include="System.Configuration.ConfigurationManager" />
+  </ItemGroup>
 
 </Project>

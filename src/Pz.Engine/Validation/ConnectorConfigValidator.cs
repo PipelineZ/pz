@@ -162,7 +162,8 @@ public static class ConnectorConfigValidator
             JsonElement root;
             try
             {
-                root = JsonSerializer.Deserialize<JsonElement>(schemaText);
+                using var schemaDoc = JsonDocument.Parse(schemaText);
+                root = schemaDoc.RootElement.Clone();
             }
             catch (JsonException)
             {
@@ -208,8 +209,8 @@ public static class ConnectorConfigValidator
 
         var schema = JsonSchema.FromText(schemaText);
         var node = YamlToJson.Convert(new Dictionary<string, object?>(values));
-        var element = JsonSerializer.Deserialize<JsonElement>(node);
-        var result = schema.Evaluate(element, new EvaluationOptions { OutputFormat = OutputFormat.List });
+        using var valuesDoc = JsonDocument.Parse(node?.ToJsonString() ?? "null");
+        var result = schema.Evaluate(valuesDoc.RootElement, new EvaluationOptions { OutputFormat = OutputFormat.List });
 
         if (result.IsValid)
         {
@@ -314,7 +315,8 @@ public static class ConnectorConfigValidator
         JsonElement root;
         try
         {
-            root = JsonSerializer.Deserialize<JsonElement>(schemaText);
+            using var schemaDoc = JsonDocument.Parse(schemaText);
+            root = schemaDoc.RootElement.Clone();
         }
         catch (JsonException)
         {

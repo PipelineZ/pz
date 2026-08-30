@@ -36,8 +36,6 @@ public sealed record ConnectorManifest(
 /// read, which is what lets the host reject an incompatible package before anything is spawned.</summary>
 public static class ManifestReader
 {
-    private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
-
     /// <summary>Reads <c>&lt;packageDir&gt;/pz.connector.json</c>. Returns null when the file is absent
     /// (the caller owns deciding what an absent manifest means). A present-but-broken
     /// manifest — malformed JSON, or a <c>protocolMajorMin</c> greater than <c>protocolMajorMax</c> —
@@ -55,7 +53,7 @@ public static class ManifestReader
         try
         {
             var bytes = File.ReadAllBytes(path);
-            dto = JsonSerializer.Deserialize<ManifestDto>(bytes, Options);
+            dto = JsonSerializer.Deserialize(bytes, PackageManagementJsonContext.Default.ManifestDto);
         }
         catch (JsonException ex)
         {
@@ -180,7 +178,7 @@ public static class ManifestReader
         }
     }
 
-    private sealed class ManifestDto
+    internal sealed class ManifestDto
     {
         public string? Name { get; set; }
         public int ProtocolMajorMin { get; set; }

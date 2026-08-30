@@ -41,6 +41,11 @@ internal sealed class ArrowBatchDataReader(RecordBatch batch) : DbDataReader
     public override object GetValue(int ordinal) => IsDBNull(ordinal) ? DBNull.Value : Cell(ordinal);
     public override string GetName(int ordinal) => batch.Schema.FieldsList[ordinal].Name;
     public override int GetOrdinal(string name) => batch.Schema.GetFieldIndex(name);
+    // The [return: DynamicallyAccessedMembers] mirrors the base DbDataReader override contract
+    // (IL2093); every type returned here is a well-known primitive the trimmer always keeps.
+    [return: System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+        System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicFields |
+        System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicProperties)]
     public override Type GetFieldType(int ordinal) => batch.Schema.FieldsList[ordinal].DataType.TypeId switch
     {
         Apache.Arrow.Types.ArrowTypeId.Int32 => typeof(int),

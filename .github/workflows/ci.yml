@@ -65,6 +65,23 @@ jobs:
       # working tree. `zip` is present on the ubuntu runner image; the script fails loudly if not.
       - run: scripts/make-release-bundle.sh "${RUNNER_TEMP}/release-bundle"
 
+  # The Native AOT runtime proof: publishes the linux-x64 native image and drives init/run/restore/
+  # PZ0360/PCP-spawn/MCP against it. The AOT *compile-time* analyzers already gate every build
+  # (TreatWarningsAsErrors), but the six third-party assemblies whose internals warn (see
+  # Pz.Cli.csproj) can only be proven safe by running the paths that cross them -- which the ordinary
+  # test suite never does, since tests run on CoreCLR.
+  verify-aot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: scripts/verify-aot.sh
+
   # The Rust workspace's own gate: absent from build-test/pack-and-verify above so a contributor
   # without cargo still gets a green build-test (the whole point of PZ_DELTALAKE_RS_NUPKG being unset
   # everywhere else -- see DeltaRsRestoreTests's doc comment). fmt/clippy/test cover rust/ itself;
