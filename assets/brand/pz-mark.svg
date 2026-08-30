@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="PipelineZ mark">
+  <defs>
+    <linearGradient id="pz-flow" gradientUnits="userSpaceOnUse" x1="30" y1="34" x2="98" y2="94">
+      <stop offset="0" stop-color="#FFB224"/>
+      <stop offset="1" stop-color="#F76808"/>
+    </linearGradient>
+  </defs>
+  <path d="M30 34 H98 L30 94 H98" fill="none" stroke="url(#pz-flow)" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="30" cy="34" r="10.5" fill="url(#pz-flow)"/>
+  <circle cx="98" cy="34" r="10.5" fill="url(#pz-flow)"/>
+  <circle cx="30" cy="94" r="10.5" fill="url(#pz-flow)"/>
+  <circle cx="98" cy="94" r="10.5" fill="url(#pz-flow)"/>
+</svg>
