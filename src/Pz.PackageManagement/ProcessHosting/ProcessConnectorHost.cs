@@ -6,9 +6,9 @@ using Pz.PackageManagement.Hosting;
 
 namespace Pz.PackageManagement.ProcessHosting;
 
-/// <summary>Process-hosted mirror of <see cref="ConnectorHost"/>: same package layout, same manifest
-/// gate, same PZ03xx literals — but a package whose manifest declares <c>runtime: "process"</c> is
-/// never loaded into this process at all. It is spawned as a child, handshaken, and driven over PCP.
+/// <summary>The out-of-process connector host: a restored package whose manifest declares
+/// <c>runtime: "process"</c> is never loaded into this process at all — it is spawned as a child,
+/// handshaken, and driven over PCP.
 ///
 /// <para><b>Loading spawns nothing.</b> <see cref="LoadFromDirectory"/> reads each package's manifest,
 /// resolves the entrypoint for this RID, and registers a shim; the first call that actually needs a
@@ -184,8 +184,8 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
             }
             catch
             {
-                // Swallow-and-continue, same as ConnectorHost's unload loop: one connector failing to
-                // tear down must not leave the REST of this host's children orphaned.
+                // Swallow-and-continue: one connector failing to tear down must not leave the rest
+                // of this host's children orphaned.
             }
         }
 
