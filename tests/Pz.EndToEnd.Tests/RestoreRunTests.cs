@@ -4,9 +4,10 @@ using Pz.TestSupport;
 
 namespace Pz.EndToEnd.Tests;
 
-/// <summary>End-to-end: restore FakeSourceConnector from a local NuGet feed, then `pz run`
-/// executes it for real through the ALC-based ConnectorHost — proving connectors install from NuGet
-/// reproducibly and RUN, not just resolve/lock.</summary>
+/// <summary>End-to-end: restore FakeSourceConnector (a runtime "dotnet" package) from a local NuGet
+/// feed, then `pz run` refuses it with PZ0360 — external connectors are hosted out of process only,
+/// and the refusal must be a clean PZ-coded config error after a successful, lock-verified restore
+/// (the process-runtime install-and-RUN proof is <see cref="DeltaRsRestoreTests"/>).</summary>
 [Collection("m2-local-feed")]
 public sealed class RestoreRunTests(M2LocalFeedFixture feed) : IDisposable
 {
@@ -18,7 +19,7 @@ public sealed class RestoreRunTests(M2LocalFeedFixture feed) : IDisposable
     }
 
     [Fact]
-    public async Task Restored_connector_executes_through_pz_run()
+    public async Task Restored_dotnet_runtime_connector_is_refused_by_pz_run_with_PZ0360()
     {
         Directory.CreateDirectory(_work);
         Directory.CreateDirectory(Path.Combine(_work, "pipelines"));
@@ -64,26 +65,19 @@ public sealed class RestoreRunTests(M2LocalFeedFixture feed) : IDisposable
         Assert.True(File.Exists(Path.Combine(_work, "pz.lock.json")));
         Assert.True(File.Exists(Path.Combine(_work, ".pz", "packages", "FakeSourceConnector", "1.2.3", "lib", "FakeSourceConnector.dll")));
 
-        var runExit = CliApp.Build().Parse(["run", "--project", _work]).Invoke();
-        Assert.Equal(ExitCodes.Ok, runExit);
+        var stderr = new StringWriter();
+        var originalError = Console.Error;
+        Console.SetError(stderr);
+        int runExit;
+        try { runExit = CliApp.Build().Parse(["run", "--project", _work]).Invoke(); }
+        finally { Console.SetError(originalError); }
 
-        var csvPath = Path.Combine(_work, "out", "total.csv");
-        Assert.True(File.Exists(csvPath));
-
-        var lines = await File.ReadAllLinesAsync(csvPath);
-        Assert.Equal(2, lines.Length); // header + one data row
-        var fields = lines[1].Split(',');
-        Assert.Equal(5, int.Parse(fields[0]));
-        Assert.Equal(15, int.Parse(fields[1])); // sum(1..5)
-
-        var runsDir = Path.Combine(_work, ".pz", "runs");
-        var runDir = Directory.EnumerateDirectories(runsDir).Single();
-        using var runResults = JsonDocument.Parse(await File.ReadAllBytesAsync(Path.Combine(runDir, "run_results.json")));
-        Assert.Equal("success", runResults.RootElement.GetProperty("status").GetString());
-        foreach (var node in runResults.RootElement.GetProperty("nodes").EnumerateArray())
-        {
-            Assert.Equal("success", node.GetProperty("status").GetString());
-        }
+        Assert.Equal(ExitCodes.ConfigError, runExit);
+        Assert.Contains("PZ0360", stderr.ToString());
+        Assert.Contains("FakeSourceConnector", stderr.ToString());
+        // Refused at registry construction: no node ever executed, so no sink output was written.
+        Assert.False(File.Exists(Path.Combine(_work, "out", "total.csv")));
+        await Task.CompletedTask;
     }
 }
 

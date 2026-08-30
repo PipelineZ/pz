@@ -218,11 +218,11 @@ partial extraction would silently truncate the target). `merge` is effectively-o
 
 ## Out-of-process connectors (PCP)
 
-A connector package can host its connector as a separate OS process instead of an in-process .NET
-assembly, declared in the package's `pz.connector.json`:
+Every external (non-builtin) connector package hosts its connector as a separate OS process —
+in-process loading is reserved for builtins — declared in the package's `pz.connector.json`:
 
-- `runtime: "process"` — opts into the out-of-process host; absent or `"dotnet"` means the
-  existing in-process `ConnectorLoadContext` path (byte-identical behavior either way).
+- `runtime: "process"` — required for external packages; a package declaring `"dotnet"` (or
+  shipping no manifest, which means the same) is refused with `PZ0360`.
 - `entrypoints` — a RID → package-relative binary path map, e.g.
   `{"linux-x64": "runtimes/linux-x64/native/pz-mysink", "win-x64": "runtimes/win-x64/native/pz-mysink.exe"}`.
   Resolved with `RuntimeIdentifierGraph` fallback (a package shipping only `linux-x64` is still
@@ -248,6 +248,7 @@ unsigned packaged DuckDB extension is refused at plan time (`PZ0359`) unless the
 | `PZ0357` | Protocol violation during data-plane operations (bad/reused write ticket, malformed Arrow IPC stream). |
 | `PZ0358` | The connector process died unexpectedly mid-operation. |
 | `PZ0359` | An unsigned packaged DuckDB extension was refused for a native scan/copy; set `allow_unsigned_extensions: true` on the connection to allow it. |
+| `PZ0360` | An external connector package declares runtime `"dotnet"` (or ships no manifest) — external connectors are hosted out of process only. Use a `runtime: "process"` (PCP) package or a builtin. |
 
 **`pz connector test <entrypoint-or-package-dir> [--config file.yml]`** — runs black-box PCP
 protocol conformance checks against one out-of-process connector, independent of any pz project.

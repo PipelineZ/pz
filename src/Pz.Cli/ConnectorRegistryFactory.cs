@@ -9,9 +9,10 @@ using Pz.PackageManagement.Restore;
 namespace Pz.Cli;
 
 /// <summary>Builds the connector registry: builtins + (when the project declares non-builtin
-/// connectors) the hosts over .pz/packages verified against pz.lock.json — a <see cref="ConnectorHost"/>
-/// for the packages whose manifest declares no runtime or <c>"dotnet"</c>, and a
-/// <see cref="ProcessConnectorHost"/> for those declaring <c>"process"</c>.</summary>
+/// connectors) a <see cref="ProcessConnectorHost"/> over .pz/packages verified against pz.lock.json.
+/// External connectors are hosted out of process only: a package whose manifest declares runtime
+/// <c>"dotnet"</c> — or ships no manifest, which means the same — is refused with PZ0360, never
+/// ALC-loaded into the engine process. Builtins are the only in-process connectors.</summary>
 internal static class ConnectorRegistryFactory
 {
     /// <summary>Throws PzValidationException (PZ0321/PZ0322/host PZ03xx mapped) on lock/host problems.
@@ -69,28 +70,41 @@ internal static class ConnectorRegistryFactory
             })
             .ToArray();
 
-        // Partition by declared runtime BEFORE constructing either host: neither can load the other's
-        // packages (a process package ships no entry assembly to ALC-load, and ProcessConnectorHost
-        // refuses a non-process manifest with PZ0354), and a wrongly-routed package fails with an error
-        // about the wrong thing.
-        var inProcessRefs = new List<ConnectorPackageRef>();
+        // Every external package must declare runtime "process" before any host is constructed —
+        // aggregated, so a project with three dotnet-runtime packages hears about all three at once.
+        var rejected = new List<PzError>();
         var outOfProcessRefs = new List<ConnectorPackageRef>();
         foreach (var packageRef in installRefs)
         {
-            (IsProcessRuntime(packagesDir, packageRef) ? outOfProcessRefs : inProcessRefs).Add(packageRef);
+            var runtime = DeclaredRuntime(packagesDir, packageRef);
+            if (runtime == "process")
+            {
+                outOfProcessRefs.Add(packageRef);
+            }
+            else
+            {
+                var declared = runtime is null
+                    ? "ships no pz.connector.json manifest"
+                    : $"declares runtime '{runtime}'";
+                rejected.Add(new PzError(
+                    PzErrorCode.ExternalConnectorNotOutOfProcess,
+                    $"connector package '{packageRef.PackageId}' ({packageRef.Version}) {declared} — " +
+                    "external connectors are hosted out of process only",
+                    null, null,
+                    "use a connector published as a runtime: \"process\" (PCP) package, or a builtin connector"));
+            }
         }
 
-        ConnectorHost? host = null;
+        if (rejected.Count > 0)
+        {
+            throw new PzValidationException(rejected.ToArray());
+        }
+
         ProcessConnectorHost? processHost = null;
         string? ownedSocketRoot = null;
         void Warn(string message) => Console.Error.WriteLine($"warning: {message}");
         try
         {
-            if (inProcessRefs.Count > 0)
-            {
-                host = ConnectorHost.LoadFromDirectory(packagesDir, inProcessRefs, warn: Warn);
-            }
-
             if (outOfProcessRefs.Count > 0)
             {
                 var (socketRoot, owned) = ProcessSocketRoot.Resolve(projectDir, runId);
@@ -108,7 +122,7 @@ internal static class ConnectorRegistryFactory
             // first, and resolving the socket root touches the filesystem (IOException,
             // UnauthorizedAccessException). Reclaim whatever did get built — and the temp root created
             // for it — through the composite that would otherwise have owned it.
-            await new ConnectorHosts(host, processHost, ownedSocketRoot).DisposeAsync().ConfigureAwait(false);
+            await new ConnectorHosts(null, processHost, ownedSocketRoot).DisposeAsync().ConfigureAwait(false);
             if (ex is ConnectorHostException hostFailure)
             {
                 throw new PzValidationException([
@@ -121,15 +135,9 @@ internal static class ConnectorRegistryFactory
             throw;
         }
 
-        var hosts = new ConnectorHosts(host, processHost, ownedSocketRoot);
+        var hosts = new ConnectorHosts(null, processHost, ownedSocketRoot);
         try
         {
-            RefuseCrossHostCollisions(host, processHost);
-            if (host is not null)
-            {
-                Register(host.Installed, host.Get, registry, nonBuiltin);
-            }
-
             if (processHost is not null)
             {
                 Register(processHost.Installed, processHost.Get, registry, nonBuiltin);
@@ -168,60 +176,30 @@ internal static class ConnectorRegistryFactory
         }
     }
 
-    /// <summary>A package's manifest <c>runtime</c> is the single source of truth for which host owns it,
-    /// and reading it is one small JSON read with no assembly load. A manifest that is missing or broken
-    /// answers "not process": <see cref="ConnectorHost"/> owns reporting both cases (a missing manifest
-    /// is its warn-and-attempt path, a malformed one its PZ0306), and raising them here would replace
-    /// its message with one that explains less.</summary>
-    private static bool IsProcessRuntime(string packagesDir, ConnectorPackageRef packageRef)
+    /// <summary>A package's manifest <c>runtime</c> is the single source of truth for whether it may be
+    /// hosted at all, and reading it is one small JSON read with no assembly load. Missing manifest
+    /// (null) and declared runtime are reported separately so the PZ0360 message names what the package
+    /// actually said; a malformed manifest surfaces as the reader's own PZ0306 rather than a PZ0360
+    /// that would misattribute the problem.</summary>
+    private static string? DeclaredRuntime(string packagesDir, ConnectorPackageRef packageRef)
     {
         try
         {
             var packageDir = Path.Combine(packagesDir, packageRef.PackageId, packageRef.Version);
-            return ManifestReader.TryRead(packageDir)?.Runtime == "process";
+            // The reader defaults an absent runtime field to "dotnet"; only an absent manifest is null.
+            return ManifestReader.TryRead(packageDir) is { } manifest ? manifest.Runtime ?? "dotnet" : null;
         }
-        catch (ConnectorHostException)
+        catch (ConnectorHostException ex)
         {
-            return false;
-        }
-    }
-
-    /// <summary>Each host rejects duplicate connector names only within its OWN package set, so a name
-    /// registered by an in-process package AND an out-of-process one reaches the registry as two
-    /// packages both claiming it. Same PZ0305 family and same invariant as every other collision here:
-    /// a name is never silently resolved in one host's favour. Aggregated — every colliding name is
-    /// reported, not just the first.</summary>
-    private static void RefuseCrossHostCollisions(ConnectorHost? host, ProcessConnectorHost? processHost)
-    {
-        if (host is null || processHost is null)
-        {
-            return;
-        }
-
-        var inProcessNames = host.Installed.Select(i => i.Name).ToHashSet(StringComparer.Ordinal);
-        var collisions = processHost.Installed
-            .Select(i => i.Name)
-            .Where(inProcessNames.Contains)
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .Select(name => new PzError(
-                PzErrorCode.ConnectorNotInstalled,
-                $"connector name '{name}' is registered by both an in-process and an out-of-process " +
-                "connector package",
-                null, null,
-                "remove one of the conflicting packages"))
-            .ToArray();
-
-        if (collisions.Length > 0)
-        {
-            throw new PzValidationException(collisions);
+            throw new PzValidationException([new PzError(ex.Code, ex.Message, null, null, ex.Hint)]);
         }
     }
 
     /// <summary><see cref="ConnectorRegistry.AddSource"/>/<c>AddSink</c> throw
     /// <see cref="InvalidOperationException"/> when a hosted connector's name collides with an
-    /// already-registered one (always a builtin here: each host enforces its own PZ0305 cross-package
-    /// check within its package set, and <see cref="RefuseCrossHostCollisions"/> covers the pair, both
-    /// before any registration happens). Translate that into the same PZ0305 error family, naming both
+    /// already-registered one (always a builtin here: the process host enforces its own PZ0305
+    /// cross-package check within its package set before any registration happens). Translate that into
+    /// the same PZ0305 error family, naming both
     /// the colliding builtin name and the hosted package(s) that could have produced it.</summary>
     private static void RegisterOrThrowCollision(
         Action register, string connectorName, IReadOnlyList<ConnectorRequirement> nonBuiltin)

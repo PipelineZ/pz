@@ -1,4 +1,8 @@
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Text.Json;
 using Pz.Cli;
+using Pz.PackageManagement.Restore;
 
 namespace Pz.Cli.Tests;
 
@@ -46,32 +50,91 @@ public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposab
     }
 
     /// <summary>Covers <c>DescribeHostedPackage</c>'s single-non-builtin-package attribution (the common
-    /// case; the rows above are all builtins). Restores a project declaring exactly one non-builtin
-    /// connector (FakeSourceConnector, from the shared <see cref="CliLocalFeedFixture"/> local feed) and
-    /// asserts the hosted row's exact name, package id, version, and tiers/capabilities fields. The
-    /// version column is the connector's own
-    /// self-reported version ("transitive-2.0.0", from <c>FakeTransitiveDep.Info.Marker</c> -- see
-    /// <c>ConnectorsCommand.DescribeHostedPackage</c>'s doc comment), which is
-    /// deliberately different from the package version pinned in project.yml (1.2.3); that mismatch is
-    /// exactly what proves the package column is attributing the declared *package*, not smuggling in
-    /// the connector's self-reported version.</summary>
-    [Fact]
+    /// case; the rows above are all builtins). Stages a <c>runtime: "process"</c> package (the
+    /// PcpFakeConnector fixture, exactly the way <c>ConnectorTestCommandTests</c> stages it) and asserts
+    /// the hosted row's exact name, package id, version, and tiers fields. The capabilities column
+    /// requires the connector's Hello, so this is the one listing test that actually spawns the
+    /// connector process. Linux only: the fixture serves unix domain sockets.</summary>
+    [SkippableFact]
+    [SupportedOSPlatform("linux")]
     public void Connectors_lists_hosted_connector_with_package_attribution()
     {
-        WriteProject(FakeSourceConnectorProject());
-        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+
+        WriteProject("""
+            name: connectors_test
+            version: 0.1.0
+
+            connectors:
+              - package: LocalFilesPcp
+                version: 1.0.0
+            """);
+        WriteSpawnableProcessPackage();
 
         var output = RunAndCaptureStdout(["connectors", "--project", _work]);
         var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries).ToArray();
 
-        var fakesourceLine = Assert.Single(lines, l => l.StartsWith("fakesource", StringComparison.Ordinal));
-        var fields = fakesourceLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var hostedLine = Assert.Single(lines, l => l.StartsWith("localfiles-pcp", StringComparison.Ordinal));
+        var fields = hostedLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-        Assert.Equal("fakesource", fields[0]);
-        Assert.Equal("FakeSourceConnector", fields[1]);
-        Assert.Equal("transitive-2.0.0", fields[2]);
-        Assert.Equal("src:universal", fields[3]);
-        Assert.Equal("-", fields[4]);
+        Assert.Equal("localfiles-pcp", fields[0]);
+        Assert.Equal("LocalFilesPcp", fields[1]);
+        Assert.Equal("1.0.0", fields[2]);
+        Assert.Equal("src:native+universal", fields[3]);
+        Assert.Equal("snk:native+universal", fields[4]);
+    }
+
+    /// <summary>Mirrors <c>ConnectorTestCommandTests.WriteProcessPackage</c>, laid out under
+    /// <c>.pz/packages/&lt;id&gt;/&lt;version&gt;/</c> with the matching pz.lock.json the drift check
+    /// verifies. The manifest's capability set is exactly what the fixture's Hello reports, so the
+    /// handshake gate passes.</summary>
+    [SupportedOSPlatform("linux")]
+    private void WriteSpawnableProcessPackage()
+    {
+        const string packageId = "LocalFilesPcp";
+        const string version = "1.0.0";
+        var packageDir = Path.Combine(_work, ".pz", "packages", packageId, version);
+        var binDir = Path.Combine(packageDir, "bin");
+        Directory.CreateDirectory(binDir);
+
+        var entrypoint = Path.Combine(binDir, "connector");
+        File.WriteAllText(entrypoint, $"#!/bin/sh\nexec \"{FixtureExecutablePath()}\" \"$@\"\n");
+        File.SetUnixFileMode(
+            entrypoint,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+
+        File.WriteAllText(Path.Combine(packageDir, "pz.connector.json"), JsonSerializer.Serialize(
+            new Dictionary<string, object?>
+            {
+                ["name"] = "localfiles-pcp",
+                ["protocolMajorMin"] = 1,
+                ["protocolMajorMax"] = 1,
+                ["capabilities"] = new[]
+                {
+                    "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead",
+                },
+                ["runtime"] = "process",
+                ["entrypoints"] = new Dictionary<string, string>
+                {
+                    [RuntimeInformation.RuntimeIdentifier] = "bin/connector",
+                },
+            }));
+
+        LockFileWriter.Write(
+            new LockFile(LockFileWriter.CurrentVersion, RuntimeInformation.RuntimeIdentifier, [
+                new LockedPackage(packageId, version, "sha512-listing-fixture", new LockedAssets([], [])),
+            ]),
+            Path.Combine(_work, "pz.lock.json"));
+    }
+
+    private static string FixtureExecutablePath()
+    {
+        var baseDir = new DirectoryInfo(AppContext.BaseDirectory);
+        var tfm = baseDir.Name;
+        var config = baseDir.Parent!.Name;
+        var testsDir = baseDir.Parent!.Parent!.Parent!.Parent!.FullName;
+        return Path.Combine(testsDir, "fixtures", "PcpFakeConnector", "bin", config, tfm, "PcpFakeConnector");
     }
 
     [Fact]

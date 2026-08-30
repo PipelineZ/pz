@@ -385,6 +385,14 @@ public static class PzErrorCode
     /// config.</summary>
     public const string UnsignedExtensionRefused = "PZ0359";
 
+    /// <summary>An external (non-builtin) connector package declares runtime <c>"dotnet"</c> (or ships
+    /// no manifest, which means the same) — external connectors are hosted out of process only. In-proc
+    /// loading would run third-party code with the engine's full privileges (every connection's
+    /// credentials, the state store, the staging DB); the process host is the trust and crash boundary.
+    /// Raised when the connector registry is built, aggregated over every offending package; next step
+    /// is to use a connector published as a <c>runtime: "process"</c> (PCP) package, or a builtin.</summary>
+    public const string ExternalConnectorNotOutOfProcess = "PZ0360";
+
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";

@@ -104,6 +104,9 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         Assert.Contains("restore", stderr);
     }
 
+    // The bypass is proven by what comes AFTER the skipped drift check: the run gets far enough to
+    // refuse the dotnet-runtime package itself (PZ0360, from hosting) instead of stopping at the
+    // drifted lock (PZ0321) — plus the loud warning the flag promises.
     [Fact]
     public void No_lock_check_bypasses_with_loud_warning()
     {
@@ -115,9 +118,11 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         var stderr = RunAndCaptureStderr(["run", "--project", _work, "--no-lock-check"]);
         var exit = CliApp.Build().Parse(["run", "--project", _work, "--no-lock-check"]).Invoke();
 
-        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.Equal(ExitCodes.ConfigError, exit);
         Assert.Contains("warning", stderr);
         Assert.Contains("--no-lock-check", stderr);
+        Assert.Contains("PZ0360", stderr);
+        Assert.DoesNotContain("PZ0321", stderr);
     }
 
     [Fact]
