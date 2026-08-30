@@ -35,7 +35,11 @@ public sealed class CdcEndToEndTests : IClassFixture<CdcEndToEndTests.CdcPostgre
 
     private readonly string _work = Path.Combine(Path.GetTempPath(), "pz-e2e-cdc-tests", Guid.NewGuid().ToString("N"));
 
-    public CdcEndToEndTests(CdcPostgresFixture fixture) => _fx = fixture;
+    public CdcEndToEndTests(CdcPostgresFixture fixture)
+    {
+        DockerFacts.SkipUnlessDocker();
+        _fx = fixture;
+    }
 
     public void Dispose()
     {
@@ -288,8 +292,6 @@ public sealed class CdcEndToEndTests : IClassFixture<CdcEndToEndTests.CdcPostgre
     {
         private PostgreSqlContainer? _container;
 
-        public CdcPostgresFixture() => DockerFacts.SkipUnlessDocker();
-
         public string Host { get; private set; } = "";
 
         public int Port { get; private set; }
@@ -304,6 +306,11 @@ public sealed class CdcEndToEndTests : IClassFixture<CdcEndToEndTests.CdcPostgre
 
         public async Task InitializeAsync()
         {
+            if (!DockerFacts.IsAvailable)
+            {
+                return;
+            }
+
             _container = new PostgreSqlBuilder("postgres:16-alpine")
                 .WithDatabase("pz")
                 .WithUsername("pz")
