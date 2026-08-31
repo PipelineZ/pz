@@ -59,8 +59,13 @@ internal abstract class GcsWriteSession(
                 return await client.UploadObjectAsync(bucket, objectName, contentType: null, Spool,
                     cancellationToken: innerCt).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is Google.GoogleApiException or HttpRequestException or IOException)
+            catch (Exception ex) when (ex is Google.GoogleApiException or HttpRequestException or IOException
+                or TimeoutException or System.Net.Sockets.SocketException
+                or Google.Apis.Auth.OAuth2.Responses.TokenResponseException)
             {
+                // TokenResponseException covers the OAuth token fetch the SDK performs before the
+                // upload proper -- a dead/unreachable token endpoint must surface as the same
+                // classified, named failure as the upload itself.
                 throw new PzConnectorException(
                     $"gcs object '{objectName}': upload failed: {ex.Message}",
                     GcsTransient.IsTransient(ex), innerException: ex);

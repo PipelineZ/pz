@@ -96,10 +96,12 @@ public sealed class GcsSinkNativeTests
     }
 
     [Fact]
-    public void Partitioned_output_declines_native_copy_even_under_hmac()
+    public void Partitioned_output_declines_native_copy_under_oauth_auth()
     {
-        // A single COPY ... TO cannot express a per-row-value fan-out (the azure rule).
-        Assert.False(new GcsSink(Hmac()).TryGetNativeCopy(
+        // A single COPY ... TO cannot express a per-row-value fan-out (the azure rule); under the
+        // OAuth methods the SDK fan-out session carries it. Under hmac the same shape is a plan-time
+        // refusal instead -- see GcsReviewFixTests.Hmac_with_partition_by_fails_at_plan_time.
+        Assert.False(new GcsSink(Adc()).TryGetNativeCopy(
             Out(path: "d={yyyy}-{MM}-{dd}", partitionBy: ["ts"]), out _));
     }
 

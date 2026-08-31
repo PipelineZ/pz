@@ -70,7 +70,7 @@ internal static class GcsAuth
         var credential = auth switch
         {
             "service_account" => ServiceAccountCredential(config),
-            "adc" => GoogleCredential.GetApplicationDefault(),
+            "adc" => ApplicationDefaultCredential(),
             "hmac" => throw new PzConnectorException(
                 "gcs 'hmac' auth has no SDK client: hmac keys drive only the native DuckDB tier " +
                 "(reads and native COPY writes); use 'service_account' or 'adc' for SDK-backed writes",
@@ -85,6 +85,25 @@ internal static class GcsAuth
         }
 
         return builder.Build();
+    }
+
+    private static GoogleCredential ApplicationDefaultCredential()
+    {
+        try
+        {
+            return GoogleCredential.GetApplicationDefault();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException
+            or AggregateException)
+        {
+            // GetApplicationDefault blocks on an async lookup, so failures can arrive wrapped in an
+            // AggregateException; unwrap a single inner failure for the message.
+            var cause = ex is AggregateException { InnerExceptions: [var inner] } ? inner : ex;
+            throw new PzConnectorException(
+                "gcs 'adc' auth could not resolve Application Default Credentials: " + cause.Message +
+                " -- run 'gcloud auth application-default login', set GOOGLE_APPLICATION_CREDENTIALS, " +
+                "or use 'service_account' auth", isTransient: false, innerException: ex);
+        }
     }
 
     private static GoogleCredential ServiceAccountCredential(ConnectorConfig config)
@@ -111,11 +130,12 @@ internal static class GcsAuth
         }
         catch (Exception ex)
         {
-            // The parser throws serializer-specific exception types; whatever the shape, a key that
-            // does not parse is permanent. The raw json never appears in the message.
+            // The parser throws serializer-specific exception types whose messages can echo input
+            // fragments verbatim -- and this input is a private key, so the message is FIXED text:
+            // neither the raw json nor the parser's own wording ever reaches the user-facing error.
             throw new PzConnectorException(
-                $"gcs 'key_json' is not a valid service-account key: {ex.Message}",
-                isTransient: false, innerException: ex);
+                "gcs 'key_json' is not a valid service-account key (it must be the unmodified JSON " +
+                "key file downloaded from the Cloud Console)", isTransient: false, innerException: ex);
         }
     }
 }

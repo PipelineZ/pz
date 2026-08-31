@@ -100,13 +100,19 @@
     <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
     <!-- The per-assembly rollup codes only; every other IL warning still errors, so a first-party
          regression cannot hide behind this. MSBuildWarningsNotAsErrors is what reaches warnings the
-         ILC Exec task raises through the engine rather than the compiler. IL3002 joins the list for
-         one third-party site: Google.Apis' VersionHeaderBuilder probes Assembly.CodeBase/GetFiles
-         to build its version header and already catches the single-file throw at runtime
-         (degrading to a null version). First-party code cannot hide here either, because the
-         single-file analyzer errors at compile time before ILC ever runs. -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053;IL3002</WarningsNotAsErrors>
-    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053;IL3002</MSBuildWarningsNotAsErrors>
+         ILC Exec task raises through the engine rather than the compiler. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
+    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053</MSBuildWarningsNotAsErrors>
+  </PropertyGroup>
+  <!-- IL3002 is demoted only on RID-specific legs — the only ones where ILC runs — because ILC
+       reads the csc-level WarningsNotAsErrors, and the one offender is third-party: Google.Apis'
+       VersionHeaderBuilder probes Assembly.CodeBase/GetFiles to build its version header and
+       already catches the single-file throw at runtime, degrading to a null version. RID-less
+       builds (the CI zero-warnings gate) keep IL3002 as an error, so a first-party
+       [RequiresAssemblyFiles] call cannot hide behind this. -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' != ''">
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL3002</WarningsNotAsErrors>
+    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL3002</MSBuildWarningsNotAsErrors>
   </PropertyGroup>
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <!-- NuGet's JSON layer is Newtonsoft reflection over its own DTOs; `pz restore` depends on it. -->

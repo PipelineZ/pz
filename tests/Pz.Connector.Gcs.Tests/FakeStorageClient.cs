@@ -12,6 +12,9 @@ internal sealed class FakeStorageClient : StorageClient
     public List<(string Bucket, string Name, byte[] Content)> Uploads { get; } = [];
     public Exception? ThrowOnUpload { get; set; }
     public int UploadAttempts { get; private set; }
+    public bool Disposed { get; private set; }
+
+    public override void Dispose() => Disposed = true;
 
     public override async Task<Google.Apis.Storage.v1.Data.Object> UploadObjectAsync(
         string bucket, string objectName, string contentType, Stream source,

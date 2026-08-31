@@ -32,9 +32,20 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
     public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
     {
         copy = null;
-        if (!GcsAuth.IsHmac(config) || PartitionColumns.Read(spec.Options).Count > 0)
+        if (!GcsAuth.IsHmac(config))
         {
             return false;
+        }
+
+        if (PartitionColumns.Read(spec.Options).Count > 0)
+        {
+            // Refused HERE, at plan time, because declining native would route this output to the
+            // universal tier and the run would then die at execute time blaming
+            // engine.force_universal -- a cause the user never set.
+            throw new PzConnectorException(
+                $"output '{spec.Output}': partition_by fan-out runs on the SDK write tier, which " +
+                "'hmac' auth does not carry -- use 'service_account'/'adc' auth for this connection, " +
+                "or remove partition_by", isTransient: false);
         }
 
         var (format, objectName) = ResolveObjectName(spec);
@@ -135,7 +146,13 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
             isTransient: false);
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync()
+    {
+        // The StorageClient wraps an HttpClient; the sink owns whichever client it materialized.
+        _client?.Dispose();
+        _client = null;
+        return ValueTask.CompletedTask;
+    }
 
     /// <summary>The validated format plus the final object name, per the replace/append naming
     /// convention shared with the other object-store sinks: "replace" is a stable name
