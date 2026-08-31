@@ -1,4 +1,5 @@
 using Pz.Connector.AzureBlob;
+using Pz.Connector.Gcs;
 using Pz.Connector.Http;
 using Pz.Connector.LocalFiles;
 using Pz.Connector.MySql;
@@ -36,7 +37,7 @@ internal static class BuiltinConnectors
     {
         "Pz.Connector.LocalFiles", "Pz.Connector.S3", "Pz.Connector.Postgres", "Pz.Connector.SqlServer",
         "Pz.Connector.AzureBlob", "Pz.Connector.Http", "Pz.Connector.MySql", "Pz.Connector.Sqlite",
-        "Pz.Connector.Sftp",
+        "Pz.Connector.Sftp", "Pz.Connector.Gcs",
     };
 
     public static ConnectorRegistry CreateRegistry()
@@ -57,6 +58,9 @@ internal static class BuiltinConnectors
         var azure = new AzureConnector();
         registry.AddSource("azureblob", azure);
         registry.AddSink("azureblob", azure);
+        var gcs = new GcsConnector();
+        registry.AddSource("gcs", gcs);
+        registry.AddSink("gcs", gcs);
         var http = new HttpConnector();
         registry.AddSource("http", http);
         registry.AddSink("http", http);
