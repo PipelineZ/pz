@@ -26,6 +26,9 @@
     <!-- Pz.Connector.AzureBlob.Tests' SecretRedactionTests is the azure variant of the same
          regression guard - see that test's doc comment. -->
     <InternalsVisibleTo Include="Pz.Connector.AzureBlob.Tests" />
+    <!-- Pz.Connector.Gcs.Tests' SecretRedactionTests is the gcs variant of the same regression
+         guard - see that test's doc comment. -->
+    <InternalsVisibleTo Include="Pz.Connector.Gcs.Tests" />
     <!-- Pz.Engine.Tests sets the internal, settable ConnectivityValidator.ProbeTimeout
          seam to a near-zero value so its probe-timeout tests complete fast instead of waiting out the
          real 30s default. -->
