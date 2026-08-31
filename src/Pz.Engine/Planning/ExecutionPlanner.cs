@@ -398,9 +398,166 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             return Universal(node, $"arrow stream: connector '{def.Source.Connector}' native path refused", declaredPartitions, readToken);
         }
 
+        // Unsigned packaged-extension gate (PZ0359): a native scan whose setup loads or installs a
+        // packaged extension via a quoted filesystem path is not signature-verified, unlike a bare
+        // `LOAD <name>`/`INSTALL <name>` resolved from DuckDB's own signed repository. This is a tier
+        // choice, not a capability gap -- the universal path remains available -- so it falls back
+        // rather than failing the run (mirrors the "no native path" fallback just above, never added to
+        // `errors`). The reason string names the connection and the fix; it must never carry
+        // SetupStatements text (secret hygiene) so it does not quote the offending statement.
+        if (!def.Source.AllowUnsignedExtensions && scan!.SetupStatements.Any(HasUnsignedPackagedExtension))
+        {
+            return Universal(node,
+                $"arrow stream: source '{def.Source.Name}' native path refused -- {PzErrorCode.UnsignedExtensionRefused} " +
+                "unsigned packaged extension in setup; set allow_unsigned_extensions: true on the connection to allow it",
+                declaredPartitions, readToken);
+        }
+
         var nativePath = def.Dataset.Options.TryGetValue("path", out var p) ? p?.ToString() ?? def.Dataset.Name : def.Dataset.Name;
         return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1,
             $"native scan: connector '{def.Source.Connector}' provides {scan!.Mechanism} over {nativePath} ({readToken})");
+    }
+
+    /// <summary>An element of NativeScan/NativeCopy's SetupStatements may itself be several
+    /// `;`-separated SQL statements (a connector can hand back one string covering secrets AND an
+    /// extension load); true when ANY of them is a `LOAD`/`INSTALL` whose argument is a single- or
+    /// double-quoted filesystem path (e.g. a packaged extension pz's own package manager placed under
+    /// `.pz/packages/&lt;id&gt;/&lt;ver&gt;/…`) -- an extension DuckDB never signature-verifies,
+    /// "packaged". A bare identifier (`LOAD delta`, `INSTALL httpfs`) resolves through DuckDB's own
+    /// signed extension repository and needs no consent -- "signed". The property gated is "no unsigned
+    /// packaged extension without consent" over BOTH verbs: `INSTALL '&lt;path&gt;'` alone stages one on
+    /// disk even with no matching `LOAD` in the same setup, and a later bare `LOAD &lt;name&gt;` of an
+    /// already-installed unsigned extension would otherwise read as signed. Purely syntactic (split on
+    /// `;`, strip whitespace and comment trivia, match the keyword followed by any non-identifier
+    /// boundary) -- no execution, no path resolution, no SQL parsing library, so it is safe and cheap to
+    /// run at plan time on every candidate statement. DuckDB's own parser (ISqlAstReader) is the
+    /// sanctioned escape hatch if this split ever proves insufficient -- not a pre-emptive next
+    /// step.</summary>
+    private static bool HasUnsignedPackagedExtension(string setupStatementsElement)
+    {
+        foreach (var rawStatement in setupStatementsElement.Split(';'))
+        {
+            if (IsUnsignedPackagedExtensionStatement(rawStatement))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>A `LOAD`/`INSTALL` whose argument is a quoted filesystem path never reaches DuckDB
+    /// without consent, regardless of comment trivia between the statement's start, the keyword, and its
+    /// argument -- comments are not a way to smuggle a packaged extension load past this gate. Trivia
+    /// that cannot be parsed (an unterminated `/*`) fails CLOSED: an unparseable statement is treated as
+    /// packaged rather than silently waved through, because a gate that can be defeated by malformed
+    /// input is not a gate.</summary>
+    private static bool IsUnsignedPackagedExtensionStatement(string statement)
+    {
+        var remaining = statement.AsSpan();
+        if (!TryStripLeadingTrivia(ref remaining))
+        {
+            return true;
+        }
+
+        ReadOnlySpan<char> afterKeyword;
+        if (remaining.StartsWith("LOAD", StringComparison.OrdinalIgnoreCase))
+        {
+            afterKeyword = remaining[4..];
+        }
+        else if (remaining.StartsWith("INSTALL", StringComparison.OrdinalIgnoreCase))
+        {
+            afterKeyword = remaining[7..];
+        }
+        else
+        {
+            return false;
+        }
+
+        // The keyword ends wherever an identifier could NOT continue -- "LOADED"/"INSTALLED" is refused
+        // (still an identifier character), while whitespace, a `--`/`/* */` comment, or the argument's
+        // own opening quote all end the keyword token the same way DuckDB's own tokenizer would.
+        if (afterKeyword.Length > 0 && (char.IsLetterOrDigit(afterKeyword[0]) || afterKeyword[0] == '_'))
+        {
+            return false;
+        }
+
+        if (!TryStripLeadingTrivia(ref afterKeyword))
+        {
+            return true;
+        }
+
+        var argument = afterKeyword.Trim();
+        return argument.Length > 0 && (argument[0] == '\'' || argument[0] == '"');
+    }
+
+    /// <summary>Strips whitespace, `--` line comments, and `/* ... */` block comments from the front of
+    /// <paramref name="remaining"/>, repeating until none remain. Block comments nest (DuckDB follows
+    /// Postgres here: an inner `/*` requires its own matching `*/` before the outer one closes) --
+    /// tracked with a depth counter, not a naive first-`*/`-wins scan, so a nested comment cannot end the
+    /// strip early and leave real SQL text mistaken for more trivia. Returns false, leaving
+    /// <paramref name="remaining"/> unspecified, when a `/*` is never closed -- the caller's contract is
+    /// to fail closed on that, never to guess.</summary>
+    private static bool TryStripLeadingTrivia(ref ReadOnlySpan<char> remaining)
+    {
+        while (true)
+        {
+            remaining = remaining.TrimStart();
+
+            if (remaining.StartsWith("--", StringComparison.Ordinal))
+            {
+                var newline = remaining.IndexOf('\n');
+                remaining = newline < 0 ? default : remaining[(newline + 1)..];
+                continue;
+            }
+
+            if (remaining.StartsWith("/*", StringComparison.Ordinal))
+            {
+                if (!TrySkipBlockComment(ref remaining))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>Skips exactly one (possibly nested) `/* ... */` block comment. <paramref name="span"/>
+    /// must already start with `/*`. False, leaving <paramref name="span"/> unspecified, when depth never
+    /// returns to zero before the text runs out.</summary>
+    private static bool TrySkipBlockComment(ref ReadOnlySpan<char> span)
+    {
+        var depth = 0;
+        var i = 0;
+        while (i < span.Length)
+        {
+            if (i + 1 < span.Length && span[i] == '/' && span[i + 1] == '*')
+            {
+                depth++;
+                i += 2;
+                continue;
+            }
+
+            if (i + 1 < span.Length && span[i] == '*' && span[i + 1] == '/')
+            {
+                depth--;
+                i += 2;
+                if (depth == 0)
+                {
+                    span = span[i..];
+                    return true;
+                }
+
+                continue;
+            }
+
+            i++;
+        }
+
+        return false;
     }
 
     // Static (no connection) mirror of the postgres-style contract: a PartitionedRead-capable connector
@@ -537,6 +694,16 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         if (sink.TryGetNativeCopy(spec, out var copy))
         {
+            // Unsigned packaged-extension gate (PZ0359), sink-side mirror of the source-side gate in
+            // PlanSourceLoadAsync above -- same tier-choice-not-capability-gap reasoning, same fallback
+            // (never added to `errors`), same secret-hygiene reason string.
+            if (!def.Sink.AllowUnsignedExtensions && copy!.SetupStatements.Any(HasUnsignedPackagedExtension))
+            {
+                return Universal(node,
+                    $"arrow stream: sink '{def.Sink.Name}' native path refused -- {PzErrorCode.UnsignedExtensionRefused} " +
+                    "unsigned packaged extension in setup; set allow_unsigned_extensions: true on the connection to allow it");
+            }
+
             return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,
                 $"native copy: connector '{def.Sink.Connector}' provides {copy.Mechanism}");
         }

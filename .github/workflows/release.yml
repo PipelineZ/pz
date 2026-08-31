@@ -7,11 +7,14 @@
 #      the "Push new packages and package versions" scope -- not "push only new package versions",
 #      which cannot create an id that does not exist yet. On a private repo it stays "temporarily
 #      active" for 7 days until a successful publish binds it to the GitHub repo/owner IDs.
-#   1b. Cover the tool package too: it publishes as "pz" (Pz.Cli.csproj's <PackageId>), and a bare
-#      "pz" does NOT match the "Pz.*" glob above. Either widen that policy's package list to include
-#      "pz" or add a second policy for it, with the same repository, workflow, environment, and
-#      scope. Miss this and the push below fails authentication for "pz" alone, AFTER the other
-#      three packages have already published -- the tag is then spent and the release is half out.
+#   1b. Cover the tool packages too: the tool publishes as "pz" (Pz.Cli.csproj's <PackageId>) PLUS one
+#      RID sub-package per platform ("pz.linux-x64", "pz.linux-arm64", "pz.win-x64", "pz.osx-arm64",
+#      "pz.any" -- hybrid Native AOT packaging, see that csproj), and neither a bare "pz" nor "pz.*"
+#      matches the "Pz.*" glob above (globs are case-sensitive). Widen the policy's package list to
+#      include "pz" and "pz.*", or add a second policy for them, with the same repository, workflow,
+#      environment, and scope. Miss this and the pushes below fail authentication for the tool
+#      packages alone, AFTER the library packages have already published -- the tag is then spent and
+#      the release is half out.
 #   2. Create a GitHub Environment named "release" (repo Settings -> Environments -> New environment) and
 #      add an environment secret NUGET_USER = the nuget.org profile name (NOT email) of the account that
 #      owns the trusted publishing policy above.
@@ -19,6 +22,13 @@
 #      token for a short-lived nuget.org API key at run time, scoped to exactly what step 1 configured.
 # Until that one-time setup exists, a real `v*` tag push will fail at the NuGet/login step with an
 # authentication error -- that failure is expected and does not indicate a workflow bug.
+#
+# Shape: Native AOT cannot cross-compile between OSes, so one `pack-aot` job per platform builds that
+# platform's RID sub-package; the `release` job builds/tests/packs everything else, then pushes in the
+# order the RID-specific tool contract requires -- every sub-package BEFORE the `pz` pointer, because
+# the .NET CLI resolves an install through the pointer and fails if a referenced sub-package is not
+# there yet. MinVer computes the same version in every job from the same tag, which is what makes the
+# sub-packages and the pointer agree (a version mismatch breaks installs).
 name: release
 
 on:
@@ -26,7 +36,36 @@ on:
     tags: ['v*']
 
 jobs:
+  pack-aot:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+          - os: ubuntu-24.04-arm
+            rid: linux-arm64
+          - os: windows-latest
+            rid: win-x64
+          - os: macos-latest
+            rid: osx-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # MinVer computes the release version from this tag + history.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet pack src/Pz.Cli -c Release -r ${{ matrix.rid }} -o packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pz-${{ matrix.rid }}
+          path: packages/pz.${{ matrix.rid }}.*.nupkg
+          if-no-files-found: error
+
   release:
+    needs: pack-aot
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release # secret-scopes NUGET_USER to this job; supports required-reviewer gating too.
@@ -50,15 +89,35 @@ jobs:
       - run: dotnet test Pz.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
         env:
           PZ_TESTS_OFFLINE: '1'
+      # Packs the library packages and the `pz` POINTER (PublishAot in Pz.Cli.csproj means the bare
+      # pack emits the pointer, not a runnable tool)...
       - run: dotnet pack Pz.slnx -c Release -o packages --no-build
+      # ...and the CoreCLR `any` fallback sub-package, which serves every platform without an AOT
+      # build. Cannot use --no-build: packing a RID is a publish.
+      - run: dotnet pack src/Pz.Cli -c Release -r any -p:PublishAot=false -o packages
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: pz-*
+          path: packages
+          merge-multiple: true
       - name: NuGet login (trusted publishing)
         id: login
         uses: NuGet/login@v1
         with:
           user: ${{ secrets.NUGET_USER }} # nuget.org profile name, NOT email -- see prerequisites above.
-      - name: Push packages to nuget.org
+      # Two pushes, and the order is the contract: every `pz.<rid>`/`pz.any` sub-package and library
+      # package must be live before the `pz` pointer is, or an install racing the publish resolves the
+      # pointer to a sub-package that is not there yet.
+      - name: Push sub-packages and libraries to nuget.org
         run: >
-          dotnet nuget push 'packages/*.nupkg'
+          find packages -name '*.nupkg' ! -regex '.*/pz\.[0-9].*' -print0 |
+          xargs -0 -n1 dotnet nuget push
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --skip-duplicate
+      - name: Push the pz pointer package last
+        run: >
+          dotnet nuget push packages/pz.[0-9]*.nupkg
           --source https://api.nuget.org/v3/index.json
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --skip-duplicate

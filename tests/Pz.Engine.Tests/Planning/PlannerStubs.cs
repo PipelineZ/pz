@@ -237,6 +237,63 @@ internal sealed class StubConfigurableCapabilitiesSink(ConnectorCapabilities cap
     public ValueTask DisposeAsync() => default;
 }
 
+/// <summary>Source connector whose native scan setup statements are test-configurable -- the source-side
+/// mirror of <see cref="StubConfigurableSetupStatementsSink"/>, for the unsigned-packaged-extension gate
+/// (PZ0359) source-side test.</summary>
+internal sealed class StubConfigurableSetupStatementsSource(params string[] setupStatements) : ISourceConnector, ISource
+{
+    public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeScan;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call GetSchemaAsync");
+
+    public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = new NativeScan("select 'stub'", setupStatements) { Mechanism = "stub_scan" };
+        return true;
+    }
+
+    public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call PlanReadAsync");
+
+    public ValueTask DisposeAsync() => default;
+}
+
+/// <summary>Sink connector whose native copy setup statements are test-configurable -- lets a
+/// planner-gate test supply the exact `LOAD` statement it wants to probe (a bare signed name or a
+/// quoted packaged path) without a dedicated stub per case. Declares ReplaceWrites like
+/// StubUniversalSink so TestDags' default replace output plans cleanly regardless of the gate's
+/// verdict (a universal fallback must still succeed, not trip PZ0324).</summary>
+internal sealed class StubConfigurableSetupStatementsSink(params string[] setupStatements) : ISinkConnector, ISink
+{
+    public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeCopy | ConnectorCapabilities.ReplaceWrites;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+    public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
+    {
+        copy = new NativeCopy("copy stub", setupStatements) { Mechanism = "stub_copy" };
+        return true;
+    }
+
+    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call BeginWriteAsync");
+
+    public ValueTask DisposeAsync() => default;
+}
+
 /// <summary>Source connector that resolves
 /// <see cref="NaturalReadShape.Feed"/> for every dataset -- the stub counterpart of HttpSource's
 /// delta-link-pointer detection, for planner-gate tests that need a connector whose natural read shape

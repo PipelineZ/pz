@@ -46,28 +46,29 @@ public static class TemplateRenderer
         globals.Inner.SetValue("sink", new SinkFunction(pipeline, inlineBindings, callErrors), readOnly: true);
         // Records the reference (shape-validated later, in DagCompiler/WatermarkInference) and
         // renders a deterministic quoted sentinel — "record now, resolve later", same as sink().
-        globals.Inner.Import("watermark", new Func<string, string, string>((sourceName, dataset) =>
+        globals.Inner.SetValue("watermark", new ScalarFunction("watermark", ["source", "dataset"], args =>
         {
-            var wmRef = new WatermarkRef(sourceName, dataset);
+            var wmRef = new WatermarkRef(args[0], args[1]);
             watermarkRefs.Add(wmRef);
             return $"'{wmRef.Sentinel}'";
-        }));
-        globals.Inner.Import("ref", new Func<string, string>(pipelineName =>
+        }), readOnly: true);
+        globals.Inner.SetValue("ref", new ScalarFunction("ref", ["pipeline"], args =>
         {
+            var pipelineName = args[0];
             dependencies.Add(new DepRef.Pipeline(pipelineName));
             var target = ctx.Project.Pipelines.FirstOrDefault(p => p.Name == pipelineName);
             return target is { Materialization: "ephemeral" }
                 ? $"__pz_cte__{pipelineName}"
                 : $"staging.{pipelineName}";
-        }));
-        globals.Inner.Import("var", new Func<string, object?>(name =>
-            ctx.Project.Vars.TryGetValue(name, out var value)
+        }), readOnly: true);
+        globals.Inner.SetValue("var", new ScalarFunction("var", ["name"], args =>
+            ctx.Project.Vars.TryGetValue(args[0], out var value)
                 ? value
-                : throw new ScriptRuntimeException(default, $"unknown var '{name}'")));
-        globals.Inner.Import("env", new Func<string, string>(name =>
-            ctx.Env.TryGetValue(name, out var value)
+                : throw new ScriptRuntimeException(default, $"unknown var '{args[0]}'")), readOnly: true);
+        globals.Inner.SetValue("env", new ScalarFunction("env", ["name"], args =>
+            ctx.Env.TryGetValue(args[0], out var value)
                 ? value
-                : throw new ScriptRuntimeException(default, $"environment variable '{name}' is not set")));
+                : throw new ScriptRuntimeException(default, $"environment variable '{args[0]}' is not set")), readOnly: true);
         globals.Inner.SetValue("run_id", ctx.RunId, readOnly: true);
         globals.Inner.SetValue("run_started_at", ctx.RunStartedAt.ToString("O"), readOnly: true);
 

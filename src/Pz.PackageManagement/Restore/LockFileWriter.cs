@@ -13,8 +13,6 @@ public static class LockFileWriter
     /// rejected in favour of a regenerating <c>pz restore</c>.</summary>
     public const int CurrentVersion = 2;
 
-    private static readonly JsonSerializerOptions ReadOptions = new() { PropertyNameCaseInsensitive = true };
-
     public static void Write(LockFile lockFile, string path)
     {
         using var stream = File.Create(path);
@@ -77,7 +75,7 @@ public static class LockFileWriter
         VersionProbe? probe;
         try
         {
-            probe = JsonSerializer.Deserialize<VersionProbe>(bytes, ReadOptions);
+            probe = JsonSerializer.Deserialize(bytes, PackageManagementJsonContext.Default.VersionProbe);
         }
         catch (JsonException ex)
         {
@@ -104,7 +102,7 @@ public static class LockFileWriter
 
         try
         {
-            return JsonSerializer.Deserialize<LockFile>(bytes, ReadOptions)!;
+            return JsonSerializer.Deserialize(bytes, PackageManagementJsonContext.Default.LockFile)!;
         }
         catch (JsonException ex)
         {
@@ -119,5 +117,5 @@ public static class LockFileWriter
 
     /// <summary>Reads nothing but <c>version</c>, so a lock written by a different schema version is
     /// diagnosed as such rather than as malformed JSON.</summary>
-    private sealed record VersionProbe(int Version);
+    internal sealed record VersionProbe(int Version);
 }

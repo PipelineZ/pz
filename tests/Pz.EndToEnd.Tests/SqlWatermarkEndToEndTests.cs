@@ -37,7 +37,11 @@ public sealed class SqlWatermarkEndToEndTests : IClassFixture<SqlWatermarkEndToE
     private readonly PostgresFixture _fx;
     private readonly string _work = Path.Combine(Path.GetTempPath(), "pz-e2e-sqlwatermark-tests", Guid.NewGuid().ToString("N"));
 
-    public SqlWatermarkEndToEndTests(PostgresFixture fixture) => _fx = fixture;
+    public SqlWatermarkEndToEndTests(PostgresFixture fixture)
+    {
+        DockerFacts.SkipUnlessDocker();
+        _fx = fixture;
+    }
 
     public void Dispose()
     {
@@ -257,8 +261,6 @@ public sealed class SqlWatermarkEndToEndTests : IClassFixture<SqlWatermarkEndToE
     {
         private PostgreSqlContainer? _container;
 
-        public PostgresFixture() => DockerFacts.SkipUnlessDocker();
-
         public string Host { get; private set; } = "";
 
         public int Port { get; private set; }
@@ -273,6 +275,11 @@ public sealed class SqlWatermarkEndToEndTests : IClassFixture<SqlWatermarkEndToE
 
         public async Task InitializeAsync()
         {
+            if (!DockerFacts.IsAvailable)
+            {
+                return;
+            }
+
             _container = new PostgreSqlBuilder("postgres:16-alpine")
                 .WithDatabase("pz")
                 .WithUsername("pz")

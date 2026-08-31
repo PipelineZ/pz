@@ -124,12 +124,12 @@ internal static class ConnectorsCommand
         return string.Join(",", flags);
     }
 
-    /// <summary>Best-effort package attribution for a hosted connector: <c>ConnectorHost.Installed</c>
-    /// reports each connector's own self-declared name/version (see <see
+    /// <summary>Best-effort package attribution for a hosted connector: the host's <c>Installed</c>
+    /// reports each connector's manifest name and package version (see <see
     /// cref="ConnectorRegistryFactory"/>), not which restored package registered it, so this names the
     /// sole declared non-builtin package when there is exactly one (the common case), mirroring
     /// <c>ConnectorRegistryFactory.DescribePackages</c>'s same-ambiguity precedent.</summary>
-    private static string DescribeHostedPackage(PzProject project, ConnectorHost? host)
+    private static string DescribeHostedPackage(PzProject project, ConnectorHosts? host)
     {
         if (host is null)
         {

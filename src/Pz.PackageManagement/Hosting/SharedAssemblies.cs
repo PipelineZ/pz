@@ -1,9 +1,8 @@
 namespace Pz.PackageManagement.Hosting;
 
-/// <summary>Assembly names that every connector ALC resolves to the host's (default ALC) copy instead
-/// of loading privately. Keeping these unified lets <c>IConnector</c> instances, Arrow batches, and
-/// logging abstractions cross the ALC boundary without proxying or reflection gymnastics. Everything
-/// else a connector package ships is loaded privately into its own collectible ALC.</summary>
+/// <summary>Dependency ids <c>pz restore</c> never resolves or materializes into a connector
+/// package's own <c>lib/</c>: they ship with pz itself, so a package pulling its own copy could only
+/// ever disagree with the host's.</summary>
 public static class SharedAssemblies
 {
     public static readonly IReadOnlySet<string> Names = new HashSet<string>(StringComparer.OrdinalIgnoreCase)

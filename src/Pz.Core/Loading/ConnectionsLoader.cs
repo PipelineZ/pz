@@ -23,7 +23,7 @@ internal static class ConnectionsLoader
     /// <summary>Keys pz owns at connection level. A connector whose <c>ConnectionConfigSchema</c> declares
     /// one of these is refused at validation tier 3 (PZ0345) -- it could never receive it.</summary>
     internal static readonly string[] ReservedKeys =
-        ["connector", "entities", "max_concurrency", "rate_limit", "retry"];
+        ["connector", "entities", "max_concurrency", "rate_limit", "retry", "allow_unsigned_extensions"];
 
     private static readonly string[] Directions = ["read", "write"];
 
@@ -88,7 +88,8 @@ internal static class ConnectionsLoader
             connections.Add(new ConnectionDef(name, connector, config, datasets, FileName,
                 ProjectLoader.ParseRetry(block, FileName, errors, $"connection '{name}' "),
                 ProjectLoader.ParseMaxConcurrency(block, FileName, errors),
-                ProjectLoader.ParseRateLimit(block, FileName, errors))
+                ProjectLoader.ParseRateLimit(block, FileName, errors),
+                ProjectLoader.ParseAllowUnsignedExtensions(block, FileName, name, errors))
             {
                 EntityWrites = writes,
             });

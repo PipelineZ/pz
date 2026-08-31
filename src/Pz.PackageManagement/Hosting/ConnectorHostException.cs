@@ -5,6 +5,6 @@ namespace Pz.PackageManagement.Hosting;
 /// dependency graph — Pz.PackageManagement references only Pz.Connectors.Abstractions).</summary>
 public sealed class ConnectorHostException(string code, string message, string? hint = null) : Exception(message)
 {
-    public string Code { get; } = code;   // "PZ0304" | "PZ0305" | "PZ0306" | "PZ0307"
+    public string Code { get; } = code;   // "PZ0304" | "PZ0305" | "PZ0306" | "PZ0307" | "PZ0355" | "PZ0356" | "PZ0357" | "PZ0358"
     public string? Hint { get; } = hint;
 }

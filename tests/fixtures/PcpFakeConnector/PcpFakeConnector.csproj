@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- A test peer, never shipped: the host-side PCP tests spawn this executable so every one of
+         them talks to a real out-of-process connector rather than a mock. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Kestrel + Grpc.AspNetCore.Server live in the ASP.NET Core shared framework. Referencing it
+         directly (rather than switching to Microsoft.NET.Sdk.Web) keeps this a plain console
+         executable with no web-app conventions layered on top. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Pz.Connectors.Protocol\Pz.Connectors.Protocol.csproj" />
+    <ProjectReference Include="..\..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+    <ProjectReference Include="..\..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
+  </ItemGroup>
+
+</Project>

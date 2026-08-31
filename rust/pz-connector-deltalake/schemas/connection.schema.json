@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "deltalake-rs connection",
+  "type": "object",
+  "properties": {
+    "root": {
+      "type": "string",
+      "description": "Table root: an absolute local filesystem path, or an s3:// / az:// / abfss:// URI. A relative path is refused -- this connector has no project directory to anchor one against."
+    },
+    "storage_options": {
+      "type": "object",
+      "description": "Passed verbatim to delta-rs's object_store backend (e.g. AWS_REGION, AZURE_STORAGE_ACCOUNT_NAME). Values are secrets in effect; never echoed back in errors or logs.",
+      "additionalProperties": { "type": "string" }
+    }
+  },
+  "required": ["root"],
+  "additionalProperties": false
+}

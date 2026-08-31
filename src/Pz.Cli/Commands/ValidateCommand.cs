@@ -87,7 +87,7 @@ internal static class ValidateCommand
         }
 
         ConnectorRegistry registry;
-        ConnectorHost? host;
+        ConnectorHosts? host;
         try
         {
             (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck, ct);

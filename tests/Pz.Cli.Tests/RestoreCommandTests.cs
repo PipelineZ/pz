@@ -104,6 +104,9 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         Assert.Contains("restore", stderr);
     }
 
+    // The bypass is proven by what comes AFTER the skipped drift check: the run gets far enough to
+    // refuse the dotnet-runtime package itself (PZ0360, from hosting) instead of stopping at the
+    // drifted lock (PZ0321) — plus the loud warning the flag promises.
     [Fact]
     public void No_lock_check_bypasses_with_loud_warning()
     {
@@ -115,9 +118,11 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         var stderr = RunAndCaptureStderr(["run", "--project", _work, "--no-lock-check"]);
         var exit = CliApp.Build().Parse(["run", "--project", _work, "--no-lock-check"]).Invoke();
 
-        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.Equal(ExitCodes.ConfigError, exit);
         Assert.Contains("warning", stderr);
         Assert.Contains("--no-lock-check", stderr);
+        Assert.Contains("PZ0360", stderr);
+        Assert.DoesNotContain("PZ0321", stderr);
     }
 
     [Fact]
@@ -211,10 +216,6 @@ public sealed class CliLocalFeedFixture : IDisposable
         Directory.CreateDirectory(FeedDir);
         LocalFeed.Pack(FeedDir, "FakeTransitiveDep", version: null);
         LocalFeed.Pack(FeedDir, "FakeSourceConnector", "1.2.3", versionProperty: "FakeSourceConnectorVersion");
-        // A standalone fixture whose [assembly: PzConnector] name ("localfiles")
-        // collides with a builtin's registered name — used by ConnectorRegistryFactoryTests to prove the
-        // collision is rejected (PZ0305) rather than silently overwriting the trusted builtin.
-        LocalFeed.Pack(FeedDir, "FakeBuiltinCollider", version: null);
     }
 
     public void Dispose()
@@ -228,8 +229,9 @@ public sealed class CliLocalFeedFixture : IDisposable
 /// <see cref="TestCommandTests"/>, <see cref="PlanCommandTests"/>, <see cref="RetryCommandTests"/>,
 /// <see cref="InitCommandTests"/>, <see cref="RestoreCommandTests"/>, <see cref="ConnectorRegistryFactoryTests"/>,
 /// <see cref="LsCommandTests"/> and <see cref="ConnectorsCommandTests"/>)
-/// and/or the DATA_DIR/OUT_DIR environment variables (<see cref="RunCommandTests"/>,
-/// <see cref="PlanCommandTests"/>, <see cref="CompileCommandTests"/>, <see cref="LsCommandTests"/>) -- into ONE xunit collection.
+/// and/or the DATA_DIR/OUT_DIR/TMPDIR environment variables (<see cref="RunCommandTests"/>,
+/// <see cref="PlanCommandTests"/>, <see cref="CompileCommandTests"/>, <see cref="LsCommandTests"/>,
+/// <see cref="ProcessSocketRootTests"/>) -- into ONE xunit collection.
 ///
 /// xunit only serializes test CLASSES within the SAME collection; it still runs different collections
 /// (and any uncollected class) concurrently with each other. Everything that swaps this process-global

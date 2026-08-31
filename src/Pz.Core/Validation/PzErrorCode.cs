@@ -336,6 +336,63 @@ public static class PzErrorCode
     /// name. The connector reports it as a <c>PzConnectorException</c>; the planner attaches this code so it
     /// surfaces as an aggregated, exit-2 config error rather than an unexpected engine failure.</summary>
     public const string NativeScanContractMismatch = "PZ0353";
+
+    /// <summary>A process-hosted connector's <c>pz.connector.json</c> (or the host's own check of it)
+    /// leaves this host with no usable entrypoint to spawn: an unrecognized <c>runtime</c> value, a
+    /// <c>runtime: "process"</c> manifest with no <c>entrypoints</c> or none for the current RID (even
+    /// after the RuntimeIdentifierGraph fallback walk), an entrypoint path the manifest names but that
+    /// does not exist on disk, a manifest whose declared <c>runtime</c> disagrees with the out-of-process
+    /// host that is trying to load it, or a <c>runtime: "process"</c> manifest with no <c>name</c>.
+    /// Raised both by Pz.PackageManagement's <c>ManifestReader</c> (as a hardcoded literal — that
+    /// assembly must not reference Pz.Core) and by
+    /// <c>ProcessConnectorHost</c> itself; pinned by HostErrorCodeTests.</summary>
+    public const string ProcessEntrypointMissing = "PZ0354";
+
+    /// <summary>Spawn of a process-hosted connector's executable failed at launch time (exec error,
+    /// OSError, process did not start). Raised by the host spawn path; next step is to check the
+    /// executable exists, is readable, and matches the target platform. Also raised earlier, before any
+    /// spawn is attempted, when the temp directory a runless verb would host a control socket under
+    /// (<c>ProcessSocketRoot</c>'s fallback) is itself too deep to leave room for the socket path -- the
+    /// same "nothing a user could act on" failure a bind error from inside the child would otherwise be,
+    /// but caught at the one point that can still name the cause (point TMPDIR/TEMP at a shorter
+    /// directory).</summary>
+    public const string ConnectorSpawnFailed = "PZ0355";
+
+    /// <summary>Handshake between host and a process-hosted connector failed: timeout waiting for the
+    /// Hello message, malformed Hello body (not JSON or wrong schema), or mismatch between manifest
+    /// (<c>ConnectorManifest</c>) and Hello (<c>ConnectorInfo</c>) — capability flag disagreement, or name
+    /// disagreement. Raised by the host handshake phase; next step depends on which part failed (check
+    /// logs, connector readiness, and manifest/compiled capability consistency).</summary>
+    public const string ConnectorHandshakeFailed = "PZ0356";
+
+    /// <summary>Protocol violation from a process-hosted connector during data-plane operations: bad or
+    /// reused data-plane ticket issued by the planner, or malformed Arrow IPC stream from the connector's
+    /// WriteBatchAsync reply. Raised at data-plane read/write time; next step is to check connector logs
+    /// and confirm connector and host ABI versions are compatible.</summary>
+    public const string ProtocolViolation = "PZ0357";
+
+    /// <summary>A process-hosted connector's executable died unexpectedly during an operation that was in
+    /// flight. Raised by the host when an I/O or serialization failure reveals the process exited; next
+    /// step is to check the connector's exit code and stderr logs, and confirm connector stability under
+    /// the dataset being processed.</summary>
+    public const string ConnectorDiedMidOperation = "PZ0358";
+
+    /// <summary>Planner refused the native-scan tier for a dataset because a packaged DuckDB extension
+    /// (loaded into DuckDB for native scans) is unsigned and the source connection does not declare
+    /// <c>allow_unsigned_extensions: true</c>. Unsigned extensions are inherently risky (no signature
+    /// verification); the explicit allow gates them. Raised by ExecutionPlanner; next step is to sign the
+    /// extension, or add <c>allow_unsigned_extensions: true</c> to the source connection's YAML
+    /// config.</summary>
+    public const string UnsignedExtensionRefused = "PZ0359";
+
+    /// <summary>An external (non-builtin) connector package declares runtime <c>"dotnet"</c> (or ships
+    /// no manifest, which means the same) — external connectors are hosted out of process only. In-proc
+    /// loading would run third-party code with the engine's full privileges (every connection's
+    /// credentials, the state store, the staging DB); the process host is the trust and crash boundary.
+    /// Raised when the connector registry is built, aggregated over every offending package; next step
+    /// is to use a connector published as a <c>runtime: "process"</c> (PCP) package, or a builtin.</summary>
+    public const string ExternalConnectorNotOutOfProcess = "PZ0360";
+
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";

@@ -48,6 +48,18 @@ pz_packable_ids "${ROOT_DIR}"
 pz_assert_feed_matches "${FEED_DIR}"
 echo
 
+# Hybrid AOT tool packaging (see Pz.Cli.csproj): the bare solution pack above emits the `pz` POINTER
+# package, which an install can only resolve through a RID sub-package. Pack this host's Native AOT
+# sub-package -- so the install below proves the real per-platform artifact a release ships -- plus
+# the CoreCLR `any` fallback. Packed AFTER the set-equality check above, which counts one package per
+# packable project and would (rightly) refuse these extra sub-package ids.
+echo "-- Packing the host-RID Native AOT and 'any' fallback tool sub-packages --"
+HOST_RID="$(dotnet --info | sed -n 's/^ *RID: *//p' | head -1)"
+dotnet pack "${ROOT_DIR}/src/Pz.Cli" -c Release -r "${HOST_RID}" -o "${FEED_DIR}" --nologo -v quiet
+dotnet pack "${ROOT_DIR}/src/Pz.Cli" -c Release -r any -p:PublishAot=false -o "${FEED_DIR}" --nologo -v quiet
+echo "packed pz.${HOST_RID} (Native AOT) and pz.any (CoreCLR fallback)"
+echo
+
 echo "-- Writing a throwaway NuGet.Config that lists ONLY the local feed --"
 cat > "${NUGET_CONFIG}" <<EOF
 <?xml version="1.0" encoding="utf-8"?>

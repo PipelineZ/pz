@@ -130,7 +130,7 @@ public static class ConnectorConfigValidator
     /// <c>Pz.Core.Loading.ConnectionsLoader</c> because that type is internal to Pz.Core; the two lists
     /// are pinned equal by <c>ConnectorConfigValidatorTests</c>.</summary>
     private static readonly string[] ReservedConnectionKeys =
-        ["connector", "entities", "max_concurrency", "rate_limit", "retry"];
+        ["connector", "entities", "max_concurrency", "rate_limit", "retry", "allow_unsigned_extensions"];
 
     /// <summary>A connector whose ConnectionConfigSchema declares a property pz owns could never receive
     /// that key -- the loader strips reserved keys out of connector config before the connector ever
@@ -162,7 +162,8 @@ public static class ConnectorConfigValidator
             JsonElement root;
             try
             {
-                root = JsonSerializer.Deserialize<JsonElement>(schemaText);
+                using var schemaDoc = JsonDocument.Parse(schemaText);
+                root = schemaDoc.RootElement.Clone();
             }
             catch (JsonException)
             {
@@ -185,7 +186,7 @@ public static class ConnectorConfigValidator
                         $"'{property.Name}', which pz owns at connection level.",
                         connection.FilePath, null,
                         "rename the connector's property -- pz reserves connector, entities, " +
-                        "max_concurrency, rate_limit, and retry"));
+                        "max_concurrency, rate_limit, retry, and allow_unsigned_extensions"));
                 }
             }
         }
@@ -195,10 +196,21 @@ public static class ConnectorConfigValidator
         string kind, string name, string blockLabel, string filePath, List<PzError> errors,
         HashSet<string> flaggedKeys, HashSet<string> requiredFlaggedKeys)
     {
+        // An empty schema text is "this connector declares no schema for this block", not a malformed
+        // one: an out-of-process connector carries its schemas in its handshake, so one that has not been
+        // spawned yet has none to offer, and JsonSchema.FromText would fail on the empty document rather
+        // than say so. Deliberately NOT a reason to spawn a connector during validation -- the
+        // connector's own ValidateAsync (ValidateCrossFieldAsync below) is where it still gets its say
+        // about a config it has actually been handed.
+        if (string.IsNullOrEmpty(schemaText))
+        {
+            return;
+        }
+
         var schema = JsonSchema.FromText(schemaText);
         var node = YamlToJson.Convert(new Dictionary<string, object?>(values));
-        var element = JsonSerializer.Deserialize<JsonElement>(node);
-        var result = schema.Evaluate(element, new EvaluationOptions { OutputFormat = OutputFormat.List });
+        using var valuesDoc = JsonDocument.Parse(node?.ToJsonString() ?? "null");
+        var result = schema.Evaluate(valuesDoc.RootElement, new EvaluationOptions { OutputFormat = OutputFormat.List });
 
         if (result.IsValid)
         {
@@ -303,7 +315,8 @@ public static class ConnectorConfigValidator
         JsonElement root;
         try
         {
-            root = JsonSerializer.Deserialize<JsonElement>(schemaText);
+            using var schemaDoc = JsonDocument.Parse(schemaText);
+            root = schemaDoc.RootElement.Clone();
         }
         catch (JsonException)
         {

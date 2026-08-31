@@ -1010,6 +1010,29 @@ public static class ProjectLoader
         return value;
     }
 
+    /// <summary>Connection-level `allow_unsigned_extensions:` -- opts a connection's native scans/copies
+    /// out of the planner's unsigned-packaged-extension gate (PZ0359). Absent -> false (a value present
+    /// but not a bool is a loud error, never a silent false, matching the engine.force_universal
+    /// precedent in <see cref="RefuseUnreadableEngineValue"/>).</summary>
+    internal static bool ParseAllowUnsignedExtensions(Dictionary<string, object?> yaml, string relativePath,
+        string connectionName, List<PzError> errors)
+    {
+        if (!yaml.TryGetValue("allow_unsigned_extensions", out var raw) || raw is (null or ""))
+        {
+            return false;
+        }
+
+        if (raw is bool value)
+        {
+            return value;
+        }
+
+        errors.Add(new PzError(PzErrorCode.YamlShape,
+            $"{relativePath}: connection '{connectionName}' allow_unsigned_extensions must be true or false (got '{raw}').",
+            relativePath, null, "allow_unsigned_extensions: true"));
+        return false;
+    }
+
     private static List<PipelineDef> LoadPipelines(string projectDir, List<PzError> errors)
     {
         var pipelines = new List<PipelineDef>();

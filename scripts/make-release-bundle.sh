@@ -24,10 +24,20 @@ pz_packable_ids "${ROOT_DIR}"
 pz_assert_feed_matches "${FEED_DIR}"
 
 # The tool package's id is `pz`, lowercase, while every other id starts with a capital `Pz.` -- the
-# glob is case-sensitive, so it cannot pick up a connector package by accident.
-cli_nupkg="$(find "${FEED_DIR}" -maxdepth 1 -name 'pz.*.nupkg' -printf '%f\n')"
+# glob is case-sensitive, so it cannot pick up a connector package by accident. `pz.[0-9]*` pins the
+# POINTER package (hybrid AOT packaging, see Pz.Cli.csproj): the RID sub-packages packed below are
+# `pz.<rid>.<version>` and must not feed the version extraction.
+cli_nupkg="$(find "${FEED_DIR}" -maxdepth 1 -name 'pz.[0-9]*.nupkg' -printf '%f\n')"
 version="$(sed -E 's/^pz\.(.+)\.nupkg$/\1/' <<< "${cli_nupkg}")"
 echo "bundle version: ${version}"
+
+# The pointer alone is not installable: `dotnet tool install pz` resolves it to the sub-package for
+# the machine's RID. The VM this bundle targets is Windows, and a Windows Native AOT package cannot
+# be compiled from this (Linux/CI) machine -- so ship win-x64 as a self-contained CoreCLR
+# sub-package, plus the framework-dependent `any` fallback for anything else.
+echo "-- Packing pz tool sub-packages (win-x64 self-contained CoreCLR, any fallback) --"
+dotnet pack "${ROOT_DIR}/src/Pz.Cli" -c Release -r win-x64 -p:PublishAot=false -o "${FEED_DIR}" --nologo -v quiet
+dotnet pack "${ROOT_DIR}/src/Pz.Cli" -c Release -r any -p:PublishAot=false -o "${FEED_DIR}" --nologo -v quiet
 
 # The feed path is RELATIVE: NuGet resolves it against the nuget.config location, so the
 # bundle works from any extraction directory without rewriting.

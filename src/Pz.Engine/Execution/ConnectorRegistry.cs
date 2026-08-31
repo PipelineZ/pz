@@ -3,8 +3,8 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Engine.Execution;
 
-/// <summary>Host-agnostic name → connector map, filled both with builtins and from the ALC
-/// ConnectorHost. Names are the logical connector names used in source/sink YAML.
+/// <summary>Host-agnostic name → connector map, filled both with builtins and from the
+/// out-of-process connector host. Names are the logical connector names used in source/sink YAML.
 /// <see cref="Sources"/>/<see cref="Sinks"/> expose read-only enumeration
 /// views of the same backing dictionaries for reporting verbs (e.g. `pz connectors`) that need to
 /// list every registered connector rather than look one up by name.</summary>

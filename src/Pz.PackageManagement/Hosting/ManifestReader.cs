@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pz.PackageManagement.Restore;
 
 namespace Pz.PackageManagement.Hosting;
 
@@ -10,20 +11,33 @@ namespace Pz.PackageManagement.Hosting;
 /// against the project rather than against the process working directory. Opt-in and defaulted false: a
 /// manifest that says nothing receives nothing, so the option can never collide with a
 /// <c>ConnectionConfigSchema</c> that does not declare it. A connector that opts in must declare
-/// <c>base_dir</c> in that schema.</para></summary>
+/// <c>base_dir</c> in that schema.</para>
+///
+/// <para><paramref name="Runtime"/> is what the package declares about its hosting: only
+/// <c>"process"</c> is hostable (spawned from the RID-selected entry in
+/// <paramref name="Entrypoints"/> — package-relative paths, resolved via
+/// <see cref="ManifestReader.ResolveEntrypoint"/>); null and <c>"dotnet"</c> parse but are refused
+/// for external packages at registry construction (PZ0360). Any other value is a runtime this pz does
+/// not understand and is rejected at read time (PZ0354, "upgrade pz").</para></summary>
 public sealed record ConnectorManifest(
     string? Name, int ProtocolMajorMin, int ProtocolMajorMax, IReadOnlyList<string> Capabilities,
-    bool ProjectDirectoryAnchor = false);
+    bool ProjectDirectoryAnchor = false, string? Runtime = null,
+    IReadOnlyDictionary<string, string>? Entrypoints = null)
+{
+    /// <summary>RID → package-relative entrypoint path. Never null, even when <see cref="Runtime"/> is
+    /// null/<c>"dotnet"</c> (empty in that case) — callers never null-check it.</summary>
+    public IReadOnlyDictionary<string, string> Entrypoints { get; init; } = Entrypoints ?? EmptyEntrypoints;
 
-/// <summary>Reads a connector package's <c>pz.connector.json</c> manifest, if any, WITHOUT loading any
-/// assembly — this is what lets <see cref="ConnectorHost.LoadFromDirectory"/> reject an
-/// incompatible-protocol package before creating an <see cref="ConnectorLoadContext"/> at all.</summary>
+    private static readonly IReadOnlyDictionary<string, string> EmptyEntrypoints =
+        new Dictionary<string, string>();
+}
+
+/// <summary>Reads a connector package's <c>pz.connector.json</c> manifest, if any — one small JSON
+/// read, which is what lets the host reject an incompatible package before anything is spawned.</summary>
 public static class ManifestReader
 {
-    private static readonly JsonSerializerOptions Options = new() { PropertyNameCaseInsensitive = true };
-
     /// <summary>Reads <c>&lt;packageDir&gt;/pz.connector.json</c>. Returns null when the file is absent
-    /// (the warn-and-attempt seam in <see cref="ConnectorHost"/> handles that case). A present-but-broken
+    /// (the caller owns deciding what an absent manifest means). A present-but-broken
     /// manifest — malformed JSON, or a <c>protocolMajorMin</c> greater than <c>protocolMajorMax</c> —
     /// signals a broken package and throws <see cref="ConnectorHostException"/> PZ0306 rather than
     /// silently ignoring it.</summary>
@@ -39,14 +53,14 @@ public static class ManifestReader
         try
         {
             var bytes = File.ReadAllBytes(path);
-            dto = JsonSerializer.Deserialize<ManifestDto>(bytes, Options);
+            dto = JsonSerializer.Deserialize(bytes, PackageManagementJsonContext.Default.ManifestDto);
         }
         catch (JsonException ex)
         {
             throw new ConnectorHostException(
                 "PZ0306",
                 $"pz.connector.json at '{path}' is malformed: {ex.Message}",
-                "fix the manifest JSON, or remove the file to fall back to the no-manifest warn-and-load path");
+                "fix the manifest JSON, or rebuild the connector package");
         }
 
         if (dto is null)
@@ -54,7 +68,7 @@ public static class ManifestReader
             throw new ConnectorHostException(
                 "PZ0306",
                 $"pz.connector.json at '{path}' is malformed: empty or 'null' JSON document",
-                "fix the manifest JSON, or remove the file to fall back to the no-manifest warn-and-load path");
+                "fix the manifest JSON, or rebuild the connector package");
         }
 
         if (dto.ProtocolMajorMin > dto.ProtocolMajorMax)
@@ -65,17 +79,113 @@ public static class ManifestReader
                 "fix the manifest's protocolMajorMin/protocolMajorMax ordering");
         }
 
+        if (dto.Runtime is not (null or "dotnet" or "process"))
+        {
+            throw new ConnectorHostException(
+                "PZ0354",
+                $"pz.connector.json at '{path}' declares unknown runtime '{dto.Runtime}'",
+                "upgrade pz to a version that understands this connector's runtime, or pin an older connector version");
+        }
+
+        if (dto.Runtime == "process" && (dto.Entrypoints is null || dto.Entrypoints.Count == 0))
+        {
+            throw new ConnectorHostException(
+                "PZ0354",
+                $"pz.connector.json at '{path}' declares runtime 'process' but no entrypoints",
+                "fix the manifest's entrypoints map (RID -> package-relative binary path), or rebuild the connector package");
+        }
+
         return new ConnectorManifest(
             dto.Name, dto.ProtocolMajorMin, dto.ProtocolMajorMax, dto.Capabilities ?? [],
-            dto.ProjectDirectoryAnchor);
+            dto.ProjectDirectoryAnchor, dto.Runtime, dto.Entrypoints);
     }
 
-    private sealed class ManifestDto
+    /// <summary>Resolves <paramref name="rid"/> against <paramref name="manifest"/>'s <c>entrypoints</c>
+    /// map to an absolute binary path, walking <see cref="RuntimeIdentifierGraph"/>'s fallback ancestry
+    /// when there is no exact match (so a package shipping only <c>linux-x64</c> is still reachable from
+    /// <c>linux-musl-x64</c>). Throws <see cref="ConnectorHostException"/> PZ0354 when nothing in the
+    /// fallback chain has an entry, or when the resolved path escapes <paramref name="packageDir"/> — a
+    /// manifest is package-supplied content, and an absolute or <c>..</c>-laden entrypoint path would
+    /// otherwise let it name (and this method's caller then chmod +x) a file anywhere on disk.
+    ///
+    /// <para>Every caller that resolves an entrypoint needs it to actually be spawnable — the process
+    /// host, before its first <c>OpenAsync</c>, and <c>pz connector test</c>'s own target resolution —
+    /// so this is the one place both paths go through, and the one place that guarantees it, rather than
+    /// leaving each caller to remember.</para></summary>
+    public static string ResolveEntrypoint(ConnectorManifest manifest, string packageDir, string rid)
+    {
+        foreach (var candidate in RuntimeIdentifierGraph.Expand(rid))
+        {
+            if (manifest.Entrypoints.TryGetValue(candidate, out var relativePath))
+            {
+                var entrypoint = Path.GetFullPath(Path.Combine(packageDir, relativePath));
+                if (!IsWithinPackageDirectory(packageDir, entrypoint))
+                {
+                    throw new ConnectorHostException(
+                        "PZ0354",
+                        $"connector package '{manifest.Name ?? packageDir}' declares an entrypoint '{relativePath}' for RID '{candidate}' that resolves outside the package directory",
+                        "fix the manifest's entrypoints map to use package-relative paths only, or rebuild the connector package");
+                }
+
+                EnsureExecutable(entrypoint);
+                return entrypoint;
+            }
+        }
+
+        throw new ConnectorHostException(
+            "PZ0354",
+            $"connector package '{manifest.Name ?? packageDir}' ships no binary for RID '{rid}'",
+            $"this connector ships no binary for {rid}; add an entrypoints entry for it, or restore a build that supports this platform");
+    }
+
+    /// <summary>Whether <paramref name="fullPath"/> resolves to a location at or under
+    /// <paramref name="packageDir"/> — both compared as full paths so a manifest's <c>..</c> segments or
+    /// an outright absolute path cannot resolve to something outside the package this manifest came
+    /// from.</summary>
+    private static bool IsWithinPackageDirectory(string packageDir, string fullPath)
+    {
+        var root = Path.GetFullPath(packageDir);
+        var rootWithSeparator = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return fullPath.StartsWith(rootWithSeparator, comparison);
+    }
+
+    /// <summary>A restored package's entrypoint often reaches disk with the Unix executable bit
+    /// missing: a <c>.nupkg</c> is a zip archive, and neither <c>NuGet.Packaging.PackageBuilder</c> nor
+    /// a plain zip writer sets the Unix executable permission in an entry's external attributes unless a
+    /// packer goes out of its way to (the same reason <c>dotnet tool install</c> has always had to chmod
+    /// its own tool binaries after extraction). Silent no-op when the path does not exist (yet) or on
+    /// Windows (no such concept) — callers still own reporting a missing entrypoint as PZ0354 themselves,
+    /// this only ever ACTS on a file that is actually there.
+    ///
+    /// <para>Owner-execute only: the cache entry a restored package's <c>native/</c> asset lives in
+    /// (<c>PackageMaterializer</c>'s content-addressed cache) is shared across every project that
+    /// restores the same package, but nothing needs group/other execute to run it — the pz process tree
+    /// always runs as the one user that did the restore.</para></summary>
+    private static void EnsureExecutable(string entrypoint)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(entrypoint))
+        {
+            return;
+        }
+
+        var mode = File.GetUnixFileMode(entrypoint);
+        var executable = mode | UnixFileMode.UserExecute;
+        if (executable != mode)
+        {
+            File.SetUnixFileMode(entrypoint, executable);
+        }
+    }
+
+    internal sealed class ManifestDto
     {
         public string? Name { get; set; }
         public int ProtocolMajorMin { get; set; }
         public int ProtocolMajorMax { get; set; }
         public List<string>? Capabilities { get; set; }
         public bool ProjectDirectoryAnchor { get; set; }
+        public string? Runtime { get; set; }
+        public Dictionary<string, string>? Entrypoints { get; set; }
     }
 }

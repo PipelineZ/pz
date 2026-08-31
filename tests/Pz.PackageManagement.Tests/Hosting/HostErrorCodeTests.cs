@@ -11,6 +11,13 @@ public class HostErrorCodeTests
         Assert.Equal("PZ0305", PzErrorCode.ConnectorNotInstalled);
         Assert.Equal("PZ0306", PzErrorCode.ProtocolMismatch);
         Assert.Equal("PZ0307", PzErrorCode.NoConnectorEntryPoint);
+        Assert.Equal("PZ0354", PzErrorCode.ProcessEntrypointMissing);
+        Assert.Equal("PZ0355", PzErrorCode.ConnectorSpawnFailed);
+        Assert.Equal("PZ0356", PzErrorCode.ConnectorHandshakeFailed);
+        Assert.Equal("PZ0357", PzErrorCode.ProtocolViolation);
+        Assert.Equal("PZ0358", PzErrorCode.ConnectorDiedMidOperation);
+        Assert.Equal("PZ0359", PzErrorCode.UnsignedExtensionRefused);
+        Assert.Equal("PZ0360", PzErrorCode.ExternalConnectorNotOutOfProcess);
     }
 
     // Restore/DriftChecker/ConnectorRegistryFactory raise RestoreException/PzValidationException

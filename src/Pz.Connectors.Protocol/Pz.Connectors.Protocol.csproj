@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Generated gRPC/protobuf code for the PCP wire format; not a connector-authoring surface. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.36.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.83.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- GrpcServices="Both": the host needs the client, the C# fake-connector fixture needs the server base. -->
+    <Protobuf Include="pz_connector.proto" GrpcServices="Both" />
+  </ItemGroup>
+
+</Project>

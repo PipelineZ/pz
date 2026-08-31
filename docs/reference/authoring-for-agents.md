@@ -216,6 +216,50 @@ from {{ source('github', 'issues') }}
 An incremental source feeding `replace` is refused outright (`PZ0335`, no consent escape — a
 partial extraction would silently truncate the target). `merge` is effectively-once regardless.
 
+## Out-of-process connectors (PCP)
+
+Every external (non-builtin) connector package hosts its connector as a separate OS process —
+in-process loading is reserved for builtins — declared in the package's `pz.connector.json`:
+
+- `runtime: "process"` — required for external packages; a package declaring `"dotnet"` (or
+  shipping no manifest, which means the same) is refused with `PZ0360`.
+- `entrypoints` — a RID → package-relative binary path map, e.g.
+  `{"linux-x64": "runtimes/linux-x64/native/pz-mysink", "win-x64": "runtimes/win-x64/native/pz-mysink.exe"}`.
+  Resolved with `RuntimeIdentifierGraph` fallback (a package shipping only `linux-x64` is still
+  reachable from `linux-musl-x64`), and rejected if a path would resolve outside the package
+  directory.
+
+This is packaging-time detail an agent authoring `connections.yml`/pipelines never touches
+directly — the connector's `connector:` name in `connections.yml` and its `ConnectionConfigSchema`/
+`DatasetConfigSchema` (from `pz_connector_reference`) look identical either way.
+
+**`allow_unsigned_extensions:`** — a connection-level key, alongside `connector`/`entities`/
+`max_concurrency`/`rate_limit`/`retry`, default `false`. A native scan/copy that would load an
+unsigned packaged DuckDB extension is refused at plan time (`PZ0359`) unless the connection sets
+`allow_unsigned_extensions: true`.
+
+**PCP error codes:**
+
+| Code | Meaning |
+|---|---|
+| `PZ0354` | No usable entrypoint for this host: unknown `runtime`, no `entrypoints` (or none reachable for this RID), an entrypoint path that is missing or resolves outside the package directory, or a `runtime: "process"` manifest with no `name`. |
+| `PZ0355` | The connector executable failed to spawn (exec error, missing/non-executable binary, or no room for a socket path under the temp root). |
+| `PZ0356` | Handshake with the spawned connector failed: timeout waiting for `Hello`, malformed `Hello`, or a capability/name mismatch against the manifest. |
+| `PZ0357` | Protocol violation during data-plane operations (bad/reused write ticket, malformed Arrow IPC stream). |
+| `PZ0358` | The connector process died unexpectedly mid-operation. |
+| `PZ0359` | An unsigned packaged DuckDB extension was refused for a native scan/copy; set `allow_unsigned_extensions: true` on the connection to allow it. |
+| `PZ0360` | An external connector package declares runtime `"dotnet"` (or ships no manifest) — external connectors are hosted out of process only. Use a `runtime: "process"` (PCP) package or a builtin. |
+
+**`pz connector test <entrypoint-or-package-dir> [--config file.yml]`** — runs black-box PCP
+protocol conformance checks against one out-of-process connector, independent of any pz project.
+The target is a package directory containing `pz.connector.json` or a bare entrypoint binary;
+`--config` names the connection to configure and the `read:`/`write:` dataset(s) to probe (a
+`connection:` block plus optional `read: { dataset: ... }` and/or `write: { output: ..., mode: ...,
+schema_policy: ... }`). Every applicable vector runs regardless of earlier failures, printed as one
+`PASS`/`FAIL`/`SKIP <vector>[: detail]` line each. Exit codes: `0` every applicable vector passed,
+`1` one or more vectors failed, `2` a config/usage problem (bad target, malformed manifest or
+`--config`) meant no vector could even be attempted.
+
 ## Recommended tool loop
 
 1. **Reference** — read this guide and the relevant `docs/concepts/*.md`/`docs/how-to/*.md`

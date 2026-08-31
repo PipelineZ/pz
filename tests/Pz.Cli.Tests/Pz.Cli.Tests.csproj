@@ -9,6 +9,7 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
   </ItemGroup>
 
   <ItemGroup>
@@ -21,6 +22,11 @@
     <ProjectReference Include="..\..\src\Pz.Diagnostics\Pz.Diagnostics.csproj" />
     <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
+    <!-- Build-order only (ReferenceOutputAssembly=false): ConnectorTestCommandTests spawns the
+         fixture's apphost off disk as a connector package's entrypoint, so it must exist before this
+         suite runs; nothing here references its assembly. Mirrors Pz.EndToEnd.Tests' identical
+         reference. -->
+    <ProjectReference Include="..\fixtures\PcpFakeConnector\PcpFakeConnector.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

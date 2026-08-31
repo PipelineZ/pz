@@ -77,7 +77,7 @@ internal static class CdcCommand
     {
         PzProject project;
         ConnectorRegistry registry;
-        Pz.PackageManagement.Hosting.ConnectorHost? host;
+        Pz.PackageManagement.Hosting.ConnectorHosts? host;
         StateBackends backends;
         try
         {
@@ -207,7 +207,7 @@ internal static class CdcCommand
 
         PzProject project;
         ConnectorRegistry registry;
-        Pz.PackageManagement.Hosting.ConnectorHost? host;
+        Pz.PackageManagement.Hosting.ConnectorHosts? host;
         StateBackends backends;
         try
         {

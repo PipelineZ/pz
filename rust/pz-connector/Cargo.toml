@@ -1,0 +1,40 @@
+[package]
+name = "pz-connector"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "SDK for writing PipelineZ (pz) out-of-process connectors (PCP) in Rust."
+
+[dependencies]
+tonic = "0.12"
+prost = "0.13"
+prost-types = "0.13"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+# arrow-rs treats every release as a new major version, so two different pins never unify in one
+# Cargo.lock: the RecordBatch/SchemaRef types this crate's trait surface exposes would silently
+# stop being the same nominal type as the ones a delta-rs-based connector produces. This pin must
+# equal whatever arrow major the deltalake dependency in rust/pz-connector-deltalake's Cargo.toml
+# resolves to -- one arrow version for the whole workspace is what keeps that connector (and any
+# future delta-rs-based one) free of cross-version Arrow FFI bridging code.
+arrow = { version = "58", default-features = false, features = ["ipc"] }
+async-trait = "0.1"
+serde_json = { version = "1", features = ["preserve_order"] }
+getrandom = "0.2"
+anyhow = "1"
+thiserror = "1"
+
+[dev-dependencies]
+tempfile = "3"
+# test-util (tokio::time::pause/advance) is deliberately not enabled in [dependencies] -- it changes
+# the runtime's own clock behavior, and no code this crate ships to connector authors may depend on
+# that. Tests get it because Cargo unifies feature sets across dependency/dev-dependency edges of the
+# same crate for test builds only.
+tokio = { version = "1", features = ["test-util"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[[example]]
+name = "memory_sink"
+path = "examples/memory_sink.rs"

@@ -8,10 +8,16 @@ namespace Pz.Core.Model;
 ///
 /// <paramref name="Datasets"/> is the read side, loaded from YAML. <see cref="Outputs"/> is the write
 /// side, synthesized by <c>DagCompiler</c> from the sink() call sites — hence an init-only property
-/// with an empty default rather than a positional parameter: the loader never fills it.</summary>
+/// with an empty default rather than a positional parameter: the loader never fills it.
+///
+/// <paramref name="AllowUnsignedExtensions"/> opts this connection's native scans/copies out of the
+/// planner's unsigned-packaged-extension gate (PZ0359, <c>Pz.Engine.Planning.ExecutionPlanner</c>) --
+/// a `LOAD '&lt;path&gt;'` setup statement DuckDB never signature-verifies, as opposed to a bare
+/// `LOAD &lt;name&gt;` resolved from DuckDB's own signed repository.</summary>
 public sealed record ConnectionDef(string Name, string Connector,
     IReadOnlyDictionary<string, object?> Connection, IReadOnlyList<DatasetDef> Datasets, string FilePath,
-    RetryDef? Retry = null, int? MaxConcurrency = null, RateLimitDef? RateLimit = null)
+    RetryDef? Retry = null, int? MaxConcurrency = null, RateLimitDef? RateLimit = null,
+    bool AllowUnsignedExtensions = false)
 {
     public IReadOnlyList<OutputDef> Outputs { get; init; } = [];
 

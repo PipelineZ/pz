@@ -64,12 +64,40 @@ public class ConnectionsLoaderTests
               max_concurrency: 4
               rate_limit: { requests_per_minute: 600 }
               retry: { max_attempts: 3 }
+              allow_unsigned_extensions: true
             """).Connections);
 
         Assert.Equal(4, connection.MaxConcurrency);
         Assert.Equal(600, connection.RateLimit!.RequestsPerMinute);
         Assert.Equal(3, connection.Retry!.MaxAttempts);
+        Assert.True(connection.AllowUnsignedExtensions);
         Assert.Equal(["host"], connection.Connection.Keys);
+    }
+
+    [Fact]
+    public void Allow_unsigned_extensions_defaults_to_false()
+    {
+        var connection = Assert.Single(Load("""
+            warehouse:
+              connector: postgres
+              host: h
+            """).Connections);
+
+        Assert.False(connection.AllowUnsignedExtensions);
+    }
+
+    [Fact]
+    public void Allow_unsigned_extensions_must_be_a_bool()
+    {
+        var error = Assert.Single(Errors("""
+            warehouse:
+              connector: postgres
+              host: h
+              allow_unsigned_extensions: yolo
+            """), e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("warehouse", error.Message, StringComparison.Ordinal);
+        Assert.Contains("allow_unsigned_extensions", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]

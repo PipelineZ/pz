@@ -48,7 +48,7 @@ public sealed class PackageManifestsTests
         Assert.Empty(PackageManifests.AnchoredConnectorNames(
             Path.Combine(Path.GetTempPath(), "pz-tests", "absent-" + Guid.NewGuid().ToString("N"))));
 
-    /// <summary>A broken manifest IS an error, but ConnectorHost owns reporting it with its own code and
+    /// <summary>A broken manifest IS an error, but the connector host owns reporting it with its own code and
     /// hint when it loads the package. Throwing here would replace that message with one raised earlier
     /// that explains less — and would fail every verb's project load, including verbs that never touch
     /// the package.</summary>

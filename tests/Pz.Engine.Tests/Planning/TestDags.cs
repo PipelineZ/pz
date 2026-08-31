@@ -235,4 +235,44 @@ internal static class TestDags
 
         return (new CompiledDag([sinkNode]), registry);
     }
+
+    /// <summary>Sink-only single-node DAG (no source/pipeline) for the unsigned-packaged-extension gate
+    /// (PZ0359) tests: one <see cref="ConnectionDef"/> instance carrying <paramref name="allowUnsignedExtensions"/>,
+    /// feeding a caller-supplied sink connector so each test can set the exact `LOAD` setup statement it
+    /// wants to probe. Sink-only shape mirrors <see cref="DagAndRegistryWithStubSinkRateLimit"/>.</summary>
+    public static (CompiledDag Dag, ConnectorRegistry Registry) DagAndRegistryWithStubSinkSetup(
+        ISinkConnector sink, bool allowUnsignedExtensions)
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub", sink);
+
+        var sinkDef = new ConnectionDef("stub_sink", "stub", new Dictionary<string, object?>(), [],
+            "sinks/stub.yml", AllowUnsignedExtensions: allowUnsignedExtensions)
+        {
+            Outputs = [new OutputDef("out", "stg_orders", "replace", "fail_on_change", new Dictionary<string, object?>())],
+        };
+        var sinkNode = new DagNode(new NodeId("sink-ext-00"), NodeKind.SinkWrite, "stub.out",
+            [], null, new SinkOutputDef(sinkDef, sinkDef.Outputs[0]));
+
+        return (new CompiledDag([sinkNode]), registry);
+    }
+
+    /// <summary>Source-only single-node DAG (no pipeline/sink), the source-side mirror of
+    /// <see cref="DagAndRegistryWithStubSinkSetup"/> -- carries <paramref name="allowUnsignedExtensions"/>
+    /// on the source's <see cref="ConnectionDef"/> and a caller-supplied source connector so a test can set
+    /// the exact `LOAD` setup statement its <see cref="NativeScan"/> reports.</summary>
+    public static (CompiledDag Dag, ConnectorRegistry Registry) DagAndRegistryWithStubSourceSetup(
+        ISourceConnector source, bool allowUnsignedExtensions)
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", source);
+
+        var dataset = new DatasetDef("orders", new Dictionary<string, object?>(), null);
+        var sourceDef = new ConnectionDef("stub_source", "stub", new Dictionary<string, object?>(), [dataset],
+            "sources/stub.yml", AllowUnsignedExtensions: allowUnsignedExtensions);
+        var loadNode = new DagNode(new NodeId("src-ext-00"), NodeKind.SourceLoad, "src_stub__orders",
+            [], null, new SourceDatasetDef(sourceDef, dataset));
+
+        return (new CompiledDag([loadNode]), registry);
+    }
 }
