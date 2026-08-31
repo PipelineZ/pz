@@ -100,9 +100,13 @@
     <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
     <!-- The per-assembly rollup codes only; every other IL warning still errors, so a first-party
          regression cannot hide behind this. MSBuildWarningsNotAsErrors is what reaches warnings the
-         ILC Exec task raises through the engine rather than the compiler. -->
-    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
-    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053</MSBuildWarningsNotAsErrors>
+         ILC Exec task raises through the engine rather than the compiler. IL3002 joins the list for
+         one third-party site: Google.Apis' VersionHeaderBuilder probes Assembly.CodeBase/GetFiles
+         to build its version header and already catches the single-file throw at runtime
+         (degrading to a null version). First-party code cannot hide here either, because the
+         single-file analyzer errors at compile time before ILC ever runs. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053;IL3002</WarningsNotAsErrors>
+    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053;IL3002</MSBuildWarningsNotAsErrors>
   </PropertyGroup>
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <!-- NuGet's JSON layer is Newtonsoft reflection over its own DTOs; `pz restore` depends on it. -->
@@ -112,6 +116,13 @@
     <!-- SqlClient reaches config/crypto members reflectively; the state backend and connector need it. -->
     <TrimmerRootAssembly Include="Microsoft.Data.SqlClient" />
     <TrimmerRootAssembly Include="System.Configuration.ConfigurationManager" />
+    <!-- The Google stack serializes its request/response DTOs via Newtonsoft reflection; the gcs
+         connector's universal write tier needs those members to survive trimming. -->
+    <TrimmerRootAssembly Include="Google.Apis" />
+    <TrimmerRootAssembly Include="Google.Apis.Core" />
+    <TrimmerRootAssembly Include="Google.Apis.Auth" />
+    <TrimmerRootAssembly Include="Google.Apis.Storage.v1" />
+    <TrimmerRootAssembly Include="Google.Cloud.Storage.V1" />
   </ItemGroup>
 
 </Project>
