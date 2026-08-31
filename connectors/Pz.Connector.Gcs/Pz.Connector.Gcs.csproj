@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Google Cloud Storage source and sink connector (DuckDB httpfs gcs native tier + Google.Cloud.Storage universal write tier) for PipelineZ (pz).</Description>
+    <!-- Builtin connector, ships inside the Pz.Cli tool package: see the note in
+         Pz.Connector.LocalFiles.csproj for why a separate nupkg would be unconsumable. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Cloud.Storage.V1" Version="4.13.0" />
+    <PackageReference Include="Parquet.Net" Version="6.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Connector.Gcs.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same packaging note as the other builtins: Pack+PackagePath only, no
+         CopyToOutputDirectory (all builtin connectors are bundled into the pz tool
+         package; output-relative copies would collide, NETSDK1152). -->
+    <None Include="pz.connector.json" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>
