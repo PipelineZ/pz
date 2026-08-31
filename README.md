@@ -1,4 +1,4 @@
-# [PipelineZ (`pz`)](https://pipelinez.dev)
+<a href="https://pipelinez.dev"><img src="assets/brand/pz-logo.svg" alt="PipelineZ" height="48"></a>
 
 **Write SQL. Get a data pipeline. Run it anywhere.**
 
