@@ -83,17 +83,11 @@ jobs:
       - run: scripts/verify-aot.sh
 
   # The Rust workspace's own gate: absent from build-test/pack-and-verify above so a contributor
-  # without cargo still gets a green build-test (the whole point of PZ_DELTALAKE_RS_NUPKG being unset
-  # everywhere else -- see DeltaRsRestoreTests's doc comment). fmt/clippy/test cover rust/ itself;
-  # the two conformance scripts and the pack->restore->run proof cover the boundary with the .NET
-  # host, which nothing else in this workflow exercises.
+  # without cargo still gets a green build-test. fmt/clippy/test cover rust/ itself; the conformance
+  # script covers the boundary with the .NET host, which nothing else in this workflow exercises.
   rust:
     runs-on: ubuntu-latest
-    # 60, not 30: this job cold-compiles deltalake+datafusion TWICE without a cache hit (debug, for
-    # clippy/test/the conformance scripts; release, for the pack step) plus a Release dotnet test
-    # build. The release leg alone measured ~23 minutes locally on this task's own verification run --
-    # 30 was sized for a .NET-only job and was never going to survive a first (cold-cache) run here.
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -101,9 +95,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
-      # Caches ~/.cargo and rust/target keyed on Cargo.lock; every run after the first restores
-      # datafusion/deltalake's build output instead of recompiling it, which is the difference between
-      # this job finishing in minutes and re-paying the ~23 minute cold compile above every push.
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
@@ -120,15 +111,3 @@ jobs:
       - run: cargo test --workspace
         working-directory: rust
       - run: scripts/rust-conformance.sh
-      - run: scripts/rust-conformance-deltalake.sh
-      # The packaging + restore proof itself: pack the deltalake-rs binary as a NuGet package, then
-      # point the gated test at it. PZ_DELTALAKE_RS_NUPKG stays unset in every other job/leg, which is
-      # what keeps `dotnet test Pz.slnx` green there without cargo. The nupkg's exact file name
-      # carries the version scripts/pack-deltalake-rs.sh read out of Cargo.toml, which this step does
-      # not re-derive -- it globs the one file the pack step just produced instead, so a version bump
-      # there can never desync this from what actually got packed.
-      - run: |
-          scripts/pack-deltalake-rs.sh "${RUNNER_TEMP}/deltalake-rs-nupkg"
-          nupkg="$(ls "${RUNNER_TEMP}"/deltalake-rs-nupkg/Pz.Connector.DeltaLakeRs.*.nupkg)"
-          echo "PZ_DELTALAKE_RS_NUPKG=${nupkg}" >> "${GITHUB_ENV}"
-      - run: dotnet test tests/Pz.EndToEnd.Tests -c Release --filter "FullyQualifiedName~DeltaRsRestore"

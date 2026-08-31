@@ -1,7 +1,0 @@
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "deltalake-rs output options",
-  "description": "This connector needs no output-level options beyond the standard OutputSpec fields (mode, keys, partition_by) every write already carries -- there is nothing deltalake-rs-specific to declare here in v1.",
-  "type": "object",
-  "additionalProperties": true
-}
