@@ -1,5 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
+using Apache.Arrow.Types;
+using Google.Cloud.Storage.V1;
 using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Gcs;
@@ -8,11 +10,24 @@ namespace Pz.Connector.Gcs;
 /// non-partitioned output is a native DuckDB COPY over httpfs with the scoped sink secret (the s3
 /// shapes over <c>gs://</c>) and the universal tier is the clear refusal; under service_account/adc
 /// there is no DuckDB secret at all, so native is declined and writes ride SDK-backed universal
-/// write sessions. Partitioned (<c>partition_by</c>) outputs decline native under every method — a
-/// single COPY ... TO cannot express a per-row-value fan-out (the azure rule).</summary>
-internal sealed class GcsSink(ConnectorConfig config) : ISink
+/// spool-then-atomic-upload write sessions (<see cref="GcsWriteSession"/>). Partitioned
+/// (<c>partition_by</c>) outputs decline native under every method — a single COPY ... TO cannot
+/// express a per-row-value fan-out (the azure rule).
+///
+/// GatedOperations: the engine calls <see cref="UseOperationGate"/> exactly once after this sink is
+/// opened, before any <see cref="BeginWriteAsync"/> call; the stored gate threads into every session
+/// so each discrete upload op routes through it. Native COPY is unaffected (out of .NET reach).
+/// The client factory seam exists for the test suites (an emulator-backed or fake client); the
+/// production path always resolves through <see cref="GcsAuth.CreateStorageClient"/>, lazily so a
+/// native-only (hmac) sink never constructs one.</summary>
+internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clientFactory = null)
+    : ISink, IOperationGateAware
 {
     private static readonly string[] ValidFormats = ["parquet", "csv", "json"];
+    private StorageClient? _client;
+    private IOperationGate? _gate;
+
+    public void UseOperationGate(IOperationGate gate) => _gate = gate;
 
     public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
     {
@@ -42,7 +57,7 @@ internal sealed class GcsSink(ConnectorConfig config) : ISink
         return true;
     }
 
-    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
+    public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
         if (GcsAuth.IsHmac(config))
         {
@@ -52,7 +67,72 @@ internal sealed class GcsSink(ConnectorConfig config) : ISink
                 isTransient: false);
         }
 
-        throw new NotSupportedException("gcs universal write sessions are not implemented yet");
+        var (format, objectName) = ResolveObjectName(spec);
+        var (bucket, prefix) = ResolvePrefix(spec);
+        var client = _client ??= (clientFactory ?? (() => GcsAuth.CreateStorageClient(config)))();
+
+        // Partitioned output routes rows into per-day folders; validate the partition column and build a
+        // folder->inner-session fan-out session instead of a single-object session. Exactly one column:
+        // this connector renders pz's calendar tokens from a timestamp column, and DagCompiler's PZ0219
+        // has already refused a multi-column partition_by against a templated path. The folder template
+        // is the full key prefix (root prefix + templated path), so each rendered folder lands at
+        // <renderedFolder>/<objectName> -- sharing the exact object name the single-object path uses so
+        // replace/append naming is identical per folder.
+        if (PartitionColumns.Read(spec.Options) is [var partitionBy])
+        {
+            var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
+
+            ValueTask<ISinkWriteSession> Open(string folder)
+            {
+                var trimmed = folder.Trim('/');
+                var key = trimmed.Length > 0 ? $"{trimmed}/{objectName}" : objectName;
+                return OpenSessionAsync(client, format, bucket, key, schema, ct);
+            }
+
+            return new GcsPartitionedWriteSession(Open, prefix, partitionColIndex, schema);
+        }
+
+        var singleKey = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
+        return await OpenSessionAsync(client, format, bucket, singleKey, schema, ct).ConfigureAwait(false);
+    }
+
+    private async ValueTask<ISinkWriteSession> OpenSessionAsync(
+        StorageClient client, string format, string bucket, string key, Schema schema, CancellationToken ct) =>
+        format switch
+        {
+            "parquet" => await GcsParquetWriteSession.CreateAsync(client, bucket, key, schema, ct, _gate)
+                .ConfigureAwait(false),
+            "csv" => GcsCsvWriteSession.Create(client, bucket, key, schema, _gate),
+            "json" => GcsJsonWriteSession.Create(client, bucket, key, _gate),
+            _ => throw new InvalidOperationException("unreachable: format already validated by ResolveObjectName"),
+        };
+
+    /// <summary>Runtime fail-fast for the partition column: it must exist in the write schema AND be a
+    /// timestamp/date Arrow type. Same shape as the azure/postgres pre-checks -- permanent, names the
+    /// output and column, thrown before any resource is opened.</summary>
+    private static int ResolvePartitionColumn(string output, Schema schema, string partitionBy)
+    {
+        var fields = schema.FieldsList;
+        for (var i = 0; i < fields.Count; i++)
+        {
+            if (!string.Equals(fields[i].Name, partitionBy, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (fields[i].DataType.TypeId is not (ArrowTypeId.Timestamp or ArrowTypeId.Date32))
+            {
+                throw new PzConnectorException(
+                    $"output '{output}': partition_by column '{partitionBy}' is not a timestamp/date column " +
+                    $"(got '{fields[i].DataType}')", isTransient: false);
+            }
+
+            return i;
+        }
+
+        throw new PzConnectorException(
+            $"output '{output}': partition_by column '{partitionBy}' is not present in the write schema",
+            isTransient: false);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
