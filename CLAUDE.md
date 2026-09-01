@@ -104,7 +104,7 @@ DuckDB is the buffer manager — the .NET side only ever holds in-flight Arrow b
 | `src/Pz.State.Http` | pluggable state backend: `IKeyedStateStore` over a server's run-scoped HTTP state endpoints (ETag/`If-Match` CAS), keyed state only — referenced directly by `Pz.Cli` |
 | `src/Pz.State.SqlServer` | pluggable state backend: `IKeyedStateStore`/`IRunArtifactStore` over SQL Server, schema creation/migration, batched event persistence — referenced directly by `Pz.Cli`, not loaded as a connector |
 | `src/Pz.Mcp` | the `pz mcp` verb's server: 22 typed tools (introspect/verify/author/docs always registered, `pz_run`/`pz_retry`/`pz_run_results` only under `--allow-run`) — referenced directly by `Pz.Cli`, not loaded as a connector |
-| `connectors/` | first-party connectors: LocalFiles, Postgres, S3, SqlServer, AzureBlob, Http, MySql, Sqlite |
+| `connectors/` | first-party connectors: LocalFiles, Postgres, S3, SqlServer, AzureBlob, Gcs, Http, MySql, Sqlite, Sftp |
 
 `templates/` holds real, in-place-runnable projects that are simultaneously the browsable examples
 and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
@@ -130,8 +130,9 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   are the only in-process connectors. The collectible-ALC host is deleted, and the CLI ships
   **Native AOT**: hybrid RID-specific tool packaging (`pz.<rid>` AOT sub-packages for
   linux-x64/linux-arm64/win-x64/osx-arm64 + a CoreCLR `pz.any` fallback, pointer package `pz`).
-  First-party code stays at zero trim/AOT warnings (analyzers error); the six third-party
-  assemblies whose internals warn are runtime-proven by `scripts/verify-aot.sh` (a CI gate), which
+  First-party code stays at zero trim/AOT warnings (analyzers error); the third-party
+  assemblies whose internals warn (NuGet/Newtonsoft, SqlClient, DuckDB.NET, Sylvan, Parquet.Net,
+  the Google stack) are runtime-proven by `scripts/verify-aot.sh` (a CI gate), which
   drives init/run/restore/PZ0360/PCP-spawn/MCP against the native image.
 - **DAG edges come from `ref()`/`source()`/`sink()` template calls at render time** (sandboxed
   Scriban, whitelisted functions only), never from parsing SQL. DuckDB still validates rendered SQL

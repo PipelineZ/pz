@@ -47,6 +47,10 @@ public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposab
         var azureLine = Assert.Single(lines, l => l.StartsWith("azureblob", StringComparison.Ordinal));
         Assert.Contains("src:native-only", azureLine);
         Assert.Contains("snk:native+universal", azureLine);
+
+        var gcsLine = Assert.Single(lines, l => l.StartsWith("gcs", StringComparison.Ordinal));
+        Assert.Contains("src:native-only", gcsLine);
+        Assert.Contains("snk:native+universal", gcsLine);
     }
 
     /// <summary>Covers <c>DescribeHostedPackage</c>'s single-non-builtin-package attribution (the common

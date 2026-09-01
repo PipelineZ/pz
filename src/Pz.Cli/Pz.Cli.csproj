@@ -15,6 +15,7 @@
     <ProjectReference Include="..\..\connectors\Pz.Connector.Sqlite\Pz.Connector.Sqlite.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.SqlServer\Pz.Connector.SqlServer.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.AzureBlob\Pz.Connector.AzureBlob.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.Gcs\Pz.Connector.Gcs.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.Http\Pz.Connector.Http.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.Sftp\Pz.Connector.Sftp.csproj" />
   </ItemGroup>
@@ -74,7 +75,7 @@
          appeared nowhere in the old text, so the flagship package was the hardest of the four to find
          by the name people actually know it by. Naming the bundled connectors is not padding either,
          it is what someone searching "duckdb postgres etl" needs to see to recognize a match. -->
-    <Description>PipelineZ (pz): a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline in plain SQL files. Bundles connectors for local files, S3, Azure Blob, Postgres, SQL Server, MySQL, SQLite and HTTP.</Description>
+    <Description>PipelineZ (pz): a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline in plain SQL files. Bundles connectors for local files, S3, Azure Blob, Google Cloud Storage, Postgres, SQL Server, MySQL, SQLite and HTTP.</Description>
     <!-- Hybrid Native AOT tool packaging (.NET 10 RID-specific tools). `dotnet pack` with no -r
          produces the `pz` POINTER package that lists the RID sub-packages below; `dotnet pack -r
          <rid>` produces that RID's self-contained Native AOT package and must run on a machine whose
@@ -103,6 +104,16 @@
     <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
     <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053</MSBuildWarningsNotAsErrors>
   </PropertyGroup>
+  <!-- IL3002 is demoted only on RID-specific legs — the only ones where ILC runs — because ILC
+       reads the csc-level WarningsNotAsErrors, and the one offender is third-party: Google.Apis'
+       VersionHeaderBuilder probes Assembly.CodeBase/GetFiles to build its version header and
+       already catches the single-file throw at runtime, degrading to a null version. RID-less
+       builds (the CI zero-warnings gate) keep IL3002 as an error, so a first-party
+       [RequiresAssemblyFiles] call cannot hide behind this. -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true' and '$(RuntimeIdentifier)' != ''">
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL3002</WarningsNotAsErrors>
+    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL3002</MSBuildWarningsNotAsErrors>
+  </PropertyGroup>
   <ItemGroup Condition="'$(PublishAot)' == 'true'">
     <!-- NuGet's JSON layer is Newtonsoft reflection over its own DTOs; `pz restore` depends on it. -->
     <TrimmerRootAssembly Include="Newtonsoft.Json" />
@@ -111,6 +122,13 @@
     <!-- SqlClient reaches config/crypto members reflectively; the state backend and connector need it. -->
     <TrimmerRootAssembly Include="Microsoft.Data.SqlClient" />
     <TrimmerRootAssembly Include="System.Configuration.ConfigurationManager" />
+    <!-- The Google stack serializes its request/response DTOs via Newtonsoft reflection; the gcs
+         connector's universal write tier needs those members to survive trimming. -->
+    <TrimmerRootAssembly Include="Google.Apis" />
+    <TrimmerRootAssembly Include="Google.Apis.Core" />
+    <TrimmerRootAssembly Include="Google.Apis.Auth" />
+    <TrimmerRootAssembly Include="Google.Apis.Storage.v1" />
+    <TrimmerRootAssembly Include="Google.Cloud.Storage.V1" />
   </ItemGroup>
 
 </Project>

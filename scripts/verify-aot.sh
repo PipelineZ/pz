@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end proof that the Native AOT publish of `pz` actually WORKS, not just compiles.
 #
-# The AOT compile only proves the trimmed/AOT-compiled binary links; the six third-party assemblies
+# The AOT compile only proves the trimmed/AOT-compiled binary links; the third-party assemblies
 # whose internals produce trim/AOT rollup warnings (see Pz.Cli.csproj's PublishAot block) can only be
 # proven safe by running the paths that cross them. Each step below exists to cross one:
 #
@@ -10,6 +10,10 @@
 #   pz restore (local feed)    -> NuGet.Protocol/NuGet.Packaging + Newtonsoft.Json (rooted assemblies)
 #   pz run after that restore  -> the PZ0360 refusal is a clean coded error, not an AOT crash
 #   pz connectors (PCP pkg)    -> ProcessConnectorHost spawn, Grpc.Net.Client + protobuf Hello over UDS
+#   pz run (gcs SDK sink)      -> the Google stack (rooted assemblies): service-account key JSON
+#                                 parse (Newtonsoft over Google.Apis DTOs), StorageClient build, and
+#                                 an attempted upload against a dead endpoint failing as a CLASSIFIED
+#                                 node error, never an AOT MissingMetadata crash
 #   pz mcp                     -> the MCP SDK's stdio server: initialize handshake + tools/list
 #
 # Linux only (the PCP fixture serves unix domain sockets; AOT cross-OS compiles are impossible anyway).
@@ -93,6 +97,44 @@ LISTING="$(cd "${PCP_DIR}" && "${PZ}" connectors)"
 grep -q "localfiles-pcp" <<<"${LISTING}" || { echo "FAIL: PCP connector missing from listing"; exit 1; }
 grep -q "localfiles-pcp.*native+universal" <<<"${LISTING}" || { echo "FAIL: PCP Hello capabilities not reflected"; exit 1; }
 
+echo "-- pz run with a gcs SDK sink fails classified against a dead endpoint (Google stack under AOT) --"
+GCS_DIR="${WORK_DIR}/gcs-smoke"
+mkdir -p "${GCS_DIR}/data" "${GCS_DIR}/pipelines"
+# A structurally valid service-account key with a throwaway RSA key; token_uri points at a dead
+# local port so the SDK's pre-upload token fetch fails fast and offline.
+GCS_KEY_PEM="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | awk 'BEGIN{ORS="\\n"} {print}')"
+printf 'name: aot_gcs\nversion: 0.1.0\n\nconnectors:\n  - package: Pz.Connector.LocalFiles\n    version: 0.1.0\n  - package: Pz.Connector.Gcs\n    version: 0.1.0\n' \
+  > "${GCS_DIR}/project.yml"
+printf 'id,name\n1,a\n' > "${GCS_DIR}/data/rows.csv"
+cat > "${GCS_DIR}/connections.yml" <<GCSEOF
+files:
+  connector: localfiles
+  entities:
+    rows:
+      read:
+        path: data/rows.csv
+        format: csv
+        columns:
+          id: bigint
+          name: varchar
+
+lake:
+  connector: gcs
+  auth: service_account
+  key_json: '{"type":"service_account","project_id":"aot-smoke","private_key_id":"0000000000000000000000000000000000000000","private_key":"${GCS_KEY_PEM}","client_email":"aot@aot-smoke.iam.gserviceaccount.com","client_id":"0","token_uri":"http://127.0.0.1:1/token"}'
+  endpoint: "http://127.0.0.1:1/storage/v1/"
+  root: aot-smoke-bucket
+GCSEOF
+printf "INSERT INTO {{ sink('lake', 'rows_out', strategy: 'replace', format: 'json') }}\nselect * from {{ source('files', 'rows') }}\n" \
+  > "${GCS_DIR}/pipelines/rows_out.sql"
+set +e
+(cd "${GCS_DIR}" && timeout 120 "${PZ}" run >/dev/null 2>&1)
+GCS_EXIT=$?
+set -e
+[[ "${GCS_EXIT}" -eq 1 ]] || { echo "FAIL: expected exit 1 (node failure), got ${GCS_EXIT}"; exit 1; }
+grep -q '"status":"failed"' "${GCS_DIR}/.pz/runs"/*/run_results.json || { echo "FAIL: gcs sink node not marked failed"; exit 1; }
+grep -q 'upload failed' "${GCS_DIR}/.pz/runs"/*/run_results.json || { echo "FAIL: failure is not the classified gcs upload error"; exit 1; }
+
 echo "-- pz mcp: initialize handshake + tools/list --"
 MCP_OUT="$( (printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify-aot","version":"0"}}}' \
@@ -104,4 +146,4 @@ grep -q 'pz_validate' <<<"${MCP_OUT}" || { echo "FAIL: tools/list missing pz_val
 
 echo
 echo "OK: native AOT pz publishes, initializes, runs a pipeline, restores, refuses PZ0360 cleanly,"
-echo "    spawns a PCP connector over gRPC, and serves MCP."
+echo "    spawns a PCP connector over gRPC, fails a gcs SDK write classified, and serves MCP."

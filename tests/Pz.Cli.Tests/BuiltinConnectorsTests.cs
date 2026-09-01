@@ -61,6 +61,20 @@ public class BuiltinConnectorsTests
     }
 
     [Fact]
+    public void Gcs_is_registered_as_source_and_sink()
+    {
+        var registry = BuiltinConnectors.CreateRegistry();
+        Assert.Contains("gcs", registry.Sources.Keys);
+        Assert.Contains("gcs", registry.Sinks.Keys);
+    }
+
+    [Fact]
+    public void Gcs_package_id_is_builtin()
+    {
+        Assert.Contains("Pz.Connector.Gcs", BuiltinConnectors.PackageIds);
+    }
+
+    [Fact]
     public void Sftp_is_registered_as_source_and_sink()
     {
         var registry = BuiltinConnectors.CreateRegistry();

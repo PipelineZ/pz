@@ -11,7 +11,8 @@ namespace Pz.Connector.S3;
 /// model, windowed-dataset wrapping, and the date-template watermark cover — see <see cref="S3Source"/>.
 /// The SDK-free control-plane cost follows the MySQL/sqlite precedent: `pz validate --connect`'s
 /// schema fetch answers only from a declared `columns:` contract. Registered under the logical name
-/// "s3"; GCS is reachable via the `endpoint` override (https://pipelinez.dev/how-to/gcs/).</summary>
+/// "s3"; any S3-compatible store is reachable via the `endpoint` override, though GCS now has its
+/// own first-class connector (Pz.Connector.Gcs).</summary>
 public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
 {
     private static readonly string[] ValidUrlStyles = ["vhost", "path"];
