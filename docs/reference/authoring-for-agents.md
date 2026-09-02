@@ -137,7 +137,7 @@ An entity that appears in neither `connections.yml` nor as a bare name is not an
 `source()`/`sink()` call that names it *is* the declaration. Only an unknown **connection** is an
 error (`PZ0201`).
 
-## The four template functions
+## The template functions
 
 Pipeline SQL is Scriban in sandboxed mode with a small whitelisted function set — no file I/O, no
 network, no wall clock:
@@ -191,16 +191,15 @@ all — the cursor's type is discovered from the stored watermark or, on the fir
 bound expression evaluates to. But the `initial`/`max_window`/`until` trio (written in SQL as a
 `coalesce(...)` floor plus a `least(...)` ceiling, or declared in YAML `sync:`) must be able to
 compute its bounds **before the first extraction** — the cursor has to be typed up front, so the
-entity needs a declared `columns:` contract (`PZ0213`). This is the one gap the 2026-08-12
-schema-inference simplification did not close: a contract-less csv/json dataset with a bounded
-window still needs a hand-written `columns:` map for the cursor column.
+entity needs a declared `columns:` contract (`PZ0213`). A contract-less csv/json entity with a
+bounded window therefore still needs a hand-written `columns:` map for the cursor column.
 
 Declare incrementality **either** in YAML (`sync: { mode: incremental }`) **or** in SQL
 (`watermark()`), never both for the same entity — `PZ0225`.
 
 ## Write modes and the delivery-guarantee consent rule (PZ0214)
 
-`sink()`'s `strategy` is `replace` (default), `append`, or `merge` (needs `keys: [...]`). An
+`sink()`'s `strategy` is `append` (default), `replace`, or `merge` (needs `keys: [...]`). An
 incremental source feeding an `append` sink is **at-least-once** by construction (a re-run or
 retry can re-deliver a slice) — pz refuses that pairing at compile time unless you say so
 explicitly with `duplicates: 'accept'`:
@@ -262,8 +261,8 @@ schema_policy: ... }`). Every applicable vector runs regardless of earlier failu
 
 ## Recommended tool loop
 
-1. **Reference** — read this guide and the relevant `docs/concepts/*.md`/`docs/how-to/*.md`
-   resource (`pz://docs/...`), or call `pz_connector_reference` for the connector's exact
+1. **Reference** — read this guide and the relevant documentation page via `pz_docs_list`,
+   `pz_docs_search`, and `pz_docs_get`, or call `pz_connector_reference` for the connector's exact
    connection/dataset option schemas and `pz_project_overview` for what already exists in this
    project (connections, entities, pipelines, the compiled DAG).
 2. **Author** — write or edit `connections.yml`/`pipelines/*.sql` by hand, or use the authoring
