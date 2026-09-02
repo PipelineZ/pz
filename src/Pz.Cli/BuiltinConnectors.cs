@@ -1,4 +1,5 @@
 using Pz.Connector.AzureBlob;
+using Pz.Connector.DuckDb;
 using Pz.Connector.Gcs;
 using Pz.Connector.Http;
 using Pz.Connector.LocalFiles;
@@ -37,7 +38,7 @@ internal static class BuiltinConnectors
     {
         "Pz.Connector.LocalFiles", "Pz.Connector.S3", "Pz.Connector.Postgres", "Pz.Connector.SqlServer",
         "Pz.Connector.AzureBlob", "Pz.Connector.Http", "Pz.Connector.MySql", "Pz.Connector.Sqlite",
-        "Pz.Connector.Sftp", "Pz.Connector.Gcs",
+        "Pz.Connector.Sftp", "Pz.Connector.Gcs", "Pz.Connector.DuckDb",
     };
 
     public static ConnectorRegistry CreateRegistry()
@@ -70,6 +71,9 @@ internal static class BuiltinConnectors
         var sqlite = new SqliteConnector();
         registry.AddSource("sqlite", sqlite);
         registry.AddSink("sqlite", sqlite);
+        var duckdb = new DuckDbConnector();
+        registry.AddSource("duckdb", duckdb);
+        registry.AddSink("duckdb", duckdb);
         var sftp = new SftpConnector();
         registry.AddSource("sftp", sftp);
         registry.AddSink("sftp", sftp);

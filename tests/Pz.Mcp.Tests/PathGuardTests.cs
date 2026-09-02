@@ -173,4 +173,44 @@ public class PathGuardTests
         Assert.Equal("PZ0606", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
         Assert.Equal(before, File.ReadAllText(Path.Combine(p.Dir, "connections.yml")));
     }
+
+    // --- duckdb: the connection's `path:` is a database file exactly like sqlite's.
+
+    private static void AppendDuckDbConnection(TempProject p, string path)
+    {
+        File.AppendAllText(Path.Combine(p.Dir, "connections.yml"),
+            $"""
+
+            lakedb:
+              connector: duckdb
+              path: {path}
+            """ + "\n");
+    }
+
+    [Fact]
+    public async Task Validate_refuses_a_duckdb_path_escaping_the_project()
+    {
+        using var p = new TempProject();
+        AppendDuckDbConnection(p, "../../outside.duckdb");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0606", error.GetProperty("code").GetString());
+        Assert.Contains("duckdb", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DuckDb_paths_inside_the_project_stay_accepted()
+    {
+        using var p = new TempProject();
+        AppendDuckDbConnection(p, "data/app.duckdb");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+    }
 }

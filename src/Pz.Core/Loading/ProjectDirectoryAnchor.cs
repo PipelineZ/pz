@@ -30,7 +30,7 @@ public static class ProjectDirectoryAnchor
     /// — the builtin half of the same opt-in a package connector declares in its manifest. A connector
     /// belongs here only if its <c>ConnectionConfigSchema</c> declares <see cref="OptionName"/>.</summary>
     public static readonly IReadOnlySet<string> BuiltinAnchoredConnectors =
-        new HashSet<string>(StringComparer.Ordinal) { "localfiles", "sqlite" };
+        new HashSet<string>(StringComparer.Ordinal) { "localfiles", "sqlite", "duckdb" };
 
     /// <summary><paramref name="declaredAnchoredConnectors"/> are the names read out of materialized
     /// package manifests (see <c>Pz.PackageManagement.Hosting.PackageManifests</c>); pass none for a

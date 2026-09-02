@@ -104,7 +104,7 @@ DuckDB is the buffer manager — the .NET side only ever holds in-flight Arrow b
 | `src/Pz.State.Http` | pluggable state backend: `IKeyedStateStore` over a server's run-scoped HTTP state endpoints (ETag/`If-Match` CAS), keyed state only — referenced directly by `Pz.Cli` |
 | `src/Pz.State.SqlServer` | pluggable state backend: `IKeyedStateStore`/`IRunArtifactStore` over SQL Server, schema creation/migration, batched event persistence — referenced directly by `Pz.Cli`, not loaded as a connector |
 | `src/Pz.Mcp` | the `pz mcp` verb's server: 22 typed tools (introspect/verify/author/docs always registered, `pz_run`/`pz_retry`/`pz_run_results` only under `--allow-run`) — referenced directly by `Pz.Cli`, not loaded as a connector |
-| `connectors/` | first-party connectors: LocalFiles, Postgres, S3, SqlServer, AzureBlob, Gcs, Http, MySql, Sqlite, Sftp |
+| `connectors/` | first-party connectors: LocalFiles, Postgres, S3, SqlServer, AzureBlob, Gcs, Http, MySql, Sqlite, Sftp, DuckDb |
 
 `templates/` holds real, in-place-runnable projects that are simultaneously the browsable examples
 and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
