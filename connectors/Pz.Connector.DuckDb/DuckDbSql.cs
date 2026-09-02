@@ -73,6 +73,101 @@ internal static class DuckDbSql
             : $"{alias}.{QuoteIdent(schema)}.{QuoteIdent(table)}";
     }
 
+    /// <summary>Setup for either direction: one read-write attach of the database file, idempotent
+    /// under NativeSetup's per-node repetition (<c>attach if not exists</c> skips an existing alias).
+    /// No extension is needed and the path carries no credentials, so a connect-failure echo of it is
+    /// harmless and useful.</summary>
+    internal static IReadOnlyList<string> SetupStatements(string resolvedPath, string alias) =>
+        [$"attach if not exists '{EscapeLiteral(resolvedPath)}' as {alias}"];
+
+    /// <summary>The scan fragment: a declared <c>columns:</c> contract prunes the read (only declared
+    /// columns are projected); the plain (unwindowed) incremental watermark IS pushed into the
+    /// fragment (DuckDB pushes the filter into the attached catalog's scan); the window ceiling is
+    /// MUST-apply. The engine embeds the fragment after FROM, so a plain scan stays the bare qualified
+    /// table and anything with a projection or predicate becomes a parenthesized subquery.</summary>
+    internal static string ScanFragment(string alias, DatasetSpec spec)
+    {
+        var table = QualifiedTable(alias, spec.Dataset);
+
+        var columns = ExtractColumns(spec);
+        var projection = columns is { Count: > 0 }
+            ? string.Join(", ", columns.Keys.Select(QuoteIdent))
+            : "*";
+
+        var predicates = new List<string>();
+        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
+        {
+            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
+            predicates.Add($"{QuoteIdent(cursor)} {op} {RenderWatermarkLiteral(low)}");
+        }
+
+        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
+        {
+            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
+        }
+
+        if (projection == "*" && predicates.Count == 0)
+        {
+            return table;
+        }
+
+        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
+        return $"(select {projection} from {table}{where})";
+    }
+
+    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
+    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal:
+    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
+    /// becoming a space so the literal coerces against DATE/TIMESTAMP columns and still compares
+    /// lexically against a text-typed cursor.</summary>
+    internal static string RenderWatermarkLiteral(string canonical)
+    {
+        if (IsCanonicalNumeric(canonical))
+        {
+            return canonical;
+        }
+
+        var value = IsCanonicalTimestamp(canonical)
+            ? canonical[..10] + ' ' + canonical[11..]
+            : canonical;
+        return $"'{EscapeLiteral(value)}'";
+    }
+
+    /// <summary>Optional leading '-', digits, at most one '.'. A canonical date ("2020-01-01") has an
+    /// interior '-', so it never matches and falls through to the quoted form.</summary>
+    private static bool IsCanonicalNumeric(string value)
+    {
+        var i = value.StartsWith('-') ? 1 : 0;
+        var sawDigit = false;
+        var sawDot = false;
+        for (; i < value.Length; i++)
+        {
+            if (value[i] == '.')
+            {
+                if (sawDot)
+                {
+                    return false;
+                }
+
+                sawDot = true;
+            }
+            else if (char.IsAsciiDigit(value[i]))
+            {
+                sawDigit = true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        return sawDigit;
+    }
+
+    private static bool IsCanonicalTimestamp(string value) =>
+        value.Length >= 19 && value[10] == 'T' &&
+        value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
+
     internal static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
 
     internal static string EscapeLiteral(string value) => value.Replace("'", "''");
