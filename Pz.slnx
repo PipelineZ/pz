@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/connectors/">
     <Project Path="connectors/Pz.Connector.AzureBlob/Pz.Connector.AzureBlob.csproj" />
+    <Project Path="connectors/Pz.Connector.DuckDb/Pz.Connector.DuckDb.csproj" />
     <Project Path="connectors/Pz.Connector.Gcs/Pz.Connector.Gcs.csproj" />
     <Project Path="connectors/Pz.Connector.Http/Pz.Connector.Http.csproj" />
     <Project Path="connectors/Pz.Connector.LocalFiles/Pz.Connector.LocalFiles.csproj" />
@@ -30,6 +31,7 @@
     <Project Path="tests/Pz.Benchmarks/Pz.Benchmarks.csproj" />
     <Project Path="tests/Pz.Cli.Tests/Pz.Cli.Tests.csproj" />
     <Project Path="tests/Pz.Connector.AzureBlob.Tests/Pz.Connector.AzureBlob.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.DuckDb.Tests/Pz.Connector.DuckDb.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Gcs.Tests/Pz.Connector.Gcs.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Http.Tests/Pz.Connector.Http.Tests.csproj" />
     <Project Path="tests/Pz.Connector.LocalFiles.Tests/Pz.Connector.LocalFiles.Tests.csproj" />
