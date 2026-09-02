@@ -168,6 +168,45 @@ internal static class DuckDbSql
         value.Length >= 19 && value[10] == 'T' &&
         value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
 
+    /// <summary>The copy statement(s) for one output. <c>{{source}}</c> is the engine's placeholder
+    /// for the staged relation (substituted by SinkWriteExecutor). Append and merge first create the
+    /// target from the staged shape so a first run needs no pre-created table; merge then matches on
+    /// every declared key, updating all columns by name on a match and inserting otherwise. A
+    /// keyless merge is refused at compile time; the throw here is ABI defense-in-depth.</summary>
+    internal static bool TryCopySql(string table, string mode, IReadOnlyList<string> keys, out string sql, out string mechanism)
+    {
+        const string create = "create table if not exists {0} as select * from {{{{source}}}} limit 0;\n";
+        switch (mode)
+        {
+            case "append":
+                sql = string.Format(null, create, table) +
+                    $"insert into {table} select * from {{{{source}}}};";
+                mechanism = "duckdb insert";
+                return true;
+            case "replace":
+                sql = $"create or replace table {table} as select * from {{{{source}}}}";
+                mechanism = "duckdb create-or-replace";
+                return true;
+            case "merge":
+                if (keys.Count == 0)
+                {
+                    throw new PzConnectorException(
+                        $"output '{table}': merge requires at least one key column", isTransient: false);
+                }
+
+                var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
+                sql = string.Format(null, create, table) +
+                    $"merge into {table} as t using {{{{source}}}} as s on {on} " +
+                    "when matched then update when not matched then insert;";
+                mechanism = "duckdb merge";
+                return true;
+            default:
+                sql = "";
+                mechanism = "";
+                return false;
+        }
+    }
+
     internal static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
 
     internal static string EscapeLiteral(string value) => value.Replace("'", "''");

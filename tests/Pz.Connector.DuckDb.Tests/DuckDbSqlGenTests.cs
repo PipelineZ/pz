@@ -205,4 +205,50 @@ public sealed class DuckDbSqlGenTests
             $"(select * from {WhAlias}.\"ev'en\"\"ts\" where \"up\"\"dated\" > 'o''clock')",
             DuckDbSql.ScanFragment(WhAlias, spec));
     }
+
+    [Fact]
+    public void Append_copy_is_create_if_not_exists_then_insert()
+    {
+        Assert.True(DuckDbSql.TryCopySql($"{WhAlias}.\"events\"", "append", [], out var sql, out var mechanism));
+        Assert.Equal(
+            $"create table if not exists {WhAlias}.\"events\" as select * from {{{{source}}}} limit 0;\n" +
+            $"insert into {WhAlias}.\"events\" select * from {{{{source}}}};",
+            sql);
+        Assert.Equal("duckdb insert", mechanism);
+    }
+
+    [Fact]
+    public void Replace_copy_is_create_or_replace()
+    {
+        Assert.True(DuckDbSql.TryCopySql($"{WhAlias}.\"events\"", "replace", [], out var sql, out var mechanism));
+        Assert.Equal($"create or replace table {WhAlias}.\"events\" as select * from {{{{source}}}}", sql);
+        Assert.Equal("duckdb create-or-replace", mechanism);
+    }
+
+    [Fact]
+    public void Merge_copy_is_create_if_not_exists_then_merge_on_every_key()
+    {
+        Assert.True(DuckDbSql.TryCopySql($"{WhAlias}.\"events\"", "merge", ["id", "region"], out var sql, out var mechanism));
+        Assert.Equal(
+            $"create table if not exists {WhAlias}.\"events\" as select * from {{{{source}}}} limit 0;\n" +
+            $"merge into {WhAlias}.\"events\" as t using {{{{source}}}} as s " +
+            "on t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\" " +
+            "when matched then update when not matched then insert;",
+            sql);
+        Assert.Equal("duckdb merge", mechanism);
+    }
+
+    [Fact]
+    public void Merge_without_keys_is_a_permanent_error()
+    {
+        var ex = Assert.Throws<PzConnectorException>(
+            () => DuckDbSql.TryCopySql($"{WhAlias}.\"events\"", "merge", [], out _, out _));
+        Assert.False(ex.IsTransient);
+    }
+
+    [Fact]
+    public void Unknown_mode_has_no_native_shape()
+    {
+        Assert.False(DuckDbSql.TryCopySql($"{WhAlias}.\"events\"", "upsert_all", [], out _, out _));
+    }
 }
