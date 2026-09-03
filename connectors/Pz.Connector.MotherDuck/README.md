@@ -147,11 +147,10 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
   insert, and an empty source batch leaves the target untouched — there is no pull-rewrite-push round
   trip and no blast radius on the target's constraints or indexes (unlike quack's merge-by-replace).
   **Keep each batch key-unique.** MERGE matches every source row independently against the target as
-  it stood *before* the statement ran: two source rows sharing a key the target already holds both
-  update it (last one wins, order-dependent), while two source rows sharing a key the target lacks
-  both take the "not matched" branch and are **both inserted** — the sink does not collapse
-  duplicate keys within a batch, and the connector's generated SQL makes no promise that it will.
-  Requires at least one declared key column (PZ0209 at compile).
+  it stood *before* the statement ran: duplicates of a key the target already holds all update it —
+  which value survives is not defined; duplicates of a key the target lacks are all inserted — the
+  sink does not collapse duplicate keys within a batch, and the connector's generated SQL makes no
+  promise that it will. Requires at least one declared key column (PZ0209 at compile).
 - **The connector does not create databases or schemas.** The database must exist in the account
   before the first read or write, and a `schema.table` entity's schema must exist on it too.
 - **Not path-scoped.** No `base_dir`, no `.pz` guard — a motherduck connection names a database in an
