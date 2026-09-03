@@ -15,8 +15,10 @@ namespace Pz.Core.Loading;
 /// <c>pz.connector.json</c> and the host passes its name in through
 /// <paramref name="declaredAnchoredConnectors"/>. Opt-in in both directions: a connector that says
 /// nothing receives nothing, so the injected option can never trip a <c>ConnectionConfigSchema</c>'s
-/// <c>additionalProperties: false</c>. A connector that opts in must declare <c>base_dir</c> in that
-/// schema, exactly as the builtins do.</para>
+/// <c>additionalProperties: false</c>. An opted-in connector must NOT declare <c>base_dir</c> in that
+/// schema: tier-3 validation runs on the connection as the user wrote it, before this injection, so the
+/// key is never checked against the schema anyway, and declaring it would advertise a host-owned option
+/// as authorable -- a user-written value would validate and then be silently overwritten here.</para>
 ///
 /// <para>Safe to apply before compiling: neither <c>SourceLoad</c> nor <c>SinkWrite</c> node IDs are
 /// derived from <c>Connection</c> — <c>DagCompiler</c> canonicalizes only dataset/output options and
@@ -28,7 +30,8 @@ public static class ProjectDirectoryAnchor
 
     /// <summary>Builtin connector names that resolve a relative path against a project-directory anchor
     /// — the builtin half of the same opt-in a package connector declares in its manifest. A connector
-    /// belongs here only if its <c>ConnectionConfigSchema</c> declares <see cref="OptionName"/>.</summary>
+    /// belongs here only if it reads <see cref="OptionName"/> when resolving a relative path, and none of
+    /// them declares that key in its <c>ConnectionConfigSchema</c> (see the class remarks).</summary>
     public static readonly IReadOnlySet<string> BuiltinAnchoredConnectors =
         new HashSet<string>(StringComparer.Ordinal) { "localfiles", "sqlite", "duckdb" };
 

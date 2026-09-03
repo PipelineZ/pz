@@ -27,24 +27,44 @@ public sealed class DuckDbConnector : ISourceConnector, ISinkConnector, INativeO
         ConnectorCapabilities.Transactional |
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound;
 
+    // base_dir is injected internally by the host (see ProjectDirectoryAnchor) and never user-written;
+    // `path` is the only user-facing connection option.
     public string ConnectionConfigSchema =>
-        """{ "type": "object", "required": ["path"], "properties": { "path": { "type": "string" }, "base_dir": { "type": "string" } }, "additionalProperties": false }""";
+        """{ "type": "object", "required": ["path"], "properties": { "path": { "type": "string" } }, "additionalProperties": false }""";
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
 
+    /// <summary>The root a RELATIVE <c>path</c> is normalized against when no <c>base_dir</c> is
+    /// present. Config validation runs on the connection as the user wrote it, before the host injects
+    /// the anchor, and a relative path is project-relative by definition -- so the containment question
+    /// ("does this land under the project's .pz/?") is answerable without knowing where the project is,
+    /// as long as both sides of the comparison share one stand-in root. A path that climbs out with
+    /// <c>../</c> resolves above this root, matches nothing, and is none of this rule's business.</summary>
+    private static readonly string StandInProjectRoot =
+        Path.GetFullPath(Path.DirectorySeparatorChar + "pz-project");
+
     /// <summary>One cross-field rule: the file must not live under the project's <c>.pz/</c>, the
     /// engine's own staging/state area (attaching a run's staging database to itself has no
-    /// legitimate use). Only checkable when the host injected <c>base_dir</c>.</summary>
+    /// legitimate use). A relative path is checked against <see cref="StandInProjectRoot"/> so the rule
+    /// fires on the pre-injection config tier-3 validation actually sees; an ABSOLUTE path is only
+    /// comparable when the host did inject <c>base_dir</c>.</summary>
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
-        if (config.GetString("path") is not { Length: > 0 } || config.GetString("base_dir") is not { Length: > 0 } baseDir)
+        if (config.GetString("path") is not { Length: > 0 } path)
         {
             return new(ValidationResult.Success);
         }
 
-        var resolved = DuckDbSql.ResolvePath(config);
-        var pzDir = Path.GetFullPath(Path.Combine(baseDir, ".pz")) + Path.DirectorySeparatorChar;
+        var baseDir = config.GetString("base_dir") is { Length: > 0 } injected ? injected : null;
+        if (Path.IsPathRooted(path) && baseDir is null)
+        {
+            return new(ValidationResult.Success);
+        }
+
+        var root = baseDir ?? StandInProjectRoot;
+        var resolved = Path.GetFullPath(Path.IsPathRooted(path) ? path : Path.Combine(root, path));
+        var pzDir = Path.GetFullPath(Path.Combine(root, ".pz")) + Path.DirectorySeparatorChar;
         return resolved.StartsWith(pzDir, StringComparison.Ordinal)
             ? new(ValidationResult.Failed(
                 "duckdb connection 'path' resolves inside the project's .pz/ directory, which is pz's own " +

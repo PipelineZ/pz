@@ -1,5 +1,9 @@
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Core.Model;
+using Pz.Core.Validation;
+using Pz.Engine.Execution;
+using Pz.Engine.Validation;
 
 namespace Pz.Connector.DuckDb.Tests;
 
@@ -55,9 +59,27 @@ public sealed class DuckDbConnectorTests : IDisposable
     }
 
     [Fact]
-    public async Task Validate_refuses_a_path_inside_the_projects_pz_directory()
+    public async Task Validate_refuses_a_relative_path_under_pz_with_no_base_dir_injected()
+    {
+        // Tier-3 validation runs on the connection as the USER wrote it, before the host injects
+        // base_dir -- so this is the config shape ConnectorConfigValidator actually calls ValidateAsync
+        // with. A relative path is project-relative by definition, so the refusal must fire without
+        // needing base_dir at all.
+        var config = new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["path"] = ".pz/runs/x/staging.duckdb",
+        });
+
+        var result = await new DuckDbConnector().ValidateAsync(config, CancellationToken.None);
+        var error = Assert.Single(result.Errors);
+        Assert.Contains(".pz", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Validate_refuses_an_injected_absolute_path_inside_the_projects_pz_directory()
     {
         // .pz/ is the run's own staging/state area; attaching a database there is never intended.
+        // Covers the post-injection shape: base_dir present, path resolved absolute.
         var config = new ConnectorConfig(new Dictionary<string, object?>
         {
             ["path"] = ".pz/runs/x/staging.duckdb",
@@ -67,6 +89,14 @@ public sealed class DuckDbConnectorTests : IDisposable
         var result = await new DuckDbConnector().ValidateAsync(config, CancellationToken.None);
         var error = Assert.Single(result.Errors);
         Assert.Contains(".pz", error, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Validate_accepts_a_relative_path_that_stays_outside_pz()
+    {
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["path"] = "warehouse/app.duckdb" });
+        var result = await new DuckDbConnector().ValidateAsync(config, CancellationToken.None);
+        Assert.Empty(result.Errors);
     }
 
     [Fact]
@@ -169,5 +199,29 @@ public sealed class DuckDbConnectorTests : IDisposable
         Assert.Equal("attach", scan.Mechanism);
         Assert.Equal("duckdb insert", copy.Mechanism);
         Assert.StartsWith("pz_duckdb_wh_", scan.SqlFragment, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ConnectorConfigValidator_refuses_a_duckdb_connection_whose_path_lands_under_pz()
+    {
+        // End-to-end through the production tier-3 path: ConnectorConfigValidator.ValidateAsync calls
+        // the REAL DuckDbConnector.ValidateAsync on the connection exactly as the user wrote it -- no
+        // base_dir, because tier 3 runs before the host injects it. Proves the F2 guard fires on the
+        // path a real `pz validate` run takes, not just via a direct connector call.
+        var registry = new ConnectorRegistry();
+        registry.AddSource("duckdb", new DuckDbConnector());
+
+        var source = new ConnectionDef("appdb", "duckdb",
+            new Dictionary<string, object?> { ["path"] = ".pz/runs/x/staging.duckdb" },
+            [new DatasetDef("events", new Dictionary<string, object?> { ["columns"] = new Dictionary<string, object?> { ["id"] = "bigint" } }, null)],
+            "connections.yml");
+        var project = new PzProject("proj", "0.1.0", new EngineConfig(), new Dictionary<string, object?>(), [],
+            [source], []);
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(project, registry, CancellationToken.None);
+
+        var error = Assert.Single(errors);
+        Assert.Equal("connections.yml", error.File);
+        Assert.Contains(".pz", error.Message, StringComparison.Ordinal);
     }
 }
