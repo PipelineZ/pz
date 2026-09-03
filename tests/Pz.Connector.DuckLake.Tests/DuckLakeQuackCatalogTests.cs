@@ -96,5 +96,6 @@ public sealed class DuckLakeQuackCatalogTests : IAsyncLifetime
         Assert.Contains("PZ0311", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("WRONG-TOKEN", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(server!.Token, ex.Message, StringComparison.Ordinal);
+        Assert.False(ex.IsTransient);
     }
 }

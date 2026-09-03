@@ -107,9 +107,11 @@ lake:
   data_path: ./data/lake/            # required for this catalog
 ```
 
-Requires `uri`, `token`, `data_path`; `uri` must parse as `quack:host[:port]` (bare `quack:host`
-defaults the port to 9494). Forbids `path` and every `postgres` key. The token rides a `type quack`
-secret scoped to the exact `uri`, never the attach string.
+Requires `uri`, `token`, `data_path`. All three spellings — `quack:host`, `quack:host:port`, and
+`quack://host[:port]` — are accepted and normalized to one canonical `quack:host:port` form (default
+port 9494) before it lands in either the attach string or the secret's scope, so every spelling
+attaches identically. Forbids `path` and every `postgres` key. The token rides a `type quack` secret
+scoped to that canonical URI, never the attach string.
 
 ### `motherduck` — a MotherDuck-hosted database
 
@@ -257,7 +259,9 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
   left to the attach itself.
 - **Credentials never ride the attach string.** Postgres credentials build a `type postgres` DuckDB
   secret referenced from a `type ducklake` secret whose `metadata_path` is empty by construction; the
-  quack token rides a `type quack` secret scoped to the exact URI; the MotherDuck token is a session
+  quack token rides a `type quack` secret scoped to the canonical `quack:host:port` URI (every
+  accepted spelling normalizes to this one form, so the secret's scope always matches the attach);
+  the MotherDuck token is a session
   `motherduck_token` setting, not part of any attach; S3-compatible storage credentials build a
   `type s3` secret scoped to the exact `data_path`. A failed attach therefore echoes only a path, a
   URI, or a database name — never a credential.
@@ -277,3 +281,8 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
   install/load are no-ops on repeat, `create or replace secret` is last-wins, `set` is repeatable,
   and `attach if not exists` skips an existing alias — so the same connection can appear as the
   setup for multiple reads and writes in one run without re-running side effects that matter.
+- **A shared remote catalog wants an object-store `data_path`.** DuckLake's data files are read and
+  written by the client, not by the catalog server — so when the catalog is shared (`postgres`,
+  `quack`, or `motherduck`), `data_path` should normally be an object store too. A project-relative
+  `data_path` is valid for a single client, but two machines attaching the same remote catalog would
+  each resolve it against their own project directory, landing writes in two different places.

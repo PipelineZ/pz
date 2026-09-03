@@ -134,7 +134,13 @@ public sealed class DuckLakeConnector : ISourceConnector, ISinkConnector, INativ
             case DuckLakeCatalog.Postgres:
                 return DuckLakeProbe.TcpAsync(config.GetString("host")!, (int)(config.GetInt("port") ?? 5432), "postgres catalog", ct);
             case DuckLakeCatalog.Quack:
-                DuckLakeCatalog.TryParseQuackUri(config.GetString("uri")!, out var host, out var port);
+                if (!DuckLakeCatalog.TryParseQuackUri(config.GetString("uri")!, out var host, out var port))
+                {
+                    // Unreachable after Validate refuses a malformed uri above; kept explicit so a
+                    // discarded Try... result can never silently probe host "" port 0.
+                    return new(new ConnectionCheck(false, "permanent: 'uri' must be of the form quack:host[:port]"));
+                }
+
                 return DuckLakeProbe.TcpAsync(host, port, "quack catalog server", ct);
             default:
                 return new(new ConnectionCheck(true, "not checked: motherduck has no offline probe; the first run authenticates"));

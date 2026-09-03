@@ -69,5 +69,6 @@ public sealed class DuckLakePostgresCatalogTests(DuckLakePostgresCatalogFixture 
         var ex = await Assert.ThrowsAsync<PzConnectorException>(() => RunSetupAsync(duck, scan!.SetupStatements));
         Assert.Contains("PZ0311", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("WRONG-PASSWORD", ex.Message, StringComparison.Ordinal);
+        Assert.False(ex.IsTransient);
     }
 }

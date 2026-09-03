@@ -145,6 +145,23 @@ public sealed class DuckLakeSqlGenTests
             statements);
     }
 
+    [Theory]
+    [InlineData("quack:lake.internal")]
+    [InlineData("quack:lake.internal:9494")]
+    [InlineData("quack://lake.internal:9494")]
+    [InlineData("quack://lake.internal")]
+    public void Every_accepted_quack_uri_spelling_yields_the_same_attach_and_scope(string uri)
+    {
+        var statements = DuckLakeSql.SetupStatements(
+            Config(("catalog", "quack"), ("uri", uri), ("token", "t0k'en"), ("data_path", "/lake/data")), WhAlias);
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_secret (type quack, token 't0k''en', scope 'quack:lake.internal:9494')",
+            statements[4]);
+        Assert.Equal(
+            $"attach if not exists 'ducklake:quack:lake.internal:9494' as {WhAlias} (data_path '{Path.GetFullPath("/lake/data")}')",
+            statements[^1]);
+    }
+
     [Fact]
     public void Motherduck_catalog_sets_the_token_and_attaches_the_metadata_database()
     {

@@ -30,7 +30,8 @@ internal static class DuckLakeSql
     internal static string PostgresSecretName(string alias) => alias + "_pg";
 
     /// <summary>Resolves a local file/directory option to an absolute path: relative joins the
-    /// CLI-injected <c>base_dir</c>, else the process working directory.</summary>
+    /// CLI-injected <c>base_dir</c>, else the process working directory. Statements always embed the
+    /// absolute form — the engine's DuckDB session must not depend on process cwd.</summary>
     internal static string ResolveLocal(ConnectorConfig config, string key)
     {
         var value = config.GetString(key) ??
@@ -48,6 +49,9 @@ internal static class DuckLakeSql
     /// else is a project-relative directory.</summary>
     internal static bool IsUrl(string value) => value.Contains("://", StringComparison.Ordinal);
 
+    /// <summary>Resolves <c>data_path</c> for the attach clause: a URL passes through verbatim,
+    /// anything else goes through <see cref="ResolveLocal"/> and comes back absolute — the engine's
+    /// DuckDB session must not depend on the process working directory.</summary>
     internal static string? ResolveDataPath(ConnectorConfig config)
     {
         var value = config.GetString("data_path");
@@ -162,7 +166,12 @@ internal static class DuckLakeSql
     /// postgres secret referenced from a ducklake secret whose metadata_path is empty by
     /// construction; the quack token rides a quack secret scoped to the server URI; the MotherDuck
     /// token is a session setting. A failed attach therefore echoes only a path, a URI, or a
-    /// database name.</summary>
+    /// database name.
+    ///
+    /// The quack URI is canonicalized to <c>quack:host:port</c> before it lands in either the
+    /// attach string or the secret's scope — <c>quack:host</c>, <c>quack:host:port</c> and
+    /// <c>quack://host[:port]</c> are all accepted at validation, but the secret's scope and the
+    /// attach must name the server identically or the scoped secret silently fails to match.</summary>
     internal static IReadOnlyList<string> SetupStatements(ConnectorConfig config, string alias)
     {
         var catalog = DuckLakeCatalog.Of(config);
@@ -217,10 +226,17 @@ internal static class DuckLakeSql
                 break;
             case DuckLakeCatalog.Quack:
                 var uri = Require(config, "uri");
+                if (!DuckLakeCatalog.TryParseQuackUri(uri, out var host, out var port))
+                {
+                    throw new PzConnectorException(
+                        "ducklake connection 'uri' must be of the form quack:host[:port]", isTransient: false);
+                }
+
+                var canonical = $"quack:{host}:{port}";
                 statements.Add(
                     $"create or replace secret {SecretName(alias)} (type quack, token '{EscapeLiteral(Require(config, "token"))}', " +
-                    $"scope '{EscapeLiteral(uri)}')");
-                statements.Add($"attach if not exists 'ducklake:{EscapeLiteral(uri)}' as {alias}{dataClause}");
+                    $"scope '{EscapeLiteral(canonical)}')");
+                statements.Add($"attach if not exists 'ducklake:{EscapeLiteral(canonical)}' as {alias}{dataClause}");
                 break;
             case DuckLakeCatalog.MotherDuck:
                 statements.Add($"set motherduck_token = '{EscapeLiteral(Require(config, "token"))}'");

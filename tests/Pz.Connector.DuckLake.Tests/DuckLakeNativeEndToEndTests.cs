@@ -121,6 +121,14 @@ public sealed class DuckLakeNativeEndToEndTests : IDisposable
 
         var pinned = await ReadAsync(duck, "duckdb", Spec("tt", new Dictionary<string, object?> { ["version"] = firstSnapshot }));
         Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {pinned}"));
+
+        var pinnedSubquery = await ReadAsync(duck, "duckdb",
+            Spec("tt", new Dictionary<string, object?>
+            {
+                ["version"] = firstSnapshot,
+                ["columns"] = new Dictionary<string, string> { ["id"] = "bigint" },
+            }) with { WatermarkCursor = "id", WatermarkValue = "0" });
+        Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {pinnedSubquery}"));
     }
 
     [SkippableFact]
