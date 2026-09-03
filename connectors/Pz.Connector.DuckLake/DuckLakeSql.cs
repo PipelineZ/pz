@@ -149,6 +149,127 @@ internal static class DuckLakeSql
             ? columns
             : null;
 
+    /// <summary>Setup for either direction, in order: extension installs/loads (ducklake, the
+    /// catalog's own, httpfs when the data path is object storage), the storage secret, the
+    /// catalog's credential carrier, then ONE read-write attach. All idempotent under NativeSetup's
+    /// per-node repetition: install/load are no-ops, <c>create or replace secret</c> is last-wins,
+    /// <c>set</c> is repeatable, <c>attach if not exists</c> skips an existing alias.
+    ///
+    /// The attach string carries no credential for any catalog: postgres credentials ride a
+    /// postgres secret referenced from a ducklake secret whose metadata_path is empty by
+    /// construction; the quack token rides a quack secret scoped to the server URI; the MotherDuck
+    /// token is a session setting. A failed attach therefore echoes only a path, a URI, or a
+    /// database name.</summary>
+    internal static IReadOnlyList<string> SetupStatements(ConnectorConfig config, string alias)
+    {
+        var catalog = DuckLakeCatalog.Of(config);
+        var dataPath = ResolveDataPath(config);
+        var statements = new List<string> { "install ducklake", "load ducklake" };
+
+        switch (catalog)
+        {
+            case DuckLakeCatalog.Sqlite:
+                statements.AddRange(["install sqlite", "load sqlite"]);
+                break;
+            case DuckLakeCatalog.Postgres:
+                statements.AddRange(["install postgres", "load postgres"]);
+                break;
+            case DuckLakeCatalog.Quack:
+                statements.AddRange(["install quack", "load quack"]);
+                break;
+            case DuckLakeCatalog.MotherDuck:
+                statements.AddRange(["install motherduck", "load motherduck"]);
+                break;
+        }
+
+        if (dataPath is not null && IsUrl(dataPath))
+        {
+            statements.AddRange(["install httpfs", "load httpfs"]);
+        }
+
+        if (dataPath is not null && config.GetString("storage_key_id") is { Length: > 0 })
+        {
+            statements.Add(StorageSecretSql(config, alias, dataPath));
+        }
+
+        var dataClause = dataPath is null ? "" : $" (data_path '{EscapeLiteral(dataPath)}')";
+        switch (catalog)
+        {
+            case DuckLakeCatalog.DuckDb:
+                statements.Add($"attach if not exists 'ducklake:{EscapeLiteral(ResolveLocal(config, "path"))}' as {alias}{dataClause}");
+                break;
+            case DuckLakeCatalog.Sqlite:
+                statements.Add($"attach if not exists 'ducklake:sqlite:{EscapeLiteral(ResolveLocal(config, "path"))}' as {alias}{dataClause}");
+                break;
+            case DuckLakeCatalog.Postgres:
+                var pgSecret = PostgresSecretName(alias);
+                var secret = SecretName(alias);
+                statements.Add(PostgresSecretSql(config, pgSecret));
+                statements.Add(
+                    $"create or replace secret {secret} (type ducklake, metadata_path '', data_path '{EscapeLiteral(dataPath!)}', " +
+                    $"metadata_parameters map {{'TYPE': 'postgres', 'SECRET': '{pgSecret}'}})");
+                statements.Add($"attach if not exists 'ducklake:{secret}' as {alias}");
+                break;
+            case DuckLakeCatalog.Quack:
+                var uri = Require(config, "uri");
+                statements.Add(
+                    $"create or replace secret {SecretName(alias)} (type quack, token '{EscapeLiteral(Require(config, "token"))}', " +
+                    $"scope '{EscapeLiteral(uri)}')");
+                statements.Add($"attach if not exists 'ducklake:{EscapeLiteral(uri)}' as {alias}{dataClause}");
+                break;
+            case DuckLakeCatalog.MotherDuck:
+                statements.Add($"set motherduck_token = '{EscapeLiteral(Require(config, "token"))}'");
+                statements.Add(
+                    $"attach if not exists 'ducklake:md:__ducklake_metadata_{EscapeLiteral(Require(config, "database"))}' as {alias}{dataClause}");
+                break;
+            default:
+                throw new PzConnectorException($"ducklake connection: unknown catalog '{catalog}'", isTransient: false);
+        }
+
+        return statements;
+    }
+
+    /// <summary>The DuckDB <c>postgres</c> secret: every value is an ordinary ''-escaped literal, so no
+    /// value can break out of its position.</summary>
+    private static string PostgresSecretSql(ConnectorConfig config, string secretName)
+    {
+        var body = new StringBuilder(
+            $"host '{EscapeLiteral(Require(config, "host"))}', port {config.GetInt("port") ?? 5432}, " +
+            $"database '{EscapeLiteral(Require(config, "database"))}'");
+        if (config.GetString("user") is { Length: > 0 } user)
+        {
+            body.Append(", user '").Append(EscapeLiteral(user)).Append('\'');
+        }
+
+        if (config.GetString("password") is { Length: > 0 } password)
+        {
+            body.Append(", password '").Append(EscapeLiteral(password)).Append('\'');
+        }
+
+        return $"create or replace secret {secretName} (type postgres, {body})";
+    }
+
+    /// <summary>S3-compatible storage credentials as a secret SCOPED to the data path, so they apply
+    /// to the lake's files and nothing else in the session. Defaults match the s3 connector's.</summary>
+    internal static string StorageSecretSql(ConnectorConfig config, string alias, string dataPath)
+    {
+        var region = config.GetString("storage_region") ?? "us-east-1";
+        var endpoint = config.GetString("storage_endpoint");
+        var urlStyle = config.GetString("storage_url_style") ?? "vhost";
+        var useSsl = config.GetBool("storage_use_ssl", defaultValue: true);
+
+        return $"create or replace secret {StorageSecretName(alias)} (type s3, " +
+            $"key_id '{EscapeLiteral(Require(config, "storage_key_id"))}', " +
+            $"secret '{EscapeLiteral(Require(config, "storage_secret_key"))}', region '{EscapeLiteral(region)}'" +
+            (endpoint is null ? "" : $", endpoint '{EscapeLiteral(endpoint)}'") +
+            $", url_style '{EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}, scope '{EscapeLiteral(dataPath)}')";
+    }
+
+    private static string Require(ConnectorConfig config, string key) =>
+        config.GetString(key) is { Length: > 0 } s
+            ? s
+            : throw new PzConnectorException($"ducklake connection requires '{key}'", isTransient: false);
+
     private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
 
     private static string HashSuffix(string name) =>

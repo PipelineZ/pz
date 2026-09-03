@@ -77,4 +77,135 @@ public sealed class DuckLakeSqlGenTests
     {
         Assert.Equal(expected, DuckLakeSql.RenderWatermarkLiteral(canonical));
     }
+
+    [Fact]
+    public void Duckdb_catalog_setup_is_extension_then_attach()
+    {
+        var statements = DuckLakeSql.SetupStatements(
+            Config(("path", "/lake/catalog.ducklake"), ("data_path", "/lake/data")), WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install ducklake", "load ducklake",
+                $"attach if not exists 'ducklake:{Path.GetFullPath("/lake/catalog.ducklake")}' as {WhAlias} (data_path '{Path.GetFullPath("/lake/data")}')",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Duckdb_catalog_without_data_path_omits_the_clause()
+    {
+        var statements = DuckLakeSql.SetupStatements(Config(("path", "/lake/catalog.ducklake")), WhAlias);
+        Assert.Equal($"attach if not exists 'ducklake:{Path.GetFullPath("/lake/catalog.ducklake")}' as {WhAlias}", statements[^1]);
+    }
+
+    [Fact]
+    public void Sqlite_catalog_setup_loads_sqlite_too()
+    {
+        var statements = DuckLakeSql.SetupStatements(
+            Config(("catalog", "sqlite"), ("path", "/lake/catalog.sqlite"), ("data_path", "/lake/data")), WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install ducklake", "load ducklake", "install sqlite", "load sqlite",
+                $"attach if not exists 'ducklake:sqlite:{Path.GetFullPath("/lake/catalog.sqlite")}' as {WhAlias} (data_path '{Path.GetFullPath("/lake/data")}')",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Postgres_catalog_rides_a_postgres_secret_inside_a_ducklake_secret()
+    {
+        var statements = DuckLakeSql.SetupStatements(
+            Config(("catalog", "postgres"), ("host", "pg.internal"), ("port", 5433L), ("database", "lake"),
+                ("user", "pz"), ("password", "p'w"), ("data_path", "s3://bucket/lake/")), WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install ducklake", "load ducklake", "install postgres", "load postgres", "install httpfs", "load httpfs",
+                $"create or replace secret {WhAlias}_pg (type postgres, host 'pg.internal', port 5433, database 'lake', user 'pz', password 'p''w')",
+                $"create or replace secret {WhAlias}_secret (type ducklake, metadata_path '', data_path 's3://bucket/lake/', metadata_parameters map {{'TYPE': 'postgres', 'SECRET': '{WhAlias}_pg'}})",
+                $"attach if not exists 'ducklake:{WhAlias}_secret' as {WhAlias}",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Quack_catalog_rides_a_scoped_quack_secret()
+    {
+        var statements = DuckLakeSql.SetupStatements(
+            Config(("catalog", "quack"), ("uri", "quack:lake.internal:9494"), ("token", "t0k'en"), ("data_path", "/lake/data")), WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install ducklake", "load ducklake", "install quack", "load quack",
+                $"create or replace secret {WhAlias}_secret (type quack, token 't0k''en', scope 'quack:lake.internal:9494')",
+                $"attach if not exists 'ducklake:quack:lake.internal:9494' as {WhAlias} (data_path '{Path.GetFullPath("/lake/data")}')",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Motherduck_catalog_sets_the_token_and_attaches_the_metadata_database()
+    {
+        var statements = DuckLakeSql.SetupStatements(
+            Config(("catalog", "motherduck"), ("database", "lake"), ("token", "md'tok"), ("data_path", "s3://bucket/lake/")), WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install ducklake", "load ducklake", "install motherduck", "load motherduck", "install httpfs", "load httpfs",
+                "set motherduck_token = 'md''tok'",
+                $"attach if not exists 'ducklake:md:__ducklake_metadata_lake' as {WhAlias} (data_path 's3://bucket/lake/')",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Storage_credentials_become_an_s3_secret_scoped_to_the_data_path()
+    {
+        var config = Config(("path", "/lake/c.ducklake"), ("data_path", "s3://bucket/lake/"),
+            ("storage_key_id", "AK"), ("storage_secret_key", "S'K"), ("storage_region", "eu-west-1"),
+            ("storage_endpoint", "minio:9000"), ("storage_url_style", "path"), ("storage_use_ssl", false));
+
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type s3, key_id 'AK', secret 'S''K', region 'eu-west-1', " +
+            "endpoint 'minio:9000', url_style 'path', use_ssl false, scope 's3://bucket/lake/')",
+            DuckLakeSql.StorageSecretSql(config, WhAlias, "s3://bucket/lake/"));
+
+        var statements = DuckLakeSql.SetupStatements(config, WhAlias);
+        Assert.Contains("install httpfs", statements);
+        Assert.Contains(statements, s => s.StartsWith($"create or replace secret {WhAlias}_storage", StringComparison.Ordinal));
+        var list = statements.ToList();
+        var storageIndex = list.IndexOf($"create or replace secret {WhAlias}_storage (type s3, key_id 'AK', secret 'S''K', region 'eu-west-1', endpoint 'minio:9000', url_style 'path', use_ssl false, scope 's3://bucket/lake/')");
+        Assert.True(storageIndex >= 0 && storageIndex < list.Count - 1);
+    }
+
+    [Fact]
+    public void Storage_secret_defaults_match_the_s3_connector()
+    {
+        var config = Config(("path", "/lake/c.ducklake"), ("data_path", "s3://bucket/lake/"),
+            ("storage_key_id", "AK"), ("storage_secret_key", "SK"));
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type s3, key_id 'AK', secret 'SK', region 'us-east-1', url_style 'vhost', use_ssl true, scope 's3://bucket/lake/')",
+            DuckLakeSql.StorageSecretSql(config, WhAlias, "s3://bucket/lake/"));
+    }
+
+    [Fact]
+    public void Credentials_never_appear_in_the_attach_statement()
+    {
+        foreach (var config in new[]
+        {
+            Config(("catalog", "postgres"), ("host", "h"), ("database", "d"), ("password", "PGPW"), ("data_path", "s3://b/")),
+            Config(("catalog", "quack"), ("uri", "quack:h"), ("token", "QTOK"), ("data_path", "/d")),
+            Config(("catalog", "motherduck"), ("database", "d"), ("token", "MDTOK"), ("data_path", "s3://b/")),
+        })
+        {
+            var attach = DuckLakeSql.SetupStatements(config, WhAlias)[^1];
+            Assert.StartsWith("attach", attach, StringComparison.Ordinal);
+            foreach (var secret in new[] { "PGPW", "QTOK", "MDTOK" })
+            {
+                Assert.DoesNotContain(secret, attach, StringComparison.Ordinal);
+            }
+        }
+    }
 }
