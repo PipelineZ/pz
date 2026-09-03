@@ -55,7 +55,9 @@ wh:
 `additionalProperties: false`). All three uri spellings — `quack:host`, `quack:host:port`, and
 `quack://host[:port]` — are accepted and normalized to one canonical `quack:host:port` form (default
 port `9494`) before it lands in either the attach string or the secret's scope, so every spelling
-attaches identically. `ValidateAsync` refuses offline, aggregate: a `uri` that doesn't parse, and a
+attaches identically. `host` is a name, an IPv4 literal, or a bracketed IPv6 literal
+(`quack:[::1]:9494`); the brackets stay in the canonical form, which is how the server itself
+prints it, and an unbracketed host may not contain a colon. `ValidateAsync` refuses offline, aggregate: a `uri` that doesn't parse, and a
 `token` shorter than four characters (the server itself refuses shorter tokens, so this is caught
 before the first run rather than echoed back from a remote failure).
 

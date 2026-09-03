@@ -43,8 +43,7 @@ pruning happens anyway, inside the scan fragment itself), `PartitionedRead`, `Me
 ```yaml
 appdb:
   connector: sqlite
-  connection:
-    path: ./data/app.db   # required — the database file
+  path: ./data/app.db   # required — the database file
   entities:
     events:
       read:

@@ -32,8 +32,8 @@ public sealed class QuackNativeEndToEndTests : IAsyncLifetime
         try { Directory.Delete(dir, recursive: true); } catch (IOException) { /* best-effort */ }
     }
 
-    private ConnectorConfig Config(string? token = null) =>
-        new(new Dictionary<string, object?> { ["uri"] = server!.Uri, ["token"] = token ?? server!.Token });
+    private ConnectorConfig Config(string? token = null, string? uri = null) =>
+        new(new Dictionary<string, object?> { ["uri"] = uri ?? server!.Uri, ["token"] = token ?? server!.Token });
 
     private async Task WriteAsync(DuckSession duck, string entity, string selectSql, string mode = "replace", IReadOnlyList<string>? keys = null)
     {
@@ -49,9 +49,9 @@ public sealed class QuackNativeEndToEndTests : IAsyncLifetime
         await duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", staging, StringComparison.Ordinal));
     }
 
-    private async Task<string> ReadAsync(DuckSession duck, DatasetSpec spec, string? token = null)
+    private async Task<string> ReadAsync(DuckSession duck, DatasetSpec spec, string? token = null, string? uri = null)
     {
-        await using var source = await ((ISourceConnector)new QuackConnector()).OpenAsync(Config(token), CancellationToken.None);
+        await using var source = await ((ISourceConnector)new QuackConnector()).OpenAsync(Config(token, uri), CancellationToken.None);
         Assert.True(source.TryGetNativeScan(spec, out var scan));
         foreach (var setup in scan!.SetupStatements)
         {
@@ -145,5 +145,25 @@ public sealed class QuackNativeEndToEndTests : IAsyncLifetime
         Assert.DoesNotContain("WRONG-TOKEN", ex.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(server!.Token, ex.Message, StringComparison.Ordinal);
         Assert.False(ex.IsTransient);
+    }
+
+    // A bracketed IPv6 literal goes through the whole chain: parser, canonical secret scope, attach.
+    [SkippableFact]
+    public async Task A_bracketed_ipv6_uri_reaches_a_server_listening_on_ipv6_loopback()
+    {
+        DockerFacts.SkipIfOffline();
+        Skip.IfNot(System.Net.Sockets.Socket.OSSupportsIPv6, "no IPv6 loopback on this host");
+        await using var v6 = await QuackTestServer.StartAsync(Directory.CreateTempSubdirectory("pz-quack-v6-").FullName, host: "[::1]");
+        await using var duck = DuckSession.Open(Path.Combine(dir, "client3.duckdb"));
+
+        await duck.ExecuteAsync("install quack");
+        await duck.ExecuteAsync("load quack");
+        await duck.ExecuteAsync($"create or replace secret v6_seed (type quack, token '{v6.Token}', scope '{v6.Uri}')");
+        await duck.ExecuteAsync($"attach '{v6.Uri}' as v6_seed");
+        await duck.ExecuteAsync("create table v6_seed.ping as select 42 as answer");
+        await duck.ExecuteAsync("detach v6_seed");
+
+        var landed = await ReadAsync(duck, Spec("ping"), uri: v6.Uri);
+        Assert.Equal(42L, await duck.ScalarAsync<long>($"select answer from {landed}"));
     }
 }
