@@ -7,9 +7,12 @@ namespace Pz.Connector.Sftp;
 /// All paths are absolute-or-login-relative remote paths with '/' separators.</summary>
 internal interface ISftpFileSystem : IDisposable
 {
-    /// <summary>Regular files under <paramref name="directory"/>, full paths, '.'/'..' excluded;
-    /// recursive walks subdirectories breadth-first. A missing directory yields no entries (the
-    /// no-match error belongs to the caller, which knows the dataset name).</summary>
+    /// <summary>Regular files under <paramref name="directory"/>, '.'/'..' excluded; recursive walks
+    /// subdirectories breadth-first. Returned paths are relative to whatever form
+    /// <paramref name="directory"/> was passed in — NEVER a server-canonical/absolute form the
+    /// implementation resolved on its own — so they compose back with the caller's own glob pattern.
+    /// A missing directory yields no entries (the no-match error belongs to the caller, which knows
+    /// the dataset name).</summary>
     IEnumerable<string> ListFiles(string directory, bool recursive);
 
     Stream OpenRead(string path);          // seekable (SSH.NET SftpFileStream)
