@@ -25,9 +25,7 @@ internal static class NativeSetup
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             var described = NativeStatementRedactor.Describe(statement);
-            var hint = statement.TrimStart().StartsWith("install", StringComparison.OrdinalIgnoreCase)
-                ? " (first use of an object-store path needs network access to install the DuckDB httpfs extension)"
-                : string.Empty;
+            var hint = InstallHint(statement);
             // The inner engine message MUST be sanitized (never the raw ex.Message): a DuckDB
             // parser/binder error's "LINE <n>: ..." context block echoes the offending statement
             // verbatim, which — for a malformed CREATE SECRET — would otherwise echo the secret
@@ -37,5 +35,30 @@ internal static class NativeSetup
                 $"{PzErrorCode.NativeSetupFailed}: native setup statement failed: {described} — {sanitized}{hint}",
                 isTransient: DuckTransientErrors.IsTransient(ex.Message), innerException: ex);
         }
+    }
+
+    /// <summary>Names the extension a failing <c>install &lt;extension&gt;</c> statement was
+    /// installing, so the hint reads as advice about the extension actually being fetched rather than
+    /// a generic httpfs guess — every native-only connector ships its own extension (quack, ducklake,
+    /// duckdb, motherduck, …) and only httpfs is specifically about object storage.</summary>
+    private static string InstallHint(string statement)
+    {
+        const string prefix = "install";
+        var trimmed = statement.TrimStart();
+        if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        var extension = trimmed[prefix.Length..].TrimStart();
+        var end = extension.IndexOf(' ');
+        if (end >= 0)
+        {
+            extension = extension[..end];
+        }
+
+        return extension.Equals("httpfs", StringComparison.OrdinalIgnoreCase)
+            ? " (first use of an object-store path needs network access to install the DuckDB httpfs extension)"
+            : $" (first use needs network access to install the DuckDB {extension} extension)";
     }
 }
