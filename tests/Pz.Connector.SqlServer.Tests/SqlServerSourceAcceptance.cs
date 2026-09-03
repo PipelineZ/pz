@@ -193,8 +193,12 @@ public sealed class SqlServerSourceAcceptance(MsSqlContainerFixture fixture) : S
                 "Server Agent running (MSSQL_AGENT_ENABLED=true)?");
         }
 
-        // Bounded poll for the capture job to land the expected cumulative row count in the raw change
-        // table, so a MutateAsync caller's very next poll read never races the async capture job.
+        // Bounded poll for the capture job to land the expected cumulative CHANGE count in the raw
+        // change table, so a MutateAsync caller's very next poll read never races the async capture
+        // job. Counts changes, not rows: an update lands two rows there (__$operation 3, the
+        // before-image, and 4, the after-image), so a plain row count reaches the threshold one change
+        // early -- with insert + update + delete, the delete goes missing from the poll. Excluding the
+        // before-image makes one change one row (same rule as CdcTestSupport.WaitForChangeCountAsync).
         private async Task WaitForChangeCountAsync(int expected)
         {
             var deadline = DateTime.UtcNow + PollCap;
@@ -202,7 +206,8 @@ public sealed class SqlServerSourceAcceptance(MsSqlContainerFixture fixture) : S
             {
                 await using var conn = new SqlConnection(fixture.ConnectionString);
                 await conn.OpenAsync().ConfigureAwait(false);
-                await using var cmd = new SqlCommand($"select count(*) from cdc.{MsDdl.Quote($"{_instance}_CT")}", conn);
+                await using var cmd = new SqlCommand(
+                    $"select count(*) from cdc.{MsDdl.Quote($"{_instance}_CT")} where [__$operation] <> 3", conn);
                 var count = (int)(await cmd.ExecuteScalarAsync().ConfigureAwait(false))!;
                 if (count >= expected)
                 {
