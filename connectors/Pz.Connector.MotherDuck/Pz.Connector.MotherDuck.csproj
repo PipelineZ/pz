@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>MotherDuck connector (native-path-only: DuckDB's motherduck extension is the entire data plane) for PipelineZ (pz).</Description>
+    <!-- Builtin connector, ships inside the Pz.Cli tool package: see the note in
+         Pz.Connector.LocalFiles.csproj for why a separate nupkg would be unconsumable. -->
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Connector.MotherDuck.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Same nupkg-root manifest embedding as the other builtin connectors (see the note in
+         Pz.Connector.Postgres.csproj for why Pack+PackagePath instead of CopyToOutputDirectory). -->
+    <None Include="pz.connector.json" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>
