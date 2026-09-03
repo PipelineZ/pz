@@ -15,7 +15,7 @@ public sealed class DuckDbPlannerTests
 {
     private static Dictionary<string, object?> Connection() => new() { ["path"] = "/data/app.duckdb" };
 
-    private static CompiledDag DuckDbToDuckDbDag(string mode = "replace")
+    private static CompiledDag DuckDbToDuckDbDag(string mode = "replace", string outputName = "events_out")
     {
         var sourceDef = new ConnectionDef("appdb", "duckdb", Connection(),
             [new DatasetDef("events", new Dictionary<string, object?>(), null)], "connections.yml");
@@ -27,7 +27,7 @@ public sealed class DuckDbPlannerTests
         var pipelineNode = new DagNode(new NodeId("2222222222222222"), NodeKind.Pipeline, "stg_events",
             [loadNode.Id], pipelineDef.RawSql, pipelineDef);
 
-        var output = new OutputDef("events_out", "stg_events", mode, "fail_on_change",
+        var output = new OutputDef(outputName, "stg_events", mode, "fail_on_change",
             new Dictionary<string, object?>());
         if (mode == "merge")
         {
@@ -85,6 +85,23 @@ public sealed class DuckDbPlannerTests
         Assert.Equal(2, refusals.Length);
         Assert.Contains(refusals, e => e.Message.Contains("source 'appdb'", StringComparison.Ordinal));
         Assert.Contains(refusals, e => e.Message.Contains("mart", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_three_part_output_entity_is_a_coded_config_error_not_an_unhandled_exception()
+    {
+        // DuckDbSql.SplitEntity only recognizes "table" or "schema.table"; "a.b.c" throws
+        // PzConnectorException out of TryGetNativeCopy. The planner must catch it (mirroring the
+        // source-side PZ0353 catch) and aggregate it rather than let it escape as an unhandled crash.
+        var ex = await Assert.ThrowsAsync<PzValidationException>(
+            () => new ExecutionPlanner(Registry())
+                .PlanAsync(DuckDbToDuckDbDag(outputName: "a.b.c"), forceUniversal: false, CancellationToken.None));
+
+        var error = Assert.Single(ex.Errors);
+        Assert.Equal(PzErrorCode.NativePathContractMismatch, error.Code);
+        Assert.Contains("mart", error.Message, StringComparison.Ordinal);
+        Assert.Contains("a.b.c", error.Message, StringComparison.Ordinal);
+        Assert.Equal("connections.yml", error.File);
     }
 
     [Fact]
