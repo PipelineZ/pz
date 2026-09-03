@@ -227,4 +227,121 @@ public sealed class DuckLakeSqlGenTests
         Assert.DoesNotContain(statements, s => s.StartsWith($"create or replace secret {WhAlias}_storage", StringComparison.Ordinal));
         Assert.DoesNotContain("install httpfs", statements);
     }
+
+    [Fact]
+    public void Plain_scan_is_the_bare_qualified_table()
+    {
+        Assert.Equal($"{WhAlias}.\"events\"", DuckLakeSql.ScanFragment(WhAlias, Spec()));
+        Assert.Equal($"{WhAlias}.\"raw\".\"events\"",
+            DuckLakeSql.ScanFragment(WhAlias, new DatasetSpec("wh", "raw.events", new Dictionary<string, object?>())));
+    }
+
+    [Fact]
+    public void Version_option_time_travels_the_scan()
+    {
+        var spec = Spec(new Dictionary<string, object?> { ["version"] = 3L });
+        Assert.Equal($"{WhAlias}.\"events\" at (version => 3)", DuckLakeSql.ScanFragment(WhAlias, spec));
+    }
+
+    [Fact]
+    public void Timestamp_option_time_travels_the_scan()
+    {
+        var spec = Spec(new Dictionary<string, object?> { ["timestamp"] = "2026-05-26 00:00:00" });
+        Assert.Equal($"{WhAlias}.\"events\" at (timestamp => timestamp '2026-05-26 00:00:00')",
+            DuckLakeSql.ScanFragment(WhAlias, spec));
+    }
+
+    [Fact]
+    public void Version_and_timestamp_together_are_a_permanent_error()
+    {
+        var spec = Spec(new Dictionary<string, object?> { ["version"] = 3L, ["timestamp"] = "2026-05-26 00:00:00" });
+        var ex = Assert.Throws<PzConnectorException>(() => DuckLakeSql.ScanFragment(WhAlias, spec));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("version", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Non_integer_version_is_a_permanent_error()
+    {
+        var spec = Spec(new Dictionary<string, object?> { ["version"] = "latest" });
+        Assert.False(Assert.Throws<PzConnectorException>(() => DuckLakeSql.ScanFragment(WhAlias, spec)).IsTransient);
+    }
+
+    [Fact]
+    public void Contract_watermark_and_time_travel_compose()
+    {
+        var spec = new DatasetSpec("wh", "events", new Dictionary<string, object?>
+        {
+            ["columns"] = new Dictionary<string, string> { ["id"] = "bigint", ["name"] = "varchar" },
+            ["version"] = 3L,
+        })
+        {
+            WatermarkCursor = "id",
+            WatermarkValue = "100",
+            WatermarkUpperBound = "200",
+        };
+        Assert.Equal(
+            $"(select \"id\", \"name\" from {WhAlias}.\"events\" at (version => 3) where \"id\" > 100 and \"id\" <= 200)",
+            DuckLakeSql.ScanFragment(WhAlias, spec));
+    }
+
+    [Fact]
+    public void Inclusive_lower_bound_renders_gte()
+    {
+        var spec = Spec() with { WatermarkCursor = "id", WatermarkValue = "100", WatermarkLowerInclusive = true };
+        Assert.Equal($"(select * from {WhAlias}.\"events\" where \"id\" >= 100)", DuckLakeSql.ScanFragment(WhAlias, spec));
+    }
+
+    [Fact]
+    public void Scan_predicates_are_injection_safe()
+    {
+        var spec = new DatasetSpec("wh", "ev'en\"ts", new Dictionary<string, object?> { ["timestamp"] = "x' or 1=1" })
+        {
+            WatermarkCursor = "up\"dated",
+            WatermarkValue = "o'clock",
+        };
+        Assert.Equal(
+            $"(select * from {WhAlias}.\"ev'en\"\"ts\" at (timestamp => timestamp 'x'' or 1=1') where \"up\"\"dated\" > 'o''clock')",
+            DuckLakeSql.ScanFragment(WhAlias, spec));
+    }
+
+    [Fact]
+    public void Append_copy_is_create_if_not_exists_then_insert()
+    {
+        Assert.True(DuckLakeSql.TryCopySql($"{WhAlias}.\"events\"", "append", [], out var sql, out var mechanism));
+        Assert.Equal(
+            $"create table if not exists {WhAlias}.\"events\" as select * from {{{{source}}}} limit 0;\n" +
+            $"insert into {WhAlias}.\"events\" select * from {{{{source}}}};",
+            sql);
+        Assert.Equal("ducklake insert", mechanism);
+    }
+
+    [Fact]
+    public void Replace_copy_is_create_or_replace()
+    {
+        Assert.True(DuckLakeSql.TryCopySql($"{WhAlias}.\"events\"", "replace", [], out var sql, out var mechanism));
+        Assert.Equal($"create or replace table {WhAlias}.\"events\" as select * from {{{{source}}}}", sql);
+        Assert.Equal("ducklake create-or-replace", mechanism);
+    }
+
+    [Fact]
+    public void Merge_copy_matches_on_every_key()
+    {
+        Assert.True(DuckLakeSql.TryCopySql($"{WhAlias}.\"events\"", "merge", ["id", "region"], out var sql, out var mechanism));
+        Assert.Equal(
+            $"create table if not exists {WhAlias}.\"events\" as select * from {{{{source}}}} limit 0;\n" +
+            $"merge into {WhAlias}.\"events\" as t using {{{{source}}}} as s " +
+            "on t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\" " +
+            "when matched then update when not matched then insert;",
+            sql);
+        Assert.Equal("ducklake merge", mechanism);
+    }
+
+    [Fact]
+    public void Keyless_merge_throws_and_unknown_modes_have_no_native_shape()
+    {
+        Assert.False(Assert.Throws<PzConnectorException>(
+            () => DuckLakeSql.TryCopySql($"{WhAlias}.\"events\"", "merge", [], out _, out _)).IsTransient);
+        Assert.False(DuckLakeSql.TryCopySql($"{WhAlias}.\"events\"", "upsert_all", [], out _, out _));
+    }
 }

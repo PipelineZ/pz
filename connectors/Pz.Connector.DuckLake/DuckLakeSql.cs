@@ -269,6 +269,108 @@ internal static class DuckLakeSql
             $", url_style '{EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}, scope '{EscapeLiteral(dataPath)}')";
     }
 
+    /// <summary>The scan fragment: a declared <c>columns:</c> contract prunes the read; the optional
+    /// time-travel clause pins the snapshot; the plain (unwindowed) incremental watermark IS pushed
+    /// down (DuckDB pushes the filter into the DuckLake scan); the window ceiling is MUST-apply. A
+    /// plain scan stays the bare (optionally time-travelled) table reference; anything with a
+    /// projection or predicate becomes a parenthesized subquery.</summary>
+    internal static string ScanFragment(string alias, DatasetSpec spec)
+    {
+        var table = QualifiedTable(alias, spec.Dataset) + TimeTravelClause(spec);
+
+        var columns = ExtractColumns(spec);
+        var projection = columns is { Count: > 0 }
+            ? string.Join(", ", columns.Keys.Select(QuoteIdent))
+            : "*";
+
+        var predicates = new List<string>();
+        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
+        {
+            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
+            predicates.Add($"{QuoteIdent(cursor)} {op} {RenderWatermarkLiteral(low)}");
+        }
+
+        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
+        {
+            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
+        }
+
+        if (projection == "*" && predicates.Count == 0)
+        {
+            return table;
+        }
+
+        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
+        return $"(select {projection} from {table}{where})";
+    }
+
+    /// <summary><c>version:</c> pins a snapshot id, <c>timestamp:</c> the latest snapshot at or before
+    /// an instant; declaring both is contradictory and refused. Thrown from TryGetNativeScan, which
+    /// the planner probes, so the error surfaces at plan time.</summary>
+    internal static string TimeTravelClause(DatasetSpec spec)
+    {
+        var hasVersion = spec.Options.TryGetValue("version", out var versionValue) && versionValue is not null;
+        var hasTimestamp = spec.Options.TryGetValue("timestamp", out var timestampValue) && timestampValue is not null;
+        if (hasVersion && hasTimestamp)
+        {
+            throw new PzConnectorException(
+                $"dataset '{spec.Dataset}': declare either version: or timestamp:, not both", isTransient: false);
+        }
+
+        if (hasVersion)
+        {
+            if (!long.TryParse(versionValue!.ToString(), out var version) || version < 0)
+            {
+                throw new PzConnectorException(
+                    $"dataset '{spec.Dataset}': version: must be a non-negative snapshot id (got '{versionValue}')",
+                    isTransient: false);
+            }
+
+            return $" at (version => {version})";
+        }
+
+        return hasTimestamp
+            ? $" at (timestamp => timestamp '{EscapeLiteral(timestampValue!.ToString()!)}')"
+            : "";
+    }
+
+    /// <summary>The copy statement(s) for one output; <c>{{source}}</c> is the engine's placeholder
+    /// for the staged relation. Append and merge first create the target from the staged shape so a
+    /// first run needs no pre-created table; merge matches on every declared key, updating all
+    /// columns by name on a match and inserting otherwise. Each statement commits as one DuckLake
+    /// snapshot. A keyless merge is refused at compile time; the throw is defense-in-depth.</summary>
+    internal static bool TryCopySql(string table, string mode, IReadOnlyList<string> keys, out string sql, out string mechanism)
+    {
+        var create = $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n";
+        switch (mode)
+        {
+            case "append":
+                sql = create + $"insert into {table} select * from {{{{source}}}};";
+                mechanism = "ducklake insert";
+                return true;
+            case "replace":
+                sql = $"create or replace table {table} as select * from {{{{source}}}}";
+                mechanism = "ducklake create-or-replace";
+                return true;
+            case "merge":
+                if (keys.Count == 0)
+                {
+                    throw new PzConnectorException(
+                        $"output '{table}': merge requires at least one key column", isTransient: false);
+                }
+
+                var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
+                sql = create + $"merge into {table} as t using {{{{source}}}} as s on {on} " +
+                    "when matched then update when not matched then insert;";
+                mechanism = "ducklake merge";
+                return true;
+            default:
+                sql = "";
+                mechanism = "";
+                return false;
+        }
+    }
+
     private static string Require(ConnectorConfig config, string key) =>
         config.GetString(key) is { Length: > 0 } s
             ? s
