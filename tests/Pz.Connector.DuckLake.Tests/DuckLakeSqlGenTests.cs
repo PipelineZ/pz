@@ -268,6 +268,18 @@ public sealed class DuckLakeSqlGenTests
     }
 
     [Fact]
+    public void Timestamp_option_given_as_a_datetime_renders_invariantly()
+    {
+        var dt = Spec(new Dictionary<string, object?> { ["timestamp"] = new DateTime(2026, 5, 26, 13, 4, 5, DateTimeKind.Utc) });
+        Assert.Equal($"{WhAlias}.\"events\" at (timestamp => timestamp '2026-05-26 13:04:05.000000')",
+            DuckLakeSql.ScanFragment(WhAlias, dt));
+
+        var dto = Spec(new Dictionary<string, object?> { ["timestamp"] = new DateTimeOffset(2026, 5, 26, 15, 4, 5, TimeSpan.FromHours(2)) });
+        Assert.Equal($"{WhAlias}.\"events\" at (timestamp => timestamp '2026-05-26 13:04:05.000000')",
+            DuckLakeSql.ScanFragment(WhAlias, dto));
+    }
+
+    [Fact]
     public void Contract_watermark_and_time_travel_compose()
     {
         var spec = new DatasetSpec("wh", "events", new Dictionary<string, object?>

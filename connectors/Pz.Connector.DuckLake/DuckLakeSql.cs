@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Pz.Connectors.Abstractions;
@@ -306,7 +307,9 @@ internal static class DuckLakeSql
 
     /// <summary><c>version:</c> pins a snapshot id, <c>timestamp:</c> the latest snapshot at or before
     /// an instant; declaring both is contradictory and refused. Thrown from TryGetNativeScan, which
-    /// the planner probes, so the error surfaces at plan time.</summary>
+    /// the planner probes, so the error surfaces at plan time. The rendered literal must be invariant
+    /// and deterministic regardless of the host culture, since a Scriban kwarg can hand this a
+    /// <c>DateTime</c>/<c>DateTimeOffset</c> rather than a string.</summary>
     internal static string TimeTravelClause(DatasetSpec spec)
     {
         var hasVersion = spec.Options.TryGetValue("version", out var versionValue) && versionValue is not null;
@@ -330,9 +333,19 @@ internal static class DuckLakeSql
         }
 
         return hasTimestamp
-            ? $" at (timestamp => timestamp '{EscapeLiteral(timestampValue!.ToString()!)}')"
+            ? $" at (timestamp => timestamp '{EscapeLiteral(RenderTimestampOption(timestampValue!))}')"
             : "";
     }
+
+    /// <summary>A <c>timestamp:</c> option string passes through for DuckDB's own parser to validate;
+    /// a <c>DateTime</c>/<c>DateTimeOffset</c> (reachable through the Scriban kwarg surface) is
+    /// formatted invariantly so the literal never depends on the host culture.</summary>
+    private static string RenderTimestampOption(object value) => value switch
+    {
+        DateTime dt => dt.ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture),
+        DateTimeOffset dto => dto.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture),
+        _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? "",
+    };
 
     /// <summary>The copy statement(s) for one output; <c>{{source}}</c> is the engine's placeholder
     /// for the staged relation. Append and merge first create the target from the staged shape so a
