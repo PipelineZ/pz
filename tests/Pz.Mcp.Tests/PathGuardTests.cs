@@ -200,6 +200,8 @@ public class PathGuardTests
         var error = doc.RootElement.GetProperty("errors")[0];
         Assert.Equal("PZ0606", error.GetProperty("code").GetString());
         Assert.Contains("duckdb", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Contains("outside the project directory", error.GetProperty("message").GetString(),
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -212,5 +214,22 @@ public class PathGuardTests
             p.Dir, connect: false, RealServices(), CancellationToken.None));
 
         Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Add_connection_refuses_a_proposed_escaping_duckdb_path_without_writing()
+    {
+        using var p = new TempProject();
+        var before = File.ReadAllText(Path.Combine(p.Dir, "connections.yml"));
+
+        var doc = JsonDocument.Parse(await AuthoringTools.AddConnectionAsync(
+            p.Dir, "lakedb", "duckdb",
+            new Dictionary<string, object?> { ["path"] = "../../stolen.duckdb" },
+            RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
+        Assert.Equal("PZ0606", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+        Assert.Equal(before, File.ReadAllText(Path.Combine(p.Dir, "connections.yml")));
     }
 }
