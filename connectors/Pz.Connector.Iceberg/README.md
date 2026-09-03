@@ -213,11 +213,17 @@ needs no pre-created namespace or table. Then:
   At-least-once: an incremental source feeding an append sink still requires
   `write: { duplicates: accept }` (PZ0214).
 - `strategy: replace` — `begin transaction; delete from …; insert into … select * from {{source}};
-  commit;`. The catalog commits the pair as **one `overwrite` snapshot**, so a concurrent reader
-  sees the old rows or the new rows, never an empty table, and the table keeps its identity and
-  history (DuckDB's iceberg extension has no `CREATE OR REPLACE`, and a drop-and-recreate would
-  discard every earlier snapshot). The delete is merge-on-read (positional delete files), so a table
-  replaced many times benefits from the catalog's compaction/maintenance.
+  commit;`. DuckDB's iceberg extension commits one snapshot per DML statement — there is no
+  single-snapshot `overwrite` it can be asked for — so this is always **two** new snapshots, a
+  `delete` immediately followed by an `append`, never one combined commit. What the wrapping
+  transaction buys instead: neither snapshot reaches the catalog until `commit`, so a concurrent
+  reader sees the old rows and no new snapshot right up to that instant, then both the delete and
+  the append snapshot at once — never an empty table, never one without the other (proven against
+  the live REST fixture in `IcebergRestCatalogTests.Replace_is_invisible_to_other_readers_until_commit`).
+  The table keeps its identity and history either way (DuckDB's iceberg extension has no
+  `CREATE OR REPLACE`, and a drop-and-recreate would discard every earlier snapshot). The delete is
+  merge-on-read (positional delete files), so a table replaced many times benefits from the
+  catalog's compaction/maintenance.
 - `strategy: merge` — `merge into … as t using (select s.* from {{source}} as s qualify
   row_number() over (partition by <keys>) = 1) as s on <keys match> when matched then update when
   not matched then insert;`. The staged side is keyed unique first because DuckDB's MERGE matches

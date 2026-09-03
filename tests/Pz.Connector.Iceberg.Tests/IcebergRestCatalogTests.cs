@@ -146,6 +146,39 @@ public sealed class IcebergRestCatalogTests(IcebergRestCatalogFixture catalog) :
         Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {deduped} where id = 4"));
     }
 
+    /// <summary>Proves what the two-snapshot replace (see <see cref="Append_replace_and_merge_behave"/>)
+    /// actually buys: an independent reader -- its own DuckDB connection, its own attach of the same
+    /// catalog -- never observes the empty in-between state. It sees the pre-replace rows and no new
+    /// snapshot for as long as the writer's transaction stays open, then both the delete and the
+    /// append snapshot at once, the instant the writer commits.</summary>
+    [SkippableFact]
+    public async Task Replace_is_invisible_to_other_readers_until_commit()
+    {
+        DockerFacts.SkipUnlessDocker();
+        await using var writer = OpenDuck();
+        await using var reader = OpenDuck();
+
+        await WriteAsync(writer, "concurrent", "(select 1 as id union all select 2)");
+
+        var alias = IcebergSql.Alias("wh");
+        var table = IcebergSql.QualifiedTable(alias, $"{ns}.concurrent");
+        await RunSetupAsync(reader, IcebergSql.SetupStatements(Config(), alias));
+        var beforeSnapshotCount = await reader.ScalarAsync<long>($"select count(*) from {Snapshots("concurrent")}");
+
+        // Split the replace transaction by hand so the reader can be polled in between.
+        await writer.ExecuteAsync("begin transaction;");
+        await writer.ExecuteAsync($"delete from {table};");
+
+        Assert.Equal(2, await reader.ScalarAsync<long>($"select count(*) from {table}"));
+        Assert.Equal(beforeSnapshotCount, await reader.ScalarAsync<long>($"select count(*) from {Snapshots("concurrent")}"));
+
+        await writer.ExecuteAsync($"insert into {table} select 9 as id;");
+        await writer.ExecuteAsync("commit;");
+
+        Assert.Equal(9L, await reader.ScalarAsync<long>($"select id from {table}"));
+        Assert.Equal(beforeSnapshotCount + 2, await reader.ScalarAsync<long>($"select count(*) from {Snapshots("concurrent")}"));
+    }
+
     [SkippableFact]
     public async Task Version_and_timestamp_options_read_an_older_snapshot()
     {

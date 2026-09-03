@@ -4,7 +4,8 @@ using Pz.Connectors.Abstractions;
 namespace Pz.Connector.Iceberg;
 
 /// <summary>Native-only sink over an attached catalog: append is CREATE-IF-NOT-EXISTS + INSERT,
-/// replace is DELETE + INSERT in one transaction (one overwrite snapshot), merge is
+/// replace is DELETE + INSERT in one transaction (two snapshots, a delete then an append, landing
+/// together or not at all -- see <see cref="IcebergSql.TryCopySql"/>), merge is
 /// CREATE-IF-NOT-EXISTS + MERGE INTO on the declared keys. A <c>files</c> connection is read-only:
 /// only a catalog can commit new table metadata.</summary>
 internal sealed class IcebergSink(ConnectorConfig config) : ISink
