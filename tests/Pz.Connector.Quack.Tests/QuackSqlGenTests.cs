@@ -19,6 +19,8 @@ public sealed class QuackSqlGenTests
     [InlineData("quack:localhost", "localhost", 9494)]
     [InlineData("quack:lake.internal:18443", "lake.internal", 18443)]
     [InlineData("quack://lake.internal:18443", "lake.internal", 18443)]
+    [InlineData("quack://lake.internal:9494/", "lake.internal", 9494)]
+    [InlineData("quack://lake.internal/", "lake.internal", 9494)]
     public void Uris_parse_host_and_port(string uri, string host, int port)
     {
         Assert.True(QuackUri.TryParse(uri, out var h, out var p));

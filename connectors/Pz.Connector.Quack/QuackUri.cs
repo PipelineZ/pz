@@ -16,7 +16,7 @@ internal static class QuackUri
             return false;
         }
 
-        var rest = uri["quack:".Length..].TrimStart('/');
+        var rest = uri["quack:".Length..].TrimStart('/').TrimEnd('/');
         if (rest.Length == 0)
         {
             return false;

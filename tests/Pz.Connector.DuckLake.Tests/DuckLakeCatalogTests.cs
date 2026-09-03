@@ -105,6 +105,8 @@ public sealed class DuckLakeCatalogTests
     [InlineData("quack:localhost", "localhost", 9494)]
     [InlineData("quack:lake.internal:18443", "lake.internal", 18443)]
     [InlineData("quack://lake.internal:18443", "lake.internal", 18443)]
+    [InlineData("quack://lake.internal:9494/", "lake.internal", 9494)]
+    [InlineData("quack://lake.internal/", "lake.internal", 9494)]
     public void Quack_uris_parse_host_and_port(string uri, string host, int port)
     {
         Assert.True(DuckLakeCatalog.TryParseQuackUri(uri, out var h, out var p));
