@@ -50,4 +50,20 @@ public class StubHttpServerTests
         Assert.IsType<InvalidOperationException>(server.HandlerError);
         Assert.Equal("boom", server.HandlerError.Message);
     }
+
+    /// <summary>A server disposed before its serve loop has parked in GetContextAsync must still
+    /// tear down. Stop() wakes only a waiter that has already registered: a loop whose
+    /// listening check passed just before Stop() queued a waiter nothing would ever complete, and
+    /// DisposeAsync awaited it forever -- a test that made no requests then hung until CI's
+    /// blame-hang timeout. The construct-then-dispose window is microseconds wide, so this
+    /// repeats it; the bounded wait is the hang guard, not a timing assertion.</summary>
+    [Fact]
+    public async Task Dispose_right_after_construction_never_hangs()
+    {
+        for (var i = 0; i < 2000; i++)
+        {
+            var server = new StubHttpServer();
+            await server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+    }
 }
