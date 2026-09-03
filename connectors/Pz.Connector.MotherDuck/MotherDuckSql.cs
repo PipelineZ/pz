@@ -18,8 +18,9 @@ internal static class MotherDuckSql
 
     /// <summary>Setup for either direction: extension, the session token (a SET statement the engine
     /// describes without echoing — never the <c>md:?motherduck_token=</c> URL form, which a failed
-    /// attach would echo verbatim), and one alias-less attach. Idempotent under per-node repetition;
-    /// two connections naming the same database share one attach, and the last SET wins.</summary>
+    /// attach would echo verbatim), and one alias-less attach. The SET is accepted only before the
+    /// extension's first attach, so it relies on the engine running each distinct setup statement once
+    /// per run; two connections with different tokens cannot share a run.</summary>
     internal static IReadOnlyList<string> SetupStatements(ConnectorConfig config)
     {
         var database = Require(config, "database");

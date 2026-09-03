@@ -10,8 +10,10 @@ namespace Pz.Connector.MotherDuck;
 /// databases); every read/write is a plain statement MotherDuck executes. Zero drivers and no
 /// offline probe: <see cref="CheckConnectionAsync"/> reports "not checked" and the first run
 /// authenticates; `pz validate --connect`'s schema fetch works only with a declared `columns:`
-/// contract. Two connections naming the same database share one attach; with different tokens the
-/// last node's SET wins. Registered as "motherduck".</summary>
+/// contract. The token is a session setting the extension accepts only before its first attach, and
+/// the engine issues each distinct setup statement once per run — so two connections with the same
+/// database and token share one attach, while a second connection with a different token fails its
+/// SET as PZ0311: one MotherDuck token per run. Registered as "motherduck".</summary>
 public sealed class MotherDuckConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
 {
     public ConnectorInfo Info => new("motherduck", "0.1.0", ProtocolVersion.Major);

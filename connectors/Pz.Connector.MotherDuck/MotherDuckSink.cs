@@ -7,7 +7,7 @@ namespace Pz.Connector.MotherDuck;
 /// TABLE … AS, merge is a real MERGE INTO against the declared key columns (update on match, insert
 /// otherwise) — MotherDuck's engine executes it server-side, so unlike a client-attached remote there
 /// is no pull-rewrite-push round trip and no blast radius on the target's constraints or indexes. A
-/// keyless merge is refused at compile time (PZ0324); the throw here is ABI defense-in-depth. Commit
+/// keyless merge is refused at compile time (PZ0209); the throw here is ABI defense-in-depth. Commit
 /// semantics belong to MotherDuck, so Transactional is not declared.</summary>
 internal sealed class MotherDuckSink(ConnectorConfig config) : ISink
 {
