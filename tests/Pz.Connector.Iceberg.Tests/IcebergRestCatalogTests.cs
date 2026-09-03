@@ -1,6 +1,10 @@
 using Pz.Connectors.Abstractions;
+using Pz.Core.Dag;
+using Pz.Core.Model;
 using Pz.DuckDb;
+using Pz.Engine.Dispatch;
 using Pz.Engine.Execution;
+using Pz.Engine.Planning;
 using Pz.TestSupport;
 
 namespace Pz.Connector.Iceberg.Tests;
@@ -144,6 +148,51 @@ public sealed class IcebergRestCatalogTests(IcebergRestCatalogFixture catalog) :
         Assert.Equal(4, await duck.ScalarAsync<long>($"select count(*) from {deduped}"));
         Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {deduped} where id = 3"));
         Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {deduped} where id = 4"));
+    }
+
+    /// <summary>Drives the fix for the whole-branch review's Critical finding through the real
+    /// <see cref="SinkWriteExecutor"/> path (not <see cref="WriteAsync"/>'s direct CopySql call): a
+    /// replace whose INSERT fails after its DELETE already ran inside the wrapping transaction must
+    /// not leave that transaction open on the run's single shared connection -- proved here by a
+    /// normal write succeeding on the very same <see cref="DuckSession"/> right after.</summary>
+    [SkippableFact]
+    public async Task A_failed_replace_leaves_no_open_transaction_on_the_shared_connection()
+    {
+        DockerFacts.SkipUnlessDocker();
+        await using var duck = OpenDuck();
+
+        // Establishes the table's schema (one column, id) via a normal write.
+        await WriteAsync(duck, "txn", "(select 1 as id)");
+
+        // A staged relation with a column count DuckDB can't reconcile with the already-created
+        // table: the replace's DELETE (inside its wrapping transaction) still runs; only the INSERT
+        // -- select * from a 2-column relation into a 1-column table -- fails.
+        await duck.ExecuteAsync("create schema if not exists staging");
+        await duck.ExecuteAsync("create table staging.bad_input as select 9 as id, 'extra' as name");
+
+        var sinkDef = new ConnectionDef("wh", "iceberg", Config().Values, [], "connections.yml")
+        {
+            Outputs = [new OutputDef($"{ns}.txn", "bad_input", "replace", "fail_on_change", new Dictionary<string, object?>())],
+        };
+        var node = new DagNode(new NodeId("cccccccccccccccc"), NodeKind.SinkWrite, "wh.txn_out",
+            [], null, new SinkOutputDef(sinkDef, sinkDef.Outputs[0]));
+
+        var registry = new ConnectorRegistry();
+        registry.AddSink("iceberg", (ISinkConnector)new IcebergConnector());
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1, "test")],
+            MemoryBudget.Compute(new EngineConfig()));
+        var ctx = new RunContext(duck, registry, new RunPaths(dir, "run"), NullRunEvents.Instance, plan);
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+
+        // The real proof: a normal write commits on the same session right after. Left stuck inside
+        // the open transaction, this would fail with "cannot start a transaction within a
+        // transaction" or "current transaction is aborted".
+        await WriteAsync(duck, "txn", "(select 2 as id)");
+        Assert.Equal(2L, await duck.ScalarAsync<long>($"select id from {await ReadAsync(duck, Spec("txn"))}"));
     }
 
     /// <summary>Proves what the two-snapshot replace (see <see cref="Append_replace_and_merge_behave"/>)

@@ -127,6 +127,25 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     TryDeleteFile(move.TempPath);
                 }
 
+                // A connector's CopySql may open its own explicit transaction (e.g. a replace's
+                // `begin transaction; delete …; insert …; commit;`) -- DuckDB.NET stops at the first
+                // failing statement in the batch, so a mid-batch failure leaves that transaction open
+                // on the run's single shared connection: the node's retry would fail with "cannot
+                // start a transaction within a transaction" and every later node with "current
+                // transaction is aborted". Roll back best-effort before rethrowing -- CancellationToken.None,
+                // never `ct`: a run cancellation racing the failure must not skip this and leave the
+                // connection stuck. Swallow only "no transaction is active" (the batch's BEGIN never ran,
+                // or there was nothing to undo) -- any other rollback failure is a distinct problem and
+                // must not be hidden behind it.
+                try
+                {
+                    await ctx.Duck.ExecuteAsync("rollback", CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception rollbackEx)
+                    when (rollbackEx.Message.Contains("no transaction is active", StringComparison.OrdinalIgnoreCase))
+                {
+                }
+
                 // The inner engine message MUST be sanitized (never the raw ex.Message): a DuckDB
                 // parser/binder error's "LINE <n>: ..." context block would otherwise echo the
                 // COPY statement (and anything embedded in it) verbatim into this NodeResult/log.
