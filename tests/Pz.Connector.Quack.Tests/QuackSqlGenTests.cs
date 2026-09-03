@@ -32,6 +32,7 @@ public sealed class QuackSqlGenTests
     [InlineData("http://x")]
     [InlineData("quack:")]
     [InlineData("quack:host:notaport")]
+    [InlineData("quack://lake.internal/db")]
     public void Non_quack_uris_do_not_parse(string uri) => Assert.False(QuackUri.TryParse(uri, out _, out _));
 
     [Fact]

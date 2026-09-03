@@ -122,7 +122,7 @@ internal static class DuckLakeCatalog
         }
 
         var rest = uri["quack:".Length..].TrimStart('/').TrimEnd('/');
-        if (rest.Length == 0)
+        if (rest.Length == 0 || rest.Contains('/'))
         {
             return false;
         }
