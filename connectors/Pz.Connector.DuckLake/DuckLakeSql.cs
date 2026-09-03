@@ -158,8 +158,8 @@ internal static class DuckLakeSql
     /// catalog's own, httpfs when the data path is object storage), the storage secret (only when
     /// the data path is object storage — <c>storage_key_id</c>/<c>storage_secret_key</c> against a
     /// local data path is a validation error, so this is a defensive no-op, not the primary guard),
-    /// the catalog's credential carrier, then ONE read-write attach. All idempotent under
-    /// NativeSetup's per-node repetition: install/load are no-ops, <c>create or replace secret</c>
+    /// the catalog's credential carrier, then ONE read-write attach. All idempotent
+    /// should a node retry re-issue them (the engine runs each once per run): install/load are no-ops, <c>create or replace secret</c>
     /// is last-wins, <c>set</c> is repeatable, <c>attach if not exists</c> skips an existing alias.
     ///
     /// The attach string carries no credential for any catalog: postgres credentials ride a

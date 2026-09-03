@@ -29,6 +29,9 @@ internal sealed class NativeSetupLedger(IDuckSession duck)
 
     internal async Task ExecuteOnceAsync(string statement, CancellationToken ct)
     {
+        // A caller whose Lazy lost the GetOrAdd race awaits the winner's execution, which observes only
+        // the winner's token: every node of a run shares one cancellation token, so a follower's own
+        // token is never consulted while it waits.
         var lazy = completed.GetOrAdd(statement,
             s => new Lazy<Task>(() => NativeSetup.ExecuteSetupAsync(duck, s, ct), LazyThreadSafetyMode.ExecutionAndPublication));
         try

@@ -147,6 +147,11 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   from the topological dispatcher + bounded channels, not parallel connections.
 - **Execution is always staged materialize-then-drain**, never statement-scoped DML — even for the
   inline `INSERT INTO {{ sink(...) }}` form, which the compiler strips.
+- **Native setup statements run once per run** (`NativeSetupLedger` on `RunContext`, keyed by exact
+  statement text; concurrent nodes await the one in-flight execution; a failed statement is forgotten so
+  a retry re-issues it). MotherDuck accepts `set motherduck_token` only before its first attach, so the
+  per-node repetition the earlier native connectors tolerated would fail every second motherduck node.
+  Setup statements stay idempotent for retries; connections whose setup texts differ each run their own.
 - **Every command runs the same 8 phases** (`load → restore-check → compile → validate → plan →
   execute → finalize → report`); `compile`/`plan` stop early. Node kinds: SourceLoad, Pipeline, Check,
   SinkWrite. Nodes have stable content-addressed IDs — that's what makes `pz retry` and incremental

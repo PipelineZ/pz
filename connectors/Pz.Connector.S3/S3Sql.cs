@@ -20,8 +20,8 @@ internal static class S3Sql
         $"pz_s3_snk_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
 
     /// <summary>The full setup-statement list for either direction: install/load httpfs (no-ops when
-    /// present) + the scoped secret (<c>create or replace</c>, last-wins — all idempotent under
-    /// NativeSetup's per-node repetition).</summary>
+    /// present) + the scoped secret (<c>create or replace</c>, last-wins — all idempotent
+    /// should a node retry re-issue them; the engine runs each once per run).</summary>
     internal static IReadOnlyList<string> SetupStatements(ConnectorConfig config, string secretName) =>
         ["install httpfs", "load httpfs", CreateSecretSql(config, secretName)];
 

@@ -35,7 +35,8 @@ internal static class MySqlSql
         $"pz_mysql_snk_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
 
     /// <summary>The secret backing one alias's attach — <c>create or replace secret</c> is last-wins
-    /// and idempotent under NativeSetup's per-node repetition, just like the attach it precedes.</summary>
+    /// and idempotent should a node retry re-issue it (the engine runs each setup statement once per
+    /// run), just like the attach it precedes.</summary>
     internal static string SecretName(string alias) => alias + "_secret";
 
     /// <summary>The DuckDB <c>mysql</c> secret's CREATE SECRET body: every credential-bearing value is
@@ -69,8 +70,8 @@ internal static class MySqlSql
         return $"create or replace secret {secretName} (type mysql, {body})";
     }
 
-    /// <summary>Setup statements for either direction. All idempotent under NativeSetup's per-node
-    /// repetition: install/load are no-ops when present, CREATE OR REPLACE SECRET is last-wins, and
+    /// <summary>Setup statements for either direction. All idempotent should a node retry re-issue
+    /// them (the engine runs each once per run): install/load are no-ops when present, CREATE OR REPLACE SECRET is last-wins, and
     /// ATTACH IF NOT EXISTS skips an existing alias (verified against DuckDB v1.5.5). The
     /// attach path is always the empty string — the secret carries every credential.</summary>
     internal static IReadOnlyList<string> SetupStatements(ConnectorConfig config, string alias, bool readOnly)

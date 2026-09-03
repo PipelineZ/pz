@@ -38,7 +38,7 @@ internal static class QuackSql
     internal static string SecretName(string alias) => alias + "_secret";
 
     /// <summary>Setup for either direction: extension, the scoped token secret, one attach. All
-    /// idempotent under NativeSetup's per-node repetition.
+    /// idempotent should a node retry re-issue them; the engine runs each once per run.
     ///
     /// The uri is canonicalized to <c>quack:host:port</c> before it lands in either the secret's
     /// scope or the attach string — <c>quack:host</c>, <c>quack:host:port</c> and

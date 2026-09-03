@@ -29,8 +29,9 @@ public sealed class MotherDuckConnector : ISourceConnector, ISinkConnector, INat
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
 
-    /// <summary>No cross-field rules: required-ness is the schema's, and both values are ''-escaped
-    /// literals in the statements that carry them.</summary>
+    /// <summary>No cross-field rules: required-ness is the schema's; the token is only ever a ''-escaped
+    /// literal in the SET statement, and the database is a ''-escaped literal in the attach string and a
+    /// ""-quoted identifier in every table reference.</summary>
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(ValidationResult.Success);
 
