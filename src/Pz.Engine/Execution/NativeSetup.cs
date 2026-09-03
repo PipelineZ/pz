@@ -13,7 +13,12 @@ namespace Pz.Engine.Execution;
 /// Transience is classified by <see cref="DuckTransientErrors"/> rather than fixed to <c>false</c>
 /// — an extension install (the "install" hint below) genuinely can fail on a transient network condition
 /// (connection reset/timeout downloading httpfs), which is exactly the retry/breaker path this
-/// classification exists to unlock.</summary>
+/// classification exists to unlock.
+///
+/// Production reaches this only through <see cref="NativeSetupLedger"/> — the two native executor
+/// branches issue setup statements via <see cref="RunContext.SetupLedger"/>, never directly — so this
+/// method itself has no once-per-run memory; connector/e2e test suites that call it straight are
+/// exercising one statement in isolation, not the per-run dedupe.</summary>
 internal static class NativeSetup
 {
     internal static async Task ExecuteSetupAsync(IDuckSession duck, string statement, CancellationToken ct)

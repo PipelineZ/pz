@@ -70,6 +70,13 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// loop).</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, int> Attempts { get; } = new();
 
+    /// <summary>Per-run memo of native setup statements (extension installs, secrets, session
+    /// settings, attaches) already issued on <see cref="Duck"/> — see <see cref="NativeSetupLedger"/>.
+    /// Same shape and lifetime as <see cref="DeliveryFailures"/>/<see cref="Attempts"/>: a get-only
+    /// property with an initializer, so `with`-clones share the same ledger instance, which is exactly
+    /// right — the memo is per-run state, not per-node.</summary>
+    internal NativeSetupLedger SetupLedger { get; } = new();
+
     /// <summary><see cref="Batch"/> when set, else <see cref="BatchOptions.Default"/> (32MB / 122,880
     /// rows) — every batch-producing site (universal source reads, egress) should read this, not
     /// <see cref="Batch"/> directly, so a RunContext built without an explicit Batch still gets the
