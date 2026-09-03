@@ -44,6 +44,9 @@
          HttpConnector's checkpoint-resume ledger writes/clears end-to-end through SinkWriteExecutor —
          mirrors the Pz.Engine.Tests entry above for the same internal type. -->
     <InternalsVisibleTo Include="Pz.Connector.Http.Tests" />
+    <!-- Pz.Connector.Quack.Tests' e2e suite and SecretRedactionTests run connector fragments through
+         internal NativeSetup.ExecuteSetupAsync against a live DuckSession. -->
+    <InternalsVisibleTo Include="Pz.Connector.Quack.Tests" />
   </ItemGroup>
 
   <ItemGroup>
