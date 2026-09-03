@@ -248,8 +248,8 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
 ## Behaviours to know
 
 - **One read-write attach per connection.** Every read and write against a connection shares the
-  same alias; unlike duckdb's own connector there is no per-role split, because DuckLake's catalog
-  backends do not support attaching the same target twice in one session.
+  same alias, exactly as the duckdb connector does, because DuckLake's catalog backends do not
+  support attaching the same target twice in one session.
 - **A read refuses a missing catalog file, for the two file-backed catalogs.** The shared alias is
   read-write (writes must be able to create the catalog), so an unguarded attach of a `path` that
   does not exist would otherwise create an empty catalog and "succeed" at reading zero rows —
@@ -277,10 +277,11 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
 - **Storage credentials require an object-store `data_path`.** `storage_key_id`/
   `storage_secret_key` are refused unless `data_path` is a URL (contains `://`); declaring only one
   of the pair, or declaring any other `storage_*` key without both, is refused the same way.
-- **Setup statements are idempotent under the engine's per-node repetition.** Extension
-  install/load are no-ops on repeat, `create or replace secret` is last-wins, `set` is repeatable,
-  and `attach if not exists` skips an existing alias — so the same connection can appear as the
-  setup for multiple reads and writes in one run without re-running side effects that matter.
+- **Setup statements run once per run.** The engine issues each distinct setup statement once per
+  run and every node that needs it shares that execution; a node retry re-issues a statement that
+  failed, which the statements tolerate (extension install/load are no-ops on repeat,
+  `create or replace secret` is last-wins, `attach if not exists` skips an existing alias). A
+  `motherduck` catalog depends on this: its extension accepts a token only before its first attach.
 - **A shared remote catalog wants an object-store `data_path`.** DuckLake's data files are read and
   written by the client, not by the catalog server — so when the catalog is shared (`postgres`,
   `quack`, or `motherduck`), `data_path` should normally be an object store too. A project-relative
