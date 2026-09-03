@@ -81,8 +81,8 @@ add —
 ## Writing data
 
 One read-write attach per connection, shared by every read and write against that connection
-(`attach if not exists '<path>' as pz_duckdb_<name>_<hash>`), idempotent under the engine's
-per-node setup repetition. Then:
+(`attach if not exists '<path>' as pz_duckdb_<name>_<hash>`); the engine issues each setup
+statement once per run, and every node that needs it shares that one execution. Then:
 
 - `strategy: append` — `create table if not exists … as select * from {{source}} limit 0;` +
   `insert into … select * from {{source}};` (first run needs no pre-created table). At-least-once:

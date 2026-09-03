@@ -100,9 +100,10 @@ is something to add —
 
 ## Writing data
 
-One read-write attach per connection, shared by every read and write against that connection, setup
-idempotent under the engine's per-node repetition (extension install/load are no-ops on repeat,
-`create or replace secret` is last-wins, `attach if not exists` skips an existing alias). Then:
+One read-write attach per connection, shared by every read and write against that connection; the
+engine issues each setup statement once per run, and a node retry re-issues one that failed (extension
+install/load are no-ops on repeat, `create or replace secret` is last-wins, `attach if not exists`
+skips an existing alias). Then:
 
 - `strategy: append` — `create table if not exists … as select * from {{source}} limit 0;` +
   `insert into … select * from {{source}};` (first run needs no pre-created table). At-least-once:

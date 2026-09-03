@@ -7,6 +7,7 @@
     <Project Path="connectors/Pz.Connector.Http/Pz.Connector.Http.csproj" />
     <Project Path="connectors/Pz.Connector.LocalFiles/Pz.Connector.LocalFiles.csproj" />
     <Project Path="connectors/Pz.Connector.MySql/Pz.Connector.MySql.csproj" />
+    <Project Path="connectors/Pz.Connector.MotherDuck/Pz.Connector.MotherDuck.csproj" />
     <Project Path="connectors/Pz.Connector.S3/Pz.Connector.S3.csproj" />
     <Project Path="connectors/Pz.Connector.Sftp/Pz.Connector.Sftp.csproj" />
     <Project Path="connectors/Pz.Connector.Postgres/Pz.Connector.Postgres.csproj" />
@@ -39,6 +40,7 @@
     <Project Path="tests/Pz.Connector.Http.Tests/Pz.Connector.Http.Tests.csproj" />
     <Project Path="tests/Pz.Connector.LocalFiles.Tests/Pz.Connector.LocalFiles.Tests.csproj" />
     <Project Path="tests/Pz.Connector.MySql.Tests/Pz.Connector.MySql.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.MotherDuck.Tests/Pz.Connector.MotherDuck.Tests.csproj" />
     <Project Path="tests/Pz.Connector.S3.Tests/Pz.Connector.S3.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Sftp.Tests/Pz.Connector.Sftp.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Postgres.Tests/Pz.Connector.Postgres.Tests.csproj" />

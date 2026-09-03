@@ -95,6 +95,20 @@ public class BuiltinConnectorsTests
     }
 
     [Fact]
+    public void MotherDuck_is_registered_as_source_and_sink()
+    {
+        var registry = BuiltinConnectors.CreateRegistry();
+        Assert.Contains("motherduck", registry.Sources.Keys);
+        Assert.Contains("motherduck", registry.Sinks.Keys);
+    }
+
+    [Fact]
+    public void MotherDuck_package_id_is_builtin()
+    {
+        Assert.Contains("Pz.Connector.MotherDuck", BuiltinConnectors.PackageIds);
+    }
+
+    [Fact]
     public void S3_is_registered_as_source_and_sink()
     {
         var registry = BuiltinConnectors.CreateRegistry();

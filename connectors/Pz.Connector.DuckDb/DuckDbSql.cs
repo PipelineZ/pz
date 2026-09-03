@@ -74,7 +74,8 @@ internal static class DuckDbSql
     }
 
     /// <summary>Setup for either direction: one read-write attach of the database file, idempotent
-    /// under NativeSetup's per-node repetition (<c>attach if not exists</c> skips an existing alias).
+    /// should a node retry re-issue it — the engine runs each setup statement once per run
+    /// (<c>attach if not exists</c> skips an existing alias).
     /// No extension is needed and the path carries no credentials, so a connect-failure echo of it is
     /// harmless and useful.</summary>
     internal static IReadOnlyList<string> SetupStatements(string resolvedPath, string alias) =>

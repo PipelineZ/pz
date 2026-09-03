@@ -135,7 +135,7 @@ Start at [pipelinez.dev](https://pipelinez.dev/docs/). Worth a look:
 
 ## Status
 
-Pre-release (**v0.x**). The CLI, engine, thirteen connectors, and the MCP server are built and tested,
+Pre-release (**v0.x**). The CLI, engine, fourteen connectors, and the MCP server are built and tested,
 with around 3,000 tests gating every pull request. Expect breaking changes between v0.x minors;
 The [versioning policy](https://pipelinez.dev/versioning/) spells out what v0.x promises and what `v1.0.0` will
 freeze.

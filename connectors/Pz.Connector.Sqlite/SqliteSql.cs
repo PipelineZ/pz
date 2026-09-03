@@ -38,7 +38,8 @@ internal static class SqliteSql
     internal static IReadOnlyList<string> SetupStatements() => ["install sqlite", "load sqlite"];
 
     /// <summary>Sink setup: extension + one read-write attach of the database file. All idempotent
-    /// under NativeSetup's per-node repetition (<c>attach if not exists</c> skips an existing alias).
+    /// should a node retry re-issue them — the engine runs each once per run (<c>attach if not
+    /// exists</c> skips an existing alias).
     /// The attach path carries no credentials, so a connect-failure echo of it is harmless and useful
     /// — MySQL's empty-path/secret indirection has nothing to protect here.</summary>
     internal static IReadOnlyList<string> SinkSetupStatements(string resolvedPath, string alias) =>

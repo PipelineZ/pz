@@ -47,6 +47,9 @@
     <!-- Pz.Connector.Quack.Tests' e2e suite and SecretRedactionTests run connector fragments through
          internal NativeSetup.ExecuteSetupAsync against a live DuckSession. -->
     <InternalsVisibleTo Include="Pz.Connector.Quack.Tests" />
+    <!-- Pz.Connector.MotherDuck.Tests' SecretRedactionTests and token-gated live suite run connector
+         fragments through internal NativeSetup.ExecuteSetupAsync. -->
+    <InternalsVisibleTo Include="Pz.Connector.MotherDuck.Tests" />
   </ItemGroup>
 
   <ItemGroup>

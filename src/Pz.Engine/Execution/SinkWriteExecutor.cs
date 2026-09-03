@@ -51,7 +51,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
             var nativeRows = await ctx.Duck.ScalarAsync<long>($"select count(*) from {relation}", ct).ConfigureAwait(false);
             foreach (var statement in copy.SetupStatements)
             {
-                await NativeSetup.ExecuteSetupAsync(ctx.Duck, statement, ct).ConfigureAwait(false);
+                await ctx.SetupLedger.ExecuteOnceAsync(statement, ct).ConfigureAwait(false);
             }
 
             // Planning (ExecutionPlanner's TryGetNativeCopy probe) must be side-effect-free, so the

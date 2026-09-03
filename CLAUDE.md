@@ -104,7 +104,7 @@ DuckDB is the buffer manager — the .NET side only ever holds in-flight Arrow b
 | `src/Pz.State.Http` | pluggable state backend: `IKeyedStateStore` over a server's run-scoped HTTP state endpoints (ETag/`If-Match` CAS), keyed state only — referenced directly by `Pz.Cli` |
 | `src/Pz.State.SqlServer` | pluggable state backend: `IKeyedStateStore`/`IRunArtifactStore` over SQL Server, schema creation/migration, batched event persistence — referenced directly by `Pz.Cli`, not loaded as a connector |
 | `src/Pz.Mcp` | the `pz mcp` verb's server: 22 typed tools (introspect/verify/author/docs always registered, `pz_run`/`pz_retry`/`pz_run_results` only under `--allow-run`) — referenced directly by `Pz.Cli`, not loaded as a connector |
-| `connectors/` | first-party connectors: LocalFiles, Postgres, S3, SqlServer, AzureBlob, Gcs, Http, MySql, Sqlite, Sftp, DuckDb, DuckLake, Quack |
+| `connectors/` | first-party connectors: LocalFiles, Postgres, S3, SqlServer, AzureBlob, Gcs, Http, MySql, Sqlite, Sftp, DuckDb, DuckLake, Quack, MotherDuck |
 
 `templates/` holds real, in-place-runnable projects that are simultaneously the browsable examples
 and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
@@ -147,6 +147,11 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   from the topological dispatcher + bounded channels, not parallel connections.
 - **Execution is always staged materialize-then-drain**, never statement-scoped DML — even for the
   inline `INSERT INTO {{ sink(...) }}` form, which the compiler strips.
+- **Native setup statements run once per run** (`NativeSetupLedger` on `RunContext`, keyed by exact
+  statement text; concurrent nodes await the one in-flight execution; a failed statement is forgotten so
+  a retry re-issues it). MotherDuck accepts `set motherduck_token` only before its first attach, so the
+  per-node repetition the earlier native connectors tolerated would fail every second motherduck node.
+  Setup statements stay idempotent for retries; connections whose setup texts differ each run their own.
 - **Every command runs the same 8 phases** (`load → restore-check → compile → validate → plan →
   execute → finalize → report`); `compile`/`plan` stop early. Node kinds: SourceLoad, Pipeline, Check,
   SinkWrite. Nodes have stable content-addressed IDs — that's what makes `pz retry` and incremental
