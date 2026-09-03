@@ -94,6 +94,17 @@ public sealed class QuackNativeEndToEndTests : IAsyncLifetime
         Assert.Equal(3, await duck.ScalarAsync<long>($"select count(*) from {dim}"));
         Assert.Equal("B", await duck.ScalarAsync<string>($"select name from {dim} where id = 2"));
 
+        // An empty source batch still runs merge-by-replace's rewrite (create-or-replace from the
+        // union of an empty source and every target row that fails to match nothing), so the target
+        // must come back byte-for-byte: no row is ever a "match" against zero source rows, so every
+        // target row takes the "not exists" branch and survives untouched.
+        await WriteAsync(duck, "dim", "(select 1 as id, 'a' as name where false)", mode: "merge", keys: ["id"]);
+        var dimAfterEmptyMerge = await ReadAsync(duck, Spec("dim"));
+        Assert.Equal(3, await duck.ScalarAsync<long>($"select count(*) from {dimAfterEmptyMerge}"));
+        Assert.Equal("a", await duck.ScalarAsync<string>($"select name from {dimAfterEmptyMerge} where id = 1"));
+        Assert.Equal("B", await duck.ScalarAsync<string>($"select name from {dimAfterEmptyMerge} where id = 2"));
+        Assert.Equal("c", await duck.ScalarAsync<string>($"select name from {dimAfterEmptyMerge} where id = 3"));
+
         // merge-by-replace's "not exists" branch selects unmatched target rows whole, so a later
         // batch that omits a column entirely still leaves untouched rows carrying it: id 1 never
         // appears in the second batch below, so its region survives even though that batch's SELECT

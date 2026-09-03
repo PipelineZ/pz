@@ -11,9 +11,12 @@ namespace Pz.Connector.Quack;
 /// scoped to the server URI. A quack-attached table accepts only bulk CREATE TABLE AS / INSERT from
 /// the wire protocol — no row-level UPDATE/DELETE/MERGE — so merge pulls the target through the
 /// client into a temp table, resolves conflicts there, and rewrites the whole remote table: one
-/// remote mutation, same guarantee class as replace. Kept in lockstep with the duckdb/ducklake/
-/// motherduck connectors' Sql classes for append/replace (replicated, never referenced); merge
-/// necessarily diverges for the reason above.</summary>
+/// remote mutation, same guarantee class as replace. A matched row is replaced wholesale by the
+/// source row, not column-patched — a column the source batch omits becomes NULL on matched rows,
+/// so the pipeline's column set must stay stable across runs; cost grows with the target table's
+/// size, since the whole table crosses the wire on every merge. Kept in lockstep with the
+/// duckdb/ducklake/motherduck connectors' Sql classes for append/replace (replicated, never
+/// referenced); merge necessarily diverges for the reason above.</summary>
 internal static class QuackSql
 {
     internal static string Alias(string connectionName) =>
