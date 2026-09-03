@@ -21,7 +21,7 @@ public sealed class SecretRedactionTests
 
     private static Dictionary<string, object?> TokenConnection() => new()
     {
-        ["catalog"] = "rest", ["endpoint"] = "https://cat.example.com", ["warehouse"] = "s3://warehouse/",
+        ["catalog"] = "rest", ["endpoint"] = "https://cat.example.com", ["warehouse"] = "wh",
         ["token"] = Token, ["storage_key_id"] = "AK", ["storage_secret_key"] = StorageSecret,
     };
 

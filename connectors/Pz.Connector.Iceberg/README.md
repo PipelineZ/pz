@@ -111,7 +111,7 @@ lake:
 Requires `root`. Forbids `endpoint`, `warehouse`, `nested_namespaces` and every `rest` credential
 key. Every read is `iceberg_scan('<root>/<namespace>/<table>', allow_moved_paths = true)`; there is
 nothing to commit a write to, so a `files` connection used as a sink is refused at plan time
-(`PZ0324`). A table without a `version-hint.text` (every table a REST catalog wrote) needs the
+(`PZ0353`). A table without a `version-hint.text` (every table a REST catalog wrote) needs the
 dataset option `metadata_version:` naming the metadata file to read (see below).
 
 ### Optional: S3-compatible storage credentials

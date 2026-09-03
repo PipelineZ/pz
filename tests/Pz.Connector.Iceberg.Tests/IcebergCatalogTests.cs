@@ -65,7 +65,7 @@ public sealed class IcebergCatalogTests
         // DuckDB attaches a URL-shaped warehouse read-only, silently -- refused up front rather than
         // discovered later as a write that silently no-ops.
         Assert.Equal(
-            ["'warehouse' ('s3://bucket/wh/') looks like a URL; DuckDB attaches a URL-shaped warehouse read-only -- give the catalog's warehouse NAME instead"],
+            ["'warehouse' looks like a URL; DuckDB attaches a URL-shaped warehouse read-only -- give the catalog's warehouse NAME instead"],
             IcebergCatalog.Validate(Config(("endpoint", "http://c"), ("warehouse", "s3://bucket/wh/"))));
         Assert.Empty(IcebergCatalog.Validate(Config(("catalog", "glue"), ("warehouse", "123456789012"))));
 

@@ -118,18 +118,15 @@ public sealed class IcebergRestCatalogTests(IcebergRestCatalogFixture catalog) :
         Assert.Equal(2, await duck.ScalarAsync<long>($"select count(*) from {await ReadAsync(duck, Spec("log"))}"));
 
         await WriteAsync(duck, "snap", "(select 1 as id union all select 2)");
-        var beforeReplace = await duck.ScalarAsync<long>($"select count(*) from {Snapshots("snap")}");
+        var beforeReplace = await duck.ScalarAsync<long>($"select max(sequence_number) from {Snapshots("snap")}");
         await WriteAsync(duck, "snap", "(select 9 as id)");
         Assert.Equal(9L, await duck.ScalarAsync<long>($"select id from {await ReadAsync(duck, Spec("snap"))}"));
-        // DuckDB's iceberg extension commits one snapshot per DML statement -- there is no
-        // single-snapshot atomic overwrite it can be asked for (verified against the live REST
-        // fixture: even one MERGE INTO with a "when not matched by source then delete" clause
-        // still produces a separate delete snapshot and a separate append snapshot; DuckDB also
-        // refuses CREATE OR REPLACE against an attached iceberg catalog outright). What the
-        // wrapping transaction actually buys is that the delete and the insert land together or
-        // not at all -- exactly two new snapshots appear, a delete immediately followed by an
-        // append, never a delete on its own.
-        var newSnapshotCount = await duck.ScalarAsync<long>($"select count(*) from {Snapshots("snap")}") - beforeReplace;
+        // Asserts what TryCopySql's doc comment holds as the constraint: DuckDB's iceberg extension
+        // commits exactly one snapshot per DML statement, so a replace is never one atomic overwrite
+        // snapshot -- it is a delete snapshot immediately followed by an append snapshot, and the
+        // wrapping transaction's guarantee is only that the two land together or not at all.
+        var newSnapshotCount = await duck.ScalarAsync<long>(
+            $"select count(*) from {Snapshots("snap")} where sequence_number > {beforeReplace}");
         Assert.Equal(2, newSnapshotCount);
         var newOperations = await duck.ScalarAsync<string>(
             $"select string_agg(operation, ',' order by sequence_number) from {Snapshots("snap")} " +

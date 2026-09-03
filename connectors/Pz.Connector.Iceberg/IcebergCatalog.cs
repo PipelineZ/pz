@@ -50,9 +50,11 @@ internal static class IcebergCatalog
         // location.
         void ForbidUrlWarehouse()
         {
+            // Never echo the value: a pasted URL may carry `user:pass@` credentials, and this
+            // message can reach plan.json / a NodeResult.
             if (config.GetString("warehouse") is { Length: > 0 } warehouse && IcebergSql.IsUrl(warehouse))
             {
-                errors.Add($"'warehouse' ('{warehouse}') looks like a URL; DuckDB attaches a URL-shaped " +
+                errors.Add("'warehouse' looks like a URL; DuckDB attaches a URL-shaped " +
                     "warehouse read-only -- give the catalog's warehouse NAME instead");
             }
         }
