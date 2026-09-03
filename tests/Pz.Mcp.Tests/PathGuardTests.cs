@@ -232,4 +232,91 @@ public class PathGuardTests
         Assert.Equal("PZ0606", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
         Assert.Equal(before, File.ReadAllText(Path.Combine(p.Dir, "connections.yml")));
     }
+
+    // --- ducklake: `path` is the catalog file (duckdb/sqlite catalogs), exactly like duckdb's own
+    // `path:`; `data_path` is a second path-shaped key (the lake's data directory) that stays local
+    // for every catalog except the object-store form, which the guard must ignore.
+
+    private static void AppendDuckLakeConnection(TempProject p, string path, string dataPath)
+    {
+        File.AppendAllText(Path.Combine(p.Dir, "connections.yml"),
+            $"""
+
+            lake:
+              connector: ducklake
+              path: {path}
+              data_path: {dataPath}
+            """ + "\n");
+    }
+
+    [Fact]
+    public async Task Validate_refuses_a_ducklake_catalog_path_escaping_the_project()
+    {
+        using var p = new TempProject();
+        AppendDuckLakeConnection(p, "../../outside.ducklake", "lake/data");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0606", error.GetProperty("code").GetString());
+        Assert.Contains("ducklake", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Contains("outside the project directory", error.GetProperty("message").GetString(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Validate_refuses_a_ducklake_data_path_escaping_the_project()
+    {
+        using var p = new TempProject();
+        AppendDuckLakeConnection(p, "lake/c.ducklake", "../../outside");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("PZ0606", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task DuckLake_paths_inside_the_project_stay_accepted()
+    {
+        using var p = new TempProject();
+        AppendDuckLakeConnection(p, "lake/c.ducklake", "lake/data");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Validate_ignores_a_ducklake_object_store_data_path()
+    {
+        using var p = new TempProject();
+        AppendDuckLakeConnection(p, "lake/c.ducklake", "s3://bucket/lake/");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Add_connection_refuses_a_proposed_escaping_ducklake_data_path_without_writing()
+    {
+        using var p = new TempProject();
+        var before = File.ReadAllText(Path.Combine(p.Dir, "connections.yml"));
+
+        var doc = JsonDocument.Parse(await AuthoringTools.AddConnectionAsync(
+            p.Dir, "lake", "ducklake",
+            new Dictionary<string, object?> { ["path"] = "lake/c.ducklake", ["data_path"] = "../../stolen" },
+            RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
+        Assert.Equal("PZ0606", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+        Assert.Equal(before, File.ReadAllText(Path.Combine(p.Dir, "connections.yml")));
+    }
 }

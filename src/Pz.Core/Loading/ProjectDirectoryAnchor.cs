@@ -33,7 +33,7 @@ public static class ProjectDirectoryAnchor
     /// belongs here only if it reads <see cref="OptionName"/> when resolving a relative path, and none of
     /// them declares that key in its <c>ConnectionConfigSchema</c> (see the class remarks).</summary>
     public static readonly IReadOnlySet<string> BuiltinAnchoredConnectors =
-        new HashSet<string>(StringComparer.Ordinal) { "localfiles", "sqlite", "duckdb" };
+        new HashSet<string>(StringComparer.Ordinal) { "localfiles", "sqlite", "duckdb", "ducklake" };
 
     /// <summary><paramref name="declaredAnchoredConnectors"/> are the names read out of materialized
     /// package manifests (see <c>Pz.PackageManagement.Hosting.PackageManifests</c>); pass none for a
