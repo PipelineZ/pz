@@ -394,7 +394,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             // A connector may refuse a native scan because the dataset config is inconsistent with the file
             // it would read (e.g. CsvSource's C1 positional-binding guard). That is a config error, not an
             // engine bug -- surface it aggregated and exit-2-coded rather than letting it escape as PZ0500.
-            errors.Add(new PzError(PzErrorCode.NativeScanContractMismatch, ex.Message, def.Source.FilePath, null, null));
+            errors.Add(new PzError(PzErrorCode.NativePathContractMismatch, ex.Message, def.Source.FilePath, null, null));
             return Universal(node, $"arrow stream: connector '{def.Source.Connector}' native path refused", declaredPartitions, readToken);
         }
 
@@ -692,23 +692,37 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             return Universal(node, "arrow stream: engine.force_universal = true");
         }
 
-        if (sink.TryGetNativeCopy(spec, out var copy))
+        NativeCopy? copy;
+        try
         {
-            // Unsigned packaged-extension gate (PZ0359), sink-side mirror of the source-side gate in
-            // PlanSourceLoadAsync above -- same tier-choice-not-capability-gap reasoning, same fallback
-            // (never added to `errors`), same secret-hygiene reason string.
-            if (!def.Sink.AllowUnsignedExtensions && copy!.SetupStatements.Any(HasUnsignedPackagedExtension))
+            if (!sink.TryGetNativeCopy(spec, out copy))
             {
-                return Universal(node,
-                    $"arrow stream: sink '{def.Sink.Name}' native path refused -- {PzErrorCode.UnsignedExtensionRefused} " +
-                    "unsigned packaged extension in setup; set allow_unsigned_extensions: true on the connection to allow it");
+                return Universal(node, $"arrow stream: connector '{def.Sink.Connector}' has no native path");
             }
-
-            return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,
-                $"native copy: connector '{def.Sink.Connector}' provides {copy.Mechanism}");
+        }
+        catch (PzConnectorException ex)
+        {
+            // Sink-side mirror of PlanSourceLoadAsync's catch: a connector may refuse a native copy
+            // because the output's own config cannot produce one (e.g. DuckDbSink's three-part entity
+            // name, which no attached catalog can address). That is a config error, not an engine bug --
+            // surface it aggregated and exit-2-coded rather than letting it escape as PZ0500.
+            errors.Add(new PzError(PzErrorCode.NativePathContractMismatch,
+                $"sink '{def.Sink.Name}' output '{def.Output.Name}': {ex.Message}", def.Sink.FilePath, null, null));
+            return Universal(node, $"arrow stream: connector '{def.Sink.Connector}' native path refused");
         }
 
-        return Universal(node, $"arrow stream: connector '{def.Sink.Connector}' has no native path");
+        // Unsigned packaged-extension gate (PZ0359), sink-side mirror of the source-side gate in
+        // PlanSourceLoadAsync above -- same tier-choice-not-capability-gap reasoning, same fallback
+        // (never added to `errors`), same secret-hygiene reason string.
+        if (!def.Sink.AllowUnsignedExtensions && copy!.SetupStatements.Any(HasUnsignedPackagedExtension))
+        {
+            return Universal(node,
+                $"arrow stream: sink '{def.Sink.Name}' native path refused -- {PzErrorCode.UnsignedExtensionRefused} " +
+                "unsigned packaged extension in setup; set allow_unsigned_extensions: true on the connection to allow it");
+        }
+
+        return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,
+            $"native copy: connector '{def.Sink.Connector}' provides {copy.Mechanism}");
     }
 
     private static PlannedNode Universal(DagNode node, string reason, int partitions = 1, string? readToken = null)

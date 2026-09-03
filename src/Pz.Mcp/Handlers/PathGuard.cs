@@ -18,9 +18,9 @@ public static class PathGuard
     private static readonly string[] PathKeys = ["path", "root", "base_dir"];
 
     /// <summary>The connectors whose config carries project-relative file paths — the ones this guard
-    /// walks. sqlite counts too: its connection `path:` is a database file exactly like a localfiles
-    /// root.</summary>
-    internal static bool IsPathScoped(string? connector) => connector is "localfiles" or "sqlite";
+    /// walks. sqlite and duckdb count too: their connection `path:` is a database file exactly like a
+    /// localfiles root.</summary>
+    internal static bool IsPathScoped(string? connector) => connector is "localfiles" or "sqlite" or "duckdb";
 
     /// <summary>Every path-scoped connector's path-shaped value in the loaded project that resolves
     /// outside <paramref name="projectDir"/> — connection blocks, entity reads, and entity writes.</summary>

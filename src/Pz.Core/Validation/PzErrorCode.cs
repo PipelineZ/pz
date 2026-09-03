@@ -329,13 +329,17 @@ public static class PzErrorCode
     // retired-surface precedent.
     public const string FeedsRemoved = "PZ0352";
 
-    /// <summary>A native-scan source's declared <c>columns:</c> contract is inconsistent with the file it
-    /// reads -- currently the localfiles csv positional-binding guard (<c>CsvSource.TryGetNativeScan</c>):
+    /// <summary>A connector refused to build a native fragment because the config it was handed cannot
+    /// produce one. Two shapes, one code, both directions: a declared <c>columns:</c> contract inconsistent
+    /// with the file read (the localfiles csv positional-binding guard in <c>CsvSource.TryGetNativeScan</c>:
     /// <c>read_csv(..., columns = {...})</c> binds the contract to the file BY POSITION, so a declared order
     /// that disagrees with the actual header would silently load each column's values under a different
-    /// name. The connector reports it as a <c>PzConnectorException</c>; the planner attaches this code so it
-    /// surfaces as an aggregated, exit-2 config error rather than an unexpected engine failure.</summary>
-    public const string NativeScanContractMismatch = "PZ0353";
+    /// name), and an entity or file the connector cannot address at all (<c>DuckDbSql.SplitEntity</c>'s
+    /// three-part name; a duckdb read of a database file that does not exist). The connector reports it as a
+    /// <c>PzConnectorException</c> out of <c>TryGetNativeScan</c>/<c>TryGetNativeCopy</c>; the planner
+    /// catches it on both sides and attaches this code so it surfaces as an aggregated, exit-2 config error
+    /// rather than an unexpected engine failure.</summary>
+    public const string NativePathContractMismatch = "PZ0353";
 
     /// <summary>A process-hosted connector's <c>pz.connector.json</c> (or the host's own check of it)
     /// leaves this host with no usable entrypoint to spawn: an unrecognized <c>runtime</c> value, a

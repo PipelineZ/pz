@@ -13,6 +13,7 @@
     <ProjectReference Include="..\..\connectors\Pz.Connector.S3\Pz.Connector.S3.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.Postgres\Pz.Connector.Postgres.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.Sqlite\Pz.Connector.Sqlite.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.DuckDb\Pz.Connector.DuckDb.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.SqlServer\Pz.Connector.SqlServer.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.AzureBlob\Pz.Connector.AzureBlob.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.Gcs\Pz.Connector.Gcs.csproj" />
@@ -75,7 +76,7 @@
          appeared nowhere in the old text, so the flagship package was the hardest of the four to find
          by the name people actually know it by. Naming the bundled connectors is not padding either,
          it is what someone searching "duckdb postgres etl" needs to see to recognize a match. -->
-    <Description>PipelineZ (pz): a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline in plain SQL files. Bundles connectors for local files, S3, Azure Blob, Google Cloud Storage, Postgres, SQL Server, MySQL, SQLite and HTTP.</Description>
+    <Description>PipelineZ (pz): a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline in plain SQL files. Bundles connectors for local files, S3, Azure Blob, Google Cloud Storage, Postgres, SQL Server, MySQL, SQLite, DuckDB and HTTP.</Description>
     <!-- Hybrid Native AOT tool packaging (.NET 10 RID-specific tools). `dotnet pack` with no -r
          produces the `pz` POINTER package that lists the RID sub-packages below; `dotnet pack -r
          <rid>` produces that RID's self-contained Native AOT package and must run on a machine whose
