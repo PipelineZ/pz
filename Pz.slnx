@@ -10,6 +10,7 @@
     <Project Path="connectors/Pz.Connector.S3/Pz.Connector.S3.csproj" />
     <Project Path="connectors/Pz.Connector.Sftp/Pz.Connector.Sftp.csproj" />
     <Project Path="connectors/Pz.Connector.Postgres/Pz.Connector.Postgres.csproj" />
+    <Project Path="connectors/Pz.Connector.Quack/Pz.Connector.Quack.csproj" />
     <Project Path="connectors/Pz.Connector.Sqlite/Pz.Connector.Sqlite.csproj" />
     <Project Path="connectors/Pz.Connector.SqlServer/Pz.Connector.SqlServer.csproj" />
   </Folder>
@@ -41,6 +42,7 @@
     <Project Path="tests/Pz.Connector.S3.Tests/Pz.Connector.S3.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Sftp.Tests/Pz.Connector.Sftp.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Postgres.Tests/Pz.Connector.Postgres.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.Quack.Tests/Pz.Connector.Quack.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Sqlite.Tests/Pz.Connector.Sqlite.Tests.csproj" />
     <Project Path="tests/Pz.Connector.SqlServer.Tests/Pz.Connector.SqlServer.Tests.csproj" />
     <Project Path="tests/Pz.Connectors.Abstractions.Tests/Pz.Connectors.Abstractions.Tests.csproj" />
