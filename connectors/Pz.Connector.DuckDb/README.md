@@ -108,8 +108,11 @@ the attached file before a read or write against it.
   is read-write (writes must be able to create the file on first use), so an unguarded attach of a
   path that does not exist would otherwise create an empty database and "succeed" at reading zero
   rows — indistinguishable from an empty table and a likely `path` typo. The connector checks the
-  file exists before returning a native scan and refuses at plan time if it does not; run a write
-  against that `path` first, or fix the connection.
+  file exists before returning a native scan and refuses at plan time (`PZ0353`) if it does not; run
+  a write against that `path` first, or fix the connection. The refusal applies to nodes the run
+  executes: when one flow of a project writes the file and another reads it, `pz run <writer>`
+  plans the reader as refused-and-deferred and runs, so the project bootstraps without a second
+  project; `pz run --all` on the fresh file still refuses, because the reader would execute.
 - **Two connections, one file, is a conflict — not two writers.** Two separate `duckdb` connections
   (two `connections.yml` blocks) pointing at the same file fail at execute time with DuckDB's
   "Unique file handle conflict" error, because each connection gets its own attach alias and DuckDB

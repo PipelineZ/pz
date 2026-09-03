@@ -289,7 +289,8 @@ internal static class RunCommand
         try
         {
             plan = await new ExecutionPlanner(registry)
-                .PlanAsync(fullDag, project.Engine.ForceUniversal, ct, project.Engine);
+                .PlanAsync(fullDag, project.Engine.ForceUniversal, ct, project.Engine,
+                    RunOrchestrator.EffectiveNodeIds(fullDag, selection));
         }
         catch (PzValidationException ex)
         {

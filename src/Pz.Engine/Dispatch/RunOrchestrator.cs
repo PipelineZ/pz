@@ -440,9 +440,21 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
     /// <see cref="CompiledDag.TopologicalOrder"/>.</summary>
     private static IReadOnlyList<DagNode> ComputeEffectiveSet(CompiledDag dag, IReadOnlySet<NodeId>? selection)
     {
+        var include = EffectiveNodeIds(dag, selection);
+        return include is null
+            ? [.. dag.TopologicalOrder()]
+            : [.. dag.TopologicalOrder().Where(n => include.Contains(n.Id))];
+    }
+
+    /// <summary>The node ids a run over <paramref name="selection"/> will actually execute: the
+    /// selection plus every ancestor it depends on, or null when the selection is null (everything).
+    /// This is the one definition of "part of this run" — the planner takes it so a plan-time refusal
+    /// on a node outside it can be recorded instead of raised.</summary>
+    public static IReadOnlySet<NodeId>? EffectiveNodeIds(CompiledDag dag, IReadOnlySet<NodeId>? selection)
+    {
         if (selection is null)
         {
-            return [.. dag.TopologicalOrder()];
+            return null;
         }
 
         var byId = dag.TopologicalOrder().ToDictionary(n => n.Id);
@@ -465,7 +477,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
             }
         }
 
-        return [.. dag.TopologicalOrder().Where(n => include.Contains(n.Id))];
+        return include;
     }
 
     /// <summary>One <see cref="SemaphoreSlim"/> per distinct
