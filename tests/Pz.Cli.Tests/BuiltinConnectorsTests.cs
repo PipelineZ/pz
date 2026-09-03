@@ -81,6 +81,20 @@ public class BuiltinConnectorsTests
     }
 
     [Fact]
+    public void Quack_is_registered_as_source_and_sink()
+    {
+        var registry = BuiltinConnectors.CreateRegistry();
+        Assert.Contains("quack", registry.Sources.Keys);
+        Assert.Contains("quack", registry.Sinks.Keys);
+    }
+
+    [Fact]
+    public void Quack_package_id_is_builtin()
+    {
+        Assert.Contains("Pz.Connector.Quack", BuiltinConnectors.PackageIds);
+    }
+
+    [Fact]
     public void S3_is_registered_as_source_and_sink()
     {
         var registry = BuiltinConnectors.CreateRegistry();
