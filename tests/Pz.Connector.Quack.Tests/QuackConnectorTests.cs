@@ -62,6 +62,20 @@ public sealed class QuackConnectorTests
         Assert.StartsWith("transient:", down.Message, StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public async Task Check_probes_an_ipv6_literal_without_its_brackets()
+    {
+        Skip.IfNot(Socket.OSSupportsIPv6, "no IPv6 loopback on this host");
+        using var listener = new TcpListener(IPAddress.IPv6Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+
+        var ok = await new QuackConnector().CheckConnectionAsync(Config($"quack:[::1]:{port}"), CancellationToken.None);
+        Assert.True(ok.Ok);
+        Assert.Contains("[::1]", ok.Message);
+        listener.Stop();
+    }
+
     [Fact]
     public async Task Check_is_permanent_on_a_malformed_uri()
     {

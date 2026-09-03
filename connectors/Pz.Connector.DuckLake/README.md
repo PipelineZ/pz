@@ -108,7 +108,8 @@ lake:
 ```
 
 Requires `uri`, `token`, `data_path`. All three spellings — `quack:host`, `quack:host:port`, and
-`quack://host[:port]` — are accepted and normalized to one canonical `quack:host:port` form (default
+`quack://host[:port]`, with a name, an IPv4 literal, or a bracketed IPv6 literal (`quack:[::1]:9494`)
+as the host — are accepted and normalized to one canonical `quack:host:port` form (default
 port 9494) before it lands in either the attach string or the secret's scope, so every spelling
 attaches identically. Forbids `path` and every `postgres` key. The token rides a `type quack` secret
 scoped to that canonical URI, never the attach string.

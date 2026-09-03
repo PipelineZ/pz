@@ -110,8 +110,9 @@ internal static class DuckLakeCatalog
         return errors;
     }
 
-    /// <summary>Accepts <c>quack:host</c>, <c>quack:host:port</c> and <c>quack://host[:port]</c>;
-    /// the port defaults to the quack server's own default.</summary>
+    /// <summary>Accepts <c>quack:host</c>, <c>quack:host:port</c> and <c>quack://host[:port]</c>, where
+    /// host is a name, an IPv4 literal, or a bracketed IPv6 literal; the port defaults to the quack
+    /// server's own default. Kept in lockstep with the quack connector's <c>QuackUri.TryParse</c>.</summary>
     internal static bool TryParseQuackUri(string uri, out string host, out int port)
     {
         host = "";
@@ -127,14 +128,46 @@ internal static class DuckLakeCatalog
             return false;
         }
 
-        var colon = rest.LastIndexOf(':');
-        if (colon < 0)
+        // An IPv6 literal must be bracketed (`quack:[::1]:9494`): the brackets stay part of the host,
+        // since the server's own canonical form keeps them, and everything after `]` is the optional
+        // port. An unbracketed host may not contain a colon at all -- `quack:::1` is ambiguous, not
+        // an address.
+        string portPart;
+        if (rest[0] == '[')
         {
-            host = rest;
-            return true;
+            var close = rest.IndexOf(']', StringComparison.Ordinal);
+            if (close < 2)
+            {
+                return false;
+            }
+
+            host = rest[..(close + 1)];
+            portPart = rest[(close + 1)..];
+            if (portPart.Length == 0)
+            {
+                return true;
+            }
+
+            if (portPart[0] != ':')
+            {
+                return false;
+            }
+
+            portPart = portPart[1..];
+        }
+        else
+        {
+            var colon = rest.IndexOf(':', StringComparison.Ordinal);
+            if (colon < 0)
+            {
+                host = rest;
+                return true;
+            }
+
+            host = rest[..colon];
+            portPart = rest[(colon + 1)..];
         }
 
-        host = rest[..colon];
-        return host.Length > 0 && int.TryParse(rest[(colon + 1)..], out port) && port is > 0 and <= 65535;
+        return host.Length > 0 && int.TryParse(portPart, out port) && port is > 0 and <= 65535;
     }
 }

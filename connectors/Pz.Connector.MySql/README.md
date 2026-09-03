@@ -44,13 +44,12 @@ gateable, syncable, path-templated, or sized-DDL-relevant .NET operations at all
 ```yaml
 warehouse:
   connector: mysql
-  connection:
-    host: db.example.com          # required
-    database: analytics           # required
-    port: 3306                    # optional, default 3306
-    user: pz                      # optional
-    password: ${MYSQL_PASSWORD}   # optional
-    ssl_mode: required            # optional, passed through to the DuckDB mysql extension
+  host: db.example.com          # required
+  database: analytics           # required
+  port: 3306                    # optional, default 3306
+  user: pz                      # optional
+  password: ${MYSQL_PASSWORD}   # optional
+  ssl_mode: required            # optional, passed through to the DuckDB mysql extension
 ```
 
 `host`/`database` are the only required keys (`ConnectionConfigSchema` rejects anything else —

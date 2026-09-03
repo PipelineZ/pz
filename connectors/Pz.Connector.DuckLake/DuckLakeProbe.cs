@@ -47,7 +47,8 @@ internal static class DuckLakeProbe
             using var client = new TcpClient();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(ConnectTimeout);
-            await client.ConnectAsync(host, port, timeout.Token).ConfigureAwait(false);
+            // A bracketed IPv6 literal keeps its brackets in the canonical uri; the socket wants the bare address.
+            await client.ConnectAsync(host.Trim('[', ']'), port, timeout.Token).ConfigureAwait(false);
             return new ConnectionCheck(true, $"{what} reachable at {host}:{port} (tcp); credentials are verified at run time");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)

@@ -107,6 +107,10 @@ public sealed class DuckLakeCatalogTests
     [InlineData("quack://lake.internal:18443", "lake.internal", 18443)]
     [InlineData("quack://lake.internal:9494/", "lake.internal", 9494)]
     [InlineData("quack://lake.internal/", "lake.internal", 9494)]
+    [InlineData("quack:10.0.0.7:18443", "10.0.0.7", 18443)]
+    [InlineData("quack:[::1]", "[::1]", 9494)]
+    [InlineData("quack:[::1]:18443", "[::1]", 18443)]
+    [InlineData("quack://[fe80::1%25eth0]:9494/", "[fe80::1%25eth0]", 9494)]
     public void Quack_uris_parse_host_and_port(string uri, string host, int port)
     {
         Assert.True(DuckLakeCatalog.TryParseQuackUri(uri, out var h, out var p));
@@ -119,6 +123,12 @@ public sealed class DuckLakeCatalogTests
     [InlineData("quack:")]
     [InlineData("quack:host:notaport")]
     [InlineData("quack://lake.internal/db")]
+    [InlineData("quack:::1")]
+    [InlineData("quack:[::1")]
+    [InlineData("quack:[]")]
+    [InlineData("quack:[::1]x")]
+    [InlineData("quack:[::1]:")]
+    [InlineData("quack:host:1:2")]
     public void Non_quack_uris_do_not_parse(string uri)
     {
         Assert.False(DuckLakeCatalog.TryParseQuackUri(uri, out _, out _));

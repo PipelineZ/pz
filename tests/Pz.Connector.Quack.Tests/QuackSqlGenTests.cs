@@ -21,6 +21,10 @@ public sealed class QuackSqlGenTests
     [InlineData("quack://lake.internal:18443", "lake.internal", 18443)]
     [InlineData("quack://lake.internal:9494/", "lake.internal", 9494)]
     [InlineData("quack://lake.internal/", "lake.internal", 9494)]
+    [InlineData("quack:10.0.0.7:18443", "10.0.0.7", 18443)]
+    [InlineData("quack:[::1]", "[::1]", 9494)]
+    [InlineData("quack:[::1]:18443", "[::1]", 18443)]
+    [InlineData("quack://[fe80::1%25eth0]:9494/", "[fe80::1%25eth0]", 9494)]
     public void Uris_parse_host_and_port(string uri, string host, int port)
     {
         Assert.True(QuackUri.TryParse(uri, out var h, out var p));
@@ -33,6 +37,12 @@ public sealed class QuackSqlGenTests
     [InlineData("quack:")]
     [InlineData("quack:host:notaport")]
     [InlineData("quack://lake.internal/db")]
+    [InlineData("quack:::1")]
+    [InlineData("quack:[::1")]
+    [InlineData("quack:[]")]
+    [InlineData("quack:[::1]x")]
+    [InlineData("quack:[::1]:")]
+    [InlineData("quack:host:1:2")]
     public void Non_quack_uris_do_not_parse(string uri) => Assert.False(QuackUri.TryParse(uri, out _, out _));
 
     [Fact]
@@ -68,6 +78,16 @@ public sealed class QuackSqlGenTests
             var config = new ConnectorConfig(new Dictionary<string, object?> { ["uri"] = uri, ["token"] = "t0k'en" });
             Assert.Equal(expected, QuackSql.SetupStatements(config, WhAlias));
         }
+
+        // A bracketed IPv6 literal canonicalises with its brackets, which is the form the server prints.
+        var v6 = new ConnectorConfig(new Dictionary<string, object?> { ["uri"] = "quack://[::1]/", ["token"] = "t0k'en" });
+        Assert.Equal(
+            [
+                "install quack", "load quack",
+                $"create or replace secret {WhAlias}_secret (type quack, token 't0k''en', scope 'quack:[::1]:9494')",
+                $"attach if not exists 'quack:[::1]:9494' as {WhAlias}",
+            ],
+            QuackSql.SetupStatements(v6, WhAlias));
     }
 
     [Fact]
