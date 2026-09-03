@@ -42,6 +42,57 @@ public sealed class SinkWriteExecutor : INodeExecutor
 
         var spec = SpecBuilder.ForSinkOutput(def);
 
+        // A merge cannot match a NULL key: ON CONFLICT (pg) / MERGE ... ON (mssql) never join on NULL, so a
+        // null-keyed row (a) collapses within the batch -- the key-dedup (DISTINCT ON / ROW_NUMBER over the
+        // keys) treats all NULLs as one group and keeps a single arbitrary survivor -- and (b) is re-inserted
+        // on every run, since it never matches an existing target row. That is silent data loss plus unbounded
+        // duplication, violating the merge = effectively-once delivery guarantee. Fail loudly ahead of BOTH tiers:
+        // before the native COPY statement below and before any universal session opens (mirroring the
+        // CDC-deletes PZ0340 guard further down). A native MERGE is no exception -- its ON clause never joins
+        // on NULL either. Runtime-only: a nullable key column is legal DDL; only the actual presence of a
+        // NULL value in the staged input is the defect.
+        if (string.Equals(def.Output.Mode, "merge", StringComparison.Ordinal) && def.Output.Keys.Count > 0)
+        {
+            var nullKeyPredicate = string.Join(
+                " or ", def.Output.Keys.Select(k => ArrowInterop.QuoteQualified(k) + " is null"));
+            var nullKeyRows = await ctx.Duck.ScalarAsync<long>(
+                $"select count(*) from {relation} where {nullKeyPredicate}", ct).ConfigureAwait(false);
+            if (nullKeyRows > 0)
+            {
+                var nullMergeKeyError = new PzError(PzErrorCode.MergeKeyNull,
+                    $"output '{def.Output.Name}': merge key(s) [{string.Join(", ", def.Output.Keys)}] are null " +
+                    $"in {nullKeyRows} row(s) of the staged input -- a merge cannot match a null key, so those " +
+                    "rows would silently collapse within the batch and re-insert (duplicate) on every run",
+                    def.Sink.FilePath, null,
+                    "coalesce or filter out the null merge keys in the pipeline (a null key can't identify a " +
+                    "target row), or use write.strategy: append with duplicates: accept if duplicates are acceptable");
+                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nullMergeKeyError);
+            }
+
+            // Duplicate merge keys within one staged batch collapse to a
+            // single connector-determined survivor -- physical staging order (e.g. postgres's
+            // `distinct on ... ctid desc`), NOT cursor order -- so a stale row can silently beat the newer
+            // one while the watermark still advances past both, and `partitions:` makes the pick
+            // nondeterministic. That collapse is the sink ABI's documented Absorb contract (a native-copy sink
+            // dedups its staged side inside the generated MERGE for the same reason) and legitimate
+            // for event-log-shaped inputs, so unlike the NULL-key guard above this stays a warning, not a
+            // failure: an event with counts only (never row values), so the author can dedup
+            // deterministically in the pipeline when a specific row must win.
+            var keyList = string.Join(", ", def.Output.Keys.Select(ArrowInterop.QuoteQualified));
+            var extraRows = await ctx.Duck.ScalarAsync<long>(
+                "select cast(coalesce(sum(cnt - 1), 0) as bigint) from " +
+                $"(select count(*) as cnt from {relation} group by {keyList} having count(*) > 1) t",
+                ct).ConfigureAwait(false);
+            if (extraRows > 0)
+            {
+                var duplicateGroups = await ctx.Duck.ScalarAsync<long>(
+                    $"select count(*) from (select 1 from {relation} group by {keyList} having count(*) > 1) t",
+                    ct).ConfigureAwait(false);
+                ctx.Events.SafeMergeKeyDuplicatesDetected(node, def.Output.Name, def.Output.Keys,
+                    duplicateGroups, extraRows);
+            }
+        }
+
         if (ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.NativeCopy && sink.TryGetNativeCopy(spec, out var copy))
         {
             // No separate egress/write split for the native-copy tier: DuckDB's COPY statement reads
@@ -153,54 +204,6 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     "on_delete: delete|soft requires the merge keys to flow unchanged from the cdc dataset " +
                     "(rename them in the pipeline's upsert view only)");
                 return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nullKeyError);
-            }
-        }
-
-        // A merge cannot match a NULL key: ON CONFLICT (pg) / MERGE ... ON (mssql) never join on NULL, so a
-        // null-keyed row (a) collapses within the batch -- the key-dedup (DISTINCT ON / ROW_NUMBER over the
-        // keys) treats all NULLs as one group and keeps a single arbitrary survivor -- and (b) is re-inserted
-        // on every run, since it never matches an existing target row. That is silent data loss plus unbounded
-        // duplication, violating the merge = effectively-once delivery guarantee. Fail loudly before opening a
-        // session, mirroring the CDC-deletes PZ0340 guard above. Runtime-only: a nullable key column is legal
-        // DDL; only the actual presence of a NULL value in the staged input is the defect.
-        if (string.Equals(def.Output.Mode, "merge", StringComparison.Ordinal) && def.Output.Keys.Count > 0)
-        {
-            var nullKeyPredicate = string.Join(
-                " or ", def.Output.Keys.Select(k => ArrowInterop.QuoteQualified(k) + " is null"));
-            var nullKeyRows = await ctx.Duck.ScalarAsync<long>(
-                $"select count(*) from {relation} where {nullKeyPredicate}", ct).ConfigureAwait(false);
-            if (nullKeyRows > 0)
-            {
-                var nullMergeKeyError = new PzError(PzErrorCode.MergeKeyNull,
-                    $"output '{def.Output.Name}': merge key(s) [{string.Join(", ", def.Output.Keys)}] are null " +
-                    $"in {nullKeyRows} row(s) of the staged input -- a merge cannot match a null key, so those " +
-                    "rows would silently collapse within the batch and re-insert (duplicate) on every run",
-                    def.Sink.FilePath, null,
-                    "coalesce or filter out the null merge keys in the pipeline (a null key can't identify a " +
-                    "target row), or use write.strategy: append with duplicates: accept if duplicates are acceptable");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nullMergeKeyError);
-            }
-
-            // Duplicate merge keys within one staged batch collapse to a
-            // single connector-determined survivor -- physical staging order (e.g. postgres's
-            // `distinct on ... ctid desc`), NOT cursor order -- so a stale row can silently beat the newer
-            // one while the watermark still advances past both, and `partitions:` makes the pick
-            // nondeterministic. That collapse is the sink ABI's documented Absorb contract and legitimate
-            // for event-log-shaped inputs, so unlike the NULL-key guard above this stays a warning, not a
-            // failure: an event with counts only (never row values), so the author can dedup
-            // deterministically in the pipeline when a specific row must win.
-            var keyList = string.Join(", ", def.Output.Keys.Select(ArrowInterop.QuoteQualified));
-            var extraRows = await ctx.Duck.ScalarAsync<long>(
-                "select cast(coalesce(sum(cnt - 1), 0) as bigint) from " +
-                $"(select count(*) as cnt from {relation} group by {keyList} having count(*) > 1) t",
-                ct).ConfigureAwait(false);
-            if (extraRows > 0)
-            {
-                var duplicateGroups = await ctx.Duck.ScalarAsync<long>(
-                    $"select count(*) from (select 1 from {relation} group by {keyList} having count(*) > 1) t",
-                    ct).ConfigureAwait(false);
-                ctx.Events.SafeMergeKeyDuplicatesDetected(node, def.Output.Name, def.Output.Keys,
-                    duplicateGroups, extraRows);
             }
         }
 

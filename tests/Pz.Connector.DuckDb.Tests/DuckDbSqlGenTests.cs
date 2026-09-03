@@ -231,7 +231,8 @@ public sealed class DuckDbSqlGenTests
         Assert.True(DuckDbSql.TryCopySql($"{WhAlias}.\"events\"", "merge", ["id", "region"], out var sql, out var mechanism));
         Assert.Equal(
             $"create table if not exists {WhAlias}.\"events\" as select * from {{{{source}}}} limit 0;\n" +
-            $"merge into {WhAlias}.\"events\" as t using {{{{source}}}} as s " +
+            $"merge into {WhAlias}.\"events\" as t " +
+            "using (select s.* from {{source}} as s qualify row_number() over (partition by s.\"id\", s.\"region\") = 1) as s " +
             "on t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\" " +
             "when matched then update when not matched then insert;",
             sql);

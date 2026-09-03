@@ -105,7 +105,8 @@ public sealed class MotherDuckSqlGenTests
         Assert.True(MotherDuckSql.TryCopySql(table, "merge", ["id"], out var merge, out var m3));
         Assert.Equal(
             $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n" +
-            $"merge into {table} as t using {{{{source}}}} as s on t.\"id\" = s.\"id\" when matched then update when not matched then insert;",
+            $"merge into {table} as t using (select s.* from {{{{source}}}} as s qualify row_number() over (partition by s.\"id\") = 1) as s " +
+            "on t.\"id\" = s.\"id\" when matched then update when not matched then insert;",
             merge);
         Assert.Equal("motherduck merge", m3);
 

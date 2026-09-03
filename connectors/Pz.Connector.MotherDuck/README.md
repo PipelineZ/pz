@@ -146,11 +146,12 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
 - **Merge is a real `MERGE INTO`, executed by MotherDuck.** Matched rows update, unmatched rows
   insert, and an empty source batch leaves the target untouched — there is no pull-rewrite-push round
   trip and no blast radius on the target's constraints or indexes (unlike quack's merge-by-replace).
-  **Keep each batch key-unique.** MERGE matches every source row independently against the target as
-  it stood *before* the statement ran: duplicates of a key the target already holds all update it —
-  which value survives is not defined; duplicates of a key the target lacks are all inserted — the
-  sink does not collapse duplicate keys within a batch, and the connector's generated SQL makes no
-  promise that it will. Requires at least one declared key column (PZ0209 at compile).
+  **Duplicate keys within a batch collapse to one survivor.** MERGE matches every source row
+  independently against the target as it stood *before* the statement ran, so the generated SQL keys
+  the staged side unique first (`qualify row_number() over (partition by <keys>) = 1`) -- otherwise
+  duplicates of a key the target lacks would all insert. Which duplicate survives is not defined;
+  the engine warns (PZ0522) with counts so a pipeline can dedup deterministically when it matters.
+  Requires at least one declared key column (PZ0209 at compile).
 - **The connector does not create databases or schemas.** The database must exist in the account
   before the first read or write, and a `schema.table` entity's schema must exist on it too.
 - **Not path-scoped.** No `base_dir`, no `.pz` guard — a motherduck connection names a database in an

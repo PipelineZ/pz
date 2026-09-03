@@ -220,9 +220,13 @@ Then:
 - `strategy: replace` — `create or replace table … as select * from {{source}}`. Runs as one
   statement.
 - `strategy: merge` — `create table if not exists … as select * from {{source}} limit 0;` +
-  `merge into … as t using {{source}} as s on <keys match> when matched then update when not
-  matched then insert;`. Requires at least one declared key column (refused at compile time
-  otherwise).
+  `merge into … as t using (select s.* from {{source}} as s qualify row_number() over (partition by
+  <keys>) = 1) as s on <keys match> when matched then update when not matched then insert;`. The
+  staged side is keyed unique first because DuckDB's MERGE matches every source row independently
+  against the pre-statement target, so duplicates of a key the target lacks would all insert; one
+  connector-determined survivor per key is the sink contract, and the engine warns (PZ0522) with
+  counts when a batch carried duplicates. Requires at least one declared key column (refused at
+  compile time otherwise).
 
 Each generated statement commits as **one DuckLake snapshot** — there is no cross-statement
 transaction wrapping multiple sink outputs together. The connector does not create schemas: a

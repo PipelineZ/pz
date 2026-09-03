@@ -115,11 +115,13 @@ the attached file before a read or write against it.
   "Unique file handle conflict" error, because each connection gets its own attach alias and DuckDB
   will not attach one file twice in one session. Use one connection for both the reads and the
   writes of a given file.
-- **Merge does not deduplicate the staged side.** `MERGE INTO`'s `on` clause matches the target
-  against the staged relation row by row; if the staged relation itself carries duplicate key
-  values, DuckDB does not error the way SQL Server's `MERGE` does — it inserts (or updates from) each
-  duplicate in turn, silently producing duplicate rows in the target. Dedupe the pipeline SQL feeding
-  a merge output if the source can carry duplicate keys.
+- **Merge collapses duplicate keys within a batch.** DuckDB's `MERGE INTO` matches every staged
+  row independently against the target as it stood before the statement ran, so two staged rows
+  sharing a key the target lacks would both insert. The generated statement therefore keys the
+  staged side unique first (`qualify row_number() over (partition by <keys>) = 1`): one
+  connector-determined survivor per key, which is the sink contract every merge-capable connector
+  honours. Which duplicate survives is not defined; the engine warns (PZ0522) with the group and
+  extra-row counts so a pipeline can dedup deterministically when a specific row must win.
 - **Transactions are DuckDB's own, one snapshot per statement.** Each generated statement (the
   `create table if not exists` + `insert`/`merge` pair included) runs and commits as DuckDB provides
   transactions for a single connection — there is no cross-statement transaction wrapping multiple

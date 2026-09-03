@@ -103,6 +103,13 @@ public sealed class DuckLakeNativeEndToEndTests : IDisposable
         var dim = await ReadAsync(duck, catalog, Spec("dim"));
         Assert.Equal(3, await duck.ScalarAsync<long>($"select count(*) from {dim}"));
         Assert.Equal("B", await duck.ScalarAsync<string>($"select name from {dim} where id = 2"));
+
+        // Duplicate keys within one batch collapse to one survivor per key, new or already held.
+        await WriteAsync(duck, catalog, "dim", "(select 3 as id, 'C' as name union all select 3, 'CC' union all select 4, 'd' union all select 4, 'dd')", mode: "merge", keys: ["id"]);
+        var deduped = await ReadAsync(duck, catalog, Spec("dim"));
+        Assert.Equal(4, await duck.ScalarAsync<long>($"select count(*) from {deduped}"));
+        Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {deduped} where id = 3"));
+        Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {deduped} where id = 4"));
     }
 
     [SkippableFact]
