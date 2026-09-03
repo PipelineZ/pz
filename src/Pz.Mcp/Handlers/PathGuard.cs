@@ -15,12 +15,17 @@ namespace Pz.Mcp.Handlers;
 /// a symlink-proof security boundary, and does not try to be one.</summary>
 public static class PathGuard
 {
-    private static readonly string[] PathKeys = ["path", "root", "base_dir"];
+    private static readonly string[] PathKeys = ["path", "root", "base_dir", "data_path"];
 
     /// <summary>The connectors whose config carries project-relative file paths — the ones this guard
     /// walks. sqlite and duckdb count too: their connection `path:` is a database file exactly like a
-    /// localfiles root.</summary>
-    internal static bool IsPathScoped(string? connector) => connector is "localfiles" or "sqlite" or "duckdb";
+    /// localfiles root. ducklake carries two path-shaped keys — `path:` (the catalog file, file-backed
+    /// catalogs only) and `data_path:` (the lake's data directory, every catalog) — and ONLY
+    /// `data_path:` may instead name an object store (a URL), which <see cref="Check"/> skips for
+    /// that key alone: every other path-shaped key (including ducklake's own `path:`) is checked
+    /// regardless of what it contains, so a value like `file://../../x` cannot bypass PZ0606 by
+    /// merely looking like a URL.</summary>
+    internal static bool IsPathScoped(string? connector) => connector is "localfiles" or "sqlite" or "duckdb" or "ducklake";
 
     /// <summary>Every path-scoped connector's path-shaped value in the loaded project that resolves
     /// outside <paramref name="projectDir"/> — connection blocks, entity reads, and entity writes.</summary>
@@ -86,7 +91,17 @@ public static class PathGuard
     {
         foreach (var key in PathKeys)
         {
-            if (options.TryGetValue(key, out var raw) && raw is string value && Escapes(projectDir, value))
+            if (!options.TryGetValue(key, out var raw) || raw is not string value)
+            {
+                continue;
+            }
+
+            if (key == "data_path" && value.Contains("://", StringComparison.Ordinal))
+            {
+                continue; // only data_path may name an object store; ducklake's own path: never does
+            }
+
+            if (Escapes(projectDir, value))
             {
                 errors.Add(new PzError(PzErrorCode.McpPathEscapesProject,
                     $"{subject}: {connector} {key} '{value}' resolves outside the project directory",

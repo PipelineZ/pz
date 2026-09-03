@@ -55,6 +55,10 @@ public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposab
         var duckdbLine = Assert.Single(lines, l => l.StartsWith("duckdb", StringComparison.Ordinal));
         Assert.Contains("src:native-only", duckdbLine);
         Assert.Contains("snk:native-only", duckdbLine);
+
+        var ducklakeLine = Assert.Single(lines, l => l.StartsWith("ducklake", StringComparison.Ordinal));
+        Assert.Contains("src:native-only", ducklakeLine);
+        Assert.Contains("snk:native-only", ducklakeLine);
     }
 
     /// <summary>Covers <c>DescribeHostedPackage</c>'s single-non-builtin-package attribution (the common

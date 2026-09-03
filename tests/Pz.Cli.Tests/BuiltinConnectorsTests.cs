@@ -67,6 +67,20 @@ public class BuiltinConnectorsTests
     }
 
     [Fact]
+    public void DuckLake_is_registered_as_source_and_sink()
+    {
+        var registry = BuiltinConnectors.CreateRegistry();
+        Assert.Contains("ducklake", registry.Sources.Keys);
+        Assert.Contains("ducklake", registry.Sinks.Keys);
+    }
+
+    [Fact]
+    public void DuckLake_package_id_is_builtin()
+    {
+        Assert.Contains("Pz.Connector.DuckLake", BuiltinConnectors.PackageIds);
+    }
+
+    [Fact]
     public void S3_is_registered_as_source_and_sink()
     {
         var registry = BuiltinConnectors.CreateRegistry();
