@@ -52,7 +52,11 @@ internal static class CdcTestSupport
             "window -- is SQL Server Agent running (MSSQL_AGENT_ENABLED=true)?");
     }
 
-    // Bounded poll for the capture job to land expected rows in the raw change table.
+    // Bounded poll for the capture job to land `expected` CHANGES in the raw change table. Counts
+    // changes, not rows: an update lands two rows there (__$operation 3, the before-image, and 4, the
+    // after-image), so a plain row count reaches the threshold one change early and the very next
+    // poll read races the capture job for the last change -- with insert + update + delete, the
+    // delete goes missing. Excluding the before-image makes one change one row.
     public static async Task WaitForChangeCountAsync(string connectionString, string instance, int expected)
     {
         var deadline = DateTime.UtcNow + PollCap;
@@ -60,7 +64,8 @@ internal static class CdcTestSupport
         {
             await using var conn = new SqlConnection(connectionString);
             await conn.OpenAsync();
-            await using var cmd = new SqlCommand($"select count(*) from cdc.{MsDdl.Quote($"{instance}_CT")}", conn);
+            await using var cmd = new SqlCommand(
+                $"select count(*) from cdc.{MsDdl.Quote($"{instance}_CT")} where [__$operation] <> 3", conn);
             var count = (int)(await cmd.ExecuteScalarAsync())!;
             if (count >= expected)
             {
