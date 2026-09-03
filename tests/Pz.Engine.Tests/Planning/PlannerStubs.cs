@@ -355,3 +355,51 @@ internal sealed class StubNativeOnlySource : ISourceConnector, ISource, INativeO
 
     public ValueTask DisposeAsync() => default;
 }
+
+/// <summary>Source whose native-scan probe refuses with a <see cref="PzConnectorException"/> — the shape
+/// of a duckdb read of a file that does not exist yet, or a csv contract that disagrees with its
+/// header. No universal path either, so the planner's refusal is the only outcome.</summary>
+internal sealed class StubRefusingNativeSource : ISourceConnector, ISource
+{
+    public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeScan;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call GetSchemaAsync");
+
+    public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan) =>
+        throw new PzConnectorException($"dataset '{spec.Dataset}': file /secret/path.duckdb does not exist", isTransient: false);
+
+    public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call PlanReadAsync");
+
+    public ValueTask DisposeAsync() => default;
+}
+
+/// <summary>Sink whose native-copy probe refuses with a <see cref="PzConnectorException"/> (the shape of
+/// an entity name no attached catalog can address).</summary>
+internal sealed class StubRefusingNativeSink : ISinkConnector, ISink
+{
+    public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeCopy | ConnectorCapabilities.ReplaceWrites;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+    public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy) =>
+        throw new PzConnectorException($"output '{spec.Output}': three-part entity name cannot be addressed", isTransient: false);
+
+    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call BeginWriteAsync");
+
+    public ValueTask DisposeAsync() => default;
+}

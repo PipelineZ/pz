@@ -259,8 +259,9 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
   does not exist would otherwise create an empty catalog and "succeed" at reading zero rows —
   indistinguishable from an empty table and a likely `path` typo. The connector checks the file
   exists before returning a native scan for the `duckdb`/`sqlite` catalogs and refuses at plan time
-  if it does not; a server catalog (postgres/quack/motherduck) has no local file to check and is
-  left to the attach itself.
+  (`PZ0353`) if it does not; a server catalog (postgres/quack/motherduck) has no local file to check
+  and is left to the attach itself. The refusal applies to nodes the run executes: `pz run <writer>`
+  plans a same-project reader of the not-yet-written catalog as refused-and-deferred and runs.
 - **Credentials never ride the attach string.** Postgres credentials build a `type postgres` DuckDB
   secret referenced from a `type ducklake` secret whose `metadata_path` is empty by construction; the
   quack token rides a `type quack` secret scoped to the canonical `quack:host:port` URI (every

@@ -5,6 +5,7 @@ using Pz.Core.Model;
 using Pz.Core.Templating;
 using Pz.Core.Validation;
 using Pz.Engine.Artifacts;
+using Pz.Engine.Dispatch;
 using Pz.Engine.Execution;
 using Pz.Engine.Planning;
 using Pz.Engine.Resilience;
@@ -68,12 +69,16 @@ internal static class PlanCommand
 
             var runDag = new CompiledDag([.. fullDag.Nodes.Where(n => n.Kind != NodeKind.Check)]);
 
+            // Resolved before planning: the planner takes the same effective set `pz run` with this
+            // selection would execute, so a refusal on a node outside it is recorded, not raised --
+            // `pz plan <flow>` shows exactly the plan `pz run <flow>` will use.
+            var selection = RunSelection.Resolve(fullDag, names, select, all, gateBareMultiFlow: false);
+
             var (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck, ct);
             await using var connectorHost = host;
             var plan = await new ExecutionPlanner(registry)
-                .PlanAsync(runDag, project.Engine.ForceUniversal, ct, project.Engine);
-
-            var selection = RunSelection.Resolve(fullDag, names, select, all, gateBareMultiFlow: false);
+                .PlanAsync(runDag, project.Engine.ForceUniversal, ct, project.Engine,
+                    RunOrchestrator.EffectiveNodeIds(runDag, selection));
             var rows = selection is null ? plan.Nodes : [.. plan.Nodes.Where(n => selection.Contains(n.Id))];
 
             // Selection (positional names, --select, or --all) only narrows what

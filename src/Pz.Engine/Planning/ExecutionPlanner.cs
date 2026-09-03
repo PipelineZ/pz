@@ -20,8 +20,16 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
     private const int MinDeclaredPartitions = 1;
     private const int MaxDeclaredPartitions = 16;
 
+    /// <summary>Plans every node of <paramref name="dag"/>. <paramref name="executing"/> is the set of
+    /// nodes the run will actually execute (selection plus ancestors, see
+    /// <see cref="Dispatch.RunOrchestrator.EffectiveNodeIds"/>), or null for all of them. A connector's
+    /// native-path refusal (PZ0353) on a node outside that set is recorded in the node's reason instead
+    /// of failing the plan: the refusal is environmental — a file another flow of the same project has
+    /// not written yet — and the node will not run, so nothing is at risk. Every other plan-time gate is
+    /// static config and stays fatal regardless of selection.</summary>
     public async Task<ExecutionPlan> PlanAsync(
-        CompiledDag dag, bool forceUniversal, CancellationToken ct, EngineConfig? engineConfig = null)
+        CompiledDag dag, bool forceUniversal, CancellationToken ct, EngineConfig? engineConfig = null,
+        IReadOnlySet<NodeId>? executing = null)
     {
         var planned = new List<PlannedNode>(dag.Nodes.Count);
         var errors = new List<PzError>();
@@ -56,9 +64,9 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             planned.Add(node.Kind switch
             {
                 NodeKind.SourceLoad => WithPushdown(
-                    await PlanSourceLoadAsync(node, forceUniversal, errors, pacingRefused, identityRefused, changeCaptureRefused, shapeByNode, ct).ConfigureAwait(false),
+                    await PlanSourceLoadAsync(node, forceUniversal, errors, pacingRefused, identityRefused, changeCaptureRefused, shapeByNode, Executes(executing, node), ct).ConfigureAwait(false),
                     node),
-                NodeKind.SinkWrite => await PlanSinkWriteAsync(node, forceUniversal, errors, pacingRefused, modeRefused, ct).ConfigureAwait(false),
+                NodeKind.SinkWrite => await PlanSinkWriteAsync(node, forceUniversal, errors, pacingRefused, modeRefused, Executes(executing, node), ct).ConfigureAwait(false),
                 NodeKind.Pipeline => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
                     "duckdb sql: executes in-engine"),
                 NodeKind.Check => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
@@ -163,9 +171,12 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             : planned with { Pushdown = new PushdownInfo(hints.Columns?.Count, hints.PredicateSql is not null) };
     }
 
+    private static bool Executes(IReadOnlySet<NodeId>? executing, DagNode node) =>
+        executing is null || executing.Contains(node.Id);
+
     private async Task<PlannedNode> PlanSourceLoadAsync(DagNode node, bool forceUniversal, List<PzError> errors,
         ISet<string> pacingRefused, ISet<string> identityRefused, ISet<string> changeCaptureRefused,
-        IDictionary<NodeId, ResolvedReadShape> shapeByNode, CancellationToken ct)
+        IDictionary<NodeId, ResolvedReadShape> shapeByNode, bool executes, CancellationToken ct)
     {
         var def = (SourceDatasetDef)node.Definition;
 
@@ -392,8 +403,19 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         catch (PzConnectorException ex)
         {
             // A connector may refuse a native scan because the dataset config is inconsistent with the file
-            // it would read (e.g. CsvSource's C1 positional-binding guard). That is a config error, not an
-            // engine bug -- surface it aggregated and exit-2-coded rather than letting it escape as PZ0500.
+            // it would read (e.g. CsvSource's C1 positional-binding guard), or because the file is not there
+            // yet. That is a config error, not an engine bug -- surface it aggregated and exit-2-coded rather
+            // than letting it escape as PZ0500. Unless the node is outside this run's effective set: then
+            // the refusal is recorded (never the connector's message -- it may name a path) and the run
+            // proceeds, which is what lets the flow that WRITES the file run first in the same project.
+            if (!executes)
+            {
+                return Universal(node,
+                    $"arrow stream: connector '{def.Source.Connector}' native path refused; " +
+                    $"{PzErrorCode.NativePathContractMismatch} deferred because this node is not part of the run",
+                    declaredPartitions, readToken);
+            }
+
             errors.Add(new PzError(PzErrorCode.NativePathContractMismatch, ex.Message, def.Source.FilePath, null, null));
             return Universal(node, $"arrow stream: connector '{def.Source.Connector}' native path refused", declaredPartitions, readToken);
         }
@@ -587,7 +609,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
     }
 
     private async Task<PlannedNode> PlanSinkWriteAsync(DagNode node, bool forceUniversal, List<PzError> errors,
-        ISet<string> pacingRefused, ISet<string> modeRefused, CancellationToken ct)
+        ISet<string> pacingRefused, ISet<string> modeRefused, bool executes, CancellationToken ct)
     {
         var def = (SinkOutputDef)node.Definition;
         if (!connectors.TryGetSink(def.Sink.Connector, out var connector))
@@ -705,7 +727,15 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             // Sink-side mirror of PlanSourceLoadAsync's catch: a connector may refuse a native copy
             // because the output's own config cannot produce one (e.g. DuckDbSink's three-part entity
             // name, which no attached catalog can address). That is a config error, not an engine bug --
-            // surface it aggregated and exit-2-coded rather than letting it escape as PZ0500.
+            // surface it aggregated and exit-2-coded rather than letting it escape as PZ0500 -- unless the
+            // node is outside this run's effective set, in which case it is recorded and never runs.
+            if (!executes)
+            {
+                return Universal(node,
+                    $"arrow stream: connector '{def.Sink.Connector}' native path refused; " +
+                    $"{PzErrorCode.NativePathContractMismatch} deferred because this node is not part of the run");
+            }
+
             errors.Add(new PzError(PzErrorCode.NativePathContractMismatch,
                 $"sink '{def.Sink.Name}' output '{def.Output.Name}': {ex.Message}", def.Sink.FilePath, null, null));
             return Universal(node, $"arrow stream: connector '{def.Sink.Connector}' native path refused");

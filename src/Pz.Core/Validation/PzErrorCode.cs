@@ -338,7 +338,9 @@ public static class PzErrorCode
     /// three-part name; a duckdb read of a database file that does not exist). The connector reports it as a
     /// <c>PzConnectorException</c> out of <c>TryGetNativeScan</c>/<c>TryGetNativeCopy</c>; the planner
     /// catches it on both sides and attaches this code so it surfaces as an aggregated, exit-2 config error
-    /// rather than an unexpected engine failure.</summary>
+    /// rather than an unexpected engine failure. Raised only for a node the run will execute: on a node
+    /// outside the run's selection (plus ancestors) the refusal is recorded in the plan's reason and the
+    /// run proceeds, so a same-project flow that writes the file can run before the flow that reads it.</summary>
     public const string NativePathContractMismatch = "PZ0353";
 
     /// <summary>A process-hosted connector's <c>pz.connector.json</c> (or the host's own check of it)
