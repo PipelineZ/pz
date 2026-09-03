@@ -18,6 +18,7 @@ public sealed class StubHttpServer : IAsyncDisposable
     private readonly ConcurrentDictionary<string, Func<StubRequest, StubResponse>> _routes = new();
     private readonly List<(string Prefix, Func<StubRequest, StubResponse> Handler)> _prefixRoutes = [];
     private readonly List<StubRequest> _requests = [];
+    private readonly CancellationTokenSource _stopping = new();
     private readonly Task _loop;
     private Exception? _handlerError;
 
@@ -50,14 +51,21 @@ public sealed class StubHttpServer : IAsyncDisposable
 
     private async Task ServeAsync()
     {
-        while (_listener.IsListening)
+        var ct = _stopping.Token;
+        while (!ct.IsCancellationRequested && _listener.IsListening)
         {
             HttpListenerContext context;
             try
             {
-                context = await _listener.GetContextAsync().ConfigureAwait(false);
+                // Stop() completes only a waiter that has ALREADY registered. A waiter that registers
+                // just after Stop() -- the listening check above passed, then teardown ran -- is
+                // completed by nothing, ever; the loop would park on it forever and DisposeAsync would
+                // await the loop forever. The cancellation token is the wake-up Stop() cannot give, so
+                // the loop parks on the token as well as on the listener.
+                context = await _listener.GetContextAsync().WaitAsync(ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is HttpListenerException or ObjectDisposedException)
+            catch (Exception ex) when (ex is HttpListenerException or ObjectDisposedException
+                                       or InvalidOperationException or OperationCanceledException)
             {
                 return; // listener stopped: normal teardown
             }
@@ -70,7 +78,7 @@ public sealed class StubHttpServer : IAsyncDisposable
                 string body;
                 using (var reader = new StreamReader(context.Request.InputStream, Encoding.UTF8))
                 {
-                    body = await reader.ReadToEndAsync().ConfigureAwait(false);
+                    body = await reader.ReadToEndAsync(ct).ConfigureAwait(false);
                 }
 
                 var request = new StubRequest(context.Request.HttpMethod, context.Request.Url!, headers, body);
@@ -107,7 +115,7 @@ public sealed class StubHttpServer : IAsyncDisposable
                 }
 
                 var bytes = Encoding.UTF8.GetBytes(response.Body);
-                await context.Response.OutputStream.WriteAsync(bytes).ConfigureAwait(false);
+                await context.Response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
                 context.Response.Close();
             }
             catch (Exception ex)
@@ -154,6 +162,9 @@ public sealed class StubHttpServer : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        // Cancel before Stop(): a loop parked in (or about to park in) GetContextAsync wakes on the
+        // token whether or not the listener ever completes its waiter.
+        await _stopping.CancelAsync().ConfigureAwait(false);
         _listener.Stop();
         try
         {
@@ -165,5 +176,6 @@ public sealed class StubHttpServer : IAsyncDisposable
         }
 
         _listener.Close();
+        _stopping.Dispose();
     }
 }
