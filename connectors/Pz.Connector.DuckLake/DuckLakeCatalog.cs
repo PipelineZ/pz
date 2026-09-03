@@ -98,6 +98,15 @@ internal static class DuckLakeCatalog
             }
         }
 
+        if (hasKey && hasSecret)
+        {
+            var dataPath = config.GetString("data_path");
+            if (dataPath is not { Length: > 0 } || !DuckLakeSql.IsUrl(dataPath))
+            {
+                errors.Add("'storage_key_id' and 'storage_secret_key' require an object-store 'data_path' (a URL such as s3://bucket/prefix/)");
+            }
+        }
+
         return errors;
     }
 

@@ -150,10 +150,12 @@ internal static class DuckLakeSql
             : null;
 
     /// <summary>Setup for either direction, in order: extension installs/loads (ducklake, the
-    /// catalog's own, httpfs when the data path is object storage), the storage secret, the
-    /// catalog's credential carrier, then ONE read-write attach. All idempotent under NativeSetup's
-    /// per-node repetition: install/load are no-ops, <c>create or replace secret</c> is last-wins,
-    /// <c>set</c> is repeatable, <c>attach if not exists</c> skips an existing alias.
+    /// catalog's own, httpfs when the data path is object storage), the storage secret (only when
+    /// the data path is object storage — <c>storage_key_id</c>/<c>storage_secret_key</c> against a
+    /// local data path is a validation error, so this is a defensive no-op, not the primary guard),
+    /// the catalog's credential carrier, then ONE read-write attach. All idempotent under
+    /// NativeSetup's per-node repetition: install/load are no-ops, <c>create or replace secret</c>
+    /// is last-wins, <c>set</c> is repeatable, <c>attach if not exists</c> skips an existing alias.
     ///
     /// The attach string carries no credential for any catalog: postgres credentials ride a
     /// postgres secret referenced from a ducklake secret whose metadata_path is empty by
@@ -187,7 +189,7 @@ internal static class DuckLakeSql
             statements.AddRange(["install httpfs", "load httpfs"]);
         }
 
-        if (dataPath is not null && config.GetString("storage_key_id") is { Length: > 0 })
+        if (dataPath is not null && IsUrl(dataPath) && config.GetString("storage_key_id") is { Length: > 0 })
         {
             statements.Add(StorageSecretSql(config, alias, dataPath));
         }
@@ -202,11 +204,13 @@ internal static class DuckLakeSql
                 statements.Add($"attach if not exists 'ducklake:sqlite:{EscapeLiteral(ResolveLocal(config, "path"))}' as {alias}{dataClause}");
                 break;
             case DuckLakeCatalog.Postgres:
+                var pgDataPath = dataPath ??
+                    throw new PzConnectorException("ducklake connection requires 'data_path'", isTransient: false);
                 var pgSecret = PostgresSecretName(alias);
                 var secret = SecretName(alias);
                 statements.Add(PostgresSecretSql(config, pgSecret));
                 statements.Add(
-                    $"create or replace secret {secret} (type ducklake, metadata_path '', data_path '{EscapeLiteral(dataPath!)}', " +
+                    $"create or replace secret {secret} (type ducklake, metadata_path '', data_path '{EscapeLiteral(pgDataPath)}', " +
                     $"metadata_parameters map {{'TYPE': 'postgres', 'SECRET': '{pgSecret}'}})");
                 statements.Add($"attach if not exists 'ducklake:{secret}' as {alias}");
                 break;

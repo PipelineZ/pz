@@ -80,9 +80,25 @@ public sealed class DuckLakeCatalogTests
         var orphan = DuckLakeCatalog.Validate(Config(("path", "c.ducklake"), ("storage_region", "eu-west-1")));
         Assert.Single(orphan, e => e.Contains("storage_region", StringComparison.Ordinal));
 
-        Assert.Empty(DuckLakeCatalog.Validate(Config(("path", "c.ducklake"), ("storage_key_id", "k"),
-            ("storage_secret_key", "s"), ("storage_region", "eu-west-1"), ("storage_endpoint", "minio:9000"),
-            ("storage_url_style", "path"), ("storage_use_ssl", false))));
+        Assert.Empty(DuckLakeCatalog.Validate(Config(("path", "c.ducklake"), ("data_path", "s3://b/"),
+            ("storage_key_id", "k"), ("storage_secret_key", "s"), ("storage_region", "eu-west-1"),
+            ("storage_endpoint", "minio:9000"), ("storage_url_style", "path"), ("storage_use_ssl", false))));
+    }
+
+    [Fact]
+    public void Storage_credentials_require_an_object_store_data_path()
+    {
+        var missing = DuckLakeCatalog.Validate(Config(("path", "c.ducklake"), ("storage_key_id", "k"), ("storage_secret_key", "s")));
+        var missingError = Assert.Single(missing);
+        Assert.Contains("data_path", missingError, StringComparison.Ordinal);
+
+        var local = DuckLakeCatalog.Validate(Config(("path", "c.ducklake"), ("data_path", "lake/data"),
+            ("storage_key_id", "k"), ("storage_secret_key", "s")));
+        var localError = Assert.Single(local);
+        Assert.Contains("data_path", localError, StringComparison.Ordinal);
+
+        Assert.Empty(DuckLakeCatalog.Validate(Config(("path", "c.ducklake"), ("data_path", "s3://b/"),
+            ("storage_key_id", "k"), ("storage_secret_key", "s"))));
     }
 
     [Theory]

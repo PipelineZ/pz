@@ -208,4 +208,23 @@ public sealed class DuckLakeSqlGenTests
             }
         }
     }
+
+    [Fact]
+    public void Postgres_catalog_without_data_path_is_a_permanent_error()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => DuckLakeSql.SetupStatements(
+            Config(("catalog", "postgres"), ("host", "h"), ("database", "d")), WhAlias));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("'data_path'", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Storage_credentials_with_a_local_data_path_emit_no_storage_secret()
+    {
+        var statements = DuckLakeSql.SetupStatements(
+            Config(("path", "/lake/c.ducklake"), ("data_path", "/lake/data"),
+                ("storage_key_id", "AK"), ("storage_secret_key", "SK")), WhAlias);
+        Assert.DoesNotContain(statements, s => s.StartsWith($"create or replace secret {WhAlias}_storage", StringComparison.Ordinal));
+        Assert.DoesNotContain("install httpfs", statements);
+    }
 }
