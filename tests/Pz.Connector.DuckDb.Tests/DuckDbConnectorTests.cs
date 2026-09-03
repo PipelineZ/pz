@@ -189,6 +189,9 @@ public sealed class DuckDbConnectorTests : IDisposable
     [Fact]
     public async Task Native_scan_and_copy_share_one_attach_alias()
     {
+        // TryGetNativeScan refuses a missing file (F5); this test is about the shared alias, not
+        // that guard, so give it a file that exists.
+        await File.WriteAllBytesAsync(Path.Combine(dir, "app.duckdb"), []);
         await using var source = await ((ISourceConnector)new DuckDbConnector()).OpenAsync(Config(), CancellationToken.None);
         await using var sink = await ((ISinkConnector)new DuckDbConnector()).OpenAsync(Config(), CancellationToken.None);
 

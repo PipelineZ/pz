@@ -231,6 +231,23 @@ public sealed class DuckDbNativeEndToEndTests : IDisposable
         Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {landed}"));
         Assert.Equal(2L, await duck.ScalarAsync<long>($"select id from {landed}"));
     }
+
+    [Fact]
+    public async Task A_read_against_a_missing_file_is_refused_and_creates_no_file()
+    {
+        // The shared alias is read-write (writes must be able to create the file), so an unguarded
+        // `attach if not exists` against a missing file would silently create an empty database on a
+        // read -- indistinguishable from an empty table and a likely path typo (F5).
+        Assert.False(File.Exists(DbPath("absent.duckdb")));
+
+        await using var source = await ((ISourceConnector)new DuckDbConnector()).OpenAsync(Config("absent.duckdb"), CancellationToken.None);
+        var ex = Assert.Throws<PzConnectorException>(() => source.TryGetNativeScan(Spec(), out _));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("events", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain(DbPath("absent.duckdb"), ex.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(DbPath("absent.duckdb")));
+    }
 }
 
 /// <summary>A scratch DuckDB file, deleted on dispose (best-effort). Test-support types are

@@ -23,8 +23,20 @@ internal sealed class DuckDbSource(ConnectorConfig config) : ISource
         return new ValueTask<DatasetSchema>(new DatasetSchema(new Schema(fields, null)));
     }
 
+    /// <summary>The shared alias is read-write (writes must be able to create the file), so an
+    /// unguarded `attach if not exists` against a missing file would silently create an empty
+    /// database and "succeed" at reading zero rows -- indistinguishable from an empty table and a
+    /// likely path typo. Refuse before returning the scan instead. The resolved absolute path is
+    /// never in the message (secret/path hygiene); the dataset name is enough to locate the fix.</summary>
     public bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
     {
+        if (!File.Exists(DuckDbSql.ResolvePath(config)))
+        {
+            throw new PzConnectorException(
+                $"dataset '{spec.Dataset}': duckdb database file does not exist; reads cannot create it -- " +
+                "create it with a write first, or fix the connection's 'path'", isTransient: false);
+        }
+
         var alias = DuckDbSql.Alias(spec.Source);
         scan = new NativeScan(
             DuckDbSql.ScanFragment(alias, spec),

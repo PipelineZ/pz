@@ -8,14 +8,26 @@ using Pz.Engine.Planning;
 
 namespace Pz.Connector.DuckDb.Tests;
 
-/// <summary>The planner half of the native-only contract against the REAL connector (the planner's
-/// probes never open the file, so no fixture is needed): both directions plan onto the native tier
-/// for every write mode, and engine.force_universal collides with both markers as PZ0312.</summary>
-public sealed class DuckDbPlannerTests
+/// <summary>The planner half of the native-only contract against the REAL connector: both directions
+/// plan onto the native tier for every write mode, and engine.force_universal collides with both
+/// markers as PZ0312. The source side's native-scan probe now refuses a missing file (F5), so every
+/// dag built here points its source connection at a file this fixture actually creates.</summary>
+public sealed class DuckDbPlannerTests : IDisposable
 {
-    private static Dictionary<string, object?> Connection() => new() { ["path"] = "/data/app.duckdb" };
+    private readonly string dir = Directory.CreateTempSubdirectory("pz-duckdb-planner-tests-").FullName;
+    private readonly string dbPath;
 
-    private static CompiledDag DuckDbToDuckDbDag(string mode = "replace", string outputName = "events_out")
+    public DuckDbPlannerTests()
+    {
+        dbPath = Path.Combine(dir, "app.duckdb");
+        File.WriteAllBytes(dbPath, []);
+    }
+
+    public void Dispose() => Directory.Delete(dir, recursive: true);
+
+    private Dictionary<string, object?> Connection() => new() { ["path"] = dbPath };
+
+    private CompiledDag DuckDbToDuckDbDag(string mode = "replace", string outputName = "events_out")
     {
         var sourceDef = new ConnectionDef("appdb", "duckdb", Connection(),
             [new DatasetDef("events", new Dictionary<string, object?>(), null)], "connections.yml");
@@ -109,6 +121,6 @@ public sealed class DuckDbPlannerTests
     {
         var plan = await new ExecutionPlanner(Registry())
             .PlanAsync(DuckDbToDuckDbDag(), forceUniversal: false, CancellationToken.None);
-        Assert.All(plan.Nodes, n => Assert.DoesNotContain("/data/app.duckdb", n.Reason, StringComparison.Ordinal));
+        Assert.All(plan.Nodes, n => Assert.DoesNotContain(dbPath, n.Reason, StringComparison.Ordinal));
     }
 }
