@@ -24,8 +24,13 @@ public static class PathGuard
     /// `data_path:` may instead name an object store (a URL), which <see cref="Check"/> skips for
     /// that key alone: every other path-shaped key (including ducklake's own `path:`) is checked
     /// regardless of what it contains, so a value like `file://../../x` cannot bypass PZ0606 by
-    /// merely looking like a URL.</summary>
-    internal static bool IsPathScoped(string? connector) => connector is "localfiles" or "sqlite" or "duckdb" or "ducklake";
+    /// merely looking like a URL. iceberg's one path-shaped key, `root:` (the `files` catalog's
+    /// table-directory root), may likewise name an object store and gets the same URL skip — for
+    /// that connector alone, since a localfiles `root:` is never a URL.</summary>
+    internal static bool IsPathScoped(string? connector) => connector is "localfiles" or "sqlite" or "duckdb" or "ducklake" or "iceberg";
+
+    private static bool MayNameObjectStore(string connector, string key) =>
+        key == "data_path" || (connector == "iceberg" && key == "root");
 
     /// <summary>Every path-scoped connector's path-shaped value in the loaded project that resolves
     /// outside <paramref name="projectDir"/> — connection blocks, entity reads, and entity writes.</summary>
@@ -96,9 +101,9 @@ public static class PathGuard
                 continue;
             }
 
-            if (key == "data_path" && value.Contains("://", StringComparison.Ordinal))
+            if (MayNameObjectStore(connector, key) && value.Contains("://", StringComparison.Ordinal))
             {
-                continue; // only data_path may name an object store; ducklake's own path: never does
+                continue; // only data_path and iceberg's root may name an object store; ducklake's own path: never does
             }
 
             if (Escapes(projectDir, value))

@@ -45,7 +45,7 @@ internal static class NativeSetup
     /// <summary>Names the extension a failing <c>install &lt;extension&gt;</c> statement was
     /// installing, so the hint reads as advice about the extension actually being fetched rather than
     /// a generic httpfs guess — every native-only connector ships its own extension (quack, ducklake,
-    /// duckdb, motherduck, …) and only httpfs is specifically about object storage.</summary>
+    /// duckdb, motherduck, iceberg, …) and only httpfs is specifically about object storage.</summary>
     private static string InstallHint(string statement)
     {
         const string prefix = "install";

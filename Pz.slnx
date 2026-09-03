@@ -5,6 +5,7 @@
     <Project Path="connectors/Pz.Connector.DuckLake/Pz.Connector.DuckLake.csproj" />
     <Project Path="connectors/Pz.Connector.Gcs/Pz.Connector.Gcs.csproj" />
     <Project Path="connectors/Pz.Connector.Http/Pz.Connector.Http.csproj" />
+    <Project Path="connectors/Pz.Connector.Iceberg/Pz.Connector.Iceberg.csproj" />
     <Project Path="connectors/Pz.Connector.LocalFiles/Pz.Connector.LocalFiles.csproj" />
     <Project Path="connectors/Pz.Connector.MySql/Pz.Connector.MySql.csproj" />
     <Project Path="connectors/Pz.Connector.MotherDuck/Pz.Connector.MotherDuck.csproj" />
@@ -38,6 +39,7 @@
     <Project Path="tests/Pz.Connector.DuckLake.Tests/Pz.Connector.DuckLake.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Gcs.Tests/Pz.Connector.Gcs.Tests.csproj" />
     <Project Path="tests/Pz.Connector.Http.Tests/Pz.Connector.Http.Tests.csproj" />
+    <Project Path="tests/Pz.Connector.Iceberg.Tests/Pz.Connector.Iceberg.Tests.csproj" />
     <Project Path="tests/Pz.Connector.LocalFiles.Tests/Pz.Connector.LocalFiles.Tests.csproj" />
     <Project Path="tests/Pz.Connector.MySql.Tests/Pz.Connector.MySql.Tests.csproj" />
     <Project Path="tests/Pz.Connector.MotherDuck.Tests/Pz.Connector.MotherDuck.Tests.csproj" />

@@ -25,6 +25,9 @@
     <!-- Pz.Connector.DuckLake.Tests' e2e suites and SecretRedactionTests run connector fragments
          through internal NativeSetup.ExecuteSetupAsync against a live DuckSession. -->
     <InternalsVisibleTo Include="Pz.Connector.DuckLake.Tests" />
+    <!-- Pz.Connector.Iceberg.Tests' REST-catalog e2e suite and SecretRedactionTests run connector
+         fragments through internal NativeSetup.ExecuteSetupAsync against a live DuckSession. -->
+    <InternalsVisibleTo Include="Pz.Connector.Iceberg.Tests" />
     <!-- Pz.Connector.S3.Tests' SecretRedactionTests calls internal NativeSetup.ExecuteSetupAsync
          directly (regression guard: a malformed CREATE SECRET must never leak its literal into a
          NativeSetup failure message) - see that test's doc comment. -->

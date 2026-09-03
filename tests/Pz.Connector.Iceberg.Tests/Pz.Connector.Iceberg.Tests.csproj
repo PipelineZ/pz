@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.S3" Version="4.0.100.2" />
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="JsonSchema.Net" Version="9.2.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <!-- Pinned above Testcontainers' unbounded 2025.1.0 floor: that version has a known high-severity
+         advisory, and NuGet audit (NU1903, WarningsAsErrors) fails restore otherwise. Test-only
+         transitive dep of Testcontainers.Minio. -->
+    <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="Testcontainers.Minio" Version="4.13.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
+    <ProjectReference Include="..\..\connectors\Pz.Connector.Iceberg\Pz.Connector.Iceberg.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Core\Pz.Core.csproj" />
+    <ProjectReference Include="..\..\src\Pz.DuckDb\Pz.DuckDb.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
+    <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
+  </ItemGroup>
+
+</Project>
