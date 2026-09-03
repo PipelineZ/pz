@@ -154,12 +154,16 @@ public sealed class QuackSqlGenTests
         Assert.Equal("quack create-or-replace", m2);
 
         Assert.True(QuackSql.TryCopySql(table, "merge", ["id", "region"], out var merge, out var m3));
+        const string scratch = "pz_quack_merge_ec11af20";
         Assert.Equal(
             $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n" +
-            $"merge into {table} as t using {{{{source}}}} as s on t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\" " +
-            "when matched then update when not matched then insert;",
+            $"create or replace temp table {scratch} as select s.* from {{{{source}}}} as s union all by name " +
+            $"select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s " +
+            "where t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\");\n" +
+            $"create or replace table {table} as select * from {scratch};\n" +
+            $"drop table {scratch};",
             merge);
-        Assert.Equal("quack merge", m3);
+        Assert.Equal("quack merge-by-replace", m3);
 
         Assert.False(Assert.Throws<PzConnectorException>(() => QuackSql.TryCopySql(table, "merge", [], out _, out _)).IsTransient);
         Assert.False(QuackSql.TryCopySql(table, "upsert_all", [], out _, out _));

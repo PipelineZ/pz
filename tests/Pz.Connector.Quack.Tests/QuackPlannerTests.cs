@@ -60,7 +60,7 @@ public sealed class QuackPlannerTests
     [Theory]
     [InlineData("append", "quack insert")]
     [InlineData("replace", "quack create-or-replace")]
-    [InlineData("merge", "quack merge")]
+    [InlineData("merge", "quack merge-by-replace")]
     public async Task Both_directions_plan_onto_the_native_tier(string mode, string mechanism)
     {
         var plan = await new ExecutionPlanner(Registry())

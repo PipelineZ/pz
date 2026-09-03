@@ -8,8 +8,12 @@ namespace Pz.Connector.Quack;
 /// building; DuckDB parses every statement (double-quoted identifiers, ''-escaped literals). ONE
 /// read-write alias per connection shared by reads and writes. The token NEVER rides the attach
 /// string (a failed ATTACH echoes its path verbatim into the engine error); it rides a quack secret
-/// scoped to the server URI. Kept in lockstep with the duckdb/ducklake/motherduck connectors' Sql
-/// classes (replicated, never referenced).</summary>
+/// scoped to the server URI. A quack-attached table accepts only bulk CREATE TABLE AS / INSERT from
+/// the wire protocol — no row-level UPDATE/DELETE/MERGE — so merge pulls the target through the
+/// client into a temp table, resolves conflicts there, and rewrites the whole remote table: one
+/// remote mutation, same guarantee class as replace. Kept in lockstep with the duckdb/ducklake/
+/// motherduck connectors' Sql classes for append/replace (replicated, never referenced); merge
+/// necessarily diverges for the reason above.</summary>
 internal static class QuackSql
 {
     internal static string Alias(string connectionName) =>
@@ -120,8 +124,12 @@ internal static class QuackSql
                 }
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
-                sql = create + $"merge into {table} as t using {{{{source}}}} as s on {on} when matched then update when not matched then insert;";
-                mechanism = "quack merge";
+                var scratch = "pz_quack_merge_" + HashSuffix(table);
+                sql = create +
+                    $"create or replace temp table {scratch} as select s.* from {{{{source}}}} as s union all by name select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s where {on});\n" +
+                    $"create or replace table {table} as select * from {scratch};\n" +
+                    $"drop table {scratch};";
+                mechanism = "quack merge-by-replace";
                 return true;
             default:
                 sql = "";
