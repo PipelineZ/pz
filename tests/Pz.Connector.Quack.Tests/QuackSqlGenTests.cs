@@ -160,7 +160,8 @@ public sealed class QuackSqlGenTests
         const string scratch = "pz_quack_merge_ec11af20";
         Assert.Equal(
             $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n" +
-            $"create or replace temp table {scratch} as select s.* from {{{{source}}}} as s union all by name " +
+            $"create or replace temp table {scratch} as select s.* from {{{{source}}}} as s " +
+            "qualify row_number() over (partition by s.\"id\", s.\"region\") = 1 union all by name " +
             $"select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s " +
             "where t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\");\n" +
             $"create or replace table {table} as select * from {scratch};\n" +

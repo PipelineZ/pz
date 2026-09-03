@@ -8,17 +8,30 @@ namespace Pz.Connector.Quack;
 /// building; DuckDB parses every statement (double-quoted identifiers, ''-escaped literals). ONE
 /// read-write alias per connection shared by reads and writes. The token NEVER rides the attach
 /// string (a failed ATTACH echoes its path verbatim into the engine error); it rides a quack secret
-/// scoped to the server URI. A quack-attached table accepts only bulk CREATE TABLE AS / INSERT from
-/// the wire protocol — no row-level UPDATE/DELETE/MERGE — so merge pulls the target through the
-/// client into a temp table, resolves conflicts there, and rewrites the whole remote table: one
-/// remote mutation, same guarantee class as replace. A matched row is replaced wholesale by the
-/// source row, not column-patched — a column the source batch omits becomes NULL on matched rows,
-/// so the pipeline's column set must stay stable across runs; cost grows with the target table's
-/// size, since the whole table crosses the wire on every merge. Kept in lockstep with the
-/// duckdb/ducklake/motherduck connectors' Sql classes for append/replace (replicated, never
-/// referenced); merge necessarily diverges for the reason above.</summary>
+/// scoped to the server URI.
+///
+/// A quack-attached table accepts only bulk CREATE TABLE AS / INSERT from the wire protocol — no
+/// row-level UPDATE/DELETE/MERGE — so merge pulls the target through the client into a temp table,
+/// resolves conflicts there, and rewrites the whole remote table with one <c>create or replace
+/// table</c>: same guarantee class as replace. That rewrite is the whole blast radius of
+/// merge-by-replace: (a) primary keys, NOT NULL/DEFAULT constraints and indexes on the target do not
+/// survive it — the replacement table has none of them; (b) the target's column order follows the
+/// source batch's order, not whatever order it had before; (c) a column the source batch omits
+/// becomes NULL on matched rows — a matched row is replaced wholesale, not column-patched, so the
+/// pipeline's column set must stay stable across runs; (d) duplicate keys within one source batch
+/// collapse to one connector-determined survivor before the rewrite runs; (e) whether the
+/// <c>create or replace table</c> itself is atomic is the server's guarantee, not pz's — a failed
+/// rewrite can leave the target missing or partial until the next run, which recomputes the same
+/// result (the merge is idempotent). Cost grows with the target table's size, since the whole table
+/// crosses the wire on every merge. Kept in lockstep with the duckdb/ducklake/motherduck connectors'
+/// Sql classes for append/replace (replicated, never referenced); merge necessarily diverges for the
+/// reasons above.</summary>
 internal static class QuackSql
 {
+    /// <summary>Sanitized connection name plus the first 8 lowercase hex chars of SHA-256 of the RAW
+    /// name, so "prod-db" and "prod_db" (both sanitize identically) never share an alias — without
+    /// the hash suffix, a second connection could silently reuse the first's attach, since
+    /// <c>attach if not exists</c> is first-wins.</summary>
     internal static string Alias(string connectionName) =>
         $"pz_quack_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
 
@@ -50,6 +63,8 @@ internal static class QuackSql
         ];
     }
 
+    /// <summary>An entity is <c>table</c> (the server's default schema) or <c>schema.table</c>:
+    /// exactly one split on the first dot; more dots, or an empty side, is a permanent error.</summary>
     internal static (string? Schema, string Table) SplitEntity(string entity)
     {
         var dot = entity.IndexOf('.', StringComparison.Ordinal);
@@ -80,7 +95,9 @@ internal static class QuackSql
     }
 
     /// <summary>Contract prunes the projection; the plain incremental watermark is pushed down (the
-    /// server evaluates the predicate); the window ceiling is MUST-apply.</summary>
+    /// server evaluates the predicate); the window ceiling is MUST-apply. The engine embeds the
+    /// fragment after FROM, which is why a bare table is returned unwrapped — anything with a
+    /// projection or predicate becomes a parenthesized subquery instead.</summary>
     internal static string ScanFragment(string alias, DatasetSpec spec)
     {
         var table = QualifiedTable(alias, spec.Dataset);
@@ -127,9 +144,18 @@ internal static class QuackSql
                 }
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
+
+                // Two source rows sharing a key within one batch would otherwise both survive into
+                // the union (neither is "the target row" so neither takes the not-exists branch) and
+                // the final create-or-replace would then fail on a duplicate key from the caller's
+                // perspective. qualify row_number() keeps exactly one row per key group before the
+                // union runs — connector-determined, not first/last-wins — which is the sink
+                // contract's Absorb behaviour that a real MERGE gives the siblings for free.
+                var partitionBy = string.Join(", ", keys.Select(k => $"s.{QuoteIdent(k)}"));
+                var dedupedSource = $"select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1";
                 var scratch = "pz_quack_merge_" + HashSuffix(table);
                 sql = create +
-                    $"create or replace temp table {scratch} as select s.* from {{{{source}}}} as s union all by name select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s where {on});\n" +
+                    $"create or replace temp table {scratch} as {dedupedSource} union all by name select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s where {on});\n" +
                     $"create or replace table {table} as select * from {scratch};\n" +
                     $"drop table {scratch};";
                 mechanism = "quack merge-by-replace";
@@ -141,6 +167,10 @@ internal static class QuackSql
         }
     }
 
+    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
+    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal:
+    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
+    /// becoming a space so it coerces against DATE/TIMESTAMP columns.</summary>
     internal static string RenderWatermarkLiteral(string canonical)
     {
         if (IsCanonicalNumeric(canonical))

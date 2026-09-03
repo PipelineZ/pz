@@ -7,7 +7,8 @@ namespace Pz.Connector.Quack.Tests;
 /// <summary>A DuckDB server for the tests, in-process: a second <see cref="DuckSession"/> on its own
 /// file runs <c>quack_serve</c> (which returns immediately and serves on background threads) on a
 /// free loopback port with a fixed token; <c>quack_stop</c> on dispose. Tokens must be at least
-/// four characters.</summary>
+/// four characters. Kept in lockstep with <c>Pz.Connector.DuckLake.Tests.QuackTestServer</c>
+/// (namespace-only differs, replicated, never referenced).</summary>
 internal sealed class QuackTestServer(DuckSession server, string uri, string token) : IAsyncDisposable
 {
     public string Uri => uri;

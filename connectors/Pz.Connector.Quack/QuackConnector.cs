@@ -47,6 +47,8 @@ public sealed class QuackConnector : ISourceConnector, ISinkConnector, INativeOn
         return new(errors.Count == 0 ? ValidationResult.Success : ValidationResult.Failed([.. errors]));
     }
 
+    /// <summary>Kept in lockstep with <c>DuckLakeProbe.TcpAsync</c> (replicated, never
+    /// referenced).</summary>
     public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
     {
         if (config.GetString("uri") is not { } uri || !QuackUri.TryParse(uri, out var host, out var port))
