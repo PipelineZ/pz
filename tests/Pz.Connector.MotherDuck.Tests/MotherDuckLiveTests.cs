@@ -36,7 +36,7 @@ public sealed class MotherDuckLiveTests : IDisposable
         Assert.True(sink.TryGetNativeCopy(new OutputSpec("wh", entity, mode, "fail_on_change", new Dictionary<string, object?>()) { Keys = keys ?? [] }, out var copy));
         foreach (var setup in copy!.SetupStatements)
         {
-            await ledger.ExecuteOnceAsync(duck, setup, CancellationToken.None);
+            await ledger.ExecuteOnceAsync(setup, CancellationToken.None);
         }
 
         var staging = "stage_" + Guid.NewGuid().ToString("N");
@@ -50,7 +50,7 @@ public sealed class MotherDuckLiveTests : IDisposable
         Assert.True(source.TryGetNativeScan(spec, out var scan));
         foreach (var setup in scan!.SetupStatements)
         {
-            await ledger.ExecuteOnceAsync(duck, setup, CancellationToken.None);
+            await ledger.ExecuteOnceAsync(setup, CancellationToken.None);
         }
 
         var landed = "landed_" + Guid.NewGuid().ToString("N");
@@ -63,7 +63,7 @@ public sealed class MotherDuckLiveTests : IDisposable
     {
         SkipUnlessLive();
         await using var duck = DuckSession.Open(Path.Combine(dir, "client.duckdb"));
-        var ledger = new NativeSetupLedger();
+        var ledger = new NativeSetupLedger(duck);
         var table = $"pz_live_{suffix}";
         try
         {
@@ -122,7 +122,7 @@ public sealed class MotherDuckLiveTests : IDisposable
     {
         SkipUnlessLive();
         await using var duck = DuckSession.Open(Path.Combine(dir, "client2.duckdb"));
-        var ledger = new NativeSetupLedger();
+        var ledger = new NativeSetupLedger(duck);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["database"] = Database, ["token"] = "WRONG-TOKEN" });
         await using var source = await ((ISourceConnector)new MotherDuckConnector()).OpenAsync(config, CancellationToken.None);
         Assert.True(source.TryGetNativeScan(new DatasetSpec("wh", "x", new Dictionary<string, object?>()), out var scan));
@@ -131,7 +131,7 @@ public sealed class MotherDuckLiveTests : IDisposable
         {
             foreach (var setup in scan!.SetupStatements)
             {
-                await ledger.ExecuteOnceAsync(duck, setup, CancellationToken.None);
+                await ledger.ExecuteOnceAsync(setup, CancellationToken.None);
             }
         });
         Assert.Contains("PZ0311", ex.Message, StringComparison.Ordinal);

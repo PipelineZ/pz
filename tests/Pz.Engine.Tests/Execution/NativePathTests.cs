@@ -89,6 +89,41 @@ public sealed class NativePathTests : IAsyncLifetime
             recording.ExecutedStatements[2]);
     }
 
+    /// <summary>Proves the wiring, not just the ledger in isolation: two nodes of the same run
+    /// (a SourceLoad and a SinkWrite, both native-only) reach <see cref="NativeSetup.ExecuteSetupAsync"/>
+    /// through the same <see cref="RunContext.SetupLedger"/> rather than each running its own copy of
+    /// the loop that used to live in the executors.</summary>
+    [Fact]
+    public async Task Executors_reach_setup_through_the_ledger()
+    {
+        const string statement = "create table ledger_reach_marker(x int)";
+        await _duck.ExecuteAsync("create table staging.p5 as select 1 as x");
+
+        var sourceNode = SourceLoadNode("src5", "t5");
+        var sinkNode = SinkWriteNode("p5");
+
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", new ConfigurableNativeSource("(values (1)) t(x)", [statement]));
+        registry.AddSink("stub", new ConfigurableNativeSink(Path.Combine(_dir, "out5.tmp"), Path.Combine(_dir, "out5.csv"), [statement]));
+
+        var plan = new ExecutionPlan(
+            [
+                new PlannedNode(sourceNode.Id, sourceNode.Kind, sourceNode.Name, EdgeStrategy.NativeScan, 1, "test"),
+                new PlannedNode(sinkNode.Id, sinkNode.Kind, sinkNode.Name, EdgeStrategy.NativeCopy, 1, "test"),
+            ],
+            MemoryBudget.Compute(new EngineConfig()));
+
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance, plan);
+
+        var sourceResult = await new KindDispatchingExecutor().ExecuteAsync(sourceNode, ctx, CancellationToken.None);
+        var sinkResult = await new KindDispatchingExecutor().ExecuteAsync(sinkNode, ctx, CancellationToken.None);
+
+        Assert.Equal(NodeStatus.Success, sourceResult.Status);
+        Assert.Equal(NodeStatus.Success, sinkResult.Status);
+        Assert.Equal(1, await _duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'ledger_reach_marker'"));
+    }
+
     [Fact]
     public async Task Native_setup_failure_is_PZ0311_with_redacted_statement()
     {
@@ -455,9 +490,10 @@ public sealed class NativePathTests : IAsyncLifetime
         public ValueTask DisposeAsync() => default;
     }
 
-    /// <summary>Sink whose native copy is fully configurable (temp/final path) and whose universal
-    /// write path throws — any accidental universal fall-through fails loudly.</summary>
-    private sealed class ConfigurableNativeSink(string tempPath, string finalPath) : ISinkConnector, ISink
+    /// <summary>Sink whose native copy is fully configurable (temp/final path, setup statements) and
+    /// whose universal write path throws — any accidental universal fall-through fails loudly.</summary>
+    private sealed class ConfigurableNativeSink(string tempPath, string finalPath, IReadOnlyList<string>? setupStatements = null)
+        : ISinkConnector, ISink
     {
         public ConnectorInfo Info => new("stub-native-sink", "0.1.0", ProtocolVersion.Major);
         public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeCopy;
@@ -470,7 +506,7 @@ public sealed class NativePathTests : IAsyncLifetime
 
         public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
         {
-            copy = new NativeCopy($"copy (select 1) to '{tempPath}'", [])
+            copy = new NativeCopy($"copy (select 1) to '{tempPath}'", setupStatements ?? [])
             {
                 Mechanism = "stub_copy",
                 Finalizations = [new FileMove(tempPath, finalPath)],

@@ -74,8 +74,13 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// settings, attaches) already issued on <see cref="Duck"/> — see <see cref="NativeSetupLedger"/>.
     /// Same shape and lifetime as <see cref="DeliveryFailures"/>/<see cref="Attempts"/>: a get-only
     /// property with an initializer, so `with`-clones share the same ledger instance, which is exactly
-    /// right — the memo is per-run state, not per-node.</summary>
-    internal NativeSetupLedger SetupLedger { get; } = new();
+    /// right — the memo is per-run state, not per-node. Built from <see cref="Duck"/> at construction
+    /// (not lazily against whichever session an executor happens to pass), so the ledger can only ever
+    /// be asked to run a statement against the session it is bound to. A `with`-clone that also
+    /// replaces <see cref="Duck"/> would keep the ORIGINAL session's ledger — bound to a record field's
+    /// value at construction time, a positional-record initializer does not re-run on `with` — but no
+    /// production code clones a RunContext with a different Duck.</summary>
+    internal NativeSetupLedger SetupLedger { get; } = new(Duck);
 
     /// <summary><see cref="Batch"/> when set, else <see cref="BatchOptions.Default"/> (32MB / 122,880
     /// rows) — every batch-producing site (universal source reads, egress) should read this, not

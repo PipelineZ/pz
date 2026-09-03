@@ -196,7 +196,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             foreach (var statement in scan.SetupStatements)
             {
-                await ctx.SetupLedger.ExecuteOnceAsync(ctx.Duck, statement, ct).ConfigureAwait(false);
+                await ctx.SetupLedger.ExecuteOnceAsync(statement, ct).ConfigureAwait(false);
             }
 
             var nativeTable = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
