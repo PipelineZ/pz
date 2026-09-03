@@ -303,6 +303,21 @@ public class PathGuardTests
         Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
     }
 
+    /// <summary>Only `data_path:` may name an object store; `path:` is checked regardless of what it
+    /// contains, so a value that merely looks like a URL cannot bypass PZ0606.</summary>
+    [Fact]
+    public async Task Validate_still_refuses_a_url_looking_catalog_path()
+    {
+        using var p = new TempProject();
+        AppendDuckLakeConnection(p, "file://../../outside.ducklake", "lake/data");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.Equal("PZ0606", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+    }
+
     [Fact]
     public async Task Add_connection_refuses_a_proposed_escaping_ducklake_data_path_without_writing()
     {

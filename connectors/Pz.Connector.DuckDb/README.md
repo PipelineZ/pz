@@ -42,8 +42,7 @@ pruning happens anyway, inside the scan fragment itself), `PartitionedRead`, `Ch
 ```yaml
 lakedb:
   connector: duckdb
-  connection:
-    path: ./data/warehouse.duckdb   # required — the database file
+  path: ./data/warehouse.duckdb   # required — the database file
   entities:
     events:
       read:

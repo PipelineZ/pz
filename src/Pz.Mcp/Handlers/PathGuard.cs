@@ -20,9 +20,11 @@ public static class PathGuard
     /// <summary>The connectors whose config carries project-relative file paths — the ones this guard
     /// walks. sqlite and duckdb count too: their connection `path:` is a database file exactly like a
     /// localfiles root. ducklake carries two path-shaped keys — `path:` (the catalog file, file-backed
-    /// catalogs only) and `data_path:` (the lake's data directory, every catalog) — and `data_path:`
-    /// may instead name an object store (a URL), which <see cref="Check"/> skips: a URL is never a
-    /// project-relative path to begin with.</summary>
+    /// catalogs only) and `data_path:` (the lake's data directory, every catalog) — and ONLY
+    /// `data_path:` may instead name an object store (a URL), which <see cref="Check"/> skips for
+    /// that key alone: every other path-shaped key (including ducklake's own `path:`) is checked
+    /// regardless of what it contains, so a value like `file://../../x` cannot bypass PZ0606 by
+    /// merely looking like a URL.</summary>
     internal static bool IsPathScoped(string? connector) => connector is "localfiles" or "sqlite" or "duckdb" or "ducklake";
 
     /// <summary>Every path-scoped connector's path-shaped value in the loaded project that resolves
@@ -94,9 +96,9 @@ public static class PathGuard
                 continue;
             }
 
-            if (value.Contains("://", StringComparison.Ordinal))
+            if (key == "data_path" && value.Contains("://", StringComparison.Ordinal))
             {
-                continue; // an object-store URL (ducklake's data_path:) is never a project-relative path
+                continue; // only data_path may name an object store; ducklake's own path: never does
             }
 
             if (Escapes(projectDir, value))
