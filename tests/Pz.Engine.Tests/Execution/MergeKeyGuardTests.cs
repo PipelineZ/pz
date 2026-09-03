@@ -1,17 +1,21 @@
+using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.DuckDb;
 using Pz.Engine.Execution;
+using Pz.Engine.Planning;
 
 namespace Pz.Engine.Tests.Execution;
 
 /// <summary>A <c>strategy: merge</c> output whose staged input carries a NULL in a declared merge key is
 /// refused (PZ0521) before any sink session opens. A merge cannot match a NULL key, so such rows silently
 /// collapse within the batch and re-insert (duplicate) every run — the guard turns that silent
-/// loss/duplication into a loud failure, mirroring the CDC-deletes PZ0340 guard. Harness reuses the stub
-/// sink and real-staging setup from <see cref="CdcDrainTests"/>.</summary>
+/// loss/duplication into a loud failure, mirroring the CDC-deletes PZ0340 guard. The guard sits ahead of
+/// both tiers: a native-copy sink's MERGE never joins on NULL either, so the null-key refusal and the
+/// duplicate-key warning fire before the COPY statement exactly as they do before a universal session
+/// opens. Harness reuses the stub sink and real-staging setup from <see cref="CdcDrainTests"/>.</summary>
 public sealed class MergeKeyGuardTests : IAsyncLifetime
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pz-merge-key-guard-tests", Guid.NewGuid().ToString("N"));
@@ -63,11 +67,44 @@ public sealed class MergeKeyGuardTests : IAsyncLifetime
             int skipped, TimeSpan duration) { }
     }
 
-    private static ConnectorRegistry Registry(PlainSinkConnector sink)
+    private static ConnectorRegistry Registry(ISinkConnector sink)
     {
         var reg = new ConnectorRegistry();
         reg.AddSink("cdcdelete", sink);
         return reg;
+    }
+
+    private RunContext NativeContext(NativeMergeSink sink, DagNode node, IRunEvents? events = null) => new(
+        _duck, Registry(sink), new RunPaths(_dir, "test-run"), events ?? NullRunEvents.Instance,
+        Plan: new ExecutionPlan([new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1, "test")],
+            MemoryBudget.Compute(new EngineConfig())),
+        Batch: new BatchOptions(TargetBatchBytes: 256));
+
+    /// <summary>A native-copy merge sink whose COPY materializes the staged relation into
+    /// <c>staging.native_out</c>; the universal path must never be entered.</summary>
+    private sealed class NativeMergeSink : ISinkConnector, ISink
+    {
+        public ConnectorInfo Info => new("cdcdelete", "0.1.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeCopy | ConnectorCapabilities.Merge;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+            new(ValidationResult.Success);
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            new(new ConnectionCheck(true));
+        public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+        public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
+        {
+            copy = new NativeCopy("create table staging.native_out as select * from {{source}}", []) { Mechanism = "stub_merge" };
+            return true;
+        }
+
+        public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
+            throw new InvalidOperationException("universal path must not be used");
+
+        public ValueTask DisposeAsync() => default;
     }
 
     // A plain merge (no CDC): OnDelete is null, so the CDC-deletes guard is skipped and this test isolates
@@ -147,5 +184,37 @@ public sealed class MergeKeyGuardTests : IAsyncLifetime
 
         Assert.Equal(NodeStatus.Success, result.Status);
         Assert.Empty(events.DuplicateWarnings);
+    }
+
+    [Fact]
+    public async Task Native_copy_null_merge_key_fails_PZ0521_before_the_copy_runs()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'a'), (CAST(NULL AS BIGINT), 'b')) t(id, name)");
+        var node = MergeSinkNode();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node), default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.MergeKeyNull, result.Error!.Code);
+        Assert.Equal(0L, await _duck.ScalarAsync<long>(
+            "select count(*) from information_schema.tables where table_schema = 'staging' and table_name = 'native_out'"));
+    }
+
+    [Fact]
+    public async Task Native_copy_duplicate_merge_keys_warn_and_the_copy_still_runs()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'newer'), (1, 'older'), (2, 'only')) t(id, name)");
+        var node = MergeSinkNode();
+        var events = new RecordingEvents();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node, events), default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(3L, await _duck.ScalarAsync<long>("select count(*) from staging.native_out"));
+        var warning = Assert.Single(events.DuplicateWarnings);
+        Assert.Equal(1, warning.Groups);
+        Assert.Equal(1, warning.ExtraRows);
     }
 }

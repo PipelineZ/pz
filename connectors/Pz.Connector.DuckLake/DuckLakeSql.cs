@@ -389,7 +389,16 @@ internal static class DuckLakeSql
                 }
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
-                sql = create + $"merge into {table} as t using {{{{source}}}} as s on {on} " +
+
+                // DuckDB's MERGE matches every source row independently against the target as it stood
+                // before the statement ran: two staged rows sharing a key the target lacks would BOTH take
+                // the not-matched branch and both insert, and duplicates of a held key would update it
+                // in an undefined order. The sink contract says duplicate keys within one batch collapse
+                // to a single connector-determined survivor, so the staged side is made key-unique
+                // (qualify row_number() per key group) before MERGE ever sees it.
+                var partitionBy = string.Join(", ", keys.Select(k => $"s.{QuoteIdent(k)}"));
+                var dedupedSource = $"(select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1)";
+                sql = create + $"merge into {table} as t using {dedupedSource} as s on {on} " +
                     "when matched then update when not matched then insert;";
                 mechanism = "ducklake merge";
                 return true;

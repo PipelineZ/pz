@@ -159,6 +159,26 @@ public sealed class DuckDbNativeEndToEndTests : IDisposable
         Assert.Equal("c", await duck.ScalarAsync<string>($"select name from {landed} where id = 3"));
     }
 
+    // Two staged rows sharing a key within one batch collapse to one connector-determined survivor,
+    // whether the key is new to the target (both rows would otherwise insert) or already held.
+    [Fact]
+    public async Task Merge_collapses_duplicate_keys_within_a_batch()
+    {
+        await using var session = OpenDuck();
+        var duck = session.Duck;
+
+        await WriteAsync(duck, "app.duckdb", "dupes", "(select 1 as id, 'a' as name)", mode: "merge", keys: ["id"]);
+        await WriteAsync(duck, "app.duckdb", "dupes",
+            "(select 1 as id, 'b' as name union all select 1, 'c' union all select 2, 'd' union all select 2, 'e')",
+            mode: "merge", keys: ["id"]);
+
+        var landed = await ReadAsync(duck, "app.duckdb", Spec("dupes"));
+        Assert.Equal(2, await duck.ScalarAsync<long>($"select count(*) from {landed}"));
+        Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {landed} where id = 1"));
+        Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {landed} where id = 2"));
+        Assert.NotEqual("a", await duck.ScalarAsync<string>($"select name from {landed} where id = 1"));
+    }
+
     [Fact]
     public async Task Schema_qualified_entities_write_and_read_inside_that_schema()
     {
