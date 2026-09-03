@@ -84,11 +84,24 @@ public sealed class DuckLakeConnectorTests : IDisposable
     {
         var config = new ConnectorConfig(new Dictionary<string, object?>
         {
-            ["path"] = ".pz/runs/x/catalog.ducklake",
+            ["path"] = Path.Combine(dir, ".pz", "runs", "x", "catalog.ducklake"),
             ["base_dir"] = dir,
         });
         var result = await new DuckLakeConnector().ValidateAsync(config, CancellationToken.None);
         Assert.Single(result.Errors);
+    }
+
+    [Fact]
+    public async Task Validate_ignores_an_absolute_path_when_no_base_dir_is_injected()
+    {
+        // An absolute path is only comparable against .pz/ once the host injects base_dir --
+        // pre-injection, tier-3 validation has no anchor to resolve it against.
+        var config = new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["path"] = Path.Combine(dir, ".pz", "x.ducklake"),
+        });
+        var result = await new DuckLakeConnector().ValidateAsync(config, CancellationToken.None);
+        Assert.Empty(result.Errors);
     }
 
     [Fact]

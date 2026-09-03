@@ -94,11 +94,17 @@ public sealed class DuckLakeConnector : ISourceConnector, ISinkConnector, INativ
 
     /// <summary>The catalog key matrix, aggregate (see <see cref="DuckLakeCatalog.Validate"/>), plus
     /// the <c>.pz/</c>-containment rule on <c>path</c> and <c>data_path</c> (see
-    /// <see cref="PzDirError"/>).</summary>
+    /// <see cref="PzDirError"/>). <c>path</c> is only meaningful for the file-backed catalogs
+    /// (duckdb, sqlite); a stray <c>path</c> declared against a server catalog is already flagged by
+    /// <see cref="DuckLakeCatalog.Validate"/>'s matrix, so the containment check does not pile a
+    /// second, unrelated error onto it. <c>data_path</c> applies to every catalog and stays
+    /// unconditional (URL-skipped inside <see cref="PzDirError"/>).</summary>
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         var errors = new List<string>(DuckLakeCatalog.Validate(config));
-        if (PzDirError(config, "path") is { } pathError)
+        var catalog = DuckLakeCatalog.Of(config);
+        if (catalog is DuckLakeCatalog.DuckDb or DuckLakeCatalog.Sqlite &&
+            PzDirError(config, "path") is { } pathError)
         {
             errors.Add(pathError);
         }
