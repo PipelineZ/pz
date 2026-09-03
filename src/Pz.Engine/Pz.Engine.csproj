@@ -22,6 +22,9 @@
     <!-- Pz.Connector.DuckDb.Tests' e2e suite runs connector fragments through internal
          NativeSetup.ExecuteSetupAsync against a live DuckSession (the Sqlite e2e precedent). -->
     <InternalsVisibleTo Include="Pz.Connector.DuckDb.Tests" />
+    <!-- Pz.Connector.DuckLake.Tests' e2e suites and SecretRedactionTests run connector fragments
+         through internal NativeSetup.ExecuteSetupAsync against a live DuckSession. -->
+    <InternalsVisibleTo Include="Pz.Connector.DuckLake.Tests" />
     <!-- Pz.Connector.S3.Tests' SecretRedactionTests calls internal NativeSetup.ExecuteSetupAsync
          directly (regression guard: a malformed CREATE SECRET must never leak its literal into a
          NativeSetup failure message) - see that test's doc comment. -->
