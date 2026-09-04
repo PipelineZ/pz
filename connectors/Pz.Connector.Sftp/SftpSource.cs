@@ -245,22 +245,15 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
 
     internal static string FileContext(DatasetSpec spec, string path) => $"dataset '{spec.Dataset}': file '{path}'";
 
-    /// <summary>The entity names the file, and `format:` defaults csv — mirrors S3Source.GetFormat's
-    /// TryGetValue-then-ternary shape, but (unlike S3, which folds any unrecognized string into its
-    /// parquet branch) refuses an unrecognized format loudly, naming the dataset.</summary>
+    /// <summary>The entity names the file, and `format:` defaults csv. Resolved through the shared
+    /// catalog like every other file-place connector; sftp has no native tier, so every resolved
+    /// format must additionally pass <see cref="FileFormatCatalog.EnsureUniversalTierSupported"/>.</summary>
     private static string GetFormat(DatasetSpec spec)
     {
-        var format = spec.Options.TryGetValue("format", out var value) && value?.ToString() is { Length: > 0 } f
-            ? f
-            : "csv";
-        if (format is not ("csv" or "parquet" or "json"))
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': sftp source v0 only supports format 'csv', 'parquet' or 'json' " +
-                $"(got '{format}')", isTransient: false);
-        }
-
-        return format;
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "csv", "sftp", context);
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "sftp", context);
+        return format.Name;
     }
 
     private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
