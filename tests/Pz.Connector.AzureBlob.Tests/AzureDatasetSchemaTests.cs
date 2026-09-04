@@ -99,8 +99,9 @@ public sealed class AzureDatasetSchemaTests
     [Fact]
     public async Task Unsupported_format_is_PZ0301()
     {
-        // Without the enum, an unknown format would fall through AzureSource's else-branch and
-        // silently plan a read_parquet scan over non-parquet objects.
+        // The schema enum refuses an unrecognized format at validate time (PZ0301); if it somehow
+        // reached AzureSource, FileFormatCatalog.Resolve would refuse it too (PZ0361) -- there is no
+        // silent fallback to a read_parquet scan over non-parquet objects.
         var source = new ConnectionDef("lake", "azureblob", ValidConnection,
             [new DatasetDef("events", new Dictionary<string, object?>
             {

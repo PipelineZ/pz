@@ -33,8 +33,9 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// ever materialized just to peek. No match is a clean named permanent error.</summary>
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var format = GetFormat(spec);
-        var loc = AzureUrl.ParseDataset(spec.Options, $"dataset '{spec.Dataset}'");
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", context).Name;
+        var loc = AzureUrl.ParseDataset(spec.Options, context);
 
         string? firstMatch = null;
         await foreach (var name in EnumerateMatchingBlobsAsync(loc, spec, ct).ConfigureAwait(false))
@@ -159,7 +160,8 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// if that plan-time refusal were ever bypassed.</summary>
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
-        if (GetFormat(spec) is "csv" or "json")
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", $"dataset '{spec.Dataset}'").Name;
+        if (format is "csv" or "json")
         {
             GetColumnsContract(spec); // throws the named contract error when the columns: contract is absent
         }
@@ -324,9 +326,6 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
 
     private static PzConnectorException NoMatch(DatasetSpec spec, AzureLocation loc) =>
         new($"dataset '{spec.Dataset}': no blobs matched '{AzureUrl.Render(loc)}'", isTransient: false);
-
-    private static string? GetFormat(DatasetSpec spec) =>
-        spec.Options.TryGetValue("format", out var f) ? f?.ToString() : null;
 
     /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/> (mirrors
     /// <c>Pz.Connector.LocalFiles.CsvSource.ReadHeaderAsync</c>, replicated per this connector's
