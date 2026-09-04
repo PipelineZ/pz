@@ -175,7 +175,7 @@ because `client_id`/`client_secret` already name a REST catalog's OAuth2 pair he
 | `connection_string` | `storage_connection_string` | — |
 | `account_key` | `storage_account_name`, `storage_account_key` | `storage_endpoint` (a custom Blob endpoint, e.g. Azurite) |
 | `service_principal` | `storage_tenant_id`, `storage_client_id`, `storage_client_secret`, `storage_account_name` | — |
-| `credential_chain` | `storage_account_name` | `storage_chain` (e.g. `cli;env`; managed identity is a link in the chain) |
+| `credential_chain` | `storage_account_name` | `storage_chain` (e.g. `cli;env`; managed identity is a link in the chain (a user-assigned identity's client id cannot be pinned here)) |
 
 Every S3 key is refused under `azure` and every Azure key under `s3`; `storage: azure` is refused
 on `glue`/`s3_tables`. A `files` root with an Azure scheme infers `storage: azure` and needs a
@@ -183,7 +183,9 @@ on `glue`/`s3_tables`. A `files` root with an Azure scheme infers `storage: azur
 `storage_auth`, in which case the catalog is expected to vend Azure SAS credentials. The
 connection loads DuckDB's `azure` extension and, when a method is declared, builds a `type azure`
 secret — scoped to a `files` root, unscoped on a catalog — and switches the REST catalog's
-credential vending off exactly as explicit S3 keys do.
+credential vending off exactly as explicit S3 keys do. As with S3, DuckDB prefers a longer-scoped
+secret for any path one covers, so an azureblob connection's scoped secret wins over an iceberg
+catalog connection's unscoped one in the same session.
 
 **Status of writes on Azure.** The `azure` extension DuckDB 1.5.5 installs implements the
 directory and write operations the iceberg extension's insert needs, but DuckDB's own
@@ -316,9 +318,9 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
   run and every node that needs it shares that execution; a node retry re-issues a statement that
   failed, which the statements tolerate (extension install/load are no-ops on repeat, `create or
   replace secret` is last-wins, `attach if not exists` skips an existing alias).
-- **First use needs network access** to install the DuckDB `iceberg` and `httpfs` extensions (and
-  `aws` for a credential-chain AWS catalog); the extension repository is consulted only when an
-  extension is not yet installed.
+- **First use needs network access** to install the DuckDB `iceberg` and `httpfs` extensions
+  (`azure` under `storage: azure`, `aws` for a credential-chain AWS catalog); the extension
+  repository is consulted only when an extension is not yet installed.
 - **A catalog and a `files` connection may point at the same warehouse.** They get separate aliases
   and separately scoped secrets; reading a table through `files` right after the catalog wrote it
   needs the newest `metadata_version:` — a `files` read never consults the catalog.

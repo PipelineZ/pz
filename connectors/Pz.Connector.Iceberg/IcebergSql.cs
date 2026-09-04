@@ -220,6 +220,10 @@ internal static class IcebergSql
 
         if (azure)
         {
+            // Total, not a redundant nesting of the outer `if (azure)`: collapsing to
+            // `if (azure && hasStorageKeys)` would let an azure connection with no storage keys fall
+            // through to the `else if (IsAws(catalog))` arm below and emit a `type s3`
+            // credential-chain secret, which is wrong for every azure connection.
             if (hasStorageKeys)
             {
                 statements.Add(AzureStorageSecretSql(config, alias, scope: root));

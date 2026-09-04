@@ -224,6 +224,14 @@ internal static class IcebergCatalog
                 errors.Add($"'{key}' requires 'storage_auth'");
             }
 
+            // storage_endpoint is a shared key (also valid under s3), so it is deliberately absent
+            // from AzureOnlyKeys -- without this check it would pass validation here and then be
+            // silently dropped: no storage_auth means no secret is ever built to carry it.
+            if (config.Values.ContainsKey("storage_endpoint"))
+            {
+                errors.Add("'storage_endpoint' requires 'storage_auth'");
+            }
+
             return;
         }
 

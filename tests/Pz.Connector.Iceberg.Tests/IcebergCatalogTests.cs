@@ -191,6 +191,11 @@ public sealed class IcebergCatalogTests
         Assert.Equal(["'storage_endpoint' under storage 'azure' applies to storage_auth 'account_key' only"],
             IcebergCatalog.Validate(Config(("endpoint", "http://c"), ("storage", "azure"), ("storage_auth", "connection_string"),
                 ("storage_connection_string", "cs"), ("storage_endpoint", "http://x"))));
+
+        // storage_endpoint is a shared key (also valid under s3), so it is not in AzureOnlyKeys and
+        // would otherwise slip through the "requires storage_auth" sweep unchecked and be dropped.
+        Assert.Equal(["'storage_endpoint' requires 'storage_auth'"],
+            IcebergCatalog.Validate(Config(("endpoint", "http://c"), ("storage", "azure"), ("storage_endpoint", "http://x"))));
     }
 
     [Fact]

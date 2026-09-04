@@ -60,26 +60,33 @@ public sealed class IcebergAzureRestTests : IDisposable
     {
         Skip.If(Env("PZ_ICEBERG_AZURE_ENDPOINT") is null, "PZ_ICEBERG_AZURE_ENDPOINT is not set");
         Skip.If(Env("PZ_ICEBERG_AZURE_WAREHOUSE") is null, "PZ_ICEBERG_AZURE_WAREHOUSE is not set");
+        Skip.If((Env("PZ_ICEBERG_AZURE_ACCOUNT_NAME") is null) != (Env("PZ_ICEBERG_AZURE_ACCOUNT_KEY") is null),
+            "PZ_ICEBERG_AZURE_ACCOUNT_NAME and PZ_ICEBERG_AZURE_ACCOUNT_KEY must be set together");
         await using var duck = DuckSession.Open(Path.Combine(dir, "scratch.duckdb"));
         var connector = new IcebergConnector();
 
-        foreach (var (mode, rows) in new[] { ("replace", "select 1 as id union all select 2"), ("append", "select 3 as id") })
+        try
         {
-            await using var sink = await ((ISinkConnector)connector).OpenAsync(Config(), CancellationToken.None);
-            var spec = new OutputSpec("wh", $"{ns}.{table}", mode, "fail_on_change", new Dictionary<string, object?>()) { Keys = [] };
-            Assert.True(sink.TryGetNativeCopy(spec, out var copy));
-            await RunSetupAsync(duck, copy!.SetupStatements);
-            var staging = "stage_" + Guid.NewGuid().ToString("N");
-            await duck.ExecuteAsync($"create table {staging} as {rows}");
-            await duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", staging, StringComparison.Ordinal));
+            foreach (var (mode, rows) in new[] { ("replace", "select 1 as id union all select 2"), ("append", "select 3 as id") })
+            {
+                await using var sink = await ((ISinkConnector)connector).OpenAsync(Config(), CancellationToken.None);
+                var spec = new OutputSpec("wh", $"{ns}.{table}", mode, "fail_on_change", new Dictionary<string, object?>()) { Keys = [] };
+                Assert.True(sink.TryGetNativeCopy(spec, out var copy));
+                await RunSetupAsync(duck, copy!.SetupStatements);
+                var staging = "stage_" + Guid.NewGuid().ToString("N");
+                await duck.ExecuteAsync($"create table {staging} as {rows}");
+                await duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", staging, StringComparison.Ordinal));
+            }
+
+            await using var source = await ((ISourceConnector)connector).OpenAsync(Config(), CancellationToken.None);
+            Assert.True(source.TryGetNativeScan(new DatasetSpec("wh", $"{ns}.{table}", new Dictionary<string, object?>()), out var scan));
+            await RunSetupAsync(duck, scan!.SetupStatements);
+            await duck.ExecuteAsync($"create table landed as select * from {scan.SqlFragment}");
+            Assert.Equal(3, await duck.ScalarAsync<long>("select count(*) from landed"));
         }
-
-        await using var source = await ((ISourceConnector)connector).OpenAsync(Config(), CancellationToken.None);
-        Assert.True(source.TryGetNativeScan(new DatasetSpec("wh", $"{ns}.{table}", new Dictionary<string, object?>()), out var scan));
-        await RunSetupAsync(duck, scan!.SetupStatements);
-        await duck.ExecuteAsync($"create table landed as select * from {scan.SqlFragment}");
-        Assert.Equal(3, await duck.ScalarAsync<long>("select count(*) from landed"));
-
-        await duck.ExecuteAsync($"drop table {IcebergSql.Alias("wh")}.\"{ns}\".\"{table}\"");
+        finally
+        {
+            await duck.ExecuteAsync($"drop table {IcebergSql.Alias("wh")}.\"{ns}\".\"{table}\"");
+        }
     }
 }
