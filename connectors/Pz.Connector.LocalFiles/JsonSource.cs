@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
 
@@ -31,24 +32,17 @@ internal sealed class JsonSource(string baseDir) : ISource
 
     public bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
     {
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "json", "localfiles", context);
         var absPath = ResolvePath(spec);
         var declared = ExtractColumns(spec);
-        string fragment;
-        if (declared is { Count: > 0 })
+        var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
+        var request = new FormatReadRequest(urlArg, 1, declared, TypeNameMap.ToDuckDbName);
+        var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
+        scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
-            var duckColumns = string.Join(", ", declared.Select(c =>
-                $"'{EscapeSqlLiteral(c.Key)}': '{TypeNameMap.ToDuckDbName(c.Value, c.Key)}'"));
-            fragment = $"read_json('{EscapeSqlLiteral(absPath)}', columns = {{{duckColumns}}}, format = 'newline_delimited')";
-        }
-        else
-        {
-            fragment = $"read_json('{EscapeSqlLiteral(absPath)}', auto_detect = true, format = 'newline_delimited')";
-        }
-
-        scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), SetupStatements: [])
-        {
-            Mechanism = "read_json",
-            SchemaInferred = declared is not { Count: > 0 },
+            Mechanism = FileFormatCatalog.ReadMechanism(format),
+            SchemaInferred = FileFormatCatalog.SchemaInferred(format, declared),
         };
         return true;
     }

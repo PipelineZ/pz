@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Parquet;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
 
@@ -50,11 +51,15 @@ internal sealed class ParquetSource(string baseDir) : ISource
     /// savings UNLESS the dataset is windowed.</summary>
     public bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
     {
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", context);
         var absPath = ResolvePath(spec);
-        var fragment = $"read_parquet('{EscapeSqlLiteral(absPath)}')";
-        scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), SetupStatements: [])
+        var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
+        var request = new FormatReadRequest(urlArg, 1, null, TypeNameMap.ToDuckDbName);
+        var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
+        scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
-            Mechanism = "read_parquet",
+            Mechanism = FileFormatCatalog.ReadMechanism(format),
         };
         return true;
     }

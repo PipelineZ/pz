@@ -17,26 +17,17 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
 {
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
-        var format = spec.Options.TryGetValue("format", out var f) ? f?.ToString() : null;
-        if (format is not ("parquet" or "csv" or "json"))
-        {
-            copy = null;
-            return false;
-        }
+        var context = $"output '{spec.Output}'";
+        var format = ResolveFormat(spec);
+        FileFormatCatalog.EnsureWritable(format, "localfiles", context);
 
         var finalPath = ResolveFinalPath(spec);
         var tempPath = Path.Combine(Path.GetDirectoryName(finalPath)!, $".pz-native-{Guid.NewGuid():N}{Path.GetExtension(finalPath)}");
-        var formatClause = format switch
-        {
-            "parquet" => "format parquet",
-            "csv" => "format csv, header",
-            _ => "format json",
-        };
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to '{EscapeSqlLiteral(tempPath)}' ({formatClause})",
-            SetupStatements: [])
+            $"copy (select * from {{{{source}}}}) to '{EscapeSqlLiteral(tempPath)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            FileFormatCatalog.SetupStatements(format))
         {
-            Mechanism = $"COPY TO {format}",
+            Mechanism = $"COPY TO {format.Name}",
             Finalizations = [new FileMove(tempPath, finalPath)],
         };
         return true;
@@ -50,12 +41,11 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
     /// creates the directory at execution time, right before running the COPY (SinkWriteExecutor).</summary>
     private string ResolveFinalPath(OutputSpec spec)
     {
-        var format = ResolveFormat(spec);
+        var ext = ResolveFormat(spec).Extension;
         var outputDir = ResolveOutputDir(spec);
-
-        var fileName = $"{spec.Output}.{format}";
+        var fileName = $"{spec.Output}.{ext}";
         return string.Equals(spec.Mode, "append", StringComparison.OrdinalIgnoreCase)
-            ? Path.Combine(outputDir, $"{spec.Output}-{Guid.NewGuid():N}.{format}")
+            ? Path.Combine(outputDir, $"{spec.Output}-{Guid.NewGuid():N}.{ext}")
             : Path.Combine(outputDir, fileName);
     }
 
@@ -63,7 +53,9 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
+        var context = $"output '{spec.Output}'";
         var format = ResolveFormat(spec);
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "localfiles", context);
         var outputDir = ResolveOutputDir(spec);
         Directory.CreateDirectory(outputDir);
 
@@ -71,18 +63,18 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
         var tempDir = Path.Combine(outputDir, $".pz-tmp-{runGuid}");
         Directory.CreateDirectory(tempDir);
 
-        var fileName = $"{spec.Output}.{format}";
+        var fileName = $"{spec.Output}.{format.Extension}";
         var tempFilePath = Path.Combine(tempDir, fileName);
 
         // Commit protocol: "replace" overwrites the stable final name; "append" lands
         // under a run-unique suffixed name instead so repeated runs accumulate files.
         var finalFilePath = string.Equals(spec.Mode, "append", StringComparison.OrdinalIgnoreCase)
-            ? Path.Combine(outputDir, $"{spec.Output}-{runGuid}.{format}")
+            ? Path.Combine(outputDir, $"{spec.Output}-{runGuid}.{format.Extension}")
             : Path.Combine(outputDir, fileName);
 
         try
         {
-            return format switch
+            return format.Name switch
             {
                 "parquet" => await ParquetSinkWriteSession.CreateAsync(tempDir, tempFilePath, finalFilePath, schema, ct)
                     .ConfigureAwait(false),
@@ -111,19 +103,8 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
         return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
     }
 
-    private static string ResolveFormat(OutputSpec spec)
-    {
-        var format = spec.Options.TryGetValue("format", out var value) ? value?.ToString() : null;
-        format ??= "parquet";
-        if (format is not ("parquet" or "csv" or "json"))
-        {
-            throw new PzConnectorException(
-                $"output '{spec.Output}': localfiles sink v0 only supports format 'parquet', 'csv' or 'json' (got '{format}')",
-                isTransient: false);
-        }
-
-        return format;
-    }
+    internal static FileFormat ResolveFormat(OutputSpec spec) =>
+        FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", $"output '{spec.Output}'");
 
     internal static void TryDeleteDir(string dir)
     {
