@@ -6,8 +6,11 @@ namespace Pz.Connector.Iceberg.Tests;
 
 /// <summary>One Azurite container holding a mirror of a table the REST fixture wrote. Azurite
 /// emulates the Blob endpoint only (no DFS endpoint), so it can host an <c>az://</c> files root but
-/// never a REST catalog's warehouse. The constructor calls <see cref="DockerFacts.SkipUnlessDocker"/>
-/// and <see cref="DockerFacts.SkipIfOffline"/> before any Testcontainers call.</summary>
+/// never a REST catalog's warehouse. A class fixture must never throw <see cref="SkipException"/>
+/// from its constructor -- xunit wraps that in a TestClassException and reports FAILED, not Skipped
+/// (see <see cref="DockerFacts.IsAvailable"/>) -- so the guards live in the consuming test method
+/// (<see cref="DockerFacts.SkipUnlessDocker"/>/<see cref="DockerFacts.SkipIfOffline"/>) and this
+/// fixture's <see cref="InitializeAsync"/> no-ops without docker or under PZ_TESTS_OFFLINE.</summary>
 public sealed class IcebergAzuriteFixture : IAsyncLifetime
 {
     // Pinned in step with tests/Pz.Connector.AzureBlob.Tests/AzuriteFixture.cs: older tags reject
@@ -17,12 +20,6 @@ public sealed class IcebergAzuriteFixture : IAsyncLifetime
     public const string Container = "pz-iceberg-e2e";
 
     private AzuriteContainer? container;
-
-    public IcebergAzuriteFixture()
-    {
-        DockerFacts.SkipUnlessDocker();
-        DockerFacts.SkipIfOffline();
-    }
 
     /// <summary>Azurite's well-known dev-account connection string — the shape DuckDB's
     /// <c>type azure</c> secret's <c>connection_string</c> expects.</summary>
@@ -34,6 +31,11 @@ public sealed class IcebergAzuriteFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
+        if (!DockerFacts.IsAvailable || DockerFacts.IsOffline)
+        {
+            return;
+        }
+
         container = new AzuriteBuilder(ImageName).Build();
         await container.StartAsync().ConfigureAwait(false);
         ConnectionString = container.GetConnectionString();

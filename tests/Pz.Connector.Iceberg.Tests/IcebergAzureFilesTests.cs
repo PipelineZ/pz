@@ -49,6 +49,7 @@ public sealed class IcebergAzureFilesTests(IcebergRestCatalogFixture catalog, Ic
     public async Task A_files_root_on_azure_blob_reads_a_mirrored_table_with_the_watermark_pushed_down()
     {
         DockerFacts.SkipUnlessDocker();
+        DockerFacts.SkipIfOffline();
         await using var duck = DuckSession.Open(Path.Combine(dir, "scratch.duckdb"));
 
         // Write through the REST catalog onto MinIO.
