@@ -18,6 +18,7 @@ public sealed class SecretRedactionTests
     private const string Token = "B3AR3R_T0KEN";
     private const string ClientSecret = "CL13NT_S3CRET";
     private const string StorageSecret = "ST0RAGE_S3CRET";
+    private const string AzureKey = "AZUR3_ACC0UNT_K3Y";
 
     private static Dictionary<string, object?> TokenConnection() => new()
     {
@@ -29,6 +30,13 @@ public sealed class SecretRedactionTests
     {
         ["catalog"] = "rest", ["endpoint"] = "https://cat.example.com", ["warehouse"] = "wh",
         ["client_id"] = "pz", ["client_secret"] = ClientSecret,
+    };
+
+    private static Dictionary<string, object?> AzureConnection() => new()
+    {
+        ["catalog"] = "rest", ["endpoint"] = "https://cat.example.com", ["warehouse"] = "wh",
+        ["token"] = Token, ["storage"] = "azure", ["storage_auth"] = "account_key",
+        ["storage_account_name"] = "acct", ["storage_account_key"] = AzureKey,
     };
 
     private static CompiledDag Dag(Dictionary<string, object?> connection)
@@ -84,6 +92,21 @@ public sealed class SecretRedactionTests
         {
             try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
         }
+
+        var azurePlan = await new ExecutionPlanner(Registry()).PlanAsync(Dag(AzureConnection()), forceUniversal: false, CancellationToken.None);
+        Assert.All(azurePlan.Nodes, n => Assert.DoesNotContain(AzureKey, n.Reason, StringComparison.Ordinal));
+
+        var azureDir = Path.Combine(Path.GetTempPath(), "pz-iceberg-redaction-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            PlanWriter.Write(azurePlan, azureDir);
+            var azureJson = await File.ReadAllTextAsync(Path.Combine(azureDir, "plan.json"));
+            Assert.DoesNotContain(AzureKey, azureJson, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(azureDir, recursive: true); } catch { /* best-effort cleanup */ }
+        }
     }
 
     [Theory]
@@ -117,6 +140,33 @@ public sealed class SecretRedactionTests
                 () => NativeSetup.ExecuteSetupAsync(duck, broken, CancellationToken.None));
             Assert.Contains("PZ0311", ex.Message, StringComparison.Ordinal);
             Assert.DoesNotContain(secret, ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
+        }
+    }
+
+    [Fact]
+    public async Task A_malformed_azure_storage_secret_never_leaks_into_the_setup_failure()
+    {
+        var carrier = IcebergSql.AzureStorageSecretSql(new ConnectorConfig(AzureConnection()), IcebergSql.Alias("wh"), null);
+        Assert.Contains(AzureKey, carrier, StringComparison.Ordinal);
+
+        // Same corruption as the other carriers -- a parse error must fire before DuckDB would ever
+        // resolve the `azure` extension, so this stays offline with no extension download.
+        var broken = carrier.Replace(" (type ", " type ", StringComparison.Ordinal);
+        Assert.NotEqual(carrier, broken);
+
+        var dir = Path.Combine(Path.GetTempPath(), "pz-iceberg-redaction-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var duck = DuckSession.Open(Path.Combine(dir, "t.duckdb"));
+            var ex = await Assert.ThrowsAsync<PzConnectorException>(
+                () => NativeSetup.ExecuteSetupAsync(duck, broken, CancellationToken.None));
+            Assert.Contains("PZ0311", ex.Message, StringComparison.Ordinal);
+            Assert.DoesNotContain(AzureKey, ex.Message, StringComparison.Ordinal);
         }
         finally
         {

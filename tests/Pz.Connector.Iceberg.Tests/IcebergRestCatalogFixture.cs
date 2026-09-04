@@ -1,4 +1,5 @@
 using Amazon.S3;
+using Azure.Storage.Blobs;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -103,17 +104,18 @@ public sealed class IcebergRestCatalogFixture : IAsyncLifetime
         }
     }
 
+    private AmazonS3Client CreateClient() => new(AccessKey, SecretKey, new AmazonS3Config
+    {
+        ServiceURL = $"http://{StorageEndpoint}",
+        ForcePathStyle = true,
+        AuthenticationRegion = "us-east-1",
+    });
+
     /// <summary>The newest metadata file version of a table the catalog wrote (its files carry no
     /// version-hint), for a <c>files</c>-catalog read that must name it explicitly.</summary>
     public async Task<string> LatestMetadataVersionAsync(string ns, string table)
     {
-        var config = new AmazonS3Config
-        {
-            ServiceURL = $"http://{StorageEndpoint}",
-            ForcePathStyle = true,
-            AuthenticationRegion = "us-east-1",
-        };
-        using var client = new AmazonS3Client(AccessKey, SecretKey, config);
+        using var client = CreateClient();
         var listing = await client.ListObjectsV2Async(new Amazon.S3.Model.ListObjectsV2Request
         {
             BucketName = Bucket,
@@ -127,6 +129,25 @@ public sealed class IcebergRestCatalogFixture : IAsyncLifetime
             .OrderByDescending(v => v, StringComparer.Ordinal)
             .First();
         return newest;
+    }
+
+    /// <summary>Copies every object of one table (<c>ns/table/**</c>) from the MinIO warehouse into
+    /// an Azure container under the same keys, so an <c>az://</c> files root can scan a table only a
+    /// REST catalog could have written.</summary>
+    public async Task MirrorTableAsync(string ns, string table, BlobContainerClient target)
+    {
+        using var client = CreateClient();
+        var listing = await client.ListObjectsV2Async(new Amazon.S3.Model.ListObjectsV2Request
+        {
+            BucketName = Bucket,
+            Prefix = $"{ns}/{table}/",
+        }).ConfigureAwait(false);
+        Assert.False(listing.IsTruncated);
+        foreach (var key in listing.S3Objects.Select(o => o.Key))
+        {
+            using var response = await client.GetObjectAsync(Bucket, key).ConfigureAwait(false);
+            await target.GetBlobClient(key).UploadAsync(response.ResponseStream, overwrite: true).ConfigureAwait(false);
+        }
     }
 }
 

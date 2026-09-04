@@ -24,8 +24,12 @@ public static class DockerFacts
     /// class constructor, where SkipException does turn into a skip.</summary>
     public static bool IsAvailable => DockerAvailable.Value;
 
+    /// <summary>Non-throwing probe for the same reason as <see cref="IsAvailable"/>: a class fixture's
+    /// <c>InitializeAsync</c> checks this to no-op instead of calling <see cref="SkipIfOffline"/>, whose
+    /// SkipException would report FAILED rather than Skipped when thrown outside a test method.</summary>
+    public static bool IsOffline => Environment.GetEnvironmentVariable("PZ_TESTS_OFFLINE") == "1";
+
     public static void SkipUnlessDocker() => Skip.IfNot(DockerAvailable.Value, "docker is not available");
 
-    public static void SkipIfOffline() => Skip.If(
-        Environment.GetEnvironmentVariable("PZ_TESTS_OFFLINE") == "1", "PZ_TESTS_OFFLINE=1");
+    public static void SkipIfOffline() => Skip.If(IsOffline, "PZ_TESTS_OFFLINE=1");
 }

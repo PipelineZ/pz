@@ -13,6 +13,8 @@
          advisory, and NuGet audit (NU1903, WarningsAsErrors) fails restore otherwise. Test-only
          transitive dep of Testcontainers.Minio. -->
     <PackageReference Include="SSH.NET" Version="2026.0.0" />
+    <PackageReference Include="Testcontainers.Azurite" Version="4.13.0" />
+    <PackageReference Include="Azure.Storage.Blobs" Version="12.24.0" />
     <PackageReference Include="Testcontainers.Minio" Version="4.13.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
