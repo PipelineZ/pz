@@ -318,6 +318,61 @@ public class PathGuardTests
         Assert.Equal("PZ0606", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
     }
 
+    // --- iceberg: `root` (the `files` catalog's table-directory root) is the connector's one
+    // path-shaped key; it stays local unless it names an object store, which the guard must ignore.
+
+    private static void AppendIcebergConnection(TempProject p, string root)
+    {
+        File.AppendAllText(Path.Combine(p.Dir, "connections.yml"),
+            $"""
+
+            lake:
+              connector: iceberg
+              catalog: files
+              root: {root}
+            """);
+    }
+
+    [Fact]
+    public async Task Validate_refuses_an_iceberg_root_escaping_the_project()
+    {
+        using var p = new TempProject();
+        AppendIcebergConnection(p, "../../outside");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0606", error.GetProperty("code").GetString());
+        Assert.Contains("iceberg", error.GetProperty("message").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Iceberg_root_inside_the_project_stays_accepted()
+    {
+        using var p = new TempProject();
+        Directory.CreateDirectory(Path.Combine(p.Dir, "lake"));
+        AppendIcebergConnection(p, "lake");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Validate_ignores_an_iceberg_object_store_root()
+    {
+        using var p = new TempProject();
+        AppendIcebergConnection(p, "s3://bucket/warehouse/");
+
+        var doc = JsonDocument.Parse(await VerifyTools.ValidateAsync(
+            p.Dir, connect: false, RealServices(), CancellationToken.None));
+
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+    }
+
     [Fact]
     public async Task Add_connection_refuses_a_proposed_escaping_ducklake_data_path_without_writing()
     {

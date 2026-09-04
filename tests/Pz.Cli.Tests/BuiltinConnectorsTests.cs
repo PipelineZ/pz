@@ -81,6 +81,20 @@ public class BuiltinConnectorsTests
     }
 
     [Fact]
+    public void Iceberg_is_registered_as_source_and_sink()
+    {
+        var registry = BuiltinConnectors.CreateRegistry();
+        Assert.Contains("iceberg", registry.Sources.Keys);
+        Assert.Contains("iceberg", registry.Sinks.Keys);
+    }
+
+    [Fact]
+    public void Iceberg_package_id_is_builtin()
+    {
+        Assert.Contains("Pz.Connector.Iceberg", BuiltinConnectors.PackageIds);
+    }
+
+    [Fact]
     public void Quack_is_registered_as_source_and_sink()
     {
         var registry = BuiltinConnectors.CreateRegistry();

@@ -29,12 +29,13 @@ public sealed class ProjectDirectoryAnchorTests
     public void Builtin_anchored_connectors_receive_the_project_dir()
     {
         var anchored = ProjectDirectoryAnchor.Inject(
-            ProjectWith("localfiles", "sqlite", "duckdb", "ducklake"), ProjectDir);
+            ProjectWith("localfiles", "sqlite", "duckdb", "ducklake", "iceberg"), ProjectDir);
 
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "localfiles"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "sqlite"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "duckdb"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "ducklake"));
+        Assert.Equal(ProjectDir, BaseDirOf(anchored, "iceberg"));
     }
 
     /// <summary>Opt-in in both directions: a connector that never asked receives nothing. This is what

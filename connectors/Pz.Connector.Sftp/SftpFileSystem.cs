@@ -11,6 +11,12 @@ namespace Pz.Connector.Sftp;
 /// reference to it once <see cref="SftpClientFactory.Connect"/> returns.</summary>
 internal sealed class SftpFileSystem(SftpClient client, IDisposable? auth = null) : ISftpFileSystem
 {
+    /// <summary>Regular files under <paramref name="directory"/>, yielded as
+    /// <c>&lt;directory as passed&gt;/&lt;entry name&gt;</c> — relative to whatever form the caller
+    /// passed, NEVER <c>ISftpFile.FullName</c>. SSH.NET builds <c>FullName</c> from the server's
+    /// <c>realpath</c> of the listed directory, so under a chrooted OpenSSH server (atmoz/sftp and
+    /// friends) a relative <paramref name="directory"/> like "upload/x" comes back rooted at
+    /// "/upload/x", which then fails to match the caller's relative glob pattern.</summary>
     public IEnumerable<string> ListFiles(string directory, bool recursive)
     {
         // A bare glob pattern with no directory part (e.g. "*.csv") resolves to a static prefix with
@@ -46,17 +52,23 @@ internal sealed class SftpFileSystem(SftpClient client, IDisposable? auth = null
                     continue;
                 }
 
+                var joined = Join(current, entry.Name);
                 if (entry.IsRegularFile)
                 {
-                    yield return entry.FullName;
+                    yield return joined;
                 }
                 else if (recursive && entry.IsDirectory)
                 {
-                    pending.Enqueue(entry.FullName);
+                    pending.Enqueue(joined);
                 }
             }
         }
     }
+
+    /// <summary>Joins a listing directory and an entry name in the caller's own form: "." yields the
+    /// bare name (no "./" prefix); a directory already ending in '/' is not doubled.</summary>
+    private static string Join(string directory, string name) =>
+        directory == "." ? name : directory.EndsWith('/') ? directory + name : $"{directory}/{name}";
 
     public Stream OpenRead(string path) => client.OpenRead(path);
 

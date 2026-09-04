@@ -240,6 +240,42 @@ public sealed class NativePathTests : IAsyncLifetime
         Assert.False(File.Exists(finalPath));
     }
 
+    /// <summary>A CopySql batch that opens its own explicit transaction (the shape Iceberg's replace
+    /// mode emits: `begin transaction; …; commit;`) and fails mid-way must not leave that transaction
+    /// open on the run's single shared connection. DuckDB.NET stops at the failing statement, so
+    /// without an engine-issued ROLLBACK the connection would be stuck "within a transaction" and every
+    /// later statement -- on this node's retry or any other node -- would fail. Proves the same
+    /// <see cref="DuckSession"/> is usable again immediately after the failed node returns.</summary>
+    [Fact]
+    public async Task Native_copy_rolls_back_an_open_transaction_left_by_a_failed_batch()
+    {
+        await _duck.ExecuteAsync("create table staging.t as select 1 as x");
+        var tempPath = Path.Combine(_dir, "unused.parquet");
+        var finalPath = Path.Combine(_dir, "unused-final.parquet");
+
+        var node = SinkWriteNode("t");
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub", new TransactionalFailingCopySink(tempPath, finalPath));
+        var plan = SingleNodePlan(node, EdgeStrategy.NativeCopy);
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance, plan);
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+
+        // The batch's own CREATE TABLE ran inside the aborted transaction, so a proper ROLLBACK
+        // undoes it too -- if it still exists, the transaction was never rolled back.
+        Assert.Equal(0, await _duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'rolled_back_marker'"));
+
+        // The real proof: the connection accepts new statements. Left inside the open transaction,
+        // this would fail with "cannot start a transaction within a transaction" (a fresh BEGIN) or
+        // "current transaction is aborted" (any other statement).
+        await _duck.ExecuteAsync("create table staging.after_failed_native_copy (x int)");
+        Assert.Equal(1, await _duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'after_failed_native_copy'"));
+    }
+
     /// <summary>The drift gate covers both data-plane tiers
     /// uniformly -- native scan never surfaces Arrow batches to .NET, but it always produces a
     /// staging table, and that materialized table is the gate's only input. Proves the native
@@ -539,6 +575,42 @@ public sealed class NativePathTests : IAsyncLifetime
             copy = new NativeCopy("copy (select * from staging.__does_not_exist__) to '" + tempPath + "'", [])
             {
                 Mechanism = "stub_failing_copy",
+                Finalizations = [new FileMove(tempPath, finalPath)],
+            };
+            return true;
+        }
+
+        public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
+            throw new InvalidOperationException("universal path must not be used");
+
+        public ValueTask DisposeAsync() => default;
+    }
+
+    /// <summary>Sink whose CopySql mirrors Iceberg's replace mode: it opens an explicit transaction,
+    /// runs a statement that succeeds, then one that is guaranteed to fail (a nonexistent relation)
+    /// before ever reaching COMMIT -- used to prove the engine rolls the open transaction back rather
+    /// than leaving it stuck on the run's shared connection.</summary>
+    private sealed class TransactionalFailingCopySink(string tempPath, string finalPath) : ISinkConnector, ISink
+    {
+        public ConnectorInfo Info => new("stub-transactional-failing-copy-sink", "0.1.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeCopy;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+        public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+        public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
+        {
+            copy = new NativeCopy(
+                "begin transaction;\n" +
+                "create table staging.rolled_back_marker as select 1 as x;\n" +
+                "select * from staging.__does_not_exist__;\n" +
+                "commit;",
+                [])
+            {
+                Mechanism = "stub_transactional_failing_copy",
                 Finalizations = [new FileMove(tempPath, finalPath)],
             };
             return true;

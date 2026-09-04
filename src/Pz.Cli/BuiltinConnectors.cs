@@ -3,6 +3,7 @@ using Pz.Connector.DuckDb;
 using Pz.Connector.DuckLake;
 using Pz.Connector.Gcs;
 using Pz.Connector.Http;
+using Pz.Connector.Iceberg;
 using Pz.Connector.LocalFiles;
 using Pz.Connector.MotherDuck;
 using Pz.Connector.MySql;
@@ -42,7 +43,7 @@ internal static class BuiltinConnectors
         "Pz.Connector.LocalFiles", "Pz.Connector.S3", "Pz.Connector.Postgres", "Pz.Connector.SqlServer",
         "Pz.Connector.AzureBlob", "Pz.Connector.Http", "Pz.Connector.MySql", "Pz.Connector.Sqlite",
         "Pz.Connector.Sftp", "Pz.Connector.Gcs", "Pz.Connector.DuckDb", "Pz.Connector.DuckLake",
-        "Pz.Connector.Quack", "Pz.Connector.MotherDuck",
+        "Pz.Connector.Quack", "Pz.Connector.MotherDuck", "Pz.Connector.Iceberg",
     };
 
     public static ConnectorRegistry CreateRegistry()
@@ -87,6 +88,9 @@ internal static class BuiltinConnectors
         var motherduck = new MotherDuckConnector();
         registry.AddSource("motherduck", motherduck);
         registry.AddSink("motherduck", motherduck);
+        var iceberg = new IcebergConnector();
+        registry.AddSource("iceberg", iceberg);
+        registry.AddSink("iceberg", iceberg);
         var sftp = new SftpConnector();
         registry.AddSource("sftp", sftp);
         registry.AddSink("sftp", sftp);

@@ -413,7 +413,11 @@ public abstract class SourceConnectorAcceptanceTests
 
     /// <summary>No untracked retries: a transient failure injected AT the gate boundary must
     /// surface unchanged after exactly one gate call -- proving the connector performs no retry of its
-    /// own outside the gate (node-level retry stays the sole backstop).</summary>
+    /// own outside the gate (node-level retry stays the sole backstop). The injected failure may
+    /// surface from <c>PlanReadAsync</c> itself or from the subsequent read: a connector whose
+    /// planning does a genuine remote operation (e.g. listing files to resolve partitions) is just as
+    /// compliant gating that as gating the read -- either way, exactly one gate call happens and the
+    /// failure is never retried.</summary>
     [SkippableFact]
     public async Task Gated_connector_does_not_retry_outside_gate()
     {
@@ -428,9 +432,9 @@ public abstract class SourceConnectorAcceptanceTests
         ((IOperationGateAware)source).UseOperationGate(gate);
         gate.FailNextWith(new PzConnectorException("testkit: injected transient failure", isTransient: true));
 
-        var partitions = await source.PlanReadAsync(SmallDataset, ReadHints.None, CancellationToken.None);
         var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
         {
+            var partitions = await source.PlanReadAsync(SmallDataset, ReadHints.None, CancellationToken.None);
             foreach (var partition in partitions)
             {
                 await foreach (var batch in partition.ReadAsync(
