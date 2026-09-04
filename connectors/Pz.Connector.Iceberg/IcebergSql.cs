@@ -181,11 +181,12 @@ internal static class IcebergSql
             : null;
 
     /// <summary>Setup for either direction, in order: extension installs/loads (iceberg; httpfs for
-    /// every catalog and for an object-store <c>files</c> root; aws when an AWS catalog runs on the
-    /// credential chain), the storage secret, the catalog secret, then ONE read-write attach (none
-    /// for <c>files</c>). All idempotent should a node retry re-issue them (the engine runs each once
-    /// per run): install/load are no-ops, <c>create or replace secret</c> is last-wins,
-    /// <c>attach if not exists</c> skips an existing alias.
+    /// every catalog and for an object-store <c>files</c> root; azure under <c>storage: azure</c>, in
+    /// place of aws; aws when an AWS catalog runs on the credential chain), the storage secret, the
+    /// catalog secret, then ONE read-write attach (none for <c>files</c>). All idempotent should a
+    /// node retry re-issue them (the engine runs each once per run): install/load are no-ops,
+    /// <c>create or replace secret</c> is last-wins, <c>attach if not exists</c> skips an existing
+    /// alias.
     ///
     /// The attach string carries no credential for any catalog: a bearer token or OAuth2 client pair
     /// rides a <c>type iceberg</c> secret the attach references by name; AWS catalogs sign with the
@@ -193,12 +194,14 @@ internal static class IcebergSql
     /// echoes only the warehouse and the endpoint. Explicit storage keys on a REST catalog also turn
     /// credential vending off (<c>access_delegation_mode 'none'</c>): the keys ARE the data-plane
     /// credential, and a catalog that cannot vend (MinIO-backed dev catalogs, the Apache REST
-    /// fixture) would otherwise be asked to.</summary>
+    /// fixture) would otherwise be asked to. An Azure <c>storage_auth</c> method is the same kind of
+    /// explicit data-plane credential and turns vending off the same way.</summary>
     internal static IReadOnlyList<string> SetupStatements(ConnectorConfig config, string alias)
     {
         var catalog = IcebergCatalog.Of(config);
         var statements = new List<string> { "install iceberg", "load iceberg" };
         var root = catalog == IcebergCatalog.Files ? ResolveRoot(config) : null;
+        var azure = IcebergCatalog.StorageOf(config) == IcebergCatalog.StorageAzure;
         var hasStorageKeys = IcebergCatalog.HasStorageCredentials(config);
 
         if (root is null || IsUrl(root))
@@ -206,12 +209,23 @@ internal static class IcebergSql
             statements.AddRange(["install httpfs", "load httpfs"]);
         }
 
-        if (IcebergCatalog.IsAws(catalog) && !hasStorageKeys)
+        if (azure)
+        {
+            statements.AddRange(["install azure", "load azure"]);
+        }
+        else if (IcebergCatalog.IsAws(catalog) && !hasStorageKeys)
         {
             statements.AddRange(["install aws", "load aws"]);
         }
 
-        if (hasStorageKeys && (root is null || IsUrl(root)))
+        if (azure)
+        {
+            if (hasStorageKeys)
+            {
+                statements.Add(AzureStorageSecretSql(config, alias, scope: root));
+            }
+        }
+        else if (hasStorageKeys && (root is null || IsUrl(root)))
         {
             statements.Add(StorageSecretSql(config, alias, scope: root));
         }
@@ -303,6 +317,45 @@ internal static class IcebergSql
             (endpoint is null ? "" : $", endpoint '{EscapeLiteral(endpoint)}'") +
             $", url_style '{EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}" +
             (scope is null ? "" : $", scope '{EscapeLiteral(scope)}'") + ")";
+    }
+
+    /// <summary>Azure storage credentials as a <c>type azure</c> secret. One body per
+    /// <c>storage_auth</c> method, field-for-field the azureblob connector's shapes: the two
+    /// key-bearing methods funnel through a connection string (a custom <c>storage_endpoint</c>
+    /// becomes its <c>BlobEndpoint=</c>), the two token-bearing ones name a provider and the
+    /// account. A <c>files</c> root is scoped WITH a trailing slash — the azure extension's scope
+    /// match is a plain prefix test on the slash-terminated form, so <c>az://c/wh</c> alone would
+    /// also cover <c>az://c/wh2</c>. A catalog connection's secret is unscoped, as for S3.</summary>
+    internal static string AzureStorageSecretSql(ConnectorConfig config, string alias, string? scope)
+    {
+        var auth = IcebergCatalog.StorageAuth(config);
+        var body = auth switch
+        {
+            "connection_string" => $"connection_string '{EscapeLiteral(Require(config, "storage_connection_string"))}'",
+            "account_key" => $"connection_string '{EscapeLiteral(AssembleAzureConnectionString(config))}'",
+            "service_principal" =>
+                $"provider service_principal, tenant_id '{EscapeLiteral(Require(config, "storage_tenant_id"))}', " +
+                $"client_id '{EscapeLiteral(Require(config, "storage_client_id"))}', " +
+                $"client_secret '{EscapeLiteral(Require(config, "storage_client_secret"))}', " +
+                $"account_name '{EscapeLiteral(Require(config, "storage_account_name"))}'",
+            "credential_chain" => "provider credential_chain" +
+                (config.GetString("storage_chain") is { Length: > 0 } chain ? $", chain '{EscapeLiteral(chain)}'" : "") +
+                $", account_name '{EscapeLiteral(Require(config, "storage_account_name"))}'",
+            _ => throw new PzConnectorException($"iceberg connection: unsupported storage_auth '{auth}'", isTransient: false),
+        };
+
+        var scoped = scope is null ? "" : $", scope '{EscapeLiteral(scope.TrimEnd('/') + "/")}'";
+        return $"create or replace secret {StorageSecretName(alias)} (type azure, {body}{scoped})";
+    }
+
+    private static string AssembleAzureConnectionString(ConnectorConfig config)
+    {
+        var name = Require(config, "storage_account_name");
+        var key = Require(config, "storage_account_key");
+        var suffix = config.GetString("storage_endpoint") is { Length: > 0 } endpoint
+            ? $";BlobEndpoint={endpoint}"
+            : ";EndpointSuffix=core.windows.net";
+        return $"DefaultEndpointsProtocol=https;AccountName={name};AccountKey={key}{suffix}";
     }
 
     /// <summary>An AWS catalog with no explicit keys signs with the ambient AWS credential chain

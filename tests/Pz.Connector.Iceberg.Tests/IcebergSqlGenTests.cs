@@ -395,6 +395,84 @@ public sealed class IcebergSqlGenTests
     }
 
     [Fact]
+    public void Rest_catalog_under_azure_without_an_auth_method_loads_azure_and_leaves_vending_on()
+    {
+        var statements = IcebergSql.SetupStatements(Rest(("token", "tok"), ("storage", "azure")), WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure",
+                $"create or replace secret {WhAlias}_secret (type iceberg, token 'tok')",
+                $"attach if not exists 'wh' as {WhAlias} (type iceberg, endpoint 'https://cat.example.com/api', secret {WhAlias}_secret)",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Rest_catalog_with_an_azure_connection_string_turns_vending_off_and_leaves_the_secret_unscoped()
+    {
+        var statements = IcebergSql.SetupStatements(
+            Rest(("token", "tok"), ("storage", "azure"), ("storage_auth", "connection_string"), ("storage_connection_string", "AccountName=a;AccountKey=k'k")),
+            WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure",
+                $"create or replace secret {WhAlias}_storage (type azure, connection_string 'AccountName=a;AccountKey=k''k')",
+                $"create or replace secret {WhAlias}_secret (type iceberg, token 'tok')",
+                $"attach if not exists 'wh' as {WhAlias} (type iceberg, endpoint 'https://cat.example.com/api', secret {WhAlias}_secret, access_delegation_mode 'none')",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Azure_secret_bodies_mirror_the_azureblob_connector()
+    {
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type azure, connection_string 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=k;EndpointSuffix=core.windows.net')",
+            IcebergSql.AzureStorageSecretSql(Config(("storage_auth", "account_key"), ("storage_account_name", "acct"), ("storage_account_key", "k")), WhAlias, scope: null));
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type azure, connection_string 'DefaultEndpointsProtocol=https;AccountName=acct;AccountKey=k;BlobEndpoint=http://127.0.0.1:10000/acct')",
+            IcebergSql.AzureStorageSecretSql(Config(("storage_auth", "account_key"), ("storage_account_name", "acct"), ("storage_account_key", "k"),
+                ("storage_endpoint", "http://127.0.0.1:10000/acct")), WhAlias, scope: null));
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type azure, provider service_principal, tenant_id 't', client_id 'c', client_secret 's''s', account_name 'acct')",
+            IcebergSql.AzureStorageSecretSql(Config(("storage_auth", "service_principal"), ("storage_tenant_id", "t"), ("storage_client_id", "c"),
+                ("storage_client_secret", "s's"), ("storage_account_name", "acct")), WhAlias, scope: null));
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type azure, provider credential_chain, account_name 'acct')",
+            IcebergSql.AzureStorageSecretSql(Config(("storage_auth", "credential_chain"), ("storage_account_name", "acct")), WhAlias, scope: null));
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type azure, provider credential_chain, chain 'cli;env', account_name 'acct', scope 'az://c/wh/')",
+            IcebergSql.AzureStorageSecretSql(Config(("storage_auth", "credential_chain"), ("storage_account_name", "acct"), ("storage_chain", "cli;env")), WhAlias, scope: "az://c/wh"));
+    }
+
+    [Fact]
+    public void Files_catalog_with_an_azure_root_loads_azure_and_scopes_the_secret_with_a_trailing_slash()
+    {
+        var statements = IcebergSql.SetupStatements(
+            Config(("catalog", "files"), ("root", "az://c/wh/"), ("storage_auth", "connection_string"), ("storage_connection_string", "cs")), WhAlias);
+        Assert.Equal(
+            new[]
+            {
+                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure",
+                $"create or replace secret {WhAlias}_storage (type azure, connection_string 'cs', scope 'az://c/wh/')",
+            },
+            statements);
+    }
+
+    [Fact]
+    public void Azure_credentials_never_appear_in_the_attach_statement()
+    {
+        var attach = IcebergSql.SetupStatements(
+            Rest(("token", "TOK"), ("storage", "azure"), ("storage_auth", "account_key"), ("storage_account_name", "acct"), ("storage_account_key", "AZKEY")),
+            WhAlias)[^1];
+        Assert.StartsWith("attach", attach, StringComparison.Ordinal);
+        Assert.DoesNotContain("AZKEY", attach, StringComparison.Ordinal);
+        Assert.DoesNotContain("TOK", attach, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Append_copy_ensures_namespace_and_table_then_inserts()
     {
         Assert.True(IcebergSql.TryCopySql(WhAlias, "raw.events", "append", [], out var sql, out var mechanism));
