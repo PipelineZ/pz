@@ -9,7 +9,7 @@ namespace Pz.Connector.Iceberg.Tests;
 /// <c>az://</c> root on Azurite, through the real ISource surface (<c>install azure</c>, the scoped
 /// <c>type azure</c> secret, the moved-path scan). The table is written by the REST+MinIO fixture
 /// and mirrored, because no REST catalog can keep its warehouse on Azurite (no DFS endpoint) —
-/// REST writes on Azure are covered by the env-gated IcebergAzureRestTests.</summary>
+/// REST writes on Azure are covered by the env-gated <see cref="IcebergAzureRestTests"/>.</summary>
 [Collection("iceberg-rest")]
 public sealed class IcebergAzureFilesTests(IcebergRestCatalogFixture catalog, IcebergAzuriteFixture azurite)
     : IClassFixture<IcebergAzuriteFixture>, IDisposable
