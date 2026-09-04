@@ -141,6 +141,59 @@ data-plane credential, and a catalog that cannot vend (a MinIO-backed developmen
 Apache REST fixture) would otherwise be asked to. Without them a REST catalog is expected to vend
 storage credentials itself (Polaris, S3 Tables, Glue, R2 all do).
 
+### Optional: Azure storage (`storage: azure`)
+
+```yaml
+lake:
+  connector: iceberg
+  catalog: rest
+  endpoint: https://lakekeeper.internal/catalog
+  warehouse: adls-wh                     # a NAME, as for every catalog
+  token: ${LAKE_TOKEN}
+  storage: azure                         # the tables' data files live on Azure Blob / ADLS Gen2
+  storage_auth: service_principal        # or connection_string | account_key | credential_chain
+  storage_tenant_id: ${AZ_TENANT}
+  storage_client_id: ${AZ_CLIENT}
+  storage_client_secret: ${AZ_SECRET}
+  storage_account_name: mylakeaccount
+
+raw:
+  connector: iceberg
+  catalog: files
+  root: "abfss://lake@mylakeaccount.dfs.core.windows.net/warehouse/"   # az://, azure:// or abfss://
+  storage_auth: credential_chain         # storage: azure is inferred from the root's scheme
+  storage_account_name: mylakeaccount
+  storage_chain: cli;env                 # optional
+```
+
+`storage` selects the key family: `s3` (the default, the keys above) or `azure`. Under `azure`
+the keys mirror the azureblob connector's `auth` methods field-for-field, prefixed `storage_`
+because `client_id`/`client_secret` already name a REST catalog's OAuth2 pair here:
+
+| `storage_auth` | required | optional |
+|---|---|---|
+| `connection_string` | `storage_connection_string` | — |
+| `account_key` | `storage_account_name`, `storage_account_key` | `storage_endpoint` (a custom Blob endpoint, e.g. Azurite) |
+| `service_principal` | `storage_tenant_id`, `storage_client_id`, `storage_client_secret`, `storage_account_name` | — |
+| `credential_chain` | `storage_account_name` | `storage_chain` (e.g. `cli;env`; managed identity is a link in the chain) |
+
+Every S3 key is refused under `azure` and every Azure key under `s3`; `storage: azure` is refused
+on `glue`/`s3_tables`. A `files` root with an Azure scheme infers `storage: azure` and needs a
+`storage_auth` (nothing vends credentials for a bare root); a `rest` catalog may omit
+`storage_auth`, in which case the catalog is expected to vend Azure SAS credentials. The
+connection loads DuckDB's `azure` extension and, when a method is declared, builds a `type azure`
+secret — scoped to a `files` root, unscoped on a catalog — and switches the REST catalog's
+credential vending off exactly as explicit S3 keys do.
+
+**Status of writes on Azure.** The `azure` extension DuckDB 1.5.5 installs implements the
+directory and write operations the iceberg extension's insert needs, but DuckDB's own
+documentation still lists REST catalogs as supported on S3, S3 Tables and GCS only, and no local
+emulator can host an Azure-backed catalog (Azurite has no ADLS/DFS endpoint). This repository's CI
+therefore proves `files` reads over `az://` (Azurite) and ships REST writes on Azure as
+extension-supported but unproven; `tests/Pz.Connector.Iceberg.Tests/IcebergAzureRestTests.cs`
+runs the write round-trip when `PZ_ICEBERG_AZURE_ENDPOINT`/`PZ_ICEBERG_AZURE_WAREHOUSE` (and
+optionally `PZ_ICEBERG_AZURE_TOKEN`, `PZ_ICEBERG_AZURE_ACCOUNT_NAME`/`_KEY`) point at a real catalog.
+
 ### Entities and namespaces
 
 The **entity is `namespace.table`** — an Iceberg table always lives in a namespace, so a bare
@@ -254,9 +307,9 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
 - **Credentials never ride the attach string.** A bearer token or OAuth2 client pair builds a
   `type iceberg` DuckDB secret the attach references by name; AWS catalogs sign with a `type s3`
   secret (explicit keys, or `provider credential_chain`); storage keys build a `type s3` secret
-  scoped as described above. A failed attach therefore echoes only the warehouse and the endpoint —
-  never a credential — and a malformed carrier statement is redacted before it reaches a run result
-  (`PZ0311`).
+  scoped as described above, or a `type azure` secret under `storage: azure`. A failed attach
+  therefore echoes only the warehouse and the endpoint — never a credential — and a malformed
+  carrier statement is redacted before it reaches a run result (`PZ0311`).
 - **A `files` read refuses a missing local table directory** at plan time (`PZ0353`) — almost
   always an entity or `root` typo, and `iceberg_scan`'s own error would name the absolute path.
 - **Setup statements run once per run.** The engine issues each distinct setup statement once per
