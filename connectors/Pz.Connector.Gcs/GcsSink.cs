@@ -3,6 +3,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Google.Cloud.Storage.V1;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Gcs;
 
@@ -23,7 +24,6 @@ namespace Pz.Connector.Gcs;
 internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clientFactory = null)
     : ISink, IOperationGateAware
 {
-    private static readonly string[] ValidFormats = ["parquet", "csv", "json"];
     private StorageClient? _client;
     private IOperationGate? _gate;
 
@@ -51,19 +51,12 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         var (format, objectName) = ResolveObjectName(spec);
         var (bucket, prefix) = ResolvePrefix(spec);
         var key = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
-        // json is DuckDB's newline-delimited (NDJSON) writer -- the same `format json` COPY shape the
-        // localfiles/s3 native paths use.
-        var formatClause = format switch
-        {
-            "parquet" => "format parquet",
-            "csv" => "format csv, header",
-            _ => "format json",
-        };
+        var context = $"output '{spec.Output}'";
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to 'gs://{GcsSql.Esc(bucket)}/{GcsSql.Esc(key)}' ({formatClause})",
-            GcsSql.SetupStatements(config, GcsSql.SinkSecretName(spec.Sink)))
+            $"copy (select * from {{{{source}}}}) to 'gs://{GcsSql.Esc(bucket)}/{GcsSql.Esc(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            [.. GcsSql.SetupStatements(config, GcsSql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
         {
-            Mechanism = $"COPY TO gcs {format}",
+            Mechanism = $"COPY TO gcs {format.Name}",
         };
         return true;
     }
@@ -79,6 +72,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         }
 
         var (format, objectName) = ResolveObjectName(spec);
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "gcs", $"output '{spec.Output}'");
         var (bucket, prefix) = ResolvePrefix(spec);
         var client = _client ??= (clientFactory ?? (() => GcsAuth.CreateStorageClient(config)))();
 
@@ -108,14 +102,14 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
     }
 
     private async ValueTask<ISinkWriteSession> OpenSessionAsync(
-        StorageClient client, string format, string bucket, string key, Schema schema, CancellationToken ct) =>
-        format switch
+        StorageClient client, FileFormat format, string bucket, string key, Schema schema, CancellationToken ct) =>
+        format.Name switch
         {
             "parquet" => await GcsParquetWriteSession.CreateAsync(client, bucket, key, schema, ct, _gate)
                 .ConfigureAwait(false),
             "csv" => GcsCsvWriteSession.Create(client, bucket, key, schema, _gate),
             "json" => GcsJsonWriteSession.Create(client, bucket, key, _gate),
-            _ => throw new InvalidOperationException("unreachable: format already validated by ResolveObjectName"),
+            _ => throw new InvalidOperationException("unreachable: format already validated by EnsureUniversalTierSupported"),
         };
 
     /// <summary>Runtime fail-fast for the partition column: it must exist in the write schema AND be a
@@ -158,21 +152,14 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
     /// convention shared with the other object-store sinks: "replace" is a stable name
     /// (<c>&lt;output&gt;.&lt;format&gt;</c>); "append" lands under a run-unique guid-suffixed name
     /// instead so repeated runs accumulate objects.</summary>
-    private static (string Format, string ObjectName) ResolveObjectName(OutputSpec spec)
+    private static (FileFormat Format, string ObjectName) ResolveObjectName(OutputSpec spec)
     {
-        var format = spec.Options.TryGetValue("format", out var f) && f?.ToString() is { Length: > 0 } s
-            ? s
-            : throw new PzConnectorException($"output '{spec.Output}': gcs requires 'format'", isTransient: false);
-        if (!ValidFormats.Contains(format))
-        {
-            throw new PzConnectorException(
-                $"output '{spec.Output}': gcs 'format' must be one of 'parquet', 'csv', 'json' (got '{format}')",
-                isTransient: false);
-        }
-
+        var context = $"output '{spec.Output}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, null, "gcs", context);
+        FileFormatCatalog.EnsureWritable(format, "gcs", context);
         var objectName = string.Equals(spec.Mode, "append", StringComparison.OrdinalIgnoreCase)
-            ? $"{spec.Output}-{Guid.NewGuid():N}.{format}"
-            : $"{spec.Output}.{format}";
+            ? $"{spec.Output}-{Guid.NewGuid():N}.{format.Extension}"
+            : $"{spec.Output}.{format.Extension}";
         return (format, objectName);
     }
 
