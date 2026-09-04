@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.S3;
 
@@ -33,71 +34,26 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
 
     public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
     {
-        var format = GetFormat(spec);
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "s3", context);
         var (bucket, key) = ResolveLocation(spec);
         var keyPatterns = CoverKeys(key, spec);
         var urlList = string.Join(", ", keyPatterns.Select(k => $"'s3://{S3Sql.Esc(bucket)}/{S3Sql.Esc(k)}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
-        string fragment;
-        string mechanism;
-        var schemaInferred = false;
-        string? sniffFragment = null;
-
-        if (format == "csv")
-        {
-            // The azure/localfiles two-state model: a declared columns: contract — partial or full,
-            // this method cannot tell them apart without reading the file, which it deliberately
-            // never does — renders the strict columns map (auto_detect = false); only a fully
-            // contract-less dataset auto-detects.
-            var declared = ExtractColumns(spec);
-            if (declared is { Count: > 0 })
-            {
-                fragment = $"read_csv({urlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared)}}})";
-            }
-            else
-            {
-                fragment = $"read_csv({urlArg}, header = true, auto_detect = true)";
-                schemaInferred = true;
-                if (keyPatterns.Count == 1)
-                {
-                    // Single-key reads only (the azure rule): a multi-key window cover would sniff
-                    // just one member file and claim a verdict for the set.
-                    sniffFragment = $"sniff_csv({urlList})";
-                }
-            }
-
-            mechanism = "read_csv";
-        }
-        else if (format == "json")
-        {
-            // read_json has no `types=` named parameter in the bundled DuckDB, so both states render
-            // the same shapes azure does.
-            var declared = ExtractColumns(spec);
-            if (declared is { Count: > 0 })
-            {
-                fragment = $"read_json({urlArg}, columns = {{{ColumnsMap(declared)}}}, format = 'newline_delimited')";
-            }
-            else
-            {
-                fragment = $"read_json({urlArg}, auto_detect = true, format = 'newline_delimited')";
-                schemaInferred = true;
-            }
-
-            mechanism = "read_json";
-        }
-        else
-        {
-            fragment = $"read_parquet({urlArg})";
-            mechanism = "read_parquet";
-        }
+        var declared = ExtractColumns(spec);
+        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared, S3TypeNameMap.ToDuckDbName);
+        var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
+        var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 
         scan = new NativeScan(
             S3WindowSql.Wrap(fragment, spec),
-            S3Sql.SetupStatements(config, S3Sql.SourceSecretName(spec.Source)))
+            [.. S3Sql.SetupStatements(config, S3Sql.SourceSecretName(spec.Source)), .. FileFormatCatalog.SetupStatements(format)])
         {
-            Mechanism = mechanism,
-            SchemaInferred = schemaInferred,
-            SniffFragment = sniffFragment,
+            Mechanism = FileFormatCatalog.ReadMechanism(format),
+            SchemaInferred = inferred,
+            // Single-key reads only: a multi-key window cover would sniff one member file and claim a
+            // verdict for the set.
+            SniffFragment = inferred && keyPatterns.Count == 1 ? FileFormatCatalog.SniffFragment(format, spec.Options, urlList) : null,
         };
         return true;
     }
@@ -146,13 +102,8 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
         return PathTemplate.WindowCover(key, lo, hi);
     }
 
-    private static string ColumnsMap(IReadOnlyDictionary<string, string> declared) =>
-        string.Join(", ", declared.Select(c => $"'{S3Sql.Esc(c.Key)}': '{S3TypeNameMap.ToDuckDbName(c.Value, c.Key)}'"));
-
     private static string GetFormat(DatasetSpec spec) =>
-        spec.Options.TryGetValue("format", out var f) && f?.ToString() is { Length: > 0 } format
-            ? format
-            : "parquet";
+        FileFormatCatalog.Resolve(spec.Options, "parquet", "s3", $"dataset '{spec.Dataset}'").Extension;
 
     private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
         spec.Options.TryGetValue("columns", out var value) &&

@@ -100,9 +100,9 @@ public sealed class S3SinkTests
         });
 
         Assert.False(ex.IsTransient);
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
         Assert.Contains("prquet", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("parquet", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("csv", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -147,7 +147,8 @@ public sealed class S3SinkTests
             _ = sink.TryGetNativeCopy(Spec(format: "jsn"), out _);
         });
 
-        Assert.Contains("json", ex.Message, StringComparison.Ordinal);
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

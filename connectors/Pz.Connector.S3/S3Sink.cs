@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.S3;
 
@@ -8,8 +9,6 @@ namespace Pz.Connector.S3;
 /// scoped CREATE SECRET. There is no universal write path in v0 — BeginWriteAsync always throws.</summary>
 internal sealed class S3Sink(ConnectorConfig config) : ISink
 {
-    private static readonly string[] ValidFormats = ["parquet", "csv", "json"];
-
     public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
     {
         // The connection's `root:` says which lake -- "<bucket>" or "<bucket>/<prefix>".
@@ -24,31 +23,18 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
         var prefix = S3Sql.Join(
             rootBucket is null || (spec.Options.ContainsKey("bucket") && rootBucket != bucket) ? "" : rootPrefix,
             (spec.Options.TryGetValue("path", out var p) ? p?.ToString() : null)?.TrimEnd('/') ?? "");
-        var format = Require(spec.Options, "format", spec);
-        if (!ValidFormats.Contains(format))
-        {
-            throw new PzConnectorException(
-                $"output '{spec.Output}': s3 'format' must be one of 'parquet', 'csv', 'json' (got '{format}')",
-                isTransient: false);
-        }
-
+        var context = $"output '{spec.Output}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, null, "s3", context);
+        FileFormatCatalog.EnsureWritable(format, "s3", context);
         var objectName = spec.Mode == "append"
-            ? $"{spec.Output}-{Guid.NewGuid():N}.{Ext(format)}"
-            : $"{spec.Output}.{Ext(format)}";
+            ? $"{spec.Output}-{Guid.NewGuid():N}.{format.Extension}"
+            : $"{spec.Output}.{format.Extension}";
         var key = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
-        // json is DuckDB's newline-delimited (NDJSON) writer -- the same `format json` COPY shape the
-        // localfiles native path uses.
-        var formatClause = format switch
-        {
-            "parquet" => "format parquet",
-            "csv" => "format csv, header",
-            _ => "format json",
-        };
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to 's3://{Esc(bucket)}/{Esc(key)}' ({formatClause})",
-            S3Sql.SetupStatements(config, S3Sql.SinkSecretName(spec.Sink)))
+            $"copy (select * from {{{{source}}}}) to 's3://{Esc(bucket)}/{Esc(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            [.. S3Sql.SetupStatements(config, S3Sql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
         {
-            Mechanism = $"COPY TO s3 {format}",
+            Mechanism = $"COPY TO s3 {format.Name}",
         };
         return true;
     }
@@ -59,11 +45,5 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    private static string Require(IReadOnlyDictionary<string, object?> options, string key, OutputSpec spec) =>
-        options.TryGetValue(key, out var v) && v?.ToString() is { Length: > 0 } s
-            ? s
-            : throw new PzConnectorException($"output '{spec.Output}': s3 requires '{key}'", isTransient: false);
-
     private static string Esc(string value) => S3Sql.Esc(value);
-    private static string Ext(string format) => format; // object suffix == format name (parquet/csv/json)
 }

@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 [assembly: PzConnector("s3", typeof(Pz.Connector.S3.S3Connector))]
 
@@ -36,7 +37,8 @@ public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlyS
     // owning that case with its targeted message. Sink OUTPUT options stay plan/probe-validated by
     // S3Sink — tier 3 never evaluates output options.
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, "format": { "enum": ["csv","parquet","json"] }, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
 
     /// <summary>Offline cross-field validation: both credential fields must be present,
     /// and <c>url_style</c> — when given — must be one of DuckDB's two accepted values. Never touches
