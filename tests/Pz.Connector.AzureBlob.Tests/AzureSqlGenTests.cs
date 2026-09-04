@@ -62,6 +62,8 @@ public sealed class AzureSqlGenTests
         Assert.False(ex.IsTransient);
         Assert.Contains("parquet", ex.Message, StringComparison.Ordinal);
         Assert.Contains("csv", ex.Message, StringComparison.Ordinal);
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
     }
 
     private static DatasetSpec Ds(string format = "parquet", string container = "lake", string path = "in/*.parquet",

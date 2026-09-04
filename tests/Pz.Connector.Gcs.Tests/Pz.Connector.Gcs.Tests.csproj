@@ -17,6 +17,7 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+    <PackageReference Include="JsonSchema.Net" Version="9.2.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -27,6 +28,7 @@
     <ProjectReference Include="..\..\connectors\Pz.Connector.Gcs\Pz.Connector.Gcs.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
     <ProjectReference Include="..\..\src\Pz.Cli\Pz.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
     <ProjectReference Include="..\..\src\Pz.DuckDb\Pz.DuckDb.csproj" />
     <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />

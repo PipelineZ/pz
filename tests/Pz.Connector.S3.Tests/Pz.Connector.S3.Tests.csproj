@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
     <ProjectReference Include="..\..\connectors\Pz.Connector.S3\Pz.Connector.S3.csproj" />
     <ProjectReference Include="..\..\src\Pz.Cli\Pz.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
     <ProjectReference Include="..\..\src\Pz.DuckDb\Pz.DuckDb.csproj" />
     <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />

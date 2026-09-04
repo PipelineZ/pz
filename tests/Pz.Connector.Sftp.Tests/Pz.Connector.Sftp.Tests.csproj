@@ -11,6 +11,7 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+    <PackageReference Include="JsonSchema.Net" Version="9.2.2" />
   </ItemGroup>
 
   <ItemGroup>
@@ -20,6 +21,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\connectors\Pz.Connector.Sftp\Pz.Connector.Sftp.csproj" />
     <ProjectReference Include="..\..\src\Pz.Connectors.TestKit\Pz.Connectors.TestKit.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
   </ItemGroup>
 

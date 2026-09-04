@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.S3.Tests;
 
@@ -182,5 +183,12 @@ public sealed class S3SinkTests
             var schema = Json.Schema.JsonSchema.FromText(s); // throws on malformed
             Assert.NotNull(schema);
         }
+    }
+
+    [Fact]
+    public void Dataset_schema_embeds_the_catalog_format_properties()
+    {
+        var c = new S3Connector();
+        Assert.Contains(FileFormatCatalog.SchemaProperties, c.DatasetConfigSchema, StringComparison.Ordinal);
     }
 }

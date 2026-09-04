@@ -20,6 +20,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
     <ProjectReference Include="..\..\src\Pz.Connectors.TestKit\Pz.Connectors.TestKit.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
     <ProjectReference Include="..\..\src\Pz.DuckDb\Pz.DuckDb.csproj" />
     <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
   </ItemGroup>

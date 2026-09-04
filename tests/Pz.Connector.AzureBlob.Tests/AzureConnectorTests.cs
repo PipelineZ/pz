@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.AzureBlob.Tests;
 
@@ -30,5 +31,12 @@ public sealed class AzureConnectorTests
         var result = await c.ValidateAsync(new ConnectorConfig(new Dictionary<string, object?>()), CancellationToken.None);
         Assert.False(result.IsValid);
         Assert.Contains(result.Errors, e => e.Contains("auth", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Dataset_schema_embeds_the_catalog_format_properties()
+    {
+        var c = new AzureConnector();
+        Assert.Contains(FileFormatCatalog.SchemaProperties, c.DatasetConfigSchema, StringComparison.Ordinal);
     }
 }
