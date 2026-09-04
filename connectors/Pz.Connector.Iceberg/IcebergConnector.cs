@@ -8,8 +8,9 @@ namespace Pz.Connector.Iceberg;
 /// extension is the ENTIRE data plane: the engine's session attaches the catalog once per
 /// connection and every read/write is a plain statement against that alias. The connection names
 /// the catalog (an Iceberg REST catalog, AWS Glue, Amazon S3 Tables, or no catalog at all — a
-/// `files` root of table directories, read-only) and its credentials; optional S3-compatible storage
-/// credentials cover the data files when the catalog does not vend them. Zero drivers: `pz validate
+/// `files` root of table directories, read-only) and its credentials; optional storage credentials
+/// (S3-compatible keys, or an Azure auth method under `storage: azure`) cover the data files when
+/// the catalog does not vend them. Zero drivers: `pz validate
 /// --connect` verifies a REST endpoint by TCP reachability only and a local root by its directory,
 /// and its schema fetch works only for datasets with a declared `columns:` contract. Registered
 /// under the logical name "iceberg".</summary>
@@ -35,7 +36,13 @@ public sealed class IcebergConnector : ISourceConnector, ISinkConnector, INative
           "root": { "type": "string" },
           "storage_key_id": { "type": "string" }, "storage_secret_key": { "type": "string" },
           "storage_region": { "type": "string" }, "storage_endpoint": { "type": "string" },
-          "storage_url_style": { "enum": ["vhost", "path"] }, "storage_use_ssl": { "type": "boolean" }
+          "storage_url_style": { "enum": ["vhost", "path"] }, "storage_use_ssl": { "type": "boolean" },
+          "storage": { "enum": ["s3", "azure"] },
+          "storage_auth": { "enum": ["connection_string", "account_key", "service_principal", "credential_chain"] },
+          "storage_connection_string": { "type": "string" }, "storage_account_name": { "type": "string" },
+          "storage_account_key": { "type": "string" }, "storage_tenant_id": { "type": "string" },
+          "storage_client_id": { "type": "string" }, "storage_client_secret": { "type": "string" },
+          "storage_chain": { "type": "string" }
         }, "additionalProperties": false }
         """;
 
