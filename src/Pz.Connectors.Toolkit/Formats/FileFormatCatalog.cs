@@ -14,9 +14,9 @@ public static class FileFormatCatalog
 
     private static readonly Dictionary<string, FileFormat> Formats = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["csv"] = new("csv", "csv", NativeRead: true, NativeWrite: true, [], NoOptions),
-        ["json"] = new("json", "json", NativeRead: true, NativeWrite: true, [], NoOptions),
-        ["parquet"] = new("parquet", "parquet", NativeRead: true, NativeWrite: true, [], NoOptions),
+        ["csv"] = new("csv", "csv", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
+        ["json"] = new("json", "json", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
+        ["parquet"] = new("parquet", "parquet", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
     };
 
     /// <summary>Every format-scoped option key any format owns. A key here that the resolved format's
@@ -43,7 +43,7 @@ public static class FileFormatCatalog
         var name = options.TryGetValue("format", out var v) && v?.ToString() is { Length: > 0 } given ? given : defaultFormat;
         if (name is null)
         {
-            throw Permanent($"PZ0361: {context}: {connector} requires 'format' (one of {Supported()})");
+            throw Permanent($"PZ0361: {context}: {connector} requires 'format' (supported: {Supported()})");
         }
 
         if (!Formats.TryGetValue(name, out var format))
@@ -66,6 +66,9 @@ public static class FileFormatCatalog
     /// <summary>The FROM-usable DuckDB fragment for a native read. csv and json follow the two-state
     /// contract model: a declared contract (partial or full) renders the strict <c>columns = {…}</c> map
     /// and reads only those columns; no contract auto-detects.</summary>
+    /// <param name="options">The dataset's format-scoped options -- a delimiter, a json layout, a sheet
+    /// -- once a format admits one; unused until then.</param>
+    /// <param name="context">Names the dataset in an option error, e.g. "dataset 'x'".</param>
     public static string ReadFragment(
         FileFormat format, IReadOnlyDictionary<string, object?> options, FormatReadRequest read, string context)
     {
@@ -95,6 +98,8 @@ public static class FileFormatCatalog
 
     /// <summary>DuckDB's own sniffer verdict for a SINGLE csv file, or null for every other format --
     /// callers pass it only for inferred, single-file reads.</summary>
+    /// <param name="options">The dataset's format-scoped options -- a delimiter, a json layout, a sheet
+    /// -- once a format admits one; unused until then.</param>
     public static string? SniffFragment(FileFormat format, IReadOnlyDictionary<string, object?> options, string singleUrlLiteral)
     {
         ArgumentNullException.ThrowIfNull(format);
@@ -102,6 +107,9 @@ public static class FileFormatCatalog
     }
 
     /// <summary>The parenthesised COPY options for a native write, e.g. <c>format csv, header</c>.</summary>
+    /// <param name="options">The output's format-scoped options -- a delimiter, a json layout, a sheet
+    /// -- once a format admits one; unused until then.</param>
+    /// <param name="context">Names the output in an option error, e.g. "output 'y'".</param>
     public static string CopyClause(FileFormat format, IReadOnlyDictionary<string, object?> options, string context)
     {
         ArgumentNullException.ThrowIfNull(format);
@@ -152,23 +160,26 @@ public static class FileFormatCatalog
         }
     }
 
-    /// <summary>PZ0361 when the format (or one of its options) can only run on the native tier and the
-    /// caller is a managed reader/writer (sftp, or the localfiles/azure/gcs universal sessions). The
-    /// managed tiers implement exactly csv, parquet and newline-delimited json.</summary>
+    /// <summary>PZ0361 when the resolved format has no <see cref="FileFormat.UniversalTier"/> reader/writer
+    /// for a caller that has no native tier to fall back to -- sftp (no native tier at all) and any output
+    /// or read forced onto the universal tier by an otherwise-native connector.</summary>
+    /// <param name="options">Unused today; a later change refuses option-level cases (a native-only option
+    /// on an otherwise universal-tier format) through it.</param>
     public static void EnsureUniversalTierSupported(
         FileFormat format, IReadOnlyDictionary<string, object?> options, string connector, string context)
     {
         ArgumentNullException.ThrowIfNull(format);
-        if (format.Name is not ("csv" or "json" or "parquet"))
+        if (!format.UniversalTier)
         {
-            throw Permanent($"PZ0361: {context}: format '{format.Name}' is native-only; {connector} reads and writes it through DuckDB only -- " +
-                "use a connector with a native tier (localfiles, s3, gcs, azureblob) or choose csv, parquet or json");
+            var choices = string.Join(", ", Formats.Values.Where(f => f.UniversalTier).Select(f => f.Name).Order(StringComparer.Ordinal));
+            throw Permanent($"PZ0361: {context}: format '{format.Name}' is native-only (DuckDB reads and writes it); {connector} has no native tier here -- " +
+                $"choose one of {choices}, or use a connector whose native tier carries it (localfiles, s3, gcs, azureblob)");
         }
     }
 
     private static void ValidateOptions(FileFormat format, IReadOnlyDictionary<string, object?> options, string context)
     {
-        // No format-scoped options exist yet; PR 2 adds delimiter/layout, PR 3 adds sheet/header.
+        // Every format-scoped option key must appear on its format's OptionKeys; no format admits one yet, so there is nothing to validate.
     }
 
     private static string ColumnsMap(IReadOnlyDictionary<string, string> declared, Func<string, string, string> duckType) =>

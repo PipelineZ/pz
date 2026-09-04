@@ -37,7 +37,7 @@ public sealed class FileFormatCatalogTests
     {
         var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(Opts(), null, "s3", "output 'o'"));
         Assert.False(ex.IsTransient);
-        Assert.StartsWith("PZ0361: output 'o': s3 requires 'format'", ex.Message, StringComparison.Ordinal);
+        Assert.Equal("PZ0361: output 'o': s3 requires 'format' (supported: csv, json, parquet)", ex.Message);
     }
 
     [Fact]
@@ -119,6 +119,16 @@ public sealed class FileFormatCatalogTests
         var csv = FileFormatCatalog.Resolve(Opts("csv"), null, "s3", "output 'o'");
         FileFormatCatalog.EnsureWritable(csv, "s3", "output 'o'");
         FileFormatCatalog.EnsureUniversalTierSupported(csv, Opts("csv"), "sftp", "output 'o'");
+    }
+
+    [Fact]
+    public void EnsureUniversalTierSupported_refuses_a_format_without_the_universal_tier()
+    {
+        var native = new FileFormat("x", "x", NativeRead: true, NativeWrite: true, UniversalTier: false, [], new HashSet<string>(StringComparer.Ordinal));
+        var ex = Assert.Throws<PzConnectorException>(() =>
+            FileFormatCatalog.EnsureUniversalTierSupported(native, Opts(), "sftp", "dataset 'd'"));
+        Assert.False(ex.IsTransient);
+        Assert.StartsWith("PZ0361: dataset 'd': format 'x' is native-only", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
