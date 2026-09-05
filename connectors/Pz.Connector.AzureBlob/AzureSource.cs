@@ -8,6 +8,7 @@ using Azure.Storage.Blobs.Models;
 using Azure.Storage.Files.DataLake.Models;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
+using Pz.Connectors.Toolkit.Formats;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.AzureBlob;
@@ -32,8 +33,9 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// ever materialized just to peek. No match is a clean named permanent error.</summary>
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var format = GetFormat(spec);
-        var loc = AzureUrl.ParseDataset(spec.Options, $"dataset '{spec.Dataset}'");
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", context).Name;
+        var loc = AzureUrl.ParseDataset(spec.Options, context);
 
         string? firstMatch = null;
         await foreach (var name in EnumerateMatchingBlobsAsync(loc, spec, ct).ConfigureAwait(false))
@@ -101,83 +103,28 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// LocalFiles' <c>CsvSource.TryGetNativeScan</c>).</summary>
     public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
     {
-        var format = spec.Options.TryGetValue("format", out var f) ? f?.ToString() : null;
-        var loc = AzureUrl.ParseDataset(spec.Options, $"dataset '{spec.Dataset}'");
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", context);
+        var loc = AzureUrl.ParseDataset(spec.Options, context);
         var keyPatterns = CoverKeys(loc.Key, spec);
         var urlList = string.Join(", ", keyPatterns.Select(k =>
             $"'{AzureUrl.Escape(AzureUrl.Render(loc with { Key = k }))}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Source));
-        string fragment;
-        string mechanism;
-        var schemaInferred = false;
-        string? sniffFragment = null;
+        var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
+        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared, AzureTypeNameMap.ToDuckDbName);
+        var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
+        var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 
-        if (format == "csv")
+        scan = new NativeScan(
+            AzureWindowSql.Wrap(fragment, spec),
+            ["install azure", "load azure", secret, .. FileFormatCatalog.SetupStatements(format)])
         {
-            // Two-state model, not three -- mirrors LocalFiles' CsvSource.TryGetNativeScan exactly. A
-            // declared columns: contract, partial or full (native scan has no way to tell them apart
-            // without reading the file, which it deliberately never does), always renders the strict
-            // fragment (auto_detect = false, columns = {...}): DuckDB reads only the named columns.
-            // The types=+auto_detect=true combination works, but it KEEPS every column in the file
-            // instead of confining the read to the declared ones, so csv deliberately does not offer
-            // "declare some columns, infer the rest".
-            var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
-            if (declared is { Count: > 0 })
-            {
-                var duckColumns = string.Join(", ", declared.Select(c =>
-                    $"'{AzureUrl.Escape(c.Key)}': '{AzureTypeNameMap.ToDuckDbName(c.Value, c.Key)}'"));
-                fragment = $"read_csv({urlArg}, header = true, auto_detect = false, columns = {{{duckColumns}}})";
-            }
-            else
-            {
-                fragment = $"read_csv({urlArg}, header = true, auto_detect = true)";
-                schemaInferred = true;
-                if (keyPatterns.Count == 1)
-                {
-                    // Single-key reads only: a multi-key window cover would sniff just one member
-                    // file and claim a verdict for the set.
-                    sniffFragment = $"sniff_csv({urlList})";
-                }
-            }
-
-            mechanism = "read_csv";
-        }
-        else if (format == "json")
-        {
-            // Two-state model for its own, unrelated reason: DuckDB's read_json in the bundled version
-            // has no `types=` named parameter at all (Binder Error: "Invalid named parameter 'types'
-            // for function read_json" -- confirmed against the real bundled DuckDB, see
-            // AzureSqlGenTests.ReadJson_has_no_types_named_parameter), so read_csv's
-            // types=+auto_detect=true combination has no json counterpart. Any declared columns:
-            // (partial or full) render as the `columns = {...}` map (auto_detect implicitly off), and
-            // only a fully contract-less dataset gets `auto_detect = true` with no map at all.
-            var declared = ExtractColumns(spec);
-            if (declared is { Count: > 0 })
-            {
-                var duckColumns = string.Join(", ", declared.Select(c =>
-                    $"'{AzureUrl.Escape(c.Key)}': '{AzureTypeNameMap.ToDuckDbName(c.Value, c.Key)}'"));
-                fragment = $"read_json({urlArg}, columns = {{{duckColumns}}}, format = 'newline_delimited')";
-            }
-            else
-            {
-                fragment = $"read_json({urlArg}, auto_detect = true, format = 'newline_delimited')";
-                schemaInferred = true;
-            }
-
-            mechanism = "read_json";
-        }
-        else
-        {
-            fragment = $"read_parquet({urlArg})";
-            mechanism = "read_parquet";
-        }
-
-        scan = new NativeScan(AzureWindowSql.Wrap(fragment, spec), SetupStatements: ["install azure", "load azure", secret])
-        {
-            Mechanism = mechanism,
-            SchemaInferred = schemaInferred,
-            SniffFragment = sniffFragment,
+            Mechanism = FileFormatCatalog.ReadMechanism(format),
+            SchemaInferred = inferred,
+            // Single-key reads only: a multi-key window cover would sniff just one member file and
+            // claim a verdict for the set.
+            SniffFragment = inferred && keyPatterns.Count == 1 ? FileFormatCatalog.SniffFragment(format, spec.Options, urlList) : null,
         };
         return true;
     }
@@ -213,7 +160,8 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// if that plan-time refusal were ever bypassed.</summary>
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
-        if (GetFormat(spec) is "csv" or "json")
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", $"dataset '{spec.Dataset}'").Name;
+        if (format is "csv" or "json")
         {
             GetColumnsContract(spec); // throws the named contract error when the columns: contract is absent
         }
@@ -378,9 +326,6 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
 
     private static PzConnectorException NoMatch(DatasetSpec spec, AzureLocation loc) =>
         new($"dataset '{spec.Dataset}': no blobs matched '{AzureUrl.Render(loc)}'", isTransient: false);
-
-    private static string? GetFormat(DatasetSpec spec) =>
-        spec.Options.TryGetValue("format", out var f) ? f?.ToString() : null;
 
     /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/> (mirrors
     /// <c>Pz.Connector.LocalFiles.CsvSource.ReadHeaderAsync</c>, replicated per this connector's

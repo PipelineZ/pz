@@ -36,7 +36,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         var format = GetFormat(spec);
         var declared = ExtractColumns(spec);
 
-        if (format == "json")
+        if (format.Name == "json")
         {
             if (declared is not { Count: > 0 })
             {
@@ -46,7 +46,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
             return new DatasetSchema(ContractProjector.BuildSchema(declared));
         }
 
-        var pattern = SftpPaths.ResolveReadPattern(settings.Root, spec, format);
+        var pattern = SftpPaths.ResolveReadPattern(settings.Root, spec, format.Extension);
         var fs = connect(settings);
         try
         {
@@ -59,7 +59,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
             var path = matches[0];
             using var stream = await SftpGate.OpenReadAsync(_gate, fs, path, spec, ct).ConfigureAwait(false);
 
-            return format == "parquet"
+            return format.Name == "parquet"
                 ? await ParquetSchemaAsync(stream, declared, spec, path, ct).ConfigureAwait(false)
                 : await CsvSchemaAsync(stream, declared, ct).ConfigureAwait(false);
         }
@@ -84,13 +84,13 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     {
         var format = GetFormat(spec);
         var declared = ExtractColumns(spec);
-        if (format == "json" && declared is not { Count: > 0 })
+        if (format.Name == "json" && declared is not { Count: > 0 })
         {
             throw JsonContractRequiredError(spec);
         }
 
         var groupSize = FilesPerPartition(spec);
-        var pattern = SftpPaths.ResolveReadPattern(settings.Root, spec, format);
+        var pattern = SftpPaths.ResolveReadPattern(settings.Root, spec, format.Extension);
         var fs = connect(settings);
         IReadOnlyList<string> matches;
         try
@@ -111,7 +111,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         var partitions = new IDatasetPartition[groups.Length];
         for (var i = 0; i < groups.Length; i++)
         {
-            partitions[i] = new SftpFilePartition(settings, connect, groups[i], format, declared, spec, hints, _gate);
+            partitions[i] = new SftpFilePartition(settings, connect, groups[i], format.Name, declared, spec, hints, _gate);
         }
 
         return partitions;
@@ -245,21 +245,17 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
 
     internal static string FileContext(DatasetSpec spec, string path) => $"dataset '{spec.Dataset}': file '{path}'";
 
-    /// <summary>The entity names the file, and `format:` defaults csv — mirrors S3Source.GetFormat's
-    /// TryGetValue-then-ternary shape, but (unlike S3, which folds any unrecognized string into its
-    /// parquet branch) refuses an unrecognized format loudly, naming the dataset.</summary>
-    private static string GetFormat(DatasetSpec spec)
+    /// <summary>The entity names the file, and `format:` defaults csv. Resolved through the shared
+    /// catalog like every other file-place connector; sftp has no native tier, so every resolved
+    /// format must additionally pass <see cref="FileFormatCatalog.EnsureUniversalTierSupported"/>.
+    /// Callers use <see cref="FileFormat.Name"/> to dispatch by format and
+    /// <see cref="FileFormat.Extension"/> to resolve the default read path -- the same today (csv,
+    /// json, parquet all name themselves after their extension) but distinct concerns.</summary>
+    private static FileFormat GetFormat(DatasetSpec spec)
     {
-        var format = spec.Options.TryGetValue("format", out var value) && value?.ToString() is { Length: > 0 } f
-            ? f
-            : "csv";
-        if (format is not ("csv" or "parquet" or "json"))
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': sftp source v0 only supports format 'csv', 'parquet' or 'json' " +
-                $"(got '{format}')", isTransient: false);
-        }
-
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "csv", "sftp", context);
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "sftp", context);
         return format;
     }
 

@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 [assembly: PzConnector("azureblob", typeof(Pz.Connector.AzureBlob.AzureConnector))]
 
@@ -35,7 +36,8 @@ public sealed class AzureConnector : ISourceConnector, ISinkConnector, INativeOn
     // targeted message. Sink OUTPUT options stay plan/probe-validated by AzureSink — tier 3 never
     // evaluates output options.
     public string DatasetConfigSchema =>
-        """{ "type": "object", "required": ["container","path"], "properties": { "scheme": { "enum": ["az","azure","abfss"] }, "container": { "type": "string" }, "path": { "type": "string" }, "format": { "enum": ["csv","parquet","json"] }, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+        """{ "type": "object", "required": ["container","path"], "properties": { "scheme": { "enum": ["az","azure","abfss"] }, "container": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(AzureAuth.Validate(config));

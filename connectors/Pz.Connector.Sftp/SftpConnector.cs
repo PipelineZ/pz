@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 [assembly: PzConnector("sftp", typeof(Pz.Connector.Sftp.SftpConnector))]
 
@@ -23,9 +24,12 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
 
     // Strict source-dataset schema (the azureblob/s3 parity shape): unknown/typo'd options fail
     // `pz validate` with PZ0301 instead of being silently ignored. files_per_partition is genuinely
-    // honored here (universal-tier reads), unlike the native-only file connectors.
+    // honored here (universal-tier reads), unlike the native-only file connectors. `format` comes
+    // from the shared catalog (FileFormatCatalog.SchemaProperties), same as every other file-place
+    // connector's schema.
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "path": { "type": "string" }, "format": { "enum": ["csv","parquet","json"] }, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {

@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.AzureBlob;
 
@@ -18,7 +19,6 @@ namespace Pz.Connector.AzureBlob;
 /// never opens a session and is out of .NET reach either way.</summary>
 internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateAware
 {
-    private static readonly string[] ValidFormats = ["parquet", "csv", "json"];
     private IOperationGate? _gate;
 
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
@@ -35,19 +35,14 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         }
 
         var (format, _, loc) = ResolveFinalLocation(spec);
-        var formatClause = format switch
-        {
-            "parquet" => "format parquet",
-            "csv" => "format csv, header",
-            _ => "format json",
-        };
+        var context = $"output '{spec.Output}'";
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Sink));
 
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to '{AzureUrl.Escape(AzureUrl.Render(loc))}' ({formatClause})",
-            SetupStatements: ["install azure", "load azure", secret])
+            $"copy (select * from {{{{source}}}}) to '{AzureUrl.Escape(AzureUrl.Render(loc))}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            ["install azure", "load azure", secret, .. FileFormatCatalog.SetupStatements(format)])
         {
-            Mechanism = $"COPY TO azure {format}",
+            Mechanism = $"COPY TO azure {format.Name}",
         };
         return true;
     }
@@ -55,6 +50,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
         var (format, objectName, loc) = ResolveFinalLocation(spec);
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "azureblob", $"output '{spec.Output}'");
 
         // Partitioned output routes rows into per-day folders; validate the partition column and build a
         // folder->inner-session fan-out session instead of a single-blob session.
@@ -69,7 +65,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         var finalBlobName = loc.Key;
         var tempBlobName = $"{finalBlobName}.pz-tmp-{Guid.NewGuid():N}";
 
-        return format switch
+        return format.Name switch
         {
             "parquet" => await AzureParquetWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                 .ConfigureAwait(false),
@@ -77,7 +73,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
                 .ConfigureAwait(false),
             "json" => await AzureJsonWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                 .ConfigureAwait(false),
-            _ => throw new InvalidOperationException("unreachable: format already validated by ResolveFinalLocation"),
+            _ => throw new InvalidOperationException("unreachable: format already validated by EnsureUniversalTierSupported"),
         };
     }
 
@@ -89,7 +85,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
     /// <c>&lt;renderedFolder&gt;/&lt;objectName&gt;</c>, sharing the exact object name the single-blob path
     /// uses so replace/append naming is identical per folder).</summary>
     private ISinkWriteSession BeginPartitionedWrite(
-        OutputSpec spec, Schema schema, string format, string objectName, AzureLocation loc, string partitionBy,
+        OutputSpec spec, Schema schema, FileFormat format, string objectName, AzureLocation loc, string partitionBy,
         CancellationToken ct)
     {
         var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
@@ -103,7 +99,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
             var finalBlobName = trimmed.Length > 0 ? $"{trimmed}/{objectName}" : objectName;
             var tempBlobName = $"{finalBlobName}.pz-tmp-{Guid.NewGuid():N}";
 
-            return format switch
+            return format.Name switch
             {
                 "parquet" => await AzureParquetWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                     .ConfigureAwait(false),
@@ -111,7 +107,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
                     .ConfigureAwait(false),
                 "json" => await AzureJsonWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                     .ConfigureAwait(false),
-                _ => throw new InvalidOperationException("unreachable: format already validated by ResolveFinalLocation"),
+                _ => throw new InvalidOperationException("unreachable: format already validated by EnsureUniversalTierSupported"),
             };
         }
 
@@ -154,33 +150,18 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
     /// "append" lands under a run-unique guid-suffixed name instead so repeated runs accumulate blobs.
     /// Side-effect-free (computes only) -- called from <see cref="TryGetNativeCopy"/>, which planning
     /// (ExecutionPlanner) also probes.</summary>
-    private static (string Format, string ObjectName, AzureLocation Location) ResolveFinalLocation(OutputSpec spec)
+    private static (FileFormat Format, string ObjectName, AzureLocation Location) ResolveFinalLocation(OutputSpec spec)
     {
-        var format = Require(spec.Options, "format", spec.Output);
-        if (!ValidFormats.Contains(format))
-        {
-            throw new PzConnectorException(
-                $"output '{spec.Output}': azure 'format' must be one of 'parquet', 'csv', 'json' (got '{format}')", isTransient: false);
-        }
-
-        var ext = format switch
-        {
-            "parquet" => "parquet",
-            "csv" => "csv",
-            _ => "json",
-        };
+        var context = $"output '{spec.Output}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, null, "azureblob", context);
+        FileFormatCatalog.EnsureWritable(format, "azureblob", context);
         var objectName = string.Equals(spec.Mode, "append", StringComparison.OrdinalIgnoreCase)
-            ? $"{spec.Output}-{Guid.NewGuid():N}.{ext}"
-            : $"{spec.Output}.{ext}";
-        var loc = AzureUrl.ParseSink(spec.Options, $"output '{spec.Output}'", objectName);
+            ? $"{spec.Output}-{Guid.NewGuid():N}.{format.Extension}"
+            : $"{spec.Output}.{format.Extension}";
+        var loc = AzureUrl.ParseSink(spec.Options, context, objectName);
         return (format, objectName, loc);
     }
 
     private static string? Str(IReadOnlyDictionary<string, object?> options, string key) =>
         options.TryGetValue(key, out var v) ? v?.ToString() : null;
-
-    private static string Require(IReadOnlyDictionary<string, object?> options, string key, string output) =>
-        options.TryGetValue(key, out var v) && v?.ToString() is { Length: > 0 } s
-            ? s
-            : throw new PzConnectorException($"output '{output}': azure requires '{key}'", isTransient: false);
 }

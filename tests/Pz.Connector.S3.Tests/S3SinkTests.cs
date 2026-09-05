@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.S3.Tests;
 
@@ -100,9 +101,9 @@ public sealed class S3SinkTests
         });
 
         Assert.False(ex.IsTransient);
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
         Assert.Contains("prquet", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("parquet", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("csv", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -147,7 +148,8 @@ public sealed class S3SinkTests
             _ = sink.TryGetNativeCopy(Spec(format: "jsn"), out _);
         });
 
-        Assert.Contains("json", ex.Message, StringComparison.Ordinal);
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -181,5 +183,12 @@ public sealed class S3SinkTests
             var schema = Json.Schema.JsonSchema.FromText(s); // throws on malformed
             Assert.NotNull(schema);
         }
+    }
+
+    [Fact]
+    public void Dataset_schema_embeds_the_catalog_format_properties()
+    {
+        var c = new S3Connector();
+        Assert.Contains(FileFormatCatalog.SchemaProperties, c.DatasetConfigSchema, StringComparison.Ordinal);
     }
 }

@@ -339,8 +339,8 @@ public sealed class JsonFormatTests : IDisposable
             async () => await sink.BeginWriteAsync(spec, schema, CancellationToken.None));
 
         Assert.False(ex.IsTransient);
-        Assert.Contains("'json'", ex.Message);
-        Assert.Contains("xml", ex.Message);
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
     }
     /// <summary>Mirrors the csv flag — contract-less json auto-detects, so only it declares
     /// <see cref="NativeScan.SchemaInferred"/>.</summary>

@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Sftp;
 
@@ -72,7 +73,7 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     /// <c>&lt;root&gt;/&lt;renderedFolder&gt;/&lt;objectName&gt;</c>, sharing the exact object name the
     /// single-output path uses so replace/append naming is identical per folder.</summary>
     private ISinkWriteSession BeginPartitionedWrite(
-        OutputSpec spec, Schema schema, string format, string objectName, string partitionBy, CancellationToken ct)
+        OutputSpec spec, Schema schema, FileFormat format, string objectName, string partitionBy, CancellationToken ct)
     {
         var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
 
@@ -99,10 +100,11 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     }
 
     /// <summary>Dispatches to the one format-specific session, gate threaded through. Format was
-    /// already validated by <see cref="ResolveFormat"/>, so the fallback branch is unreachable.</summary>
+    /// already validated by <see cref="ResolveFormat"/> (writable, and universal-tier-supported), so
+    /// the fallback branch is unreachable.</summary>
     private async ValueTask<ISinkWriteSession> OpenSessionAsync(
-        ISftpFileSystem fs, bool ownsFileSystem, string tempPath, string finalPath, string format, Schema schema,
-        string context, CancellationToken ct) => format switch
+        ISftpFileSystem fs, bool ownsFileSystem, string tempPath, string finalPath, FileFormat format, Schema schema,
+        string context, CancellationToken ct) => format.Name switch
     {
         "parquet" => await SftpParquetWriteSession.CreateAsync(fs, ownsFileSystem, tempPath, finalPath, schema, _gate, context, ct)
             .ConfigureAwait(false),
@@ -159,19 +161,14 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    /// <summary>Format resolution, mirroring <c>LocalFilesSink.ResolveFormat</c>: default parquet,
-    /// permanent error naming the output for anything else.</summary>
-    private static string ResolveFormat(OutputSpec spec)
+    /// <summary>Format resolution, through the shared catalog: default parquet, writable, and (sftp
+    /// has no native tier) universal-tier-supported.</summary>
+    private static FileFormat ResolveFormat(OutputSpec spec)
     {
-        var format = spec.Options.TryGetValue("format", out var value) ? value?.ToString() : null;
-        format ??= "parquet";
-        if (format is not ("parquet" or "csv" or "json"))
-        {
-            throw new PzConnectorException(
-                $"output '{spec.Output}': sftp sink v0 only supports format 'parquet', 'csv' or 'json' (got '{format}')",
-                isTransient: false);
-        }
-
+        var context = $"output '{spec.Output}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "sftp", context);
+        FileFormatCatalog.EnsureWritable(format, "sftp", context);
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "sftp", context);
         return format;
     }
 
@@ -180,10 +177,10 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     /// (<c>&lt;output&gt;.&lt;ext&gt;</c>); "append" lands under a run-unique guid-suffixed name
     /// instead so repeated runs accumulate files. Computed once per <see cref="BeginWriteAsync"/> call
     /// so every folder a partitioned fan-out opens shares the exact same object name.</summary>
-    private static string ResolveObjectName(OutputSpec spec, string format) =>
+    private static string ResolveObjectName(OutputSpec spec, FileFormat format) =>
         string.Equals(spec.Mode, "append", StringComparison.OrdinalIgnoreCase)
-            ? $"{spec.Output}-{Guid.NewGuid():N}.{format}"
-            : $"{spec.Output}.{format}";
+            ? $"{spec.Output}-{Guid.NewGuid():N}.{format.Extension}"
+            : $"{spec.Output}.{format.Extension}";
 
     private static string? Str(IReadOnlyDictionary<string, object?> options, string key) =>
         options.TryGetValue(key, out var v) ? v?.ToString() : null;

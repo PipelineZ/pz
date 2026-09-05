@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Toolkit.Formats;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.LocalFiles;
@@ -102,41 +103,37 @@ internal sealed class CsvSource(string baseDir) : ISource
     /// (`read_json` has no `types=` parameter at all).</summary>
     public bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
     {
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", context);
         var absPath = ResolvePath(spec); // existing helper resolving against base_dir
         var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
-        string fragment;
         if (declared is { Count: > 0 })
         {
             ValidateHeaderMatchesContract(absPath, spec.Dataset, declared);
-            var duckColumns = string.Join(", ", declared.Select(c =>
-                $"'{EscapeSqlLiteral(c.Key)}': '{TypeNameMap.ToDuckDbName(c.Value, c.Key)}'"));
-            fragment = $"read_csv('{EscapeSqlLiteral(absPath)}', header = true, auto_detect = false, columns = {{{duckColumns}}})";
         }
-        else
+        else if (File.Exists(absPath) && new FileInfo(absPath).Length == 0)
         {
             // A zero-byte file has no header row to infer a schema from, and DuckDB's auto_detect
             // fabricates a single `column0` VARCHAR column instead of failing -- a made-up schema that
             // would propagate silently to every downstream sink. Refuse loudly while the schema is still
             // undecided; same file-exists scoping as ValidateHeaderMatchesContract (an absent file at
             // plan time is legitimate, and a header-only file is a legitimate empty dataset).
-            if (File.Exists(absPath) && new FileInfo(absPath).Length == 0)
-            {
-                throw new PzConnectorException(
-                    $"dataset '{spec.Dataset}': csv file '{absPath}' is empty (0 bytes) -- there is no header " +
-                    "to auto-detect a schema from. Provide a file with at least a header row, or declare a " +
-                    "columns: contract if an empty feed is expected",
-                    isTransient: false);
-            }
-
-            fragment = $"read_csv('{EscapeSqlLiteral(absPath)}', header = true, auto_detect = true)";
+            throw new PzConnectorException(
+                $"dataset '{spec.Dataset}': csv file '{absPath}' is empty (0 bytes) -- there is no header " +
+                "to auto-detect a schema from. Provide a file with at least a header row, or declare a " +
+                "columns: contract if an empty feed is expected",
+                isTransient: false);
         }
 
-        var inferred = declared is not { Count: > 0 };
-        scan = new NativeScan(WrapWindowed(fragment, spec), SetupStatements: [])
+        var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
+        var request = new FormatReadRequest(urlArg, 1, declared, TypeNameMap.ToDuckDbName);
+        var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
+        var inferred = FileFormatCatalog.SchemaInferred(format, declared);
+        scan = new NativeScan(WrapWindowed(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
-            Mechanism = "read_csv",
+            Mechanism = FileFormatCatalog.ReadMechanism(format),
             SchemaInferred = inferred,
-            SniffFragment = inferred ? $"sniff_csv('{EscapeSqlLiteral(absPath)}')" : null,
+            SniffFragment = inferred ? FileFormatCatalog.SniffFragment(format, spec.Options, urlArg) : null,
         };
         return true;
     }
@@ -303,19 +300,8 @@ internal sealed class CsvSource(string baseDir) : ISource
         return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
     }
 
-    private static string GetFormat(DatasetSpec spec)
-    {
-        var format = spec.Options.TryGetValue("format", out var value) ? value?.ToString() : null;
-        format ??= "csv";
-        if (!string.Equals(format, "csv", StringComparison.OrdinalIgnoreCase))
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': localfiles source v0 only supports format 'csv', 'parquet' or 'json' (got '{format}')",
-                isTransient: false);
-        }
-
-        return format;
-    }
+    private static string GetFormat(DatasetSpec spec) =>
+        FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", $"dataset '{spec.Dataset}'").Extension;
 
     /// <summary>The declared `columns:` contract, injected by <c>SourceLoadExecutor</c> into
     /// <see cref="DatasetSpec.Options"/>["columns"]. Missing contract is a permanent failure: this path

@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Gcs.Tests;
 
@@ -96,5 +97,23 @@ public sealed class GcsConnectorTests
         Assert.Contains("\"auth\"", connector.ConnectionConfigSchema, StringComparison.Ordinal);
         Assert.Contains("files_per_partition", connector.DatasetConfigSchema, StringComparison.Ordinal);
         Assert.Contains("\"columns\"", connector.DatasetConfigSchema, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Published_schemas_are_valid_json_schema()
+    {
+        var c = new GcsConnector();
+        foreach (var s in new[] { c.ConnectionConfigSchema, c.DatasetConfigSchema })
+        {
+            var schema = Json.Schema.JsonSchema.FromText(s); // throws on malformed
+            Assert.NotNull(schema);
+        }
+    }
+
+    [Fact]
+    public void Dataset_schema_embeds_the_catalog_format_properties()
+    {
+        var c = new GcsConnector();
+        Assert.Contains(FileFormatCatalog.SchemaProperties, c.DatasetConfigSchema, StringComparison.Ordinal);
     }
 }

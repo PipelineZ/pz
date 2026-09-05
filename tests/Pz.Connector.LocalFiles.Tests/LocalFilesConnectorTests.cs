@@ -3,6 +3,7 @@ using Apache.Arrow.Types;
 using Pz.Connector.LocalFiles;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Toolkit.Formats;
 using Pz.DuckDb;
 
 namespace Pz.Connector.LocalFiles.Tests;
@@ -708,6 +709,48 @@ public sealed class LocalFilesConnectorTests : IDisposable
         var quoted = finalPath.Replace("'", "''");
         var value = await duck.ScalarAsync<decimal>($"select amount from read_parquet('{quoted}')");
         Assert.Equal(12345.123456789m, value);
+    }
+
+    /// <summary>No `format:` at all takes the native tier's default (parquet) rather than declining
+    /// native and falling back to the universal Parquet.Net session -- native is the preferred tier, and
+    /// the sink's documented default format is parquet, so a format-less output should get the same
+    /// native COPY a `format: parquet` output gets.</summary>
+    [Fact]
+    public async Task Sink_without_format_takes_the_native_parquet_copy()
+    {
+        var connector = new LocalFilesConnector();
+        await using var sink = await ((ISinkConnector)connector).OpenAsync(Config, CancellationToken.None);
+
+        var spec = new OutputSpec("lake", "out", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["path"] = "out" });
+
+        var ok = sink.TryGetNativeCopy(spec, out var copy);
+        Assert.True(ok);
+        Assert.Contains("(format parquet)", copy!.CopySql);
+        Assert.Equal("COPY TO parquet", copy.Mechanism);
+        Assert.EndsWith("out.parquet", copy.Finalizations[0].FinalPath);
+    }
+
+    [Fact]
+    public async Task Sink_with_unknown_format_is_refused_at_plan_time_with_PZ0361()
+    {
+        var connector = new LocalFilesConnector();
+        await using var sink = await ((ISinkConnector)connector).OpenAsync(Config, CancellationToken.None);
+
+        var spec = new OutputSpec("lake", "out", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["path"] = "out", ["format"] = "orc" });
+
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.False(ex.IsTransient);
+    }
+
+    [Fact]
+    public void Dataset_schema_embeds_the_catalog_format_properties()
+    {
+        var connector = new LocalFilesConnector();
+        Assert.Contains(FileFormatCatalog.SchemaProperties, connector.DatasetConfigSchema, StringComparison.Ordinal);
     }
 
     [Fact]

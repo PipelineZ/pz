@@ -399,6 +399,20 @@ public static class PzErrorCode
     /// is to use a connector published as a <c>runtime: "process"</c> (PCP) package, or a builtin.</summary>
     public const string ExternalConnectorNotOutOfProcess = "PZ0360";
 
+    /// <summary>A file-place connector (localfiles, s3, gcs, azureblob, sftp) was asked for a
+    /// <c>format:</c> it does not support in that direction or on that tier: an unknown format name, a
+    /// read-only format (avro) on a sink, a native-only format (xlsx, json <c>layout: array</c>) on a
+    /// managed reader/writer such as sftp, or a multi-file read of a single-workbook format. The message
+    /// names the dataset/output and the supported set; next step is to pick a supported format or a
+    /// connector with a native tier.</summary>
+    public const string FileFormatUnsupported = "PZ0361";
+
+    /// <summary>A format-scoped option (<c>delimiter</c>, <c>layout</c>, <c>sheet</c>, <c>header</c>) is
+    /// invalid: declared on an entity of a format that does not admit it, or carrying a bad value (a
+    /// multi-character delimiter, an unknown <c>layout</c>). Next step is to remove the option or fix its
+    /// value; the message names the option, the format and the entity.</summary>
+    public const string FileFormatOptionInvalid = "PZ0362";
+
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";

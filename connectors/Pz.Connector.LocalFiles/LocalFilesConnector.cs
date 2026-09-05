@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 [assembly: PzConnector("localfiles", typeof(Pz.Connector.LocalFiles.LocalFilesConnector))]
 
@@ -37,7 +38,8 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector
         """{ "type": "object", "properties": { "root": { "type": "string" } }, "additionalProperties": false }""";
 
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "path": { "type": "string" }, "format": { "enum": ["csv", "parquet", "json"] }, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(ValidationResult.Success);
@@ -67,7 +69,8 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector
 /// <see cref="DatasetSpec"/>, which is where <c>format:</c> actually lives. This holds one instance of
 /// each and forwards per call: <c>format: parquet</c> routes to <see cref="ParquetSource"/>,
 /// <c>format: json</c> to <see cref="JsonSource"/>; <c>format: csv</c> or absent (the default) routes
-/// to <see cref="CsvSource"/>, which owns the "unsupported format" error for anything else.</summary>
+/// to <see cref="CsvSource"/>. <see cref="FileFormatCatalog.Resolve"/> owns the "unsupported format"
+/// error for anything else.</summary>
 internal sealed class LocalFilesSource(string baseDir) : ISource
 {
     private readonly CsvSource _csv = new(baseDir);
@@ -87,12 +90,12 @@ internal sealed class LocalFilesSource(string baseDir) : ISource
 
     private ISource Resolve(DatasetSpec spec)
     {
-        var format = spec.Options.TryGetValue("format", out var value) ? value?.ToString() : null;
-        if (string.Equals(format, "parquet", StringComparison.OrdinalIgnoreCase))
+        var format = FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", $"dataset '{spec.Dataset}'");
+        return format.Name switch
         {
-            return _parquet;
-        }
-
-        return string.Equals(format, "json", StringComparison.OrdinalIgnoreCase) ? _json : _csv;
+            "parquet" => _parquet,
+            "json" => _json,
+            _ => _csv,
+        };
     }
 }
