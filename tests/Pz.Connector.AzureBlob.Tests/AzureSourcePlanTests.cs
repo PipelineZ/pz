@@ -83,7 +83,7 @@ public sealed class AzureSourcePlanTests
         Assert.Empty(matched);
     }
 
-    // PlanReadAsync is a refusal stub that preserves error quality — csv/json without a
+    // PlanReadAsync is a refusal stub that preserves error quality — csv/tsv/json without a
     // columns: contract still gets the "declare a columns contract" error
     // (native scan DECLINES that case, so this stub is the only owner of the message), everything else
     // names the native-only refusal (ParquetSource precedent).
@@ -104,6 +104,26 @@ public sealed class AzureSourcePlanTests
             await source.PlanReadAsync(spec, new ReadHints(), CancellationToken.None));
 
         Assert.Contains("columns", ex.Message, StringComparison.Ordinal);
+        Assert.False(ex.IsTransient);
+    }
+
+    [Fact]
+    public async Task PlanRead_tsv_without_columns_contract_names_the_same_contract_error_as_csv()
+    {
+        var source = new AzureSource(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["auth"] = "connection_string", ["connection_string"] = "UseDevelopmentStorage=true",
+        }));
+        var spec = new DatasetSpec("src", "orders", new Dictionary<string, object?>
+        {
+            ["container"] = "lake", ["path"] = "in/*.tsv", ["format"] = "tsv",
+        });
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await source.PlanReadAsync(spec, new ReadHints(), CancellationToken.None));
+
+        Assert.Contains("columns", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("PZ0312", ex.Message, StringComparison.Ordinal);
         Assert.False(ex.IsTransient);
     }
 

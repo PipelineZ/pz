@@ -152,9 +152,9 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         CoverKeys(key, spec).Select(PathTemplate.StaticPrefix).ToArray();
 
     /// <summary>Azure reads are native-only, so this is a refusal stub. It preserves two error messages:
-    /// csv/json without a declared `columns:` contract gets the clear contract error, everything else gets
-    /// the native-only refusal -- the ParquetSource precedent. <see cref="TryGetNativeScan"/> never
-    /// declines for a contract-less csv/json dataset, and the planner only ever calls `PlanReadAsync` when
+    /// csv/tsv/json without a declared `columns:` contract gets the clear contract error, everything else
+    /// gets the native-only refusal -- the ParquetSource precedent. <see cref="TryGetNativeScan"/> never
+    /// declines for a contract-less csv/tsv/json dataset, and the planner only ever calls `PlanReadAsync` when
     /// `engine.force_universal`/`files_per_partition` forces the universal tier -- which it refuses
     /// outright for any <see cref="INativeOnlySource"/> at plan time (this connector's contract). So this
     /// method is normally unreachable in practice; the pre-check inside it stays only as defense in depth
@@ -162,7 +162,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", $"dataset '{spec.Dataset}'").Name;
-        if (format is "csv" or "json")
+        if (format is "csv" or "tsv" or "json")
         {
             GetColumnsContract(spec); // throws the named contract error when the columns: contract is absent
         }
@@ -347,11 +347,11 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     }
 
     /// <summary>The declared `columns:` contract, injected by <c>SourceLoadExecutor</c> into
-    /// <see cref="DatasetSpec.Options"/>["columns"]. Shared by csv and json (both require a contract; v0
-    /// does no type inference). Missing contract is a permanent failure.</summary>
+    /// <see cref="DatasetSpec.Options"/>["columns"]. Shared by csv, tsv and json (all three require a
+    /// contract; v0 does no type inference). Missing contract is a permanent failure.</summary>
     private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec) =>
         ExtractColumns(spec) ?? throw new PzConnectorException(
-            $"dataset '{spec.Dataset}': azure csv/json requires a declared columns: contract", isTransient: false);
+            $"dataset '{spec.Dataset}': azure csv/tsv/json requires a declared columns: contract", isTransient: false);
 
     private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
         spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
