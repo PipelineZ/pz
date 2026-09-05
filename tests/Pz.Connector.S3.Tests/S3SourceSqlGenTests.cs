@@ -215,6 +215,39 @@ public sealed class S3SourceSqlGenTests
     }
 
     [Fact]
+    public void Xlsx_read_installs_excel_and_reads_one_workbook()
+    {
+        Assert.True(Source().TryGetNativeScan(Ds(format: "xlsx"), out var scan));
+        Assert.Equal("read_xlsx('s3://my-bucket/raw/orders.xlsx', header = true)", scan!.SqlFragment);
+        Assert.Equal("read_xlsx", scan.Mechanism);
+        // Assert.EndsWith on a collection does not exist in xunit -- assert the last two elements
+        // explicitly; the secret statement comes first.
+        Assert.Equal("install excel", scan.SetupStatements[^2]);
+        Assert.Equal("load excel", scan.SetupStatements[^1]);
+    }
+
+    [Fact]
+    public void Avro_read_with_a_contract_casts_and_installs_avro()
+    {
+        var cols = new Dictionary<string, string> { ["id"] = "bigint" };
+        Assert.True(Source().TryGetNativeScan(Ds(format: "avro", columns: cols), out var scan));
+        Assert.Equal("(select \"id\"::BIGINT as \"id\" from read_avro('s3://my-bucket/raw/orders.avro'))", scan!.SqlFragment);
+        Assert.Contains("load avro", scan.SetupStatements);
+    }
+
+    [Fact]
+    public void Xlsx_read_over_a_date_template_window_cover_is_PZ0361()
+    {
+        // A date-templated path with both watermark bounds present resolves to a multi-file cover
+        // list -- xlsx reads exactly one workbook per entity, so it refuses rather than silently
+        // reading one file of the matched set.
+        var ex = Assert.Throws<PzConnectorException>(() => Source().TryGetNativeScan(
+            Ds(format: "xlsx", path: "in/{yyyy}/{MM}/{dd}.xlsx", cursor: "d", value: "2026-01-01", upper: "2026-01-03"),
+            out _));
+        Assert.Contains("xlsx reads one workbook per entity", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task PlanRead_refuses_the_universal_tier_with_PZ0312()
     {
         var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>

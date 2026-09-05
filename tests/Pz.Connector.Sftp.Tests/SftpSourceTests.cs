@@ -533,6 +533,32 @@ public class SftpSourceTests
     }
 
     [Fact]
+    public async Task Xlsx_read_is_PZ0361()
+    {
+        // sftp has no native tier -- xlsx is native-only (DuckDB's excel extension), so it is refused
+        // by EnsureUniversalTierSupported before any connection is dialed.
+        var fake = new FakeSftpFileSystem();
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("orders", ("format", "xlsx"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => source.GetSchemaAsync(spec, default).AsTask());
+        Assert.StartsWith("PZ0361: dataset 'orders': format 'xlsx' is native-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Avro_read_is_PZ0361()
+    {
+        var fake = new FakeSftpFileSystem();
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("orders", ("format", "avro"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => source.GetSchemaAsync(spec, default).AsTask());
+        Assert.StartsWith("PZ0361: dataset 'orders': format 'avro' is native-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Gate_wraps_list_and_open_read_operations()
     {
         var fake = new FakeSftpFileSystem();

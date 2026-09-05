@@ -359,4 +359,63 @@ public sealed class AzureSqlGenTests
         Assert.True(src.TryGetNativeScan(Ds(), out var parquet));
         Assert.False(parquet!.SchemaInferred);
     }
+
+    [Fact]
+    public void Xlsx_read_installs_excel_and_reads_one_workbook()
+    {
+        // Unlike s3/gcs, azure's Ds() helper always carries a path: value -- AzureUrl.ParseDataset
+        // requires 'path' explicitly (no <entity>.<format> default), so an explicit single-file path
+        // is passed here rather than relying on the helper's own default.
+        var src = new AzureSource(Conn());
+        Assert.True(src.TryGetNativeScan(Ds(format: "xlsx", path: "in/orders.xlsx"), out var scan));
+        Assert.Equal("read_xlsx('az://lake/in/orders.xlsx', header = true)", scan!.SqlFragment);
+        Assert.Equal("read_xlsx", scan.Mechanism);
+        // Assert.EndsWith on a collection does not exist in xunit -- assert the last two elements
+        // explicitly; the secret statement comes first.
+        Assert.Equal("install excel", scan.SetupStatements[^2]);
+        Assert.Equal("load excel", scan.SetupStatements[^1]);
+    }
+
+    [Fact]
+    public void Avro_read_with_a_contract_casts_and_installs_avro()
+    {
+        var src = new AzureSource(Conn());
+        var cols = new Dictionary<string, string> { ["id"] = "bigint" };
+        Assert.True(src.TryGetNativeScan(Ds(format: "avro", path: "in/orders.avro", columns: cols), out var scan));
+        Assert.Equal("(select \"id\"::BIGINT as \"id\" from read_avro('az://lake/in/orders.avro'))", scan!.SqlFragment);
+        Assert.Contains("load avro", scan.SetupStatements);
+    }
+
+    [Fact]
+    public void Xlsx_read_over_a_date_template_window_cover_is_PZ0361()
+    {
+        // A date-templated path with both watermark bounds present resolves to a multi-file cover
+        // list -- xlsx reads exactly one workbook per entity, so it refuses rather than silently
+        // reading one file of the matched set.
+        var src = new AzureSource(Conn());
+        var ex = Assert.Throws<PzConnectorException>(() => src.TryGetNativeScan(
+            Ds(format: "xlsx", path: "in/{yyyy}/{MM}/{dd}.xlsx", cursor: "d", value: "2026-01-01", upper: "2026-01-03"),
+            out _));
+        Assert.Contains("xlsx reads one workbook per entity", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_copy_installs_excel_and_ends_the_copy_with_the_xlsx_clause()
+    {
+        var sink = new AzureSink(Conn());
+        Assert.True(sink.TryGetNativeCopy(Out(format: "xlsx"), out var copy));
+        Assert.EndsWith("data.xlsx' (format xlsx, header true)", copy!.CopySql, StringComparison.Ordinal);
+        Assert.Equal("install excel", copy.SetupStatements[^2]);
+        Assert.Equal("load excel", copy.SetupStatements[^1]);
+    }
+
+    [Fact]
+    public void Avro_write_is_the_read_only_refusal()
+    {
+        var sink = new AzureSink(Conn());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "avro"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': format 'avro' is read-only on azureblob -- write parquet, csv or json instead",
+            ex.Message);
+    }
 }

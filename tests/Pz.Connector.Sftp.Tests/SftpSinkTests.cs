@@ -176,6 +176,20 @@ public class SftpSinkTests
         Assert.Empty(fake.Operations);   // refused before the connection is ever dialed
     }
 
+    [Fact]
+    public async Task TryGetNativeCopy_refuses_xlsx_at_plan_time()
+    {
+        // sftp has no native tier -- xlsx is native-only (DuckDB's excel extension), so it is refused
+        // by ResolveFormat at plan time, before the connection is ever dialed.
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("orders", "replace", ("path", "dir"), ("format", "xlsx"));
+
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
+        Assert.StartsWith("PZ0361: output 'orders': format 'xlsx' is native-only", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(fake.Operations);
+    }
+
     // ---------- SftpSink: partition_by fan-out (via the real dispatch path) ----------
 
     [Fact]

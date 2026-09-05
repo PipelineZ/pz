@@ -214,4 +214,26 @@ public sealed class S3SinkTests
         sink.TryGetNativeCopy(Spec(format: "json", layout: "array"), out var copy);
         Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Xlsx_copy_installs_excel_and_ends_the_copy_with_the_xlsx_clause()
+    {
+        var sink = new S3Sink(Config());
+        Assert.True(sink.TryGetNativeCopy(Spec(format: "xlsx"), out var copy));
+        Assert.EndsWith("data.xlsx' (format xlsx, header true)", copy!.CopySql, StringComparison.Ordinal);
+        // Assert.EndsWith on a collection does not exist in xunit -- assert the last two elements
+        // explicitly; the secret statement comes first.
+        Assert.Equal("install excel", copy.SetupStatements[^2]);
+        Assert.Equal("load excel", copy.SetupStatements[^1]);
+    }
+
+    [Fact]
+    public void Avro_write_is_the_read_only_refusal()
+    {
+        var sink = new S3Sink(Config());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Spec(format: "avro"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': format 'avro' is read-only on s3 -- write parquet, csv or json instead",
+            ex.Message);
+    }
 }

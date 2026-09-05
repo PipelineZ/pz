@@ -136,4 +136,25 @@ public sealed class GcsSinkNativeTests
         Assert.True(new GcsSink(Hmac()).TryGetNativeCopy(Out(format: "json", layout: "array"), out var copy));
         Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Xlsx_copy_installs_excel_and_ends_the_copy_with_the_xlsx_clause()
+    {
+        Assert.True(new GcsSink(Hmac()).TryGetNativeCopy(Out(format: "xlsx"), out var copy));
+        Assert.EndsWith("daily.xlsx' (format xlsx, header true)", copy!.CopySql, StringComparison.Ordinal);
+        // Assert.EndsWith on a collection does not exist in xunit -- assert the last two elements
+        // explicitly; the secret statement comes first.
+        Assert.Equal("install excel", copy.SetupStatements[^2]);
+        Assert.Equal("load excel", copy.SetupStatements[^1]);
+    }
+
+    [Fact]
+    public void Avro_write_is_the_read_only_refusal()
+    {
+        var sink = new GcsSink(Hmac());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "avro"), out _));
+        Assert.Equal(
+            "PZ0361: output 'daily': format 'avro' is read-only on gcs -- write parquet, csv or json instead",
+            ex.Message);
+    }
 }
