@@ -107,7 +107,7 @@ public sealed class AzureDatasetSchemaTests
             {
                 ["container"] = "raw",
                 ["path"] = "events/*.avro",
-                ["format"] = "avro",
+                ["format"] = "orc",
             }, null)], "sources/lake.yml");
 
         var errors = await ConnectorConfigValidator.ValidateAsync(Project(source), Registry(), default);
