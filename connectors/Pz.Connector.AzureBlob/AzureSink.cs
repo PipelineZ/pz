@@ -77,7 +77,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
                 .ConfigureAwait(false),
             "json" => await AzureJsonWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                 .ConfigureAwait(false),
-            _ => throw new InvalidOperationException("unreachable: format already validated by EnsureUniversalTierSupported"),
+            _ => throw new UnreachableException("unreachable: format already validated by EnsureUniversalTierSupported"),
         };
     }
 
