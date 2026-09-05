@@ -64,12 +64,12 @@ my-project/
     root: out   # a source() write lands under out/<entity>/ unless overridden per entity
   ```
 
-`format:` on a file-place entity (localfiles, s3, gcs, azureblob, sftp) is one of `csv`, `tsv`,
-`parquet`, `json`. Format-scoped options sit beside it, in YAML or as `source()`/`sink()` kwargs:
-`delimiter: "|"` (csv only, one ASCII character; tsv is fixed to tab), `layout: ndjson | array`
-(json only; `ndjson` is the default, `array` is one top-level JSON array and is native-tier only,
-so sftp refuses it with PZ0361). An option on the wrong format is PZ0362. A read with no `path:`
-is `<root>/<entity>.<format>`; a sink file is `<entity>.<format>`.
+  `format:` on a file-place entity (localfiles, s3, gcs, azureblob, sftp) is one of `csv`, `tsv`,
+  `parquet`, `json`. Format-scoped options sit beside it, in YAML or as `source()`/`sink()` kwargs:
+  `delimiter: "|"` (csv only, one ASCII character; tsv is fixed to tab), `layout: ndjson | array`
+  (json only; `ndjson` is the default, `array` is one top-level JSON array and is native-tier only,
+  so sftp refuses it with PZ0361). An option on the wrong format is PZ0362. A read with no `path:`
+  is `<root>/<entity>.<format>`; a sink file is `<entity>.<format>`.
 
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a
