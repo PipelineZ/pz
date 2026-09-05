@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Apache.Arrow.Types;
@@ -112,7 +113,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
                 .ConfigureAwait(false),
             "csv" or "tsv" => GcsCsvWriteSession.Create(client, bucket, key, schema, delimiter, _gate),
             "json" => GcsJsonWriteSession.Create(client, bucket, key, _gate),
-            _ => throw new InvalidOperationException("unreachable: format already validated by EnsureUniversalTierSupported"),
+            _ => throw new UnreachableException("unreachable: format already validated by EnsureUniversalTierSupported"),
         };
 
     /// <summary>Runtime fail-fast for the partition column: it must exist in the write schema AND be a

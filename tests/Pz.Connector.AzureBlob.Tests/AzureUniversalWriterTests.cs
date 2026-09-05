@@ -75,7 +75,7 @@ public sealed class AzureUniversalWriterTests
         using var b2 = BuildBatch(200, 2);
 
         using var ms = new MemoryStream();
-        await AzureBlobFormat.WriteCsvAsync(ms, FixedSchema, [b0, b1, b2], CancellationToken.None);
+        await AzureBlobFormat.WriteCsvAsync(ms, FixedSchema, [b0, b1, b2], ',', CancellationToken.None);
 
         var text = ReadCsvText(ms);
         var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -104,7 +104,7 @@ public sealed class AzureUniversalWriterTests
         using var b2 = BuildBatch(200, 2);
 
         using var ms = new MemoryStream();
-        await AzureBlobFormat.WriteCsvAsync(ms, FixedSchema, [b0, b1, b2], CancellationToken.None, delimiter: '\t');
+        await AzureBlobFormat.WriteCsvAsync(ms, FixedSchema, [b0, b1, b2], '\t', CancellationToken.None);
 
         var text = ReadCsvText(ms);
         var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -135,7 +135,7 @@ public sealed class AzureUniversalWriterTests
         using var batch = new RecordBatch(FixedSchema, [idBuilder.Build(), nameBuilder.Build()], 1);
 
         using var ms = new MemoryStream();
-        await AzureBlobFormat.WriteCsvAsync(ms, FixedSchema, [batch], CancellationToken.None);
+        await AzureBlobFormat.WriteCsvAsync(ms, FixedSchema, [batch], ',', CancellationToken.None);
 
         var text = ReadCsvText(ms);
         Assert.Contains("\"a,b\"\"c\"", text, StringComparison.Ordinal);

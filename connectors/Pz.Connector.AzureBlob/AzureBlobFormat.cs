@@ -55,7 +55,7 @@ internal static class AzureBlobFormat
     /// from one implementation. <paramref name="delimiter"/> is tab for tsv, comma otherwise -- the tsv
     /// suffix carries no other formatting difference over csv.</summary>
     public static async Task WriteCsvAsync(
-        Stream dest, Schema schema, IReadOnlyList<RecordBatch> batches, CancellationToken ct, char delimiter = ',')
+        Stream dest, Schema schema, IReadOnlyList<RecordBatch> batches, char delimiter, CancellationToken ct)
     {
         var writer = new CsvWriteCodec(dest, schema, "azure universal csv sink", leaveOpen: true, delimiter: delimiter);
         await using (writer.ConfigureAwait(false))

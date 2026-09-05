@@ -24,7 +24,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
 
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
 
-    /// <summary>csv: peeks the first matched file's header (Sylvan, no data rows read); a declared
+    /// <summary>csv/tsv: peeks the first matched file's header (Sylvan, no data rows read); a declared
     /// contract prunes to contract∩header IN CONTRACT ORDER (the LocalFiles CsvSource rule), a
     /// contract-less dataset reports every header column as varchar. parquet: peeks the first matched
     /// file's footer; a declared contract is verified column-by-column against the footer (every
