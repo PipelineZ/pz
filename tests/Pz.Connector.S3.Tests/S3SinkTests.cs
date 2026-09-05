@@ -216,15 +216,15 @@ public sealed class S3SinkTests
     }
 
     [Fact]
-    public void Xlsx_copy_installs_excel_and_ends_the_copy_with_the_xlsx_clause()
+    public void Xlsx_copy_is_PZ0361_remote_write_refused()
     {
+        // s3 is a remote target -- DuckDB's excel writer aborts the whole process on a remote IO/auth
+        // failure mid-write, so xlsx write is refused at plan time rather than attempted.
         var sink = new S3Sink(Config());
-        Assert.True(sink.TryGetNativeCopy(Spec(format: "xlsx"), out var copy));
-        Assert.EndsWith("data.xlsx' (format xlsx, header true)", copy!.CopySql, StringComparison.Ordinal);
-        // Assert.EndsWith on a collection does not exist in xunit -- assert the last two elements
-        // explicitly; the secret statement comes first.
-        Assert.Equal("install excel", copy.SetupStatements[^2]);
-        Assert.Equal("load excel", copy.SetupStatements[^1]);
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Spec(format: "xlsx"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so s3 refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json",
+            ex.Message);
     }
 
     [Fact]

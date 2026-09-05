@@ -216,6 +216,13 @@ public sealed class GcsSourceSqlGenTests
     }
 
     [Fact]
+    public void Xlsx_glob_path_is_PZ0361()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => Source().TryGetNativeScan(Ds(format: "xlsx", path: "raw/*.xlsx"), out _));
+        Assert.Contains("must name a single file, not a glob", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task PlanRead_refuses_the_universal_tier_with_PZ0312()
     {
         var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>

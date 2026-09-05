@@ -400,13 +400,23 @@ public sealed class AzureSqlGenTests
     }
 
     [Fact]
-    public void Xlsx_copy_installs_excel_and_ends_the_copy_with_the_xlsx_clause()
+    public void Xlsx_glob_path_is_PZ0361()
     {
+        var src = new AzureSource(Conn());
+        var ex = Assert.Throws<PzConnectorException>(() => src.TryGetNativeScan(Ds(format: "xlsx", path: "raw/*.xlsx"), out _));
+        Assert.Contains("must name a single file, not a glob", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_copy_is_PZ0361_remote_write_refused()
+    {
+        // azureblob is a remote target -- DuckDB's excel writer aborts the whole process on a remote
+        // IO/auth failure mid-write, so xlsx write is refused at plan time rather than attempted.
         var sink = new AzureSink(Conn());
-        Assert.True(sink.TryGetNativeCopy(Out(format: "xlsx"), out var copy));
-        Assert.EndsWith("data.xlsx' (format xlsx, header true)", copy!.CopySql, StringComparison.Ordinal);
-        Assert.Equal("install excel", copy.SetupStatements[^2]);
-        Assert.Equal("load excel", copy.SetupStatements[^1]);
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "xlsx"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so azureblob refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json",
+            ex.Message);
     }
 
     [Fact]

@@ -160,6 +160,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         var context = $"output '{spec.Output}'";
         var format = FileFormatCatalog.Resolve(spec.Options, null, "azureblob", context);
         FileFormatCatalog.EnsureWritable(format, "azureblob", context);
+        FileFormatCatalog.EnsureRemoteWritable(format, "azureblob", context);
         var objectName = string.Equals(spec.Mode, "append", StringComparison.OrdinalIgnoreCase)
             ? $"{spec.Output}-{Guid.NewGuid():N}.{format.Extension}"
             : $"{spec.Output}.{format.Extension}";

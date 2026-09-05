@@ -53,6 +53,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         var (bucket, prefix) = ResolvePrefix(spec);
         var key = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
         var context = $"output '{spec.Output}'";
+        FileFormatCatalog.EnsureRemoteWritable(format, "gcs", context);
         copy = new NativeCopy(
             $"copy (select * from {{{{source}}}}) to 'gs://{GcsSql.Esc(bucket)}/{GcsSql.Esc(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             [.. GcsSql.SetupStatements(config, GcsSql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
