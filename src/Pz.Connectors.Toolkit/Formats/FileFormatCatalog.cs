@@ -72,8 +72,8 @@ public static class FileFormatCatalog
     /// <summary>The FROM-usable DuckDB fragment for a native read. csv and json follow the two-state
     /// contract model: a declared contract (partial or full) renders the strict <c>columns = {…}</c> map
     /// and reads only those columns; no contract auto-detects.</summary>
-    /// <param name="options">The dataset's format-scoped options -- a delimiter, a json layout, a sheet
-    /// -- once a format admits one; unused until then.</param>
+    /// <param name="options">Format-scoped options: <c>delimiter</c> (csv) and <c>layout</c> (json)
+    /// change the fragment; other formats ignore it.</param>
     /// <param name="context">Names the dataset in an option error, e.g. "dataset 'x'".</param>
     public static string ReadFragment(
         FileFormat format, IReadOnlyDictionary<string, object?> options, FormatReadRequest read, string context)
@@ -107,8 +107,8 @@ public static class FileFormatCatalog
 
     /// <summary>DuckDB's own sniffer verdict for a SINGLE csv file, or null for every other format --
     /// callers pass it only for inferred, single-file reads.</summary>
-    /// <param name="options">The dataset's format-scoped options -- a delimiter, a json layout, a sheet
-    /// -- once a format admits one; unused until then.</param>
+    /// <param name="options"><c>delimiter</c> (csv) is passed to sniff_csv so the sniffer sees the same
+    /// field separator as the read.</param>
     public static string? SniffFragment(FileFormat format, IReadOnlyDictionary<string, object?> options, string singleUrlLiteral)
     {
         ArgumentNullException.ThrowIfNull(format);
@@ -116,8 +116,8 @@ public static class FileFormatCatalog
     }
 
     /// <summary>The parenthesised COPY options for a native write, e.g. <c>format csv, header</c>.</summary>
-    /// <param name="options">The output's format-scoped options -- a delimiter, a json layout, a sheet
-    /// -- once a format admits one; unused until then.</param>
+    /// <param name="options"><c>delimiter</c> (csv/tsv) and <c>layout</c> (json) change the COPY
+    /// options.</param>
     /// <param name="context">Names the output in an option error, e.g. "output 'y'".</param>
     public static string CopyClause(FileFormat format, IReadOnlyDictionary<string, object?> options, string context)
     {
@@ -180,8 +180,8 @@ public static class FileFormatCatalog
     /// <summary>PZ0361 when the resolved format has no <see cref="FileFormat.UniversalTier"/> reader/writer
     /// for a caller that has no native tier to fall back to -- sftp (no native tier at all) and any output
     /// or read forced onto the universal tier by an otherwise-native connector.</summary>
-    /// <param name="options">Unused today; a later change refuses option-level cases (a native-only option
-    /// on an otherwise universal-tier format) through it.</param>
+    /// <param name="options">Option-level refusals: json <c>layout: array</c> is native-only regardless
+    /// of the format's tier.</param>
     public static void EnsureUniversalTierSupported(
         FileFormat format, IReadOnlyDictionary<string, object?> options, string connector, string context)
     {
