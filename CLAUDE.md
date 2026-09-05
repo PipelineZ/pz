@@ -66,11 +66,14 @@ scripts/verify-aot.sh
 Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-bench.sh`.
 
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
-green. Two jobs: `build-test`, an ubuntu+windows matrix where both legs build but only ubuntu runs
+green. Five jobs: `build-test`, an ubuntu+windows matrix where both legs build but only ubuntu runs
 `dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — windows is build-only,
-because the docker suites can't pull Linux images there — and `pack-and-verify` (ubuntu), which runs
+because the docker suites can't pull Linux images there; `pack-and-verify` (ubuntu), which runs
 `scripts/verify-tool-install.sh` so the install path a stranger's first five commands depend on
-cannot silently rot. `release.yml` stays tag-triggered.
+cannot silently rot; `format-extensions` (ubuntu), which runs the `Category=DuckDbExtension` tests
+(xlsx/avro, needing network to install DuckDB's excel/avro extensions) that `build-test` excludes;
+`verify-aot` (ubuntu), the Native AOT runtime proof; and `rust` (ubuntu), the Rust workspace's own
+fmt/clippy/test plus the conformance script. `release.yml` stays tag-triggered.
 
 ## Architecture
 

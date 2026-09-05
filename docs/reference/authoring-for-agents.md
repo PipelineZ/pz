@@ -73,7 +73,9 @@ my-project/
   `xlsx` (read and write, options `sheet:` and `header:`, one workbook per entity) and `avro` (read
   only) use DuckDB's `excel` and `avro` extensions, installed on first use (needs network once per
   machine and DuckDB version, cached under `~/.duckdb/extensions/`); both are native-tier only, so
-  sftp refuses them with PZ0361.
+  sftp refuses them with PZ0361. With `header: false` DuckDB names xlsx columns `A1`, `B1`, …, so a
+  `columns:` contract must use those names. xlsx write is localfiles-only (an s3/gcs/azureblob xlsx
+  sink is PZ0361); xlsx read works on all four.
 
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Apache.Arrow;
@@ -81,7 +82,7 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
                 "csv" or "tsv" => new CsvSinkWriteSession(
                     tempDir, tempFilePath, finalFilePath, schema, FileFormatCatalog.Delimiter(format, spec.Options, context)),
                 "json" => new NdjsonSinkWriteSession(tempDir, tempFilePath, finalFilePath),
-                _ => throw new UnreachableException(),
+                _ => throw new UnreachableException("unreachable: format already validated"),
             };
         }
         catch
@@ -121,8 +122,6 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
             // Suppressed by design: never mask an earlier failure with cleanup fallout.
         }
     }
-
-    private sealed class UnreachableException() : Exception("unreachable: format already validated");
 }
 
 internal enum LocalFileSessionState { Open, Committed, Aborted }
