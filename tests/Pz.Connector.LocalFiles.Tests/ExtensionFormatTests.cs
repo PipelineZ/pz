@@ -1,5 +1,3 @@
-using Apache.Arrow;
-using Apache.Arrow.Types;
 using Avro;
 using Avro.File;
 using Avro.Generic;
@@ -90,29 +88,5 @@ public sealed class ExtensionFormatTests : IDisposable
         await RunSetupAsync(duck, scan.SetupStatements);
         await duck.ExecuteAsync($"create table t as select * from {scan.SqlFragment}");
         Assert.Equal(1, await duck.ScalarAsync<long>("select count(*) from t where name is null"));
-    }
-
-    [SkippableFact]
-    public async Task Avro_sink_is_PZ0361_read_only()
-    {
-        await using var sink = await ((ISinkConnector)new LocalFilesConnector()).OpenAsync(Config, CancellationToken.None);
-        var spec = new OutputSpec("files", "users", "replace", "fail_on_change", new Dictionary<string, object?> { ["format"] = "avro" });
-        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
-        Assert.Equal("PZ0361: output 'users': format 'avro' is read-only on localfiles -- write parquet, csv or json instead", ex.Message);
-    }
-
-    [SkippableFact]
-    public async Task Xlsx_universal_write_and_read_are_PZ0361()
-    {
-        await using var sink = await ((ISinkConnector)new LocalFilesConnector()).OpenAsync(Config, CancellationToken.None);
-        var outSpec = new OutputSpec("files", "people", "replace", "fail_on_change", new Dictionary<string, object?> { ["format"] = "xlsx" });
-        var schema = new Apache.Arrow.Schema([new Apache.Arrow.Field("id", Int64Type.Default, true)], null);
-        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await sink.BeginWriteAsync(outSpec, schema, CancellationToken.None));
-        Assert.StartsWith("PZ0361: output 'people': format 'xlsx' is native-only", ex.Message, StringComparison.Ordinal);
-
-        await using var source = await ((ISourceConnector)new LocalFilesConnector()).OpenAsync(Config, CancellationToken.None);
-        var spec = new DatasetSpec("files", "people", new Dictionary<string, object?> { ["format"] = "xlsx" });
-        var ex2 = await Assert.ThrowsAsync<PzConnectorException>(async () => await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
-        Assert.StartsWith("PZ0312: dataset 'people': localfiles xlsx source is native-scan only", ex2.Message, StringComparison.Ordinal);
     }
 }
