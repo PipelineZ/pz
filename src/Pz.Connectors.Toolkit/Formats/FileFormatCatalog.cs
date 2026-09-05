@@ -201,7 +201,9 @@ public static class FileFormatCatalog
     }
 
     /// <summary>The csv/tsv field delimiter: tab for tsv, the validated <c>delimiter:</c> for csv, comma
-    /// by default. ASCII only, because the managed writer emits it as one byte.</summary>
+    /// by default. ASCII only, because the managed writer emits it as one byte; a quote, newline or
+    /// carriage return is refused because it collides with csv's own quoting and row-terminator
+    /// characters and would yield unparseable output.</summary>
     public static char Delimiter(FileFormat format, IReadOnlyDictionary<string, object?> options, string context)
     {
         ArgumentNullException.ThrowIfNull(format);
@@ -217,9 +219,10 @@ public static class FileFormatCatalog
         }
 
         var text = raw?.ToString() ?? "";
-        if (text.Length != 1 || !char.IsAscii(text[0]))
+        if (text.Length != 1 || !char.IsAscii(text[0]) || text[0] is '"' or '\n' or '\r')
         {
-            throw Permanent($"PZ0362: {context}: 'delimiter' must be exactly one ASCII character (got '{text}')");
+            throw Permanent(
+                $"PZ0362: {context}: 'delimiter' must be one ASCII character other than a quote, newline or carriage return (got '{text}')");
         }
 
         return text[0];

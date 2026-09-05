@@ -186,10 +186,14 @@ public sealed class FileFormatCatalogTests
     [InlineData(";;")]
     [InlineData("")]
     [InlineData("é")]
+    [InlineData("\"")]
+    [InlineData("\n")]
     public void Csv_delimiter_must_be_one_ascii_character(string bad)
     {
         var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("csv", "delimiter", bad), null, "s3", "dataset 'd'"));
-        Assert.StartsWith("PZ0362: dataset 'd': 'delimiter' must be exactly one ASCII character", ex.Message, StringComparison.Ordinal);
+        Assert.StartsWith(
+            "PZ0362: dataset 'd': 'delimiter' must be one ASCII character other than a quote, newline or carriage return",
+            ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
