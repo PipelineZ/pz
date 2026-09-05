@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
 
@@ -7,9 +6,9 @@ using Pz.Connectors.Toolkit.Formats;
 namespace Pz.Connector.LocalFiles;
 
 /// <summary>Local filesystem connector: CSV source via Sylvan.Data.Csv, parquet/CSV sink via
-/// Parquet.Net + a minimal RFC-4180 writer, and json (NDJSON) in both directions — native-only
-/// <c>read_json</c> source (<see cref="JsonSource"/>) and an NDJSON sink session via the shared toolkit
-/// codec. Registered under the logical name
+/// Parquet.Net + a minimal RFC-4180 writer, json (NDJSON) in both directions via the shared toolkit
+/// codec, and xlsx/avro native-only through DuckDB's excel/avro extensions (<see cref="NativeOnlySource"/>,
+/// which also carries json's native-only <c>read_json</c> read). Registered under the logical name
 /// "localfiles". Relative dataset/output <c>path</c>s resolve against the connection option
 /// <c>base_dir</c> — <c>RunCommand</c> injects the project directory there (see
 /// <see cref="Pz.Cli.BuiltinConnectors"/>), keeping this connector itself unaware of the project
@@ -66,17 +65,17 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector
 
 /// <summary>Format dispatcher: <see cref="ISourceConnector.OpenAsync"/> is connector-
 /// (not dataset-) scoped, so it cannot pick <see cref="CsvSource"/> vs <see cref="ParquetSource"/> vs
-/// <see cref="JsonSource"/> up front -- every <see cref="ISource"/> method receives its own
+/// <see cref="NativeOnlySource"/> up front -- every <see cref="ISource"/> method receives its own
 /// <see cref="DatasetSpec"/>, which is where <c>format:</c> actually lives. This holds one instance of
-/// each and forwards per call: <c>format: parquet</c> routes to <see cref="ParquetSource"/>,
-/// <c>format: json</c> to <see cref="JsonSource"/>; <c>format: csv</c>/<c>tsv</c> or absent (the
-/// default) routes to <see cref="CsvSource"/>. <see cref="FileFormatCatalog.Resolve"/> owns the
-/// "unsupported format" error for anything else.</summary>
+/// each and forwards per call: <c>format: parquet</c> routes to <see cref="ParquetSource"/>;
+/// <c>format: csv</c>/<c>tsv</c> or absent (the default) routes to <see cref="CsvSource"/>; everything
+/// else -- json, xlsx, avro -- routes to <see cref="NativeOnlySource"/>. <see
+/// cref="FileFormatCatalog.Resolve"/> owns the "unsupported format" error for anything else.</summary>
 internal sealed class LocalFilesSource(string baseDir) : ISource
 {
     private readonly CsvSource _csv = new(baseDir);
     private readonly ParquetSource _parquet = new(baseDir);
-    private readonly JsonSource _json = new(baseDir);
+    private readonly NativeOnlySource _native = new(baseDir);
 
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
         Resolve(spec).GetSchemaAsync(spec, ct);
@@ -95,9 +94,8 @@ internal sealed class LocalFilesSource(string baseDir) : ISource
         return format.Name switch
         {
             "parquet" => _parquet,
-            "json" => _json,
             "csv" or "tsv" => _csv,
-            _ => throw new UnreachableException($"format '{format.Name}' already validated by FileFormatCatalog.Resolve"),
+            _ => _native,
         };
     }
 }

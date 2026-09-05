@@ -11,6 +11,8 @@
     <PackageReference Include="Parquet.Net" Version="6.0.3" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+    <PackageReference Include="Apache.Avro" Version="1.12.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +25,7 @@
     <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
     <ProjectReference Include="..\..\src\Pz.DuckDb\Pz.DuckDb.csproj" />
     <ProjectReference Include="..\..\src\Pz.Engine\Pz.Engine.csproj" />
+    <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
   </ItemGroup>
 
 </Project>
