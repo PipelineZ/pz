@@ -37,14 +37,14 @@ public sealed class FileFormatCatalogTests
     {
         var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(Opts(), null, "s3", "output 'o'"));
         Assert.False(ex.IsTransient);
-        Assert.Equal("PZ0361: output 'o': s3 requires 'format' (supported: csv, json, parquet)", ex.Message);
+        Assert.Equal("PZ0361: output 'o': s3 requires 'format' (supported: avro, csv, json, parquet, tsv, xlsx)", ex.Message);
     }
 
     [Fact]
     public void Resolve_unknown_format_is_PZ0361_naming_the_supported_set()
     {
         var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(Opts("orc"), "csv", "gcs", "dataset 'd'"));
-        Assert.Equal("PZ0361: dataset 'd': gcs does not support format 'orc' (supported: csv, json, parquet)", ex.Message);
+        Assert.Equal("PZ0361: dataset 'd': gcs does not support format 'orc' (supported: avro, csv, json, parquet, tsv, xlsx)", ex.Message);
     }
 
     [Fact]
@@ -64,7 +64,7 @@ public sealed class FileFormatCatalogTests
             FileFormatCatalog.ReadFragment(csv, Opts("csv"), Req(declared: declared), "dataset 'd'"));
         Assert.True(FileFormatCatalog.SchemaInferred(csv, null));
         Assert.False(FileFormatCatalog.SchemaInferred(csv, declared));
-        Assert.Equal("sniff_csv('s3://b/k.csv')", FileFormatCatalog.SniffFragment(csv, Opts("csv"), "'s3://b/k.csv'"));
+        Assert.Equal("sniff_csv('s3://b/k.csv')", FileFormatCatalog.SniffFragment(csv, Opts("csv"), "'s3://b/k.csv'", "dataset 'd'"));
         Assert.Equal("read_csv", FileFormatCatalog.ReadMechanism(csv));
     }
 
@@ -77,7 +77,7 @@ public sealed class FileFormatCatalogTests
         var declared = new Dictionary<string, string> { ["id"] = "bigint" };
         Assert.Equal("read_json('s3://b/k.csv', columns = {'id': 'BIGINT'}, format = 'newline_delimited')",
             FileFormatCatalog.ReadFragment(json, Opts("json"), Req(declared: declared), "dataset 'd'"));
-        Assert.Null(FileFormatCatalog.SniffFragment(json, Opts("json"), "'s3://b/k.csv'"));
+        Assert.Null(FileFormatCatalog.SniffFragment(json, Opts("json"), "'s3://b/k.csv'", "dataset 'd'"));
         Assert.Equal("read_json", FileFormatCatalog.ReadMechanism(json));
     }
 
@@ -124,7 +124,7 @@ public sealed class FileFormatCatalogTests
     [Fact]
     public void EnsureUniversalTierSupported_refuses_a_format_without_the_universal_tier()
     {
-        var native = new FileFormat("x", "x", NativeRead: true, NativeWrite: true, UniversalTier: false, [], new HashSet<string>(StringComparer.Ordinal));
+        var native = new FileFormat("x", "x", NativeRead: true, NativeWrite: true, UniversalTier: false, LocalWriteOnly: false, [], new HashSet<string>(StringComparer.Ordinal));
         var ex = Assert.Throws<PzConnectorException>(() =>
             FileFormatCatalog.EnsureUniversalTierSupported(native, Opts(), "sftp", "dataset 'd'"));
         Assert.False(ex.IsTransient);
@@ -134,7 +134,228 @@ public sealed class FileFormatCatalogTests
     [Fact]
     public void Schema_properties_carry_the_format_enum()
     {
-        Assert.Contains("\"format\": { \"enum\": [\"csv\", \"json\", \"parquet\"] }", FileFormatCatalog.SchemaProperties, StringComparison.Ordinal);
-        Assert.Equal(["csv", "json", "parquet"], FileFormatCatalog.Names);
+        Assert.Contains("\"format\": { \"enum\": [\"avro\", \"csv\", \"json\", \"parquet\", \"tsv\", \"xlsx\"] }", FileFormatCatalog.SchemaProperties, StringComparison.Ordinal);
+        Assert.Equal(["avro", "csv", "json", "parquet", "tsv", "xlsx"], FileFormatCatalog.Names);
+    }
+
+    private static Dictionary<string, object?> With(string format, string key, object? value)
+    {
+        var o = Opts(format);
+        o[key] = value;
+        return o;
+    }
+
+    [Fact]
+    public void Tsv_is_csv_with_a_tab_delimiter_and_its_own_extension()
+    {
+        var o = Opts("tsv");
+        var tsv = FileFormatCatalog.Resolve(o, null, "s3", "dataset 'd'");
+        Assert.Equal("tsv", tsv.Extension);
+        Assert.Equal('\t', FileFormatCatalog.Delimiter(tsv, o, "dataset 'd'"));
+        Assert.Equal("read_csv('s3://b/k.csv', header = true, auto_detect = true, delim = '\\t')",
+            FileFormatCatalog.ReadFragment(tsv, o, Req(), "dataset 'd'"));
+        var declared = new Dictionary<string, string> { ["id"] = "bigint" };
+        Assert.Equal("read_csv('s3://b/k.csv', header = true, auto_detect = false, columns = {'id': 'BIGINT'}, delim = '\\t')",
+            FileFormatCatalog.ReadFragment(tsv, o, Req(declared: declared), "dataset 'd'"));
+        Assert.Equal("format csv, header, delimiter '\\t'", FileFormatCatalog.CopyClause(tsv, o, "output 'o'"));
+        Assert.Equal("sniff_csv('s3://b/k.csv', delim = '\\t')", FileFormatCatalog.SniffFragment(tsv, o, "'s3://b/k.csv'", "dataset 'd'"));
+        Assert.Equal("read_csv", FileFormatCatalog.ReadMechanism(tsv));
+        Assert.True(FileFormatCatalog.SchemaInferred(tsv, null));
+    }
+
+    [Fact]
+    public void Csv_delimiter_option_changes_fragment_and_copy_clause_only_when_not_a_comma()
+    {
+        var pipe = With("csv", "delimiter", "|");
+        var csv = FileFormatCatalog.Resolve(pipe, null, "s3", "dataset 'd'");
+        Assert.Equal('|', FileFormatCatalog.Delimiter(csv, pipe, "dataset 'd'"));
+        Assert.Equal("read_csv('s3://b/k.csv', header = true, auto_detect = true, delim = '|')",
+            FileFormatCatalog.ReadFragment(csv, pipe, Req(), "dataset 'd'"));
+        Assert.Equal("format csv, header, delimiter '|'", FileFormatCatalog.CopyClause(csv, pipe, "output 'o'"));
+
+        var comma = With("csv", "delimiter", ",");
+        Assert.Equal("read_csv('s3://b/k.csv', header = true, auto_detect = true)",
+            FileFormatCatalog.ReadFragment(FileFormatCatalog.Resolve(comma, null, "s3", "dataset 'd'"), comma, Req(), "dataset 'd'"));
+
+        var quote = With("csv", "delimiter", "'");
+        Assert.Equal("format csv, header, delimiter ''''",
+            FileFormatCatalog.CopyClause(FileFormatCatalog.Resolve(quote, null, "s3", "output 'o'"), quote, "output 'o'"));
+    }
+
+    [Theory]
+    [InlineData(";;")]
+    [InlineData("")]
+    [InlineData("é")]
+    [InlineData("\"")]
+    [InlineData("\n")]
+    public void Csv_delimiter_must_be_one_ascii_character(string bad)
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("csv", "delimiter", bad), null, "s3", "dataset 'd'"));
+        Assert.StartsWith(
+            "PZ0362: dataset 'd': 'delimiter' must be one ASCII character other than a quote, newline or carriage return",
+            ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Delimiter_on_tsv_and_layout_on_csv_are_PZ0362()
+    {
+        var ex1 = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("tsv", "delimiter", ","), null, "s3", "dataset 'd'"));
+        Assert.Equal("PZ0362: dataset 'd': 'delimiter' is not an option of format 'tsv' -- remove it or change the format", ex1.Message);
+        var ex2 = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("csv", "layout", "array"), null, "s3", "dataset 'd'"));
+        Assert.Equal("PZ0362: dataset 'd': 'layout' is not an option of format 'csv' -- remove it or change the format", ex2.Message);
+    }
+
+    [Fact]
+    public void Json_layout_array_changes_read_and_copy_shapes()
+    {
+        var o = With("json", "layout", "array");
+        var json = FileFormatCatalog.Resolve(o, null, "s3", "dataset 'd'");
+        Assert.Equal("array", FileFormatCatalog.JsonLayout(json, o));
+        Assert.Equal("read_json('s3://b/k.csv', auto_detect = true, format = 'array')",
+            FileFormatCatalog.ReadFragment(json, o, Req(), "dataset 'd'"));
+        var declared = new Dictionary<string, string> { ["id"] = "bigint" };
+        Assert.Equal("read_json('s3://b/k.csv', columns = {'id': 'BIGINT'}, format = 'array')",
+            FileFormatCatalog.ReadFragment(json, o, Req(declared: declared), "dataset 'd'"));
+        Assert.Equal("format json, array true", FileFormatCatalog.CopyClause(json, o, "output 'o'"));
+        Assert.Equal("ndjson", FileFormatCatalog.JsonLayout(json, Opts("json")));
+    }
+
+    [Fact]
+    public void Json_layout_must_be_ndjson_or_array()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("json", "layout", "lines"), null, "s3", "dataset 'd'"));
+        Assert.Equal("PZ0362: dataset 'd': 'layout' must be 'ndjson' or 'array' (got 'lines')", ex.Message);
+    }
+
+    [Fact]
+    public void Json_array_is_native_only_on_the_universal_tier()
+    {
+        var o = With("json", "layout", "array");
+        var json = FileFormatCatalog.Resolve(o, null, "sftp", "output 'o'");
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.EnsureUniversalTierSupported(json, o, "sftp", "output 'o'"));
+        Assert.StartsWith("PZ0361: output 'o': json 'layout: array' is native-only", ex.Message, StringComparison.Ordinal);
+        FileFormatCatalog.EnsureUniversalTierSupported(FileFormatCatalog.Resolve(Opts("tsv"), null, "sftp", "output 'o'"), Opts("tsv"), "sftp", "output 'o'");
+    }
+
+    [Fact]
+    public void Schema_properties_carry_tsv_delimiter_and_layout()
+    {
+        Assert.Equal(["avro", "csv", "json", "parquet", "tsv", "xlsx"], FileFormatCatalog.Names);
+        Assert.Contains("\"delimiter\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 1 }", FileFormatCatalog.SchemaProperties, StringComparison.Ordinal);
+        Assert.Contains("\"layout\": { \"enum\": [\"ndjson\", \"array\"] }", FileFormatCatalog.SchemaProperties, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_reads_through_the_excel_extension_with_sheet_and_header()
+    {
+        var o = Opts("xlsx");
+        var xlsx = FileFormatCatalog.Resolve(o, null, "localfiles", "dataset 'd'");
+        Assert.Equal(["install excel", "load excel"], FileFormatCatalog.SetupStatements(xlsx));
+        Assert.Equal("read_xlsx('s3://b/k.csv', header = true)", FileFormatCatalog.ReadFragment(xlsx, o, Req(), "dataset 'd'"));
+        Assert.True(FileFormatCatalog.SchemaInferred(xlsx, null));
+        Assert.Equal("read_xlsx", FileFormatCatalog.ReadMechanism(xlsx));
+
+        var sheet = With("xlsx", "sheet", "Q1 'data'");
+        sheet["header"] = false;
+        Assert.Equal("read_xlsx('s3://b/k.csv', header = false, sheet = 'Q1 ''data''')",
+            FileFormatCatalog.ReadFragment(FileFormatCatalog.Resolve(sheet, null, "localfiles", "dataset 'd'"), sheet, Req(), "dataset 'd'"));
+
+        var declared = new Dictionary<string, string> { ["id"] = "bigint", ["na\"me"] = "varchar" };
+        Assert.Equal("(select \"id\"::BIGINT as \"id\", \"na\"\"me\"::VARCHAR as \"na\"\"me\" from read_xlsx('s3://b/k.csv', header = true))",
+            FileFormatCatalog.ReadFragment(xlsx, o, Req(declared: declared), "dataset 'd'"));
+        Assert.False(FileFormatCatalog.SchemaInferred(xlsx, declared));
+    }
+
+    [Fact]
+    public void Xlsx_multi_file_read_is_PZ0361()
+    {
+        var o = Opts("xlsx");
+        var xlsx = FileFormatCatalog.Resolve(o, null, "s3", "dataset 'd'");
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.ReadFragment(xlsx, o, Req("['a', 'b']", 2), "dataset 'd'"));
+        Assert.Equal("PZ0361: dataset 'd': xlsx reads one workbook per entity; this read matches 2 files -- name a single file in path:", ex.Message);
+    }
+
+    [Fact]
+    public void Xlsx_glob_path_is_PZ0361()
+    {
+        var o = Opts("xlsx");
+        var xlsx = FileFormatCatalog.Resolve(o, null, "s3", "dataset 'd'");
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.ReadFragment(xlsx, o, Req("'s3://b/raw/*.xlsx'"), "dataset 'd'"));
+        Assert.Equal(
+            "PZ0361: dataset 'd': xlsx reads one workbook per entity; 'path:' must name a single file, not a glob -- DuckDB would silently read only the first match",
+            ex.Message);
+    }
+
+    [Fact]
+    public void EnsureRemoteWritable_refuses_xlsx_and_accepts_every_other_writable_format()
+    {
+        var xlsx = FileFormatCatalog.Resolve(Opts("xlsx"), null, "s3", "output 'o'");
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.EnsureRemoteWritable(xlsx, "s3", "output 'o'"));
+        Assert.False(ex.IsTransient);
+        Assert.Equal(
+            "PZ0361: output 'o': xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so s3 refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json",
+            ex.Message);
+
+        foreach (var name in new[] { "parquet", "csv", "json", "tsv" })
+        {
+            FileFormatCatalog.EnsureRemoteWritable(FileFormatCatalog.Resolve(Opts(name), null, "s3", "output 'o'"), "s3", "output 'o'");
+        }
+    }
+
+    [Fact]
+    public void Xlsx_copy_clause_carries_header_and_sheet()
+    {
+        var o = Opts("xlsx");
+        var xlsx = FileFormatCatalog.Resolve(o, null, "localfiles", "output 'o'");
+        Assert.Equal("format xlsx, header true", FileFormatCatalog.CopyClause(xlsx, o, "output 'o'"));
+        var sheet = With("xlsx", "sheet", "Out");
+        Assert.Equal("format xlsx, header true, sheet 'Out'", FileFormatCatalog.CopyClause(xlsx, sheet, "output 'o'"));
+        Assert.Equal("xlsx", xlsx.Extension);
+    }
+
+    [Fact]
+    public void Xlsx_options_are_validated()
+    {
+        var ex1 = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("xlsx", "header", "yes"), null, "s3", "dataset 'd'"));
+        Assert.Equal("PZ0362: dataset 'd': 'header' must be true or false (got 'yes')", ex1.Message);
+        var ex2 = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("xlsx", "sheet", ""), null, "s3", "dataset 'd'"));
+        Assert.Equal("PZ0362: dataset 'd': 'sheet' must be a non-empty sheet name", ex2.Message);
+        var ex3 = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.Resolve(With("csv", "sheet", "S"), null, "s3", "dataset 'd'"));
+        Assert.Equal("PZ0362: dataset 'd': 'sheet' is not an option of format 'csv' -- remove it or change the format", ex3.Message);
+    }
+
+    [Fact]
+    public void Avro_reads_through_the_avro_extension_and_is_read_only()
+    {
+        var o = Opts("avro");
+        var avro = FileFormatCatalog.Resolve(o, null, "s3", "dataset 'd'");
+        Assert.Equal(["install avro", "load avro"], FileFormatCatalog.SetupStatements(avro));
+        Assert.Equal("read_avro(['a', 'b'])", FileFormatCatalog.ReadFragment(avro, o, Req("['a', 'b']", 2), "dataset 'd'"));
+        var declared = new Dictionary<string, string> { ["id"] = "bigint" };
+        Assert.Equal("(select \"id\"::BIGINT as \"id\" from read_avro('s3://b/k.csv'))", FileFormatCatalog.ReadFragment(avro, o, Req(declared: declared), "dataset 'd'"));
+        Assert.False(FileFormatCatalog.SchemaInferred(avro, null));
+        Assert.Equal("read_avro", FileFormatCatalog.ReadMechanism(avro));
+        Assert.False(avro.NativeWrite);
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.EnsureWritable(avro, "s3", "output 'o'"));
+        Assert.Equal("PZ0361: output 'o': format 'avro' is read-only on s3 -- write parquet, csv or json instead", ex.Message);
+    }
+
+    [Fact]
+    public void Xlsx_and_avro_are_native_only()
+    {
+        foreach (var name in new[] { "xlsx", "avro" })
+        {
+            var f = FileFormatCatalog.Resolve(Opts(name), null, "sftp", "dataset 'd'");
+            var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.EnsureUniversalTierSupported(f, Opts(name), "sftp", "dataset 'd'"));
+            Assert.StartsWith($"PZ0361: dataset 'd': format '{name}' is native-only", ex.Message, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Schema_properties_carry_sheet_and_header()
+    {
+        Assert.Equal(["avro", "csv", "json", "parquet", "tsv", "xlsx"], FileFormatCatalog.Names);
+        Assert.Contains("\"sheet\": { \"type\": \"string\", \"minLength\": 1 }", FileFormatCatalog.SchemaProperties, StringComparison.Ordinal);
+        Assert.Contains("\"header\": { \"type\": \"boolean\" }", FileFormatCatalog.SchemaProperties, StringComparison.Ordinal);
     }
 }

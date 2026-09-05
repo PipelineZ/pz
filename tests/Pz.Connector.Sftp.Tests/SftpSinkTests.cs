@@ -107,6 +107,38 @@ public class SftpSinkTests
     }
 
     [Fact]
+    public async Task Tsv_write_lands_a_tab_separated_file()
+    {
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("orders", "replace", ("path", "dir"), ("format", "tsv"));
+
+        var session = await sink.BeginWriteAsync(spec, TwoColumnSchema, CancellationToken.None);
+        using var batch = BuildBatch(1, "x");
+        await session.WriteBatchAsync(batch, CancellationToken.None);
+        await session.CommitAsync(CancellationToken.None);
+        await session.DisposeAsync();
+
+        Assert.True(fake.FileExists("dir/orders.tsv"));
+        using var stream = fake.OpenRead("dir/orders.tsv");
+        using var reader = new StreamReader(stream);
+        Assert.Equal("id\tname\n1\tx\n", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task Json_array_write_is_PZ0361()
+    {
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("events", "replace", ("path", "dir"), ("format", "json"), ("layout", "array"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await sink.BeginWriteAsync(spec, TwoColumnSchema, CancellationToken.None));
+
+        Assert.StartsWith("PZ0361: output 'events': json 'layout: array' is native-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Invalid_format_names_the_output()
     {
         var fake = new FakeSftpFileSystem();
@@ -130,6 +162,32 @@ public class SftpSinkTests
 
         Assert.False(sink.TryGetNativeCopy(spec, out var copy));
         Assert.Null(copy);
+    }
+
+    [Fact]
+    public async Task TryGetNativeCopy_refuses_a_native_only_option_at_plan_time()
+    {
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("events", "replace", ("path", "dir"), ("format", "json"), ("layout", "array"));
+
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(fake.Operations);   // refused before the connection is ever dialed
+    }
+
+    [Fact]
+    public async Task TryGetNativeCopy_refuses_xlsx_at_plan_time()
+    {
+        // sftp has no native tier -- xlsx is native-only (DuckDB's excel extension), so it is refused
+        // by ResolveFormat at plan time, before the connection is ever dialed.
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("orders", "replace", ("path", "dir"), ("format", "xlsx"));
+
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
+        Assert.StartsWith("PZ0361: output 'orders': format 'xlsx' is native-only", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(fake.Operations);
     }
 
     // ---------- SftpSink: partition_by fan-out (via the real dispatch path) ----------

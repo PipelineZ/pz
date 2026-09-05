@@ -22,13 +22,14 @@ public sealed class GcsSourceSqlGenTests
     private static DatasetSpec Ds(
         string dataset = "orders", string? format = null, string? path = null, string? bucket = null,
         Dictionary<string, string>? columns = null, string? cursor = null, string? value = null,
-        string? upper = null)
+        string? upper = null, string? layout = null)
     {
         var options = new Dictionary<string, object?>();
         if (format is not null) options["format"] = format;
         if (path is not null) options["path"] = path;
         if (bucket is not null) options["bucket"] = bucket;
         if (columns is not null) options["columns"] = columns;
+        if (layout is not null) options["layout"] = layout;
         return new DatasetSpec("lake", dataset, options)
         {
             WatermarkCursor = cursor,
@@ -164,6 +165,61 @@ public sealed class GcsSourceSqlGenTests
 
         Assert.False(ex.IsTransient);
         Assert.Contains("columns:", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_read_defaults_to_the_tsv_suffix_and_tab_delimiter()
+    {
+        Assert.True(Source().TryGetNativeScan(Ds(format: "tsv"), out var scan));
+        Assert.Equal("read_csv('gs://my-bucket/raw/orders.tsv', header = true, auto_detect = true, delim = '\\t')", scan!.SqlFragment);
+        Assert.Equal("sniff_csv('gs://my-bucket/raw/orders.tsv', delim = '\\t')", scan.SniffFragment);
+    }
+
+    [Fact]
+    public void Json_array_layout_reads_with_format_array()
+    {
+        Assert.True(Source().TryGetNativeScan(Ds(format: "json", layout: "array"), out var scan));
+        Assert.Equal("read_json('gs://my-bucket/raw/orders.json', auto_detect = true, format = 'array')", scan!.SqlFragment);
+    }
+
+    [Fact]
+    public void Xlsx_read_installs_excel_and_reads_one_workbook()
+    {
+        Assert.True(Source().TryGetNativeScan(Ds(format: "xlsx"), out var scan));
+        Assert.Equal("read_xlsx('gs://my-bucket/raw/orders.xlsx', header = true)", scan!.SqlFragment);
+        Assert.Equal("read_xlsx", scan.Mechanism);
+        // Assert.EndsWith on a collection does not exist in xunit -- assert the last two elements
+        // explicitly; the secret statement comes first.
+        Assert.Equal("install excel", scan.SetupStatements[^2]);
+        Assert.Equal("load excel", scan.SetupStatements[^1]);
+    }
+
+    [Fact]
+    public void Avro_read_with_a_contract_casts_and_installs_avro()
+    {
+        var cols = new Dictionary<string, string> { ["id"] = "bigint" };
+        Assert.True(Source().TryGetNativeScan(Ds(format: "avro", columns: cols), out var scan));
+        Assert.Equal("(select \"id\"::BIGINT as \"id\" from read_avro('gs://my-bucket/raw/orders.avro'))", scan!.SqlFragment);
+        Assert.Contains("load avro", scan.SetupStatements);
+    }
+
+    [Fact]
+    public void Xlsx_read_over_a_date_template_window_cover_is_PZ0361()
+    {
+        // A date-templated path with both watermark bounds present resolves to a multi-file cover
+        // list -- xlsx reads exactly one workbook per entity, so it refuses rather than silently
+        // reading one file of the matched set.
+        var ex = Assert.Throws<PzConnectorException>(() => Source().TryGetNativeScan(
+            Ds(format: "xlsx", path: "in/{yyyy}/{MM}/{dd}.xlsx", cursor: "d", value: "2026-01-01", upper: "2026-01-03"),
+            out _));
+        Assert.Contains("xlsx reads one workbook per entity", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_glob_path_is_PZ0361()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => Source().TryGetNativeScan(Ds(format: "xlsx", path: "raw/*.xlsx"), out _));
+        Assert.Contains("must name a single file, not a glob", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

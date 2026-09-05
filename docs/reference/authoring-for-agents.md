@@ -64,6 +64,19 @@ my-project/
     root: out   # a source() write lands under out/<entity>/ unless overridden per entity
   ```
 
+  `format:` on a file-place entity (localfiles, s3, gcs, azureblob, sftp) is one of `csv`, `tsv`,
+  `parquet`, `json`, `xlsx`, `avro`. Format-scoped options sit beside it, in YAML or as
+  `source()`/`sink()` kwargs: `delimiter: "|"` (csv only, one ASCII character; tsv is fixed to tab),
+  `layout: ndjson | array` (json only; `ndjson` is the default, `array` is one top-level JSON array
+  and is native-tier only, so sftp refuses it with PZ0361). An option on the wrong format is
+  PZ0362. A read with no `path:` is `<root>/<entity>.<format>`; a sink file is `<entity>.<format>`.
+  `xlsx` (read and write, options `sheet:` and `header:`, one workbook per entity) and `avro` (read
+  only) use DuckDB's `excel` and `avro` extensions, installed on first use (needs network once per
+  machine and DuckDB version, cached under `~/.duckdb/extensions/`); both are native-tier only, so
+  sftp refuses them with PZ0361. With `header: false` DuckDB names xlsx columns `A1`, `B1`, …, so a
+  `columns:` contract must use those names. xlsx write is localfiles-only (an s3/gcs/azureblob xlsx
+  sink is PZ0361); xlsx read works on all four.
+
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a
   top-level `outputs:` block are retired (`PZ0346`/`PZ0347`); everything is one `connections.yml`.

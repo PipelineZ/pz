@@ -230,8 +230,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
             var nativeSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null,
                 WatermarkCandidate: nativeWatermarkCandidate, SyncStateCandidate: null);
             // Lint only where the connector declared the schema was DuckDB-inferred (contract-less
-            // csv/json auto_detect) — a database source's DOUBLE was already a double at the source, so
-            // linting it would be a false positive.
+            // csv/json/xlsx auto-detection) — a database source's DOUBLE was already a double at the
+            // source, so linting it would be a false positive.
             if (scan.SchemaInferred)
             {
                 await IntegerInferenceLint.ApplyAsync(node, def, nativeTable, ctx, ct).ConfigureAwait(false);

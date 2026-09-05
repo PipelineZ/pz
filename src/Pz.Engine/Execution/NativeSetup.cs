@@ -63,7 +63,9 @@ internal static class NativeSetup
         }
 
         return extension.Equals("httpfs", StringComparison.OrdinalIgnoreCase)
-            ? " (first use of an object-store path needs network access to install the DuckDB httpfs extension)"
-            : $" (first use needs network access to install the DuckDB {extension} extension)";
+            ? " (first use of an object-store path needs network access to install the DuckDB httpfs extension, " +
+                "or pre-install it with `INSTALL httpfs` in any DuckDB of the same version)"
+            : $" (first use needs network access to install the DuckDB {extension} extension, " +
+                $"or pre-install it with `INSTALL {extension}` in any DuckDB of the same version)";
     }
 }

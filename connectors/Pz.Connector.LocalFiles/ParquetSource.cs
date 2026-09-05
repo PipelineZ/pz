@@ -85,9 +85,10 @@ internal sealed class ParquetSource(string baseDir) : ISource
     /// it does not. An absolute <c>path:</c> ignores the connection's location entirely.</summary>
     private string ResolvePath(DatasetSpec spec)
     {
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", $"dataset '{spec.Dataset}'");
         var relative = spec.Options.TryGetValue("path", out var value) && value?.ToString() is { Length: > 0 } p
             ? p
-            : $"{spec.Dataset}.{"parquet"}";
+            : $"{spec.Dataset}.{format.Extension}";
 
         return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
     }

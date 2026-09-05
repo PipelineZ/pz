@@ -55,7 +55,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
             SchemaInferred = inferred,
             // Single-key reads only: a multi-key window cover would sniff one member file and claim a
             // verdict for the set.
-            SniffFragment = inferred && keyPatterns.Count == 1 ? FileFormatCatalog.SniffFragment(format, spec.Options, urlList) : null,
+            SniffFragment = inferred && keyPatterns.Count == 1 ? FileFormatCatalog.SniffFragment(format, spec.Options, urlList, context) : null,
         };
         return true;
     }

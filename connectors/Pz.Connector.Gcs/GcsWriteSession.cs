@@ -204,12 +204,12 @@ internal sealed class GcsCsvWriteSession : GcsWriteSession
     }
 
     internal static GcsCsvWriteSession Create(
-        StorageClient client, string bucket, string objectName, Schema arrowSchema, IOperationGate? gate)
+        StorageClient client, string bucket, string objectName, Schema arrowSchema, char delimiter, IOperationGate? gate)
     {
         var spool = OpenSpool();
         try
         {
-            var writer = new CsvWriteCodec(spool, arrowSchema, "gcs universal csv sink", leaveOpen: true);
+            var writer = new CsvWriteCodec(spool, arrowSchema, "gcs universal csv sink", leaveOpen: true, delimiter: delimiter);
             return new GcsCsvWriteSession(client, bucket, objectName, spool, writer, gate);
         }
         catch

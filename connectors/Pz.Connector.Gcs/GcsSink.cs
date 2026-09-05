@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Apache.Arrow.Types;
@@ -52,6 +53,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         var (bucket, prefix) = ResolvePrefix(spec);
         var key = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
         var context = $"output '{spec.Output}'";
+        FileFormatCatalog.EnsureRemoteWritable(format, "gcs", context);
         copy = new NativeCopy(
             $"copy (select * from {{{{source}}}}) to 'gs://{GcsSql.Esc(bucket)}/{GcsSql.Esc(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             [.. GcsSql.SetupStatements(config, GcsSql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
@@ -72,7 +74,9 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         }
 
         var (format, objectName) = ResolveObjectName(spec);
-        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "gcs", $"output '{spec.Output}'");
+        var context = $"output '{spec.Output}'";
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "gcs", context);
+        var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, context);
         var (bucket, prefix) = ResolvePrefix(spec);
         var client = _client ??= (clientFactory ?? (() => GcsAuth.CreateStorageClient(config)))();
 
@@ -91,25 +95,26 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
             {
                 var trimmed = folder.Trim('/');
                 var key = trimmed.Length > 0 ? $"{trimmed}/{objectName}" : objectName;
-                return OpenSessionAsync(client, format, bucket, key, schema, ct);
+                return OpenSessionAsync(client, format, delimiter, bucket, key, schema, ct);
             }
 
             return new GcsPartitionedWriteSession(Open, prefix, partitionColIndex, schema);
         }
 
         var singleKey = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
-        return await OpenSessionAsync(client, format, bucket, singleKey, schema, ct).ConfigureAwait(false);
+        return await OpenSessionAsync(client, format, delimiter, bucket, singleKey, schema, ct).ConfigureAwait(false);
     }
 
     private async ValueTask<ISinkWriteSession> OpenSessionAsync(
-        StorageClient client, FileFormat format, string bucket, string key, Schema schema, CancellationToken ct) =>
+        StorageClient client, FileFormat format, char delimiter, string bucket, string key, Schema schema,
+        CancellationToken ct) =>
         format.Name switch
         {
             "parquet" => await GcsParquetWriteSession.CreateAsync(client, bucket, key, schema, ct, _gate)
                 .ConfigureAwait(false),
-            "csv" => GcsCsvWriteSession.Create(client, bucket, key, schema, _gate),
+            "csv" or "tsv" => GcsCsvWriteSession.Create(client, bucket, key, schema, delimiter, _gate),
             "json" => GcsJsonWriteSession.Create(client, bucket, key, _gate),
-            _ => throw new InvalidOperationException("unreachable: format already validated by EnsureUniversalTierSupported"),
+            _ => throw new UnreachableException("unreachable: format already validated by EnsureUniversalTierSupported"),
         };
 
     /// <summary>Runtime fail-fast for the partition column: it must exist in the write schema AND be a

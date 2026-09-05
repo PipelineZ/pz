@@ -26,15 +26,16 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// pattern: for csv, peek the first matched blob's actual header and report only the declared `columns:`
     /// contract entries also present there (the contract-pruning rule). For parquet,
     /// download the first matched blob and read its footer via <see cref="AzureParquetReader.ReadSchema"/>.
-    /// For json, there is no header row to peek and no footer to read, so the declared `columns:` contract
-    /// IS the schema -- no blob is downloaded. Finds the first match by breaking out of <see
+    /// For json/xlsx/avro, there is no header row to peek and no footer to read (xlsx's header row names
+    /// columns but not their types; avro's embedded schema is not read here), so the declared `columns:`
+    /// contract IS the schema -- no blob is downloaded. Finds the first match by breaking out of <see
     /// cref="EnumerateMatchingBlobsAsync"/> as soon as one name arrives -- disposing the enumerator early so
     /// listing stops there instead of walking every match; no `List&lt;string&gt;` of all matched names is
     /// ever materialized just to peek. No match is a clean named permanent error.</summary>
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var context = $"dataset '{spec.Dataset}'";
-        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", context).Name;
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", context);
         var loc = AzureUrl.ParseDataset(spec.Options, context);
 
         string? firstMatch = null;
@@ -49,22 +50,25 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
             throw NoMatch(spec, loc);
         }
 
-        if (format == "json")
+        if (format.Name is "json" or "xlsx" or "avro")
         {
-            // No header row to peek (unlike csv) and no footer to read (unlike parquet) -- the declared
-            // columns: contract IS the schema, so no blob download is needed here at all.
-            var jsonColumns = GetColumnsContract(spec);
-            var jsonFields = jsonColumns.Select(kv => AzureTypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
-            return new DatasetSchema(new Schema(jsonFields, null));
+            // json has no header row to peek (unlike csv) and no footer to read (unlike parquet); xlsx's
+            // header row names columns but not their types; avro's embedded schema is not read here --
+            // for all three the declared columns: contract IS the schema, so no blob download is needed
+            // here at all.
+            var columns = GetColumnsContract(spec, format.Name);
+            var fields = columns.Select(kv => AzureTypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+            return new DatasetSchema(new Schema(fields, null));
         }
 
         var stream = await OpenBlobStreamAsync(config, loc.Scheme, loc.Container, firstMatch, ct).ConfigureAwait(false);
         try
         {
-            if (format == "csv")
+            if (format.Name is "csv" or "tsv")
             {
-                var columns = GetColumnsContract(spec);
-                var header = await ReadCsvHeaderAsync(stream, ct).ConfigureAwait(false);
+                var columns = GetColumnsContract(spec, "csv/tsv/json");
+                var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, context);
+                var header = await ReadCsvHeaderAsync(stream, delimiter, ct).ConfigureAwait(false);
                 var fields = columns
                     .Where(kv => header.Contains(kv.Key))
                     .Select(kv => AzureTypeNameMap.ToArrowField(kv.Key, kv.Value))
@@ -124,7 +128,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
             SchemaInferred = inferred,
             // Single-key reads only: a multi-key window cover would sniff just one member file and
             // claim a verdict for the set.
-            SniffFragment = inferred && keyPatterns.Count == 1 ? FileFormatCatalog.SniffFragment(format, spec.Options, urlList) : null,
+            SniffFragment = inferred && keyPatterns.Count == 1 ? FileFormatCatalog.SniffFragment(format, spec.Options, urlList, context) : null,
         };
         return true;
     }
@@ -151,9 +155,9 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         CoverKeys(key, spec).Select(PathTemplate.StaticPrefix).ToArray();
 
     /// <summary>Azure reads are native-only, so this is a refusal stub. It preserves two error messages:
-    /// csv/json without a declared `columns:` contract gets the clear contract error, everything else gets
-    /// the native-only refusal -- the ParquetSource precedent. <see cref="TryGetNativeScan"/> never
-    /// declines for a contract-less csv/json dataset, and the planner only ever calls `PlanReadAsync` when
+    /// csv/tsv/json without a declared `columns:` contract gets the clear contract error, everything else
+    /// gets the native-only refusal -- the ParquetSource precedent. <see cref="TryGetNativeScan"/> never
+    /// declines for a contract-less csv/tsv/json dataset, and the planner only ever calls `PlanReadAsync` when
     /// `engine.force_universal`/`files_per_partition` forces the universal tier -- which it refuses
     /// outright for any <see cref="INativeOnlySource"/> at plan time (this connector's contract). So this
     /// method is normally unreachable in practice; the pre-check inside it stays only as defense in depth
@@ -161,9 +165,9 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", $"dataset '{spec.Dataset}'").Name;
-        if (format is "csv" or "json")
+        if (format is "csv" or "tsv" or "json")
         {
-            GetColumnsContract(spec); // throws the named contract error when the columns: contract is absent
+            GetColumnsContract(spec, "csv/tsv/json"); // throws the named contract error when the columns: contract is absent
         }
 
         throw new PzConnectorException(
@@ -330,11 +334,11 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/> (mirrors
     /// <c>Pz.Connector.LocalFiles.CsvSource.ReadHeaderAsync</c>, replicated per this connector's
     /// no-cross-connector-reference rule). Leaves no data rows consumed beyond the header.</summary>
-    private static async Task<HashSet<string>> ReadCsvHeaderAsync(Stream blob, CancellationToken ct)
+    private static async Task<HashSet<string>> ReadCsvHeaderAsync(Stream blob, char delimiter, CancellationToken ct)
     {
         using var textReader = new StreamReader(blob, leaveOpen: true);
         using var csv = await CsvDataReader.CreateAsync(
-            textReader, new CsvDataReaderOptions { HasHeaders = true }, ct).ConfigureAwait(false);
+            textReader, new CsvDataReaderOptions { HasHeaders = true, Delimiter = delimiter }, ct).ConfigureAwait(false);
 
         var names = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < csv.FieldCount; i++)
@@ -346,11 +350,14 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     }
 
     /// <summary>The declared `columns:` contract, injected by <c>SourceLoadExecutor</c> into
-    /// <see cref="DatasetSpec.Options"/>["columns"]. Shared by csv and json (both require a contract; v0
-    /// does no type inference). Missing contract is a permanent failure.</summary>
-    private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec) =>
+    /// <see cref="DatasetSpec.Options"/>["columns"]. Shared by csv, tsv, json, xlsx and avro (all five
+    /// require a contract for schema fetch; v0 does no type inference). <paramref name="formatName"/>
+    /// names the format(s) in the error -- either one concrete format (json/xlsx/avro's schema-peek
+    /// callers) or "csv/tsv/json" (the shared universal-tier-refusal precheck). Missing contract is a
+    /// permanent failure.</summary>
+    private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec, string formatName) =>
         ExtractColumns(spec) ?? throw new PzConnectorException(
-            $"dataset '{spec.Dataset}': azure csv/json requires a declared columns: contract", isTransient: false);
+            $"dataset '{spec.Dataset}': azure {formatName} requires a declared columns: contract", isTransient: false);
 
     private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
         spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns

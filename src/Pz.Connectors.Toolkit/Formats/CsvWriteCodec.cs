@@ -13,7 +13,8 @@ namespace Pz.Connectors.Toolkit.Formats;
 /// Output carries no UTF-8 BOM, deliberately: DuckDB's native <c>COPY ... (FORMAT csv)</c> never writes
 /// one, the planner — not the author — picks the tier, and the two tiers' outputs must be
 /// interchangeable byte-for-byte. Header row from the Arrow schema, invariant formatting per the v0 type
-/// matrix, comma/quote/CR/LF fields quoted with doubled internal quotes, LF line endings.
+/// matrix, delimiter/quote/CR/LF (comma by default) fields quoted with doubled internal quotes, LF line
+/// endings.
 ///
 /// The obvious shape — format each cell to a <c>string</c> (re-allocated again by quoting), append it to
 /// a per-row <c>StringBuilder</c>, transcode UTF-16 → UTF-8 through a <c>StreamWriter</c>, one
@@ -46,14 +47,16 @@ public sealed class CsvWriteCodec : IAsyncDisposable
     /// concurrent sink session.</summary>
     private const int BufferBytes = 256 * 1024;
 
-    /// <summary>The four characters RFC 4180 requires a field to be quoted for. All are ASCII, so
-    /// scanning the raw UTF-8 bytes can never collide with a multi-byte sequence's continuation bytes
-    /// (those are all ≥ 0x80).</summary>
-    private static readonly SearchValues<byte> QuoteTriggers = SearchValues.Create(",\"\n\r"u8);
-
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
     private readonly string _sinkLabel;
+    private readonly byte _delimiter;
+
+    /// <summary>The four characters RFC 4180 requires a field to be quoted for: the configured
+    /// delimiter (comma by default), the quote character, and CR/LF. All are ASCII, so scanning the raw
+    /// UTF-8 bytes can never collide with a multi-byte sequence's continuation bytes (those are all ≥
+    /// 0x80).</summary>
+    private readonly SearchValues<byte> _quoteTriggers;
     private byte[]? _buffer;
     private int _length;
     private Column[] _columns = [];
@@ -65,26 +68,34 @@ public sealed class CsvWriteCodec : IAsyncDisposable
 
     /// <summary>Opens a writer over <paramref name="destination"/> and buffers the header row for
     /// <paramref name="schema"/>. Nothing reaches <paramref name="destination"/> until the first flush.
-    /// <paramref name="sinkLabel"/> names the connector in the "unsupported array type"
-    /// message.</summary>
-    public CsvWriteCodec(Stream destination, Schema schema, string sinkLabel, bool leaveOpen = false)
+    /// <paramref name="sinkLabel"/> names the connector in the "unsupported array type" message.
+    /// <paramref name="delimiter"/> must be ASCII, since the fast paths scan raw UTF-8 bytes for it
+    /// alongside the quote and CR/LF triggers.</summary>
+    public CsvWriteCodec(Stream destination, Schema schema, string sinkLabel, bool leaveOpen = false, char delimiter = ',')
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(schema);
+        if (!char.IsAscii(delimiter) || delimiter is '"' or '\n' or '\r')
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(delimiter), delimiter, "csv delimiter must be ASCII and not a quote, newline or carriage return");
+        }
 
         _stream = destination;
         _leaveOpen = leaveOpen;
         _sinkLabel = sinkLabel;
+        _delimiter = (byte)delimiter;
+        _quoteTriggers = SearchValues.Create([(byte)delimiter, (byte)'"', (byte)'\n', (byte)'\r']);
 
         var header = new StringBuilder();
         for (var i = 0; i < schema.FieldsList.Count; i++)
         {
             if (i > 0)
             {
-                header.Append(',');
+                header.Append(delimiter);
             }
 
-            header.Append(QuoteText(schema.FieldsList[i].Name));
+            header.Append(QuoteText(schema.FieldsList[i].Name, delimiter));
         }
 
         header.Append('\n');
@@ -220,6 +231,8 @@ public sealed class CsvWriteCodec : IAsyncDisposable
         var columns = _columns;
         var count = _columnCount;
         var length = _length;
+        var delimiter = _delimiter;
+        var quoteTriggers = _quoteTriggers;
 
         // With no string column in the schema every row has the same bound, so the per-row sizing pass
         // collapses to one comparison.
@@ -236,10 +249,10 @@ public sealed class CsvWriteCodec : IAsyncDisposable
             {
                 if (col > 0)
                 {
-                    buffer[length++] = (byte)',';
+                    buffer[length++] = delimiter;
                 }
 
-                length += WriteCell(ref columns[col], row, buffer.AsSpan(length));
+                length += WriteCell(ref columns[col], row, buffer.AsSpan(length), quoteTriggers);
             }
 
             buffer[length++] = (byte)'\n';
@@ -282,7 +295,7 @@ public sealed class CsvWriteCodec : IAsyncDisposable
             if (col > 0)
             {
                 await EnsureAsync(1, ct).ConfigureAwait(false);
-                _buffer![_length++] = (byte)',';
+                _buffer![_length++] = _delimiter;
             }
 
             if (_columns[col].Kind != CellKind.String)
@@ -331,7 +344,7 @@ public sealed class CsvWriteCodec : IAsyncDisposable
         _buffer![_length++] = (byte)'\n';
     }
 
-    private unsafe bool NeedsQuoting(int col, int row) => _columns[col].Utf8(row).IndexOfAny(QuoteTriggers) >= 0;
+    private unsafe bool NeedsQuoting(int col, int row) => _columns[col].Utf8(row).IndexOfAny(_quoteTriggers) >= 0;
 
     private unsafe int IndexOfQuote(int col, int row, int start)
     {
@@ -378,7 +391,14 @@ public sealed class CsvWriteCodec : IAsyncDisposable
     /// position, which the caller has already sized. Every rendering here must stay byte-for-byte what
     /// <c>ToString(format, InvariantCulture)</c> produces — the <c>TryFormat</c> overloads used are the
     /// UTF-8 equivalents of exactly those calls.</summary>
-    private unsafe int WriteCell(ref Column column, int row, Span<byte> destination)
+    private unsafe int WriteCell(ref Column column, int row, Span<byte> destination) =>
+        WriteCell(ref column, row, destination, _quoteTriggers);
+
+    /// <summary>Same cell formatting as the field-reading overload above, but takes the quote-trigger set
+    /// as a parameter so a hot per-cell caller (<see cref="WriteRowsThatFit"/>) that has already hoisted
+    /// it into a local passes it straight through instead of re-reading <see cref="_quoteTriggers"/> on
+    /// every string cell.</summary>
+    private unsafe int WriteCell(ref Column column, int row, Span<byte> destination, SearchValues<byte> quoteTriggers)
     {
         if (!column.IsValid(row))
         {
@@ -415,7 +435,7 @@ public sealed class CsvWriteCodec : IAsyncDisposable
                     .TryFormat(destination, out written, "O", CultureInfo.InvariantCulture);
                 break;
             default:
-                return WriteStringCell(ref column, row, destination);
+                return WriteStringCell(ref column, row, destination, quoteTriggers);
         }
 
         return written;
@@ -424,10 +444,10 @@ public sealed class CsvWriteCodec : IAsyncDisposable
     /// <summary>Copies one string cell's UTF-8 bytes straight from the pinned Arrow value buffer,
     /// quoting only when RFC 4180 requires it. Never decodes to UTF-16, so a value's bytes reach the
     /// file exactly as the source produced them.</summary>
-    private unsafe int WriteStringCell(ref Column column, int row, Span<byte> destination)
+    private static unsafe int WriteStringCell(ref Column column, int row, Span<byte> destination, SearchValues<byte> quoteTriggers)
     {
         var value = column.Utf8(row);
-        if (value.IndexOfAny(QuoteTriggers) < 0)
+        if (value.IndexOfAny(quoteTriggers) < 0)
         {
             value.CopyTo(destination);
             return value.Length;
@@ -450,14 +470,14 @@ public sealed class CsvWriteCodec : IAsyncDisposable
         return written;
     }
 
-    private static string QuoteText(string? value)
+    private static string QuoteText(string? value, char delimiter)
     {
         if (value is null)
         {
             return string.Empty;
         }
 
-        return value.IndexOfAny([',', '"', '\n', '\r']) >= 0
+        return value.IndexOfAny([delimiter, '"', '\n', '\r']) >= 0
             ? "\"" + value.Replace("\"", "\"\"") + "\""
             : value;
     }

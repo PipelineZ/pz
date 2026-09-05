@@ -26,6 +26,7 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
         var context = $"output '{spec.Output}'";
         var format = FileFormatCatalog.Resolve(spec.Options, null, "s3", context);
         FileFormatCatalog.EnsureWritable(format, "s3", context);
+        FileFormatCatalog.EnsureRemoteWritable(format, "s3", context);
         var objectName = spec.Mode == "append"
             ? $"{spec.Output}-{Guid.NewGuid():N}.{format.Extension}"
             : $"{spec.Output}.{format.Extension}";

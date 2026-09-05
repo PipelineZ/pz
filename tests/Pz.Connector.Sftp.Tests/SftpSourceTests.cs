@@ -506,6 +506,59 @@ public class SftpSourceTests
     }
 
     [Fact]
+    public async Task Tsv_read_splits_on_tabs()
+    {
+        var fake = new FakeSftpFileSystem();
+        fake.AddFile("/data/people.tsv", "id\tname\n1\ta,b\n");
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("people", ("format", "tsv"), ("columns", Columns(("id", "bigint"), ("name", "varchar"))));
+
+        var parts = await source.PlanReadAsync(spec, ReadHints.None, default);
+        Assert.Single(parts);
+
+        var batches = await DrainAsync(parts[0]);
+        Assert.Equal("a,b", ((StringArray)batches[0].Column(1)).GetString(0));
+    }
+
+    [Fact]
+    public async Task Json_array_read_is_PZ0361()
+    {
+        var fake = new FakeSftpFileSystem();
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("events", ("format", "json"), ("layout", "array"), ("columns", Columns(("id", "bigint"))));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => source.GetSchemaAsync(spec, default).AsTask());
+        Assert.StartsWith("PZ0361: dataset 'events': json 'layout: array' is native-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Xlsx_read_is_PZ0361()
+    {
+        // sftp has no native tier -- xlsx is native-only (DuckDB's excel extension), so it is refused
+        // by EnsureUniversalTierSupported before any connection is dialed.
+        var fake = new FakeSftpFileSystem();
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("orders", ("format", "xlsx"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => source.GetSchemaAsync(spec, default).AsTask());
+        Assert.StartsWith("PZ0361: dataset 'orders': format 'xlsx' is native-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Avro_read_is_PZ0361()
+    {
+        var fake = new FakeSftpFileSystem();
+        var source = NewSource(fake, root: "/data");
+        var spec = Spec("orders", ("format", "avro"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => source.GetSchemaAsync(spec, default).AsTask());
+        Assert.StartsWith("PZ0361: dataset 'orders': format 'avro' is native-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Gate_wraps_list_and_open_read_operations()
     {
         var fake = new FakeSftpFileSystem();

@@ -26,12 +26,17 @@ public sealed class S3SinkTests
 
     private static OutputSpec Spec(
         string sink = "lake", string output = "data", string mode = "replace",
-        string bucket = "my-bucket", string? path = "raw/orders", string format = "parquet")
+        string bucket = "my-bucket", string? path = "raw/orders", string format = "parquet", string? layout = null)
     {
         var options = new Dictionary<string, object?> { ["bucket"] = bucket, ["format"] = format };
         if (path is not null)
         {
             options["path"] = path;
+        }
+
+        if (layout is not null)
+        {
+            options["layout"] = layout;
         }
 
         return new OutputSpec(sink, output, mode, "fail_on_change", options);
@@ -103,7 +108,7 @@ public sealed class S3SinkTests
         Assert.False(ex.IsTransient);
         Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
         Assert.Contains("prquet", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: avro, csv, json, parquet, tsv, xlsx)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -149,7 +154,7 @@ public sealed class S3SinkTests
         });
 
         Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: avro, csv, json, parquet, tsv, xlsx)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -190,5 +195,45 @@ public sealed class S3SinkTests
     {
         var c = new S3Connector();
         Assert.Contains(FileFormatCatalog.SchemaProperties, c.DatasetConfigSchema, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_copy_targets_the_tsv_suffix_and_tab_delimiter()
+    {
+        var sink = new S3Sink(Config());
+        sink.TryGetNativeCopy(Spec(format: "tsv"), out var copy);
+        Assert.Equal(
+            "copy (select * from {{source}}) to 's3://my-bucket/raw/orders/data.tsv' " +
+            "(format csv, header, delimiter '\\t')", copy!.CopySql);
+    }
+
+    [Fact]
+    public void Json_array_layout_copies_with_format_json_array_true()
+    {
+        var sink = new S3Sink(Config());
+        sink.TryGetNativeCopy(Spec(format: "json", layout: "array"), out var copy);
+        Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_copy_is_PZ0361_remote_write_refused()
+    {
+        // s3 is a remote target -- DuckDB's excel writer aborts the whole process on a remote IO/auth
+        // failure mid-write, so xlsx write is refused at plan time rather than attempted.
+        var sink = new S3Sink(Config());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Spec(format: "xlsx"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so s3 refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json",
+            ex.Message);
+    }
+
+    [Fact]
+    public void Avro_write_is_the_read_only_refusal()
+    {
+        var sink = new S3Sink(Config());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Spec(format: "avro"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': format 'avro' is read-only on s3 -- write parquet, csv or json instead",
+            ex.Message);
     }
 }

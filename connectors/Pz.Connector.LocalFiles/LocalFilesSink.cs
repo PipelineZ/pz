@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using Apache.Arrow;
@@ -78,9 +79,10 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
             {
                 "parquet" => await ParquetSinkWriteSession.CreateAsync(tempDir, tempFilePath, finalFilePath, schema, ct)
                     .ConfigureAwait(false),
-                "csv" => new CsvSinkWriteSession(tempDir, tempFilePath, finalFilePath, schema),
+                "csv" or "tsv" => new CsvSinkWriteSession(
+                    tempDir, tempFilePath, finalFilePath, schema, FileFormatCatalog.Delimiter(format, spec.Options, context)),
                 "json" => new NdjsonSinkWriteSession(tempDir, tempFilePath, finalFilePath),
-                _ => throw new UnreachableException(),
+                _ => throw new UnreachableException("unreachable: format already validated"),
             };
         }
         catch
@@ -120,8 +122,6 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
             // Suppressed by design: never mask an earlier failure with cleanup fallout.
         }
     }
-
-    private sealed class UnreachableException() : Exception("unreachable: format already validated");
 }
 
 internal enum LocalFileSessionState { Open, Committed, Aborted }
@@ -329,17 +329,17 @@ internal sealed class ParquetSinkWriteSession : LocalFileWriteSessionBase
     }
 }
 
-/// <summary>Minimal RFC-4180 CSV writer: header row from the Arrow schema, one text line per row,
-/// fields containing a comma/quote/newline are quoted with doubled internal quotes, LF line endings.
-/// The encoding itself lives in the shared <see cref="CsvWriteCodec"/> (the same writer the azure sink
-/// uses), so csv output stays byte-identical across connectors — as NDJSON does via
+/// <summary>Minimal RFC-4180 CSV/TSV writer: header row from the Arrow schema, one text line per row,
+/// fields containing the delimiter/quote/newline are quoted with doubled internal quotes, LF line
+/// endings. The encoding itself lives in the shared <see cref="CsvWriteCodec"/> (the same writer the
+/// azure sink uses), so csv output stays byte-identical across connectors — as NDJSON does via
 /// <see cref="NdjsonWriteCodec"/>. This session keeps only the temp-file/commit protocol.</summary>
 internal sealed class CsvSinkWriteSession : LocalFileWriteSessionBase
 {
     private CsvWriteCodec? _writer;
     private bool _closed;
 
-    internal CsvSinkWriteSession(string tempDir, string tempFilePath, string finalFilePath, Schema schema)
+    internal CsvSinkWriteSession(string tempDir, string tempFilePath, string finalFilePath, Schema schema, char delimiter)
         : base(tempDir, tempFilePath, finalFilePath) =>
         _writer = new CsvWriteCodec(
             // BufferSize 0 disables FileStream's own buffer: the codec already batches whole rows into
@@ -350,7 +350,7 @@ internal sealed class CsvSinkWriteSession : LocalFileWriteSessionBase
                 Access = FileAccess.Write,
                 BufferSize = 0,
             }),
-            schema, "LocalFiles csv sink v0");
+            schema, "LocalFiles csv sink v0", delimiter: delimiter);
 
     protected override ValueTask WriteBatchCoreAsync(RecordBatch batch, CancellationToken ct) =>
         _writer!.WriteBatchAsync(batch, ct);

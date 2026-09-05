@@ -22,13 +22,14 @@ public sealed class GcsSinkNativeTests
 
     private static OutputSpec Out(
         string output = "daily", string mode = "replace", string? format = "parquet", string? path = null,
-        string? bucket = null, IReadOnlyList<string>? partitionBy = null)
+        string? bucket = null, IReadOnlyList<string>? partitionBy = null, string? layout = null)
     {
         var options = new Dictionary<string, object?>();
         if (format is not null) options["format"] = format;
         if (path is not null) options["path"] = path;
         if (bucket is not null) options["bucket"] = bucket;
         if (partitionBy is not null) options["partition_by"] = partitionBy;
+        if (layout is not null) options["layout"] = layout;
         return new OutputSpec("lake", output, mode, "strict", options);
     }
 
@@ -73,12 +74,12 @@ public sealed class GcsSinkNativeTests
         var missing = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: null), out _));
         Assert.Contains("'format'", missing.Message, StringComparison.Ordinal);
         Assert.StartsWith("PZ0361: output '", missing.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: avro, csv, json, parquet, tsv, xlsx)", missing.Message, StringComparison.Ordinal);
 
-        var bad = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "avro"), out _));
-        Assert.Contains("'avro'", bad.Message, StringComparison.Ordinal);
+        var bad = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "orc"), out _));
+        Assert.Contains("'orc'", bad.Message, StringComparison.Ordinal);
         Assert.StartsWith("PZ0361: output '", bad.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", bad.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: avro, csv, json, parquet, tsv, xlsx)", bad.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -118,5 +119,42 @@ public sealed class GcsSinkNativeTests
             await new GcsSink(Hmac()).BeginWriteAsync(Out(), schema, CancellationToken.None));
         Assert.False(ex.IsTransient);
         Assert.Contains("native COPY", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_copy_targets_the_tsv_suffix_and_tab_delimiter()
+    {
+        Assert.True(new GcsSink(Hmac()).TryGetNativeCopy(Out(format: "tsv"), out var copy));
+        Assert.Equal(
+            "copy (select * from {{source}}) to 'gs://my-bucket/out/daily.tsv' " +
+            "(format csv, header, delimiter '\\t')", copy!.CopySql);
+    }
+
+    [Fact]
+    public void Json_array_layout_copies_with_format_json_array_true()
+    {
+        Assert.True(new GcsSink(Hmac()).TryGetNativeCopy(Out(format: "json", layout: "array"), out var copy));
+        Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_copy_is_PZ0361_remote_write_refused()
+    {
+        // gcs is a remote target -- DuckDB's excel writer aborts the whole process on a remote IO/auth
+        // failure mid-write, so xlsx write is refused at plan time rather than attempted.
+        var ex = Assert.Throws<PzConnectorException>(() => new GcsSink(Hmac()).TryGetNativeCopy(Out(format: "xlsx"), out _));
+        Assert.Equal(
+            "PZ0361: output 'daily': xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so gcs refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json",
+            ex.Message);
+    }
+
+    [Fact]
+    public void Avro_write_is_the_read_only_refusal()
+    {
+        var sink = new GcsSink(Hmac());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "avro"), out _));
+        Assert.Equal(
+            "PZ0361: output 'daily': format 'avro' is read-only on gcs -- write parquet, csv or json instead",
+            ex.Message);
     }
 }

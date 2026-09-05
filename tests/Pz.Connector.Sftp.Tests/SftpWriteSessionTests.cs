@@ -38,7 +38,7 @@ public class SftpWriteSessionTests
 
     private static Task<SftpCsvWriteSession> CreateCsvAsync(
         ISftpFileSystem fs, string tempPath, string finalPath, IOperationGate? gate, bool ownsFileSystem = false) =>
-        SftpCsvWriteSession.CreateAsync(fs, ownsFileSystem, tempPath, finalPath, TwoColumnSchema, gate, "sftp csv sink test", CancellationToken.None);
+        SftpCsvWriteSession.CreateAsync(fs, ownsFileSystem, tempPath, finalPath, TwoColumnSchema, ',', gate, "sftp csv sink test", CancellationToken.None);
 
     // ---------- commit / abort / dispose protocol (csv exercises the shared base for all formats) ----------
 
@@ -273,7 +273,7 @@ public class SftpWriteSessionTests
         var tracker = new DisposeTrackingFs(new FakeSftpFileSystem());
         var gate = new CountingOperationGate();
         var session = await SftpCsvWriteSession.CreateAsync(
-            tracker, ownsFileSystem: true, "out/.pz-tmp-a-orders.csv", "out/orders.csv", TwoColumnSchema, gate,
+            tracker, ownsFileSystem: true, "out/.pz-tmp-a-orders.csv", "out/orders.csv", TwoColumnSchema, ',', gate,
             "ctx", CancellationToken.None);
 
         using var batch = BuildBatch(1, "Alice");
@@ -291,7 +291,7 @@ public class SftpWriteSessionTests
         var tracker = new DisposeTrackingFs(new FakeSftpFileSystem());
         var gate = new CountingOperationGate();
         var session = await SftpCsvWriteSession.CreateAsync(
-            tracker, ownsFileSystem: false, "out/.pz-tmp-a-orders.csv", "out/orders.csv", TwoColumnSchema, gate,
+            tracker, ownsFileSystem: false, "out/.pz-tmp-a-orders.csv", "out/orders.csv", TwoColumnSchema, ',', gate,
             "ctx", CancellationToken.None);
 
         using var batch = BuildBatch(1, "Alice");

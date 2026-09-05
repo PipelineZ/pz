@@ -9,11 +9,12 @@ public sealed class AzureSqlGenTests
         new(new Dictionary<string, object?> { ["auth"] = "connection_string", ["connection_string"] = "cs" });
 
     private static OutputSpec Out(string mode = "replace", string container = "lake", string? path = "raw/orders",
-        string format = "parquet", string? scheme = null)
+        string format = "parquet", string? scheme = null, string? layout = null)
     {
         var o = new Dictionary<string, object?> { ["container"] = container, ["format"] = format };
         if (path is not null) o["path"] = path;
         if (scheme is not null) o["scheme"] = scheme;
+        if (layout is not null) o["layout"] = layout;
         return new OutputSpec("sink", "data", mode, "fail_on_change", o);
     }
 
@@ -63,14 +64,16 @@ public sealed class AzureSqlGenTests
         Assert.Contains("parquet", ex.Message, StringComparison.Ordinal);
         Assert.Contains("csv", ex.Message, StringComparison.Ordinal);
         Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: avro, csv, json, parquet, tsv, xlsx)", ex.Message, StringComparison.Ordinal);
     }
 
     private static DatasetSpec Ds(string format = "parquet", string container = "lake", string path = "in/*.parquet",
-        string? cursor = null, string? value = null, string? upper = null, IReadOnlyDictionary<string, string>? columns = null)
+        string? cursor = null, string? value = null, string? upper = null, IReadOnlyDictionary<string, string>? columns = null,
+        string? layout = null)
     {
         var o = new Dictionary<string, object?> { ["container"] = container, ["path"] = path, ["format"] = format };
         if (columns is not null) o["columns"] = columns;
+        if (layout is not null) o["layout"] = layout;
         return new DatasetSpec("src", "orders", o) { WatermarkCursor = cursor, WatermarkValue = value, WatermarkUpperBound = upper };
     }
 
@@ -275,6 +278,44 @@ public sealed class AzureSqlGenTests
     }
 
     [Fact]
+    public void Tsv_copy_targets_the_tsv_suffix_and_tab_delimiter()
+    {
+        var sink = new AzureSink(Conn());
+        Assert.True(sink.TryGetNativeCopy(Out(format: "tsv"), out var copy));
+        Assert.Equal(
+            "copy (select * from {{source}}) to 'az://lake/raw/orders/data.tsv' " +
+            "(format csv, header, delimiter '\\t')", copy!.CopySql);
+    }
+
+    [Fact]
+    public void Json_array_layout_copies_with_format_json_array_true()
+    {
+        var sink = new AzureSink(Conn());
+        Assert.True(sink.TryGetNativeCopy(Out(format: "json", layout: "array"), out var copy));
+        Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_read_defaults_to_the_tsv_suffix_and_tab_delimiter()
+    {
+        var src = new AzureSource(Conn());
+        Assert.True(src.TryGetNativeScan(Ds(format: "tsv", path: "in/data.tsv"), out var scan));
+        Assert.Equal(
+            "read_csv('az://lake/in/data.tsv', header = true, auto_detect = true, delim = '\\t')",
+            scan!.SqlFragment);
+        Assert.Equal("sniff_csv('az://lake/in/data.tsv', delim = '\\t')", scan.SniffFragment);
+    }
+
+    [Fact]
+    public void Json_array_layout_reads_with_format_array()
+    {
+        var src = new AzureSource(Conn());
+        Assert.True(src.TryGetNativeScan(Ds(format: "json", path: "in/data.json", layout: "array"), out var scan));
+        Assert.Equal(
+            "read_json('az://lake/in/data.json', auto_detect = true, format = 'array')", scan!.SqlFragment);
+    }
+
+    [Fact]
     public void Windowed_hourly_layout_scans_the_minimal_cover_url_list()
     {
         // events/{yyyy}/{MM}/{dd}/{HH}/... with a window from 2026-01-02T10 to 2026-01-03T02:
@@ -317,5 +358,74 @@ public sealed class AzureSqlGenTests
 
         Assert.True(src.TryGetNativeScan(Ds(), out var parquet));
         Assert.False(parquet!.SchemaInferred);
+    }
+
+    [Fact]
+    public void Xlsx_read_installs_excel_and_reads_one_workbook()
+    {
+        // Unlike s3/gcs, azure's Ds() helper always carries a path: value -- AzureUrl.ParseDataset
+        // requires 'path' explicitly (no <entity>.<format> default), so an explicit single-file path
+        // is passed here rather than relying on the helper's own default.
+        var src = new AzureSource(Conn());
+        Assert.True(src.TryGetNativeScan(Ds(format: "xlsx", path: "in/orders.xlsx"), out var scan));
+        Assert.Equal("read_xlsx('az://lake/in/orders.xlsx', header = true)", scan!.SqlFragment);
+        Assert.Equal("read_xlsx", scan.Mechanism);
+        // Assert.EndsWith on a collection does not exist in xunit -- assert the last two elements
+        // explicitly; the secret statement comes first.
+        Assert.Equal("install excel", scan.SetupStatements[^2]);
+        Assert.Equal("load excel", scan.SetupStatements[^1]);
+    }
+
+    [Fact]
+    public void Avro_read_with_a_contract_casts_and_installs_avro()
+    {
+        var src = new AzureSource(Conn());
+        var cols = new Dictionary<string, string> { ["id"] = "bigint" };
+        Assert.True(src.TryGetNativeScan(Ds(format: "avro", path: "in/orders.avro", columns: cols), out var scan));
+        Assert.Equal("(select \"id\"::BIGINT as \"id\" from read_avro('az://lake/in/orders.avro'))", scan!.SqlFragment);
+        Assert.Contains("load avro", scan.SetupStatements);
+    }
+
+    [Fact]
+    public void Xlsx_read_over_a_date_template_window_cover_is_PZ0361()
+    {
+        // A date-templated path with both watermark bounds present resolves to a multi-file cover
+        // list -- xlsx reads exactly one workbook per entity, so it refuses rather than silently
+        // reading one file of the matched set.
+        var src = new AzureSource(Conn());
+        var ex = Assert.Throws<PzConnectorException>(() => src.TryGetNativeScan(
+            Ds(format: "xlsx", path: "in/{yyyy}/{MM}/{dd}.xlsx", cursor: "d", value: "2026-01-01", upper: "2026-01-03"),
+            out _));
+        Assert.Contains("xlsx reads one workbook per entity", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_glob_path_is_PZ0361()
+    {
+        var src = new AzureSource(Conn());
+        var ex = Assert.Throws<PzConnectorException>(() => src.TryGetNativeScan(Ds(format: "xlsx", path: "raw/*.xlsx"), out _));
+        Assert.Contains("must name a single file, not a glob", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Xlsx_copy_is_PZ0361_remote_write_refused()
+    {
+        // azureblob is a remote target -- DuckDB's excel writer aborts the whole process on a remote
+        // IO/auth failure mid-write, so xlsx write is refused at plan time rather than attempted.
+        var sink = new AzureSink(Conn());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "xlsx"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so azureblob refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json",
+            ex.Message);
+    }
+
+    [Fact]
+    public void Avro_write_is_the_read_only_refusal()
+    {
+        var sink = new AzureSink(Conn());
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "avro"), out _));
+        Assert.Equal(
+            "PZ0361: output 'data': format 'avro' is read-only on azureblob -- write parquet, csv or json instead",
+            ex.Message);
     }
 }

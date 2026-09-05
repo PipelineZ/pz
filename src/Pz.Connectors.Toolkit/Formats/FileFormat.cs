@@ -6,13 +6,16 @@ namespace Pz.Connectors.Toolkit.Formats;
 /// NDJSON codec) implement the format, so a connector without a native tier, or an output forced onto
 /// the universal tier, can still carry it. <see cref="DuckDbExtensions"/> are the DuckDB extensions a
 /// native scan/copy must install and load first. <see cref="OptionKeys"/> are the format-scoped options
-/// this format admits; a format-scoped option present on an entity of another format is PZ0362.</summary>
+/// this format admits; a format-scoped option present on an entity of another format is PZ0362.
+/// <see cref="LocalWriteOnly"/> is true when the format's DuckDB writer must only target the local
+/// filesystem: a remote write failure aborts the host process instead of failing the node.</summary>
 public sealed record FileFormat(
     string Name,
     string Extension,
     bool NativeRead,
     bool NativeWrite,
     bool UniversalTier,
+    bool LocalWriteOnly,
     IReadOnlyList<string> DuckDbExtensions,
     IReadOnlySet<string> OptionKeys);
 

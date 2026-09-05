@@ -8,8 +8,9 @@ namespace Pz.Connector.LocalFiles;
 /// escaping never drift between the two formats.</summary>
 internal static class LocalFilesWindowSql
 {
-    /// <summary>Wraps <paramref name="fragment"/> (a bare <c>read_csv(...)</c>/<c>read_parquet(...)</c>
-    /// call) in <c>(select * from &lt;fragment&gt; where "cursor" &gt; 'lo' and "cursor" &lt;= 'hi')</c>
+    /// <summary>Wraps <paramref name="fragment"/> — a bare <c>read_csv(...)</c>/<c>read_parquet(...)</c>
+    /// call, or a declared-contract cast subquery (<c>(select ... from read_xlsx(...))</c>/<c>read_avro(...)</c>)
+    /// — in <c>(select * from &lt;fragment&gt; where "cursor" &gt; 'lo' and "cursor" &lt;= 'hi')</c>
     /// when <paramref name="spec"/> carries both a watermark cursor and an upper bound -- the only
     /// combination <c>SourceLoadExecutor</c> ever stamps for a windowed dataset. Returns
     /// <paramref name="fragment"/> unchanged for every other case (no watermark fields, or a plain
