@@ -13,7 +13,9 @@ namespace Pz.Connector.LocalFiles;
 /// <see cref="PlanReadAsync"/>). The native scan tier (<see cref="TryGetNativeScan"/>) goes through
 /// DuckDB's <c>read_csv</c>: a fully contract-less dataset is inferred by DuckDB's own
 /// <c>auto_detect</c>, while a declared contract -- partial or full -- prunes the read to exactly its
-/// declared columns.</summary>
+/// declared columns. tsv shares this whole reader with csv -- it is the same code with the field
+/// delimiter fixed to a tab (<see cref="FileFormatCatalog.Delimiter"/>) rather than a class of its
+/// own.</summary>
 internal sealed class CsvSource(string baseDir) : ISource
 {
     /// <summary>Sylvan's read buffer defaults to 16KiB and refuses any row wider than it, failing the
@@ -29,11 +31,29 @@ internal sealed class CsvSource(string baseDir) : ISource
     /// tier is the more permissive of the two rather than the more restrictive.</summary>
     internal const int MaxRowBytes = 16 * 1024 * 1024;
 
-    /// <summary>The one place CSV reader options are constructed — every read site (header peek, ordered
-    /// header, and the partition's row read) must agree on <see cref="MaxRowBytes"/>, or a file would
-    /// parse its header and then fail on the same row's data.</summary>
-    internal static CsvDataReaderOptions ReaderOptions() =>
-        new() { HasHeaders = true, MaxBufferSize = MaxRowBytes };
+    /// <summary>The one place CSV reader options are constructed — every read site that resolves an
+    /// actual field/schema/row parse (header peek, ordered header for contract validation, and the
+    /// partition's row read) must agree on <see cref="MaxRowBytes"/>, or a file would parse its header
+    /// and then fail on the same row's data. <paramref name="delimiter"/> is comma for csv, tab for tsv,
+    /// or the validated <c>delimiter:</c> option (<see cref="FileFormatCatalog.Delimiter"/>) -- passing
+    /// it disables Sylvan's own delimiter auto-detection, which is what makes the read honour a
+    /// declared tsv/custom delimiter instead of guessing at one. Null (the split planner's own use,
+    /// see <see cref="TryPlanSplits"/>) leaves auto-detection on, which is what that planner's comma
+    /// proof needs: an oracle for the file's REAL delimiter, independent of what was declared.</summary>
+    internal static CsvDataReaderOptions ReaderOptions(char? delimiter = null) =>
+        delimiter is { } d
+            ? new() { HasHeaders = true, MaxBufferSize = MaxRowBytes, Delimiter = d }
+            : new() { HasHeaders = true, MaxBufferSize = MaxRowBytes };
+
+    /// <summary>Resolves the dataset's field delimiter through the shared catalog -- comma for csv
+    /// (unless <c>delimiter:</c> overrides it), tab for tsv. The one place every read site in this class
+    /// derives it, so a dataset's csv/tsv choice and its <c>delimiter:</c> option are honoured uniformly.</summary>
+    private static char DelimiterOf(DatasetSpec spec)
+    {
+        var context = $"dataset '{spec.Dataset}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", context);
+        return FileFormatCatalog.Delimiter(format, spec.Options, context);
+    }
 
     /// <summary>Peeks the file's actual header row (cheap: no data rows are read) and reports only the
     /// declared contract columns that are ALSO present there -- a declared column absent from the header
@@ -62,7 +82,7 @@ internal sealed class CsvSource(string baseDir) : ISource
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var columns = GetColumnsContract(spec);
-        var header = await ReadHeaderAsync(ResolvePath(spec), ct).ConfigureAwait(false);
+        var header = await ReadHeaderAsync(ResolvePath(spec), DelimiterOf(spec), ct).ConfigureAwait(false);
         var fields = columns
             .Where(kv => header.Contains(kv.Key))
             .Select(kv => TypeNameMap.ToArrowField(kv.Key, kv.Value))
@@ -70,7 +90,7 @@ internal sealed class CsvSource(string baseDir) : ISource
         return new DatasetSchema(new Schema(fields, null));
     }
 
-    private static async Task<HashSet<string>> ReadHeaderAsync(string path, CancellationToken ct)
+    private static async Task<HashSet<string>> ReadHeaderAsync(string path, char delimiter, CancellationToken ct)
     {
         if (!File.Exists(path))
         {
@@ -79,7 +99,7 @@ internal sealed class CsvSource(string baseDir) : ISource
 
         using var textReader = new StreamReader(path);
         using var csv = await CsvDataReader.CreateAsync(
-            textReader, ReaderOptions(), ct).ConfigureAwait(false);
+            textReader, ReaderOptions(delimiter), ct).ConfigureAwait(false);
 
         var names = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < csv.FieldCount; i++)
@@ -105,11 +125,12 @@ internal sealed class CsvSource(string baseDir) : ISource
     {
         var context = $"dataset '{spec.Dataset}'";
         var format = FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", context);
+        var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, context);
         var absPath = ResolvePath(spec); // existing helper resolving against base_dir
         var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
         if (declared is { Count: > 0 })
         {
-            ValidateHeaderMatchesContract(absPath, spec.Dataset, declared);
+            ValidateHeaderMatchesContract(absPath, spec.Dataset, declared, delimiter);
         }
         else if (File.Exists(absPath) && new FileInfo(absPath).Length == 0)
         {
@@ -176,7 +197,7 @@ internal sealed class CsvSource(string baseDir) : ISource
     /// Only positions within the overlap are checked: a shorter/longer file column count is DuckDB's own
     /// (loud) count-mismatch error at scan time.</summary>
     private static void ValidateHeaderMatchesContract(
-        string path, string dataset, IReadOnlyDictionary<string, string> declared)
+        string path, string dataset, IReadOnlyDictionary<string, string> declared, char delimiter)
     {
         if (!File.Exists(path))
         {
@@ -186,7 +207,7 @@ internal sealed class CsvSource(string baseDir) : ISource
         string[] header;
         try
         {
-            header = ReadOrderedHeader(path);
+            header = ReadOrderedHeader(path, delimiter);
         }
         catch (Exception)
         {
@@ -209,10 +230,10 @@ internal sealed class CsvSource(string baseDir) : ISource
         }
     }
 
-    private static string[] ReadOrderedHeader(string path)
+    private static string[] ReadOrderedHeader(string path, char? delimiter = null)
     {
         using var textReader = new StreamReader(path);
-        using var csv = CsvDataReader.Create(textReader, ReaderOptions());
+        using var csv = CsvDataReader.Create(textReader, ReaderOptions(delimiter));
         var names = new string[csv.FieldCount];
         for (var i = 0; i < csv.FieldCount; i++)
         {
@@ -245,18 +266,19 @@ internal sealed class CsvSource(string baseDir) : ISource
         var columns = GetColumnsContract(spec);
         var format = GetFormat(spec);
         var path = ResolvePath(spec);
+        var delimiter = DelimiterOf(spec);
 
-        var plan = TryPlanSplits(path);
+        var plan = TryPlanSplits(path, delimiter);
         if (plan is null)
         {
-            IReadOnlyList<IDatasetPartition> single = [new CsvPartition(path, columns)];
+            IReadOnlyList<IDatasetPartition> single = [new CsvPartition(path, columns, delimiter: delimiter)];
             return new ValueTask<IReadOnlyList<IDatasetPartition>>(single);
         }
 
         var partitions = new IDatasetPartition[plan.Splits.Count];
         for (var i = 0; i < partitions.Length; i++)
         {
-            partitions[i] = new CsvPartition(path, columns, plan, plan.Splits[i], partitions.Length);
+            partitions[i] = new CsvPartition(path, columns, plan, plan.Splits[i], partitions.Length, delimiter);
         }
 
         return new ValueTask<IReadOnlyList<IDatasetPartition>>(partitions);
@@ -265,9 +287,19 @@ internal sealed class CsvSource(string baseDir) : ISource
     /// <summary>Reads the file's own header (the split planner needs it to prove the delimiter) and asks
     /// for a split plan. Every failure mode here — an absent file, an unreadable header, a file too small
     /// — means "don't split", never an error: the real read is what surfaces a genuine problem, with the
-    /// message it always had.</summary>
-    private static CsvSplitPlan? TryPlanSplits(string path)
+    /// message it always had. A non-comma DECLARED delimiter never splits: <see cref="CsvSplitPlanner"/>
+    /// proves its boundaries by scanning for comma-quoted fields specifically, so it stays single-partition
+    /// for tsv and any other delimiter, same as a file it cannot otherwise prove safe. The header read
+    /// below deliberately still auto-detects (<see cref="ReadOrderedHeader"/>'s null default) rather than
+    /// trusting the declared comma: that is the independent proof that the file's bytes really are comma
+    /// csv, not just a mislabeled one.</summary>
+    private static CsvSplitPlan? TryPlanSplits(string path, char delimiter)
     {
+        if (delimiter != ',')
+        {
+            return null;
+        }
+
         if (!File.Exists(path) || new FileInfo(path).Length < CsvSplitPlanner.MinBytesPerPartition * 2)
         {
             return null;
@@ -336,7 +368,8 @@ internal sealed class CsvPartition(
     IReadOnlyDictionary<string, string> columns,
     CsvSplitPlan? plan = null,
     CsvSplit split = default,
-    int partitionCount = 1) : IDatasetPartition
+    int partitionCount = 1,
+    char delimiter = ',') : IDatasetPartition
 {
     public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -359,7 +392,7 @@ internal sealed class CsvPartition(
             ? new StreamReader(path)
             : new StreamReader(new CsvSliceStream(path, plan.Header, split.Start, split.End));
         using var csv = await CsvDataReader.CreateAsync(
-            textReader, CsvSource.ReaderOptions(), ct).ConfigureAwait(false);
+            textReader, CsvSource.ReaderOptions(delimiter), ct).ConfigureAwait(false);
 
         var ordinals = new int[names.Length];
         for (var i = 0; i < names.Length; i++)

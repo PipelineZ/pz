@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
 
@@ -68,9 +69,9 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector
 /// <see cref="JsonSource"/> up front -- every <see cref="ISource"/> method receives its own
 /// <see cref="DatasetSpec"/>, which is where <c>format:</c> actually lives. This holds one instance of
 /// each and forwards per call: <c>format: parquet</c> routes to <see cref="ParquetSource"/>,
-/// <c>format: json</c> to <see cref="JsonSource"/>; <c>format: csv</c> or absent (the default) routes
-/// to <see cref="CsvSource"/>. <see cref="FileFormatCatalog.Resolve"/> owns the "unsupported format"
-/// error for anything else.</summary>
+/// <c>format: json</c> to <see cref="JsonSource"/>; <c>format: csv</c>/<c>tsv</c> or absent (the
+/// default) routes to <see cref="CsvSource"/>. <see cref="FileFormatCatalog.Resolve"/> owns the
+/// "unsupported format" error for anything else.</summary>
 internal sealed class LocalFilesSource(string baseDir) : ISource
 {
     private readonly CsvSource _csv = new(baseDir);
@@ -95,7 +96,8 @@ internal sealed class LocalFilesSource(string baseDir) : ISource
         {
             "parquet" => _parquet,
             "json" => _json,
-            _ => _csv,
+            "csv" or "tsv" => _csv,
+            _ => throw new UnreachableException($"format '{format.Name}' already validated by FileFormatCatalog.Resolve"),
         };
     }
 }
