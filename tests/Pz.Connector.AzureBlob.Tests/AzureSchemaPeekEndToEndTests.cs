@@ -194,6 +194,96 @@ public sealed class AzureSchemaPeekEndToEndTests(AzuriteFixture fixture)
         Assert.IsType<StringType>(schema.Schema.FieldsList[1].DataType);
     }
 
+    /// <summary>Same shape as <see cref="GetSchemaAsync_json_declared_contract_is_the_schema"/>: xlsx's
+    /// header row names columns but not their types, so <see cref="AzureSource.GetSchemaAsync"/> reports
+    /// the declared `columns:` contract AS the schema without downloading the blob -- content is
+    /// irrelevant here, only that a match exists.</summary>
+    [SkippableFact]
+    public async Task GetSchemaAsync_xlsx_declared_contract_is_the_schema()
+    {
+        DockerFacts.SkipUnlessDocker();
+
+        var prefix = $"in-{Guid.NewGuid():N}";
+        var service = new BlobServiceClient(fixture.ConnectionString);
+        var containerClient = service.GetBlobContainerClient(AzuriteFixture.Container);
+        await containerClient.UploadBlobAsync($"{prefix}/data.xlsx", new BinaryData("not a real workbook -- never read"u8.ToArray()));
+
+        var source = new AzureSource(Config(fixture));
+        var spec = new DatasetSpec("lake", "data", new Dictionary<string, object?>
+        {
+            ["container"] = AzuriteFixture.Container,
+            ["path"] = $"{prefix}/data.xlsx",
+            ["format"] = "xlsx",
+            ["columns"] = new Dictionary<string, string> { ["id"] = "bigint", ["name"] = "varchar" },
+        });
+
+        var schema = await source.GetSchemaAsync(spec, CancellationToken.None);
+
+        Assert.Equal(2, schema.Schema.FieldsList.Count);
+        Assert.Equal("id", schema.Schema.FieldsList[0].Name);
+        Assert.IsType<Int64Type>(schema.Schema.FieldsList[0].DataType);
+        Assert.Equal("name", schema.Schema.FieldsList[1].Name);
+        Assert.IsType<StringType>(schema.Schema.FieldsList[1].DataType);
+    }
+
+    /// <summary>Same shape for avro: its embedded schema is not read by <see
+    /// cref="AzureSource.GetSchemaAsync"/> here, so the declared `columns:` contract is the only source
+    /// of a schema and no blob is downloaded.</summary>
+    [SkippableFact]
+    public async Task GetSchemaAsync_avro_declared_contract_is_the_schema()
+    {
+        DockerFacts.SkipUnlessDocker();
+
+        var prefix = $"in-{Guid.NewGuid():N}";
+        var service = new BlobServiceClient(fixture.ConnectionString);
+        var containerClient = service.GetBlobContainerClient(AzuriteFixture.Container);
+        await containerClient.UploadBlobAsync($"{prefix}/data.avro", new BinaryData("not a real avro file -- never read"u8.ToArray()));
+
+        var source = new AzureSource(Config(fixture));
+        var spec = new DatasetSpec("lake", "data", new Dictionary<string, object?>
+        {
+            ["container"] = AzuriteFixture.Container,
+            ["path"] = $"{prefix}/data.avro",
+            ["format"] = "avro",
+            ["columns"] = new Dictionary<string, string> { ["id"] = "bigint" },
+        });
+
+        var schema = await source.GetSchemaAsync(spec, CancellationToken.None);
+
+        var field = Assert.Single(schema.Schema.FieldsList);
+        Assert.Equal("id", field.Name);
+        Assert.IsType<Int64Type>(field.DataType);
+    }
+
+    /// <summary>Without a declared contract, xlsx/avro schema fetch has nothing to answer from -- the
+    /// permanent error names the actual format, not a generic "csv/tsv/json" list (that wording is for
+    /// the separate universal-tier-refusal precheck, not this schema-peek path).</summary>
+    [SkippableTheory]
+    [InlineData("xlsx")]
+    [InlineData("avro")]
+    public async Task GetSchemaAsync_without_a_contract_names_the_format(string format)
+    {
+        DockerFacts.SkipUnlessDocker();
+
+        var prefix = $"in-{Guid.NewGuid():N}";
+        var service = new BlobServiceClient(fixture.ConnectionString);
+        var containerClient = service.GetBlobContainerClient(AzuriteFixture.Container);
+        await containerClient.UploadBlobAsync($"{prefix}/data.{format}", new BinaryData("irrelevant"u8.ToArray()));
+
+        var source = new AzureSource(Config(fixture));
+        var spec = new DatasetSpec("lake", "data", new Dictionary<string, object?>
+        {
+            ["container"] = AzuriteFixture.Container,
+            ["path"] = $"{prefix}/data.{format}",
+            ["format"] = format,
+        });
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await source.GetSchemaAsync(spec, CancellationToken.None));
+        Assert.False(ex.IsTransient);
+        Assert.Equal($"dataset 'data': azure {format} requires a declared columns: contract", ex.Message);
+    }
+
     [SkippableFact]
     public async Task GetSchemaAsync_no_matching_blobs_is_a_clean_named_permanent_error()
     {
