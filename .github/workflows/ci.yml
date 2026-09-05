@@ -36,7 +36,7 @@ jobs:
       # stalled -- passing tests print nothing at normal verbosity, so silence hides the culprit.
       # With a 10m per-suite ceiling (longest suite is ~2m here), vstest kills the hung run, dumps
       # every thread's stack, and prints the in-flight test names instead.
-      - run: dotnet test Pz.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+      - run: dotnet test Pz.slnx -c Release --no-build --filter "Category!=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
         if: runner.os == 'Linux'
         env:
           PZ_TESTS_OFFLINE: '1'
@@ -64,6 +64,24 @@ jobs:
       # next connector cannot silently break the release path. RUNNER_TEMP keeps the zip out of the
       # working tree. `zip` is present on the ubuntu runner image; the script fails loudly if not.
       - run: scripts/make-release-bundle.sh "${RUNNER_TEMP}/release-bundle"
+
+  # xlsx/avro ride DuckDB's excel/avro extensions, which `install` downloads on first use -- so their
+  # tests need network and are excluded from the hermetic build-test job. This job runs exactly that
+  # category with network, so the two extension formats are gated in CI rather than only locally.
+  format-extensions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build tests/Pz.Connector.LocalFiles.Tests -c Release
+      - run: dotnet build tests/Pz.DuckDb.Tests -c Release
+      - run: dotnet test tests/Pz.Connector.LocalFiles.Tests -c Release --no-build --filter "Category=DuckDbExtension"
+      - run: dotnet test tests/Pz.DuckDb.Tests -c Release --no-build --filter "Category=DuckDbExtension"
 
   # The Native AOT runtime proof: publishes the linux-x64 native image and drives init/run/restore/
   # PZ0360/PCP-spawn/MCP against it. The AOT *compile-time* analyzers already gate every build

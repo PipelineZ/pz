@@ -61,8 +61,9 @@ scripts/verify-tool-install.sh
 scripts/verify-aot.sh
 ```
 
-`PZ_TESTS_OFFLINE=1` skips network-dependent tests. Benchmarks live in `tests/Pz.Benchmarks`
-(BenchmarkDotNet) plus `scripts/macro-bench.sh`.
+`PZ_TESTS_OFFLINE=1` skips network-dependent tests. Tests that download a DuckDB extension carry
+`[Trait("Category", "DuckDbExtension")]`, skip offline, and run in CI's `format-extensions` job.
+Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-bench.sh`.
 
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
 green. Two jobs: `build-test`, an ubuntu+windows matrix where both legs build but only ubuntu runs

@@ -49,6 +49,20 @@ echo "-- pz init + pz run (sample template, offline) --"
 [[ -f "${WORK_DIR}/hello/out/orders_curated/orders_curated.parquet" ]] || { echo "FAIL: parquet output missing"; exit 1; }
 grep -q '"status":"success"' "${WORK_DIR}/hello/.pz/runs"/*/run_results.json || { echo "FAIL: run_results not success"; exit 1; }
 
+# xlsx rides DuckDB's excel extension, downloaded on first use -- skip offline (CI's build-test job,
+# and any other offline invocation) rather than fail on a network dependency this script doesn't own.
+if [[ "${PZ_TESTS_OFFLINE:-0}" != "1" ]]; then
+  echo "-- pz run with an xlsx sink (DuckDB excel extension install+load under AOT) --"
+  cat > "${WORK_DIR}/hello/pipelines/orders_xlsx.sql" <<'EOF'
+INSERT INTO {{ sink('lake', 'orders_xlsx', strategy: 'replace', format: 'xlsx') }}
+select id, customer_id, amount, status from {{ ref('stg_orders') }}
+EOF
+  (cd "${WORK_DIR}/hello" && "${PZ}" run orders_xlsx)
+  [[ -f "${WORK_DIR}/hello/out/orders_xlsx/orders_xlsx.xlsx" ]] || { echo "FAIL: xlsx output missing"; exit 1; }
+else
+  echo "-- skipping xlsx step (PZ_TESTS_OFFLINE=1) --"
+fi
+
 echo "-- pz restore from a local feed (NuGet + Newtonsoft under AOT) --"
 dotnet pack "${ROOT_DIR}/tests/fixtures/connector-host/FakeTransitiveDep" -c Release -o "${FEED_DIR}" --nologo -v quiet
 dotnet pack "${ROOT_DIR}/tests/fixtures/connector-host/FakeSourceConnector" -c Release \
@@ -146,4 +160,5 @@ grep -q 'pz_validate' <<<"${MCP_OUT}" || { echo "FAIL: tools/list missing pz_val
 
 echo
 echo "OK: native AOT pz publishes, initializes, runs a pipeline, restores, refuses PZ0360 cleanly,"
-echo "    spawns a PCP connector over gRPC, fails a gcs SDK write classified, and serves MCP."
+echo "    spawns a PCP connector over gRPC, fails a gcs SDK write classified, serves MCP, and"
+echo "    writes xlsx through the excel extension."
