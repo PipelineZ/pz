@@ -269,14 +269,14 @@ internal sealed class SftpCsvWriteSession : SftpWriteSessionBase
         : base(fs, ownsFileSystem, tempPath, finalPath, gate, context) => _writer = writer;
 
     internal static async Task<SftpCsvWriteSession> CreateAsync(
-        ISftpFileSystem fs, bool ownsFileSystem, string tempPath, string finalPath, Schema schema,
+        ISftpFileSystem fs, bool ownsFileSystem, string tempPath, string finalPath, Schema schema, char delimiter,
         IOperationGate? gate, string context, CancellationToken ct)
     {
         Stream? stream = null;
         try
         {
             stream = await OpenWriteAsync(fs, tempPath, gate, context, ct).ConfigureAwait(false);
-            var writer = new CsvWriteCodec(stream, schema, context);
+            var writer = new CsvWriteCodec(stream, schema, context, delimiter: delimiter);
             return new SftpCsvWriteSession(fs, ownsFileSystem, tempPath, finalPath, gate, context, writer);
         }
         catch

@@ -37,13 +37,14 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     {
         var format = ResolveFormat(spec);
         var objectName = ResolveObjectName(spec, format);
+        var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, $"output '{spec.Output}'");
 
         // Exactly one column: PathTemplate.Render (used both here and by SftpPartitionedWriteSession)
         // renders one timestamp per row into a folder, and DagCompiler's PZ0219 has already refused a
         // multi-column partition_by against a templated path.
         if (PartitionColumns.Read(spec.Options) is [var partitionBy])
         {
-            return BeginPartitionedWrite(spec, schema, format, objectName, partitionBy, ct);
+            return BeginPartitionedWrite(spec, schema, format, delimiter, objectName, partitionBy, ct);
         }
 
         var outputDir = SftpPaths.ResolveOutputDir(settings.Root, spec);
@@ -53,7 +54,7 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
             CreateDirectories(fs, outputDir, spec.Output);
             var finalPath = $"{outputDir}/{objectName}";
             var tempPath = SftpWriteSessionBase.MakeTempPath(finalPath);
-            return await OpenSessionAsync(fs, ownsFileSystem: true, tempPath, finalPath, format, schema,
+            return await OpenSessionAsync(fs, ownsFileSystem: true, tempPath, finalPath, format, delimiter, schema,
                 $"output '{spec.Output}'", ct).ConfigureAwait(false);
         }
         catch
@@ -73,7 +74,8 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     /// <c>&lt;root&gt;/&lt;renderedFolder&gt;/&lt;objectName&gt;</c>, sharing the exact object name the
     /// single-output path uses so replace/append naming is identical per folder.</summary>
     private ISinkWriteSession BeginPartitionedWrite(
-        OutputSpec spec, Schema schema, FileFormat format, string objectName, string partitionBy, CancellationToken ct)
+        OutputSpec spec, Schema schema, FileFormat format, char delimiter, string objectName, string partitionBy,
+        CancellationToken ct)
     {
         var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
 
@@ -92,7 +94,7 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
                 CreateDirectories(fs, dir, spec.Output);
             }
 
-            return await OpenSessionAsync(fs, ownsFileSystem: false, tempPath, finalPath, format, schema,
+            return await OpenSessionAsync(fs, ownsFileSystem: false, tempPath, finalPath, format, delimiter, schema,
                 $"output '{spec.Output}'", ct).ConfigureAwait(false);
         }
 
@@ -103,12 +105,13 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     /// already validated by <see cref="ResolveFormat"/> (writable, and universal-tier-supported), so
     /// the fallback branch is unreachable.</summary>
     private async ValueTask<ISinkWriteSession> OpenSessionAsync(
-        ISftpFileSystem fs, bool ownsFileSystem, string tempPath, string finalPath, FileFormat format, Schema schema,
-        string context, CancellationToken ct) => format.Name switch
+        ISftpFileSystem fs, bool ownsFileSystem, string tempPath, string finalPath, FileFormat format, char delimiter,
+        Schema schema, string context, CancellationToken ct) => format.Name switch
     {
         "parquet" => await SftpParquetWriteSession.CreateAsync(fs, ownsFileSystem, tempPath, finalPath, schema, _gate, context, ct)
             .ConfigureAwait(false),
-        "csv" => await SftpCsvWriteSession.CreateAsync(fs, ownsFileSystem, tempPath, finalPath, schema, _gate, context, ct)
+        "csv" or "tsv" => await SftpCsvWriteSession.CreateAsync(
+                fs, ownsFileSystem, tempPath, finalPath, schema, delimiter, _gate, context, ct)
             .ConfigureAwait(false),
         "json" => await SftpJsonWriteSession.CreateAsync(fs, ownsFileSystem, tempPath, finalPath, _gate, context, ct)
             .ConfigureAwait(false),

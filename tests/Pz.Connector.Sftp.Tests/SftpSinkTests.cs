@@ -107,6 +107,38 @@ public class SftpSinkTests
     }
 
     [Fact]
+    public async Task Tsv_write_lands_a_tab_separated_file()
+    {
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("orders", "replace", ("path", "dir"), ("format", "tsv"));
+
+        var session = await sink.BeginWriteAsync(spec, TwoColumnSchema, CancellationToken.None);
+        using var batch = BuildBatch(1, "x");
+        await session.WriteBatchAsync(batch, CancellationToken.None);
+        await session.CommitAsync(CancellationToken.None);
+        await session.DisposeAsync();
+
+        Assert.True(fake.FileExists("dir/orders.tsv"));
+        using var stream = fake.OpenRead("dir/orders.tsv");
+        using var reader = new StreamReader(stream);
+        Assert.Equal("id\tname\n1\tx\n", await reader.ReadToEndAsync());
+    }
+
+    [Fact]
+    public async Task Json_array_write_is_PZ0361()
+    {
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("events", "replace", ("path", "dir"), ("format", "json"), ("layout", "array"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await sink.BeginWriteAsync(spec, TwoColumnSchema, CancellationToken.None));
+
+        Assert.StartsWith("PZ0361: output 'events': json 'layout: array' is native-only", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Invalid_format_names_the_output()
     {
         var fake = new FakeSftpFileSystem();

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
@@ -10,7 +11,7 @@ using Sylvan.Data.Csv;
 namespace Pz.Connector.Sftp;
 
 /// <summary>Universal-tier sftp source: SSH.NET has no DuckDB-native scan, so every read runs through
-/// a managed format reader (csv/parquet/json) over a fresh <see cref="ISftpFileSystem"/> connection.
+/// a managed format reader (csv/tsv/parquet/json) over a fresh <see cref="ISftpFileSystem"/> connection.
 /// <paramref name="connect"/> is the unit-test seam (production wires <c>SftpClientFactory.Open</c>);
 /// <see cref="GetSchemaAsync"/> opens exactly one transient connection for its peek and disposes it,
 /// and each <see cref="SftpFilePartition"/> opens its OWN connection in <see cref="SftpFilePartition.ReadAsync"/>
@@ -33,7 +34,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     /// inference).</summary>
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var format = GetFormat(spec);
+        var format = ResolveFormat(spec);
         var declared = ExtractColumns(spec);
 
         if (format.Name == "json")
@@ -59,9 +60,13 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
             var path = matches[0];
             using var stream = await SftpGate.OpenReadAsync(_gate, fs, path, spec, ct).ConfigureAwait(false);
 
-            return format.Name == "parquet"
-                ? await ParquetSchemaAsync(stream, declared, spec, path, ct).ConfigureAwait(false)
-                : await CsvSchemaAsync(stream, declared, ct).ConfigureAwait(false);
+            if (format.Name == "parquet")
+            {
+                return await ParquetSchemaAsync(stream, declared, spec, path, ct).ConfigureAwait(false);
+            }
+
+            var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, $"dataset '{spec.Dataset}'");
+            return await CsvSchemaAsync(stream, declared, delimiter, ct).ConfigureAwait(false);
         }
         finally
         {
@@ -82,13 +87,14 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     /// <see cref="ReadHints.Columns"/> to the parquet reader).</summary>
     public async ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
-        var format = GetFormat(spec);
+        var format = ResolveFormat(spec);
         var declared = ExtractColumns(spec);
         if (format.Name == "json" && declared is not { Count: > 0 })
         {
             throw JsonContractRequiredError(spec);
         }
 
+        var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, $"dataset '{spec.Dataset}'");
         var groupSize = FilesPerPartition(spec);
         var pattern = SftpPaths.ResolveReadPattern(settings.Root, spec, format.Extension);
         var fs = connect(settings);
@@ -111,7 +117,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         var partitions = new IDatasetPartition[groups.Length];
         for (var i = 0; i < groups.Length; i++)
         {
-            partitions[i] = new SftpFilePartition(settings, connect, groups[i], format.Name, declared, spec, hints, _gate);
+            partitions[i] = new SftpFilePartition(settings, connect, groups[i], format.Name, delimiter, declared, spec, hints, _gate);
         }
 
         return partitions;
@@ -120,10 +126,10 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     public ValueTask DisposeAsync() => default;
 
     private static async ValueTask<DatasetSchema> CsvSchemaAsync(
-        Stream stream, IReadOnlyDictionary<string, string>? declared, CancellationToken ct)
+        Stream stream, IReadOnlyDictionary<string, string>? declared, char delimiter, CancellationToken ct)
     {
         using var textReader = new StreamReader(stream);
-        using var csv = await CsvDataReader.CreateAsync(textReader, CsvOptions(), ct).ConfigureAwait(false);
+        using var csv = await CsvDataReader.CreateAsync(textReader, CsvOptions(delimiter), ct).ConfigureAwait(false);
 
         var header = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < csv.FieldCount; i++)
@@ -205,7 +211,8 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     /// this one place, so they can never disagree on the ceiling.</summary>
     private const int MaxRowBytes = 16 * 1024 * 1024;
 
-    internal static CsvDataReaderOptions CsvOptions() => new() { HasHeaders = true, MaxBufferSize = MaxRowBytes };
+    internal static CsvDataReaderOptions CsvOptions(char delimiter = ',') =>
+        new() { HasHeaders = true, MaxBufferSize = MaxRowBytes, Delimiter = delimiter };
 
     private static int FilesPerPartition(DatasetSpec spec)
     {
@@ -251,7 +258,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     /// Callers use <see cref="FileFormat.Name"/> to dispatch by format and
     /// <see cref="FileFormat.Extension"/> to resolve the default read path -- the same today (csv,
     /// json, parquet all name themselves after their extension) but distinct concerns.</summary>
-    private static FileFormat GetFormat(DatasetSpec spec)
+    private static FileFormat ResolveFormat(DatasetSpec spec)
     {
         var context = $"dataset '{spec.Dataset}'";
         var format = FileFormatCatalog.Resolve(spec.Options, "csv", "sftp", context);
@@ -283,6 +290,7 @@ internal sealed class SftpFilePartition(
     Func<SftpConnectionSettings, ISftpFileSystem> connect,
     IReadOnlyList<string> files,
     string format,
+    char delimiter,
     IReadOnlyDictionary<string, string>? columns,
     DatasetSpec spec,
     ReadHints hints,
@@ -421,7 +429,8 @@ internal sealed class SftpFilePartition(
     {
         "json" => SftpJsonReader.ReadAsync(stream, columns!, context, options, ct),
         "parquet" => SftpParquetReader.ReadAsync(stream, ParquetProjection(), context, options, ct),
-        _ => ReadCsvAsync(stream, path, options, ct),
+        "csv" or "tsv" => ReadCsvAsync(stream, path, options, ct),
+        _ => throw new UnreachableException($"format '{format}' has no partition read path"),
     };
 
     /// <summary>The exact, ordered column list to hand the parquet reader — see
@@ -455,7 +464,7 @@ internal sealed class SftpFilePartition(
         Stream stream, string path, BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
         using var textReader = new StreamReader(stream);
-        using var csv = await CsvDataReader.CreateAsync(textReader, SftpSource.CsvOptions(), ct).ConfigureAwait(false);
+        using var csv = await CsvDataReader.CreateAsync(textReader, SftpSource.CsvOptions(delimiter), ct).ConfigureAwait(false);
 
         string[] names;
         string[] typeNames;
