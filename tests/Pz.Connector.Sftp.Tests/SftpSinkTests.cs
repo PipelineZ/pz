@@ -164,6 +164,18 @@ public class SftpSinkTests
         Assert.Null(copy);
     }
 
+    [Fact]
+    public async Task TryGetNativeCopy_refuses_a_native_only_option_at_plan_time()
+    {
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: null);
+        var spec = Output("events", "replace", ("path", "dir"), ("format", "json"), ("layout", "array"));
+
+        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
+        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(fake.Operations);   // refused before the connection is ever dialed
+    }
+
     // ---------- SftpSink: partition_by fan-out (via the real dispatch path) ----------
 
     [Fact]

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Apache.Arrow.Types;
@@ -29,6 +30,10 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
 
     public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
     {
+        // sftp has no native tier in either direction, but the format must still be resolved here so an
+        // invalid format or a native-only option (e.g. json layout: array) is refused at PLAN time
+        // (PZ0361) rather than surfacing only when BeginWriteAsync runs at execute time.
+        ResolveFormat(spec);
         copy = null;
         return false;
     }
@@ -115,7 +120,7 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
             .ConfigureAwait(false),
         "json" => await SftpJsonWriteSession.CreateAsync(fs, ownsFileSystem, tempPath, finalPath, _gate, context, ct)
             .ConfigureAwait(false),
-        _ => throw new InvalidOperationException("unreachable: format already validated by ResolveFormat"),
+        _ => throw new UnreachableException("unreachable: format already validated by ResolveFormat"),
     };
 
     /// <summary>mkdir -p, classified through <see cref="SftpErrors.Map"/> like every other fs call --
