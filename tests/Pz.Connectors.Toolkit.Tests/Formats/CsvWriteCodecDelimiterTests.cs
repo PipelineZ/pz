@@ -46,10 +46,14 @@ public sealed class CsvWriteCodecDelimiterTests
         Assert.Equal("id,name\n1,a\tb\n2,\"plain,comma\"\n", Encoding.UTF8.GetString(ms.ToArray()));
     }
 
-    [Fact]
-    public void Non_ascii_delimiter_is_rejected()
+    [Theory]
+    [InlineData('é')]
+    [InlineData('"')]
+    [InlineData('\n')]
+    [InlineData('\r')]
+    public void Non_ascii_delimiter_is_rejected(char delimiter)
     {
         using var batch = Batch();
-        Assert.Throws<ArgumentOutOfRangeException>(() => new CsvWriteCodec(new MemoryStream(), batch.Schema, "test", delimiter: 'é'));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CsvWriteCodec(new MemoryStream(), batch.Schema, "test", delimiter: delimiter));
     }
 }

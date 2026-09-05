@@ -75,9 +75,10 @@ public sealed class CsvWriteCodec : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(destination);
         ArgumentNullException.ThrowIfNull(schema);
-        if (!char.IsAscii(delimiter))
+        if (!char.IsAscii(delimiter) || delimiter is '"' or '\n' or '\r')
         {
-            throw new ArgumentOutOfRangeException(nameof(delimiter), delimiter, "csv delimiter must be ASCII");
+            throw new ArgumentOutOfRangeException(
+                nameof(delimiter), delimiter, "csv delimiter must be ASCII and not a quote, newline or carriage return");
         }
 
         _stream = destination;
@@ -230,6 +231,8 @@ public sealed class CsvWriteCodec : IAsyncDisposable
         var columns = _columns;
         var count = _columnCount;
         var length = _length;
+        var delimiter = _delimiter;
+        var quoteTriggers = _quoteTriggers;
 
         // With no string column in the schema every row has the same bound, so the per-row sizing pass
         // collapses to one comparison.
@@ -246,10 +249,10 @@ public sealed class CsvWriteCodec : IAsyncDisposable
             {
                 if (col > 0)
                 {
-                    buffer[length++] = _delimiter;
+                    buffer[length++] = delimiter;
                 }
 
-                length += WriteCell(ref columns[col], row, buffer.AsSpan(length));
+                length += WriteCell(ref columns[col], row, buffer.AsSpan(length), quoteTriggers);
             }
 
             buffer[length++] = (byte)'\n';
@@ -388,7 +391,14 @@ public sealed class CsvWriteCodec : IAsyncDisposable
     /// position, which the caller has already sized. Every rendering here must stay byte-for-byte what
     /// <c>ToString(format, InvariantCulture)</c> produces — the <c>TryFormat</c> overloads used are the
     /// UTF-8 equivalents of exactly those calls.</summary>
-    private unsafe int WriteCell(ref Column column, int row, Span<byte> destination)
+    private unsafe int WriteCell(ref Column column, int row, Span<byte> destination) =>
+        WriteCell(ref column, row, destination, _quoteTriggers);
+
+    /// <summary>Same cell formatting as the field-reading overload above, but takes the quote-trigger set
+    /// as a parameter so a hot per-cell caller (<see cref="WriteRowsThatFit"/>) that has already hoisted
+    /// it into a local passes it straight through instead of re-reading <see cref="_quoteTriggers"/> on
+    /// every string cell.</summary>
+    private unsafe int WriteCell(ref Column column, int row, Span<byte> destination, SearchValues<byte> quoteTriggers)
     {
         if (!column.IsValid(row))
         {
@@ -425,14 +435,11 @@ public sealed class CsvWriteCodec : IAsyncDisposable
                     .TryFormat(destination, out written, "O", CultureInfo.InvariantCulture);
                 break;
             default:
-                return WriteStringCell(ref column, row, destination);
+                return WriteStringCell(ref column, row, destination, quoteTriggers);
         }
 
         return written;
     }
-
-    private unsafe int WriteStringCell(ref Column column, int row, Span<byte> destination) =>
-        WriteStringCell(ref column, row, destination, _quoteTriggers);
 
     /// <summary>Copies one string cell's UTF-8 bytes straight from the pinned Arrow value buffer,
     /// quoting only when RFC 4180 requires it. Never decodes to UTF-16, so a value's bytes reach the

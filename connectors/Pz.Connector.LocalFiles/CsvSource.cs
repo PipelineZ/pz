@@ -154,7 +154,7 @@ internal sealed class CsvSource(string baseDir) : ISource
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
             SchemaInferred = inferred,
-            SniffFragment = inferred ? FileFormatCatalog.SniffFragment(format, spec.Options, urlArg) : null,
+            SniffFragment = inferred ? FileFormatCatalog.SniffFragment(format, spec.Options, urlArg, context) : null,
         };
         return true;
     }

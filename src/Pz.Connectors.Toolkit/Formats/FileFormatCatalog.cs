@@ -109,10 +109,12 @@ public static class FileFormatCatalog
     /// callers pass it only for inferred, single-file reads.</summary>
     /// <param name="options"><c>delimiter</c> (csv) is passed to sniff_csv so the sniffer sees the same
     /// field separator as the read.</param>
-    public static string? SniffFragment(FileFormat format, IReadOnlyDictionary<string, object?> options, string singleUrlLiteral)
+    /// <param name="context">Names the dataset in a delimiter option error, e.g. "dataset 'x'".</param>
+    public static string? SniffFragment(
+        FileFormat format, IReadOnlyDictionary<string, object?> options, string singleUrlLiteral, string context)
     {
         ArgumentNullException.ThrowIfNull(format);
-        return format.Name is "csv" or "tsv" ? $"sniff_csv({singleUrlLiteral}{DelimiterSuffix(format, options, "", "delim")})" : null;
+        return format.Name is "csv" or "tsv" ? $"sniff_csv({singleUrlLiteral}{DelimiterSuffix(format, options, context, "delim")})" : null;
     }
 
     /// <summary>The parenthesised COPY options for a native write, e.g. <c>format csv, header</c>.</summary>
@@ -188,8 +190,9 @@ public static class FileFormatCatalog
         ArgumentNullException.ThrowIfNull(format);
         if (format.Name == "json" && JsonLayout(format, options) == "array")
         {
-            throw Permanent($"PZ0361: {context}: json 'layout: array' is native-only; {connector}'s managed json reader/writer handles newline-delimited json only -- " +
-                "use 'layout: ndjson' here, or a connector with a native tier (localfiles, s3, gcs, azureblob)");
+            throw Permanent($"PZ0361: {context}: json 'layout: array' is native-only; {connector}'s managed json writer/reader handles newline-delimited json only -- " +
+                "use 'layout: ndjson', remove engine.force_universal / partition_by so the native tier can carry it, " +
+                "or use a connector with a native tier (localfiles, s3, gcs, azureblob)");
         }
 
         if (!format.UniversalTier)

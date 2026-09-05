@@ -64,7 +64,7 @@ public sealed class FileFormatCatalogTests
             FileFormatCatalog.ReadFragment(csv, Opts("csv"), Req(declared: declared), "dataset 'd'"));
         Assert.True(FileFormatCatalog.SchemaInferred(csv, null));
         Assert.False(FileFormatCatalog.SchemaInferred(csv, declared));
-        Assert.Equal("sniff_csv('s3://b/k.csv')", FileFormatCatalog.SniffFragment(csv, Opts("csv"), "'s3://b/k.csv'"));
+        Assert.Equal("sniff_csv('s3://b/k.csv')", FileFormatCatalog.SniffFragment(csv, Opts("csv"), "'s3://b/k.csv'", "dataset 'd'"));
         Assert.Equal("read_csv", FileFormatCatalog.ReadMechanism(csv));
     }
 
@@ -77,7 +77,7 @@ public sealed class FileFormatCatalogTests
         var declared = new Dictionary<string, string> { ["id"] = "bigint" };
         Assert.Equal("read_json('s3://b/k.csv', columns = {'id': 'BIGINT'}, format = 'newline_delimited')",
             FileFormatCatalog.ReadFragment(json, Opts("json"), Req(declared: declared), "dataset 'd'"));
-        Assert.Null(FileFormatCatalog.SniffFragment(json, Opts("json"), "'s3://b/k.csv'"));
+        Assert.Null(FileFormatCatalog.SniffFragment(json, Opts("json"), "'s3://b/k.csv'", "dataset 'd'"));
         Assert.Equal("read_json", FileFormatCatalog.ReadMechanism(json));
     }
 
@@ -158,7 +158,7 @@ public sealed class FileFormatCatalogTests
         Assert.Equal("read_csv('s3://b/k.csv', header = true, auto_detect = false, columns = {'id': 'BIGINT'}, delim = '\\t')",
             FileFormatCatalog.ReadFragment(tsv, o, Req(declared: declared), "dataset 'd'"));
         Assert.Equal("format csv, header, delimiter '\\t'", FileFormatCatalog.CopyClause(tsv, o, "output 'o'"));
-        Assert.Equal("sniff_csv('s3://b/k.csv', delim = '\\t')", FileFormatCatalog.SniffFragment(tsv, o, "'s3://b/k.csv'"));
+        Assert.Equal("sniff_csv('s3://b/k.csv', delim = '\\t')", FileFormatCatalog.SniffFragment(tsv, o, "'s3://b/k.csv'", "dataset 'd'"));
         Assert.Equal("read_csv", FileFormatCatalog.ReadMechanism(tsv));
         Assert.True(FileFormatCatalog.SchemaInferred(tsv, null));
     }
