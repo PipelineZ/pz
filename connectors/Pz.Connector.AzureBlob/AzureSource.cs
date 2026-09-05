@@ -34,7 +34,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var context = $"dataset '{spec.Dataset}'";
-        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", context).Name;
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "azureblob", context);
         var loc = AzureUrl.ParseDataset(spec.Options, context);
 
         string? firstMatch = null;
@@ -49,7 +49,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
             throw NoMatch(spec, loc);
         }
 
-        if (format == "json")
+        if (format.Name == "json")
         {
             // No header row to peek (unlike csv) and no footer to read (unlike parquet) -- the declared
             // columns: contract IS the schema, so no blob download is needed here at all.
@@ -61,10 +61,11 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         var stream = await OpenBlobStreamAsync(config, loc.Scheme, loc.Container, firstMatch, ct).ConfigureAwait(false);
         try
         {
-            if (format == "csv")
+            if (format.Name is "csv" or "tsv")
             {
                 var columns = GetColumnsContract(spec);
-                var header = await ReadCsvHeaderAsync(stream, ct).ConfigureAwait(false);
+                var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, context);
+                var header = await ReadCsvHeaderAsync(stream, delimiter, ct).ConfigureAwait(false);
                 var fields = columns
                     .Where(kv => header.Contains(kv.Key))
                     .Select(kv => AzureTypeNameMap.ToArrowField(kv.Key, kv.Value))
@@ -330,11 +331,11 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/> (mirrors
     /// <c>Pz.Connector.LocalFiles.CsvSource.ReadHeaderAsync</c>, replicated per this connector's
     /// no-cross-connector-reference rule). Leaves no data rows consumed beyond the header.</summary>
-    private static async Task<HashSet<string>> ReadCsvHeaderAsync(Stream blob, CancellationToken ct)
+    private static async Task<HashSet<string>> ReadCsvHeaderAsync(Stream blob, char delimiter, CancellationToken ct)
     {
         using var textReader = new StreamReader(blob, leaveOpen: true);
         using var csv = await CsvDataReader.CreateAsync(
-            textReader, new CsvDataReaderOptions { HasHeaders = true }, ct).ConfigureAwait(false);
+            textReader, new CsvDataReaderOptions { HasHeaders = true, Delimiter = delimiter }, ct).ConfigureAwait(false);
 
         var names = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < csv.FieldCount; i++)

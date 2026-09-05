@@ -22,13 +22,14 @@ public sealed class GcsSinkNativeTests
 
     private static OutputSpec Out(
         string output = "daily", string mode = "replace", string? format = "parquet", string? path = null,
-        string? bucket = null, IReadOnlyList<string>? partitionBy = null)
+        string? bucket = null, IReadOnlyList<string>? partitionBy = null, string? layout = null)
     {
         var options = new Dictionary<string, object?>();
         if (format is not null) options["format"] = format;
         if (path is not null) options["path"] = path;
         if (bucket is not null) options["bucket"] = bucket;
         if (partitionBy is not null) options["partition_by"] = partitionBy;
+        if (layout is not null) options["layout"] = layout;
         return new OutputSpec("lake", output, mode, "strict", options);
     }
 
@@ -118,5 +119,21 @@ public sealed class GcsSinkNativeTests
             await new GcsSink(Hmac()).BeginWriteAsync(Out(), schema, CancellationToken.None));
         Assert.False(ex.IsTransient);
         Assert.Contains("native COPY", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_copy_targets_the_tsv_suffix_and_tab_delimiter()
+    {
+        Assert.True(new GcsSink(Hmac()).TryGetNativeCopy(Out(format: "tsv"), out var copy));
+        Assert.Equal(
+            "copy (select * from {{source}}) to 'gs://my-bucket/out/daily.tsv' " +
+            "(format csv, header, delimiter '\\t')", copy!.CopySql);
+    }
+
+    [Fact]
+    public void Json_array_layout_copies_with_format_json_array_true()
+    {
+        Assert.True(new GcsSink(Hmac()).TryGetNativeCopy(Out(format: "json", layout: "array"), out var copy));
+        Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
     }
 }

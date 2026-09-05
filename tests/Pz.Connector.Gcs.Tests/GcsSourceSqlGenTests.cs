@@ -22,13 +22,14 @@ public sealed class GcsSourceSqlGenTests
     private static DatasetSpec Ds(
         string dataset = "orders", string? format = null, string? path = null, string? bucket = null,
         Dictionary<string, string>? columns = null, string? cursor = null, string? value = null,
-        string? upper = null)
+        string? upper = null, string? layout = null)
     {
         var options = new Dictionary<string, object?>();
         if (format is not null) options["format"] = format;
         if (path is not null) options["path"] = path;
         if (bucket is not null) options["bucket"] = bucket;
         if (columns is not null) options["columns"] = columns;
+        if (layout is not null) options["layout"] = layout;
         return new DatasetSpec("lake", dataset, options)
         {
             WatermarkCursor = cursor,
@@ -164,6 +165,21 @@ public sealed class GcsSourceSqlGenTests
 
         Assert.False(ex.IsTransient);
         Assert.Contains("columns:", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_read_defaults_to_the_tsv_suffix_and_tab_delimiter()
+    {
+        Assert.True(Source().TryGetNativeScan(Ds(format: "tsv"), out var scan));
+        Assert.Equal("read_csv('gs://my-bucket/raw/orders.tsv', header = true, auto_detect = true, delim = '\\t')", scan!.SqlFragment);
+        Assert.Equal("sniff_csv('gs://my-bucket/raw/orders.tsv', delim = '\\t')", scan.SniffFragment);
+    }
+
+    [Fact]
+    public void Json_array_layout_reads_with_format_array()
+    {
+        Assert.True(Source().TryGetNativeScan(Ds(format: "json", layout: "array"), out var scan));
+        Assert.Equal("read_json('gs://my-bucket/raw/orders.json', auto_detect = true, format = 'array')", scan!.SqlFragment);
     }
 
     [Fact]

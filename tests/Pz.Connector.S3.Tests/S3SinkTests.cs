@@ -26,12 +26,17 @@ public sealed class S3SinkTests
 
     private static OutputSpec Spec(
         string sink = "lake", string output = "data", string mode = "replace",
-        string bucket = "my-bucket", string? path = "raw/orders", string format = "parquet")
+        string bucket = "my-bucket", string? path = "raw/orders", string format = "parquet", string? layout = null)
     {
         var options = new Dictionary<string, object?> { ["bucket"] = bucket, ["format"] = format };
         if (path is not null)
         {
             options["path"] = path;
+        }
+
+        if (layout is not null)
+        {
+            options["layout"] = layout;
         }
 
         return new OutputSpec(sink, output, mode, "fail_on_change", options);
@@ -190,5 +195,23 @@ public sealed class S3SinkTests
     {
         var c = new S3Connector();
         Assert.Contains(FileFormatCatalog.SchemaProperties, c.DatasetConfigSchema, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_copy_targets_the_tsv_suffix_and_tab_delimiter()
+    {
+        var sink = new S3Sink(Config());
+        sink.TryGetNativeCopy(Spec(format: "tsv"), out var copy);
+        Assert.Equal(
+            "copy (select * from {{source}}) to 's3://my-bucket/raw/orders/data.tsv' " +
+            "(format csv, header, delimiter '\\t')", copy!.CopySql);
+    }
+
+    [Fact]
+    public void Json_array_layout_copies_with_format_json_array_true()
+    {
+        var sink = new S3Sink(Config());
+        sink.TryGetNativeCopy(Spec(format: "json", layout: "array"), out var copy);
+        Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
     }
 }

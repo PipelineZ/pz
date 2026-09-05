@@ -50,7 +50,9 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
         var (format, objectName, loc) = ResolveFinalLocation(spec);
-        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "azureblob", $"output '{spec.Output}'");
+        var context = $"output '{spec.Output}'";
+        FileFormatCatalog.EnsureUniversalTierSupported(format, spec.Options, "azureblob", context);
+        var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, context);
 
         // Partitioned output routes rows into per-day folders; validate the partition column and build a
         // folder->inner-session fan-out session instead of a single-blob session.
@@ -58,7 +60,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         // DagCompiler's PZ0219 has already refused a multi-column partition_by against a templated path.
         if (PartitionColumns.Read(spec.Options) is [var partitionBy])
         {
-            return BeginPartitionedWrite(spec, schema, format, objectName, loc, partitionBy, ct);
+            return BeginPartitionedWrite(spec, schema, format, delimiter, objectName, loc, partitionBy, ct);
         }
 
         var container = AzureAuth.CreateBlobContainerClient(config, loc.Container);
@@ -69,7 +71,8 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         {
             "parquet" => await AzureParquetWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                 .ConfigureAwait(false),
-            "csv" => await AzureCsvWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
+            "csv" or "tsv" => await AzureCsvWriteSession.CreateAsync(
+                    container, tempBlobName, finalBlobName, schema, delimiter, ct, _gate)
                 .ConfigureAwait(false),
             "json" => await AzureJsonWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                 .ConfigureAwait(false),
@@ -85,8 +88,8 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
     /// <c>&lt;renderedFolder&gt;/&lt;objectName&gt;</c>, sharing the exact object name the single-blob path
     /// uses so replace/append naming is identical per folder).</summary>
     private ISinkWriteSession BeginPartitionedWrite(
-        OutputSpec spec, Schema schema, FileFormat format, string objectName, AzureLocation loc, string partitionBy,
-        CancellationToken ct)
+        OutputSpec spec, Schema schema, FileFormat format, char delimiter, string objectName, AzureLocation loc,
+        string partitionBy, CancellationToken ct)
     {
         var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
 
@@ -103,7 +106,8 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
             {
                 "parquet" => await AzureParquetWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                     .ConfigureAwait(false),
-                "csv" => await AzureCsvWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
+                "csv" or "tsv" => await AzureCsvWriteSession.CreateAsync(
+                        container, tempBlobName, finalBlobName, schema, delimiter, ct, _gate)
                     .ConfigureAwait(false),
                 "json" => await AzureJsonWriteSession.CreateAsync(container, tempBlobName, finalBlobName, schema, ct, _gate)
                     .ConfigureAwait(false),

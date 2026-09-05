@@ -288,7 +288,7 @@ internal sealed class AzureCsvWriteSession : AzureWriteSession
 
     internal static async Task<AzureCsvWriteSession> CreateAsync(
         BlobContainerClient container, string tempBlobName, string finalBlobName, Schema arrowSchema,
-        CancellationToken ct, IOperationGate? gate)
+        char delimiter, CancellationToken ct, IOperationGate? gate)
     {
         var tempBlob = container.GetBlockBlobClient(tempBlobName);
         Stream? stream = null;
@@ -308,7 +308,7 @@ internal sealed class AzureCsvWriteSession : AzureWriteSession
                         innerException: ex);
                 }
             }, ct).ConfigureAwait(false);
-            var writer = new CsvWriteCodec(stream, arrowSchema, "azure universal csv sink");
+            var writer = new CsvWriteCodec(stream, arrowSchema, "azure universal csv sink", delimiter: delimiter);
             return new AzureCsvWriteSession(container, tempBlobName, finalBlobName, writer, gate);
         }
         catch

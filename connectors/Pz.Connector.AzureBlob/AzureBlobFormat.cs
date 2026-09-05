@@ -52,10 +52,12 @@ internal static class AzureBlobFormat
     /// <summary>Writes a complete csv file (header + one line per row, RFC-4180) to <paramref name="dest"/>.
     /// Does not dispose <paramref name="dest"/> -- ownership stays with the caller. The encoding is the
     /// toolkit's shared <see cref="CsvWriteCodec"/>, so this connector and LocalFiles emit the same bytes
-    /// from one implementation.</summary>
-    public static async Task WriteCsvAsync(Stream dest, Schema schema, IReadOnlyList<RecordBatch> batches, CancellationToken ct)
+    /// from one implementation. <paramref name="delimiter"/> is tab for tsv, comma otherwise -- the tsv
+    /// suffix carries no other formatting difference over csv.</summary>
+    public static async Task WriteCsvAsync(
+        Stream dest, Schema schema, IReadOnlyList<RecordBatch> batches, CancellationToken ct, char delimiter = ',')
     {
-        var writer = new CsvWriteCodec(dest, schema, "azure universal csv sink", leaveOpen: true);
+        var writer = new CsvWriteCodec(dest, schema, "azure universal csv sink", leaveOpen: true, delimiter: delimiter);
         await using (writer.ConfigureAwait(false))
         {
             foreach (var batch in batches)

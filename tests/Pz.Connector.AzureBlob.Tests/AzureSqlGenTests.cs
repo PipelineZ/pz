@@ -9,11 +9,12 @@ public sealed class AzureSqlGenTests
         new(new Dictionary<string, object?> { ["auth"] = "connection_string", ["connection_string"] = "cs" });
 
     private static OutputSpec Out(string mode = "replace", string container = "lake", string? path = "raw/orders",
-        string format = "parquet", string? scheme = null)
+        string format = "parquet", string? scheme = null, string? layout = null)
     {
         var o = new Dictionary<string, object?> { ["container"] = container, ["format"] = format };
         if (path is not null) o["path"] = path;
         if (scheme is not null) o["scheme"] = scheme;
+        if (layout is not null) o["layout"] = layout;
         return new OutputSpec("sink", "data", mode, "fail_on_change", o);
     }
 
@@ -67,10 +68,12 @@ public sealed class AzureSqlGenTests
     }
 
     private static DatasetSpec Ds(string format = "parquet", string container = "lake", string path = "in/*.parquet",
-        string? cursor = null, string? value = null, string? upper = null, IReadOnlyDictionary<string, string>? columns = null)
+        string? cursor = null, string? value = null, string? upper = null, IReadOnlyDictionary<string, string>? columns = null,
+        string? layout = null)
     {
         var o = new Dictionary<string, object?> { ["container"] = container, ["path"] = path, ["format"] = format };
         if (columns is not null) o["columns"] = columns;
+        if (layout is not null) o["layout"] = layout;
         return new DatasetSpec("src", "orders", o) { WatermarkCursor = cursor, WatermarkValue = value, WatermarkUpperBound = upper };
     }
 
@@ -272,6 +275,44 @@ public sealed class AzureSqlGenTests
         Assert.True(sink.TryGetNativeCopy(Out(format: "json"), out var copy));
         Assert.Contains("(format json)", copy!.CopySql, StringComparison.Ordinal);
         Assert.Contains("to 'az://lake/raw/orders/data.json'", copy.CopySql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_copy_targets_the_tsv_suffix_and_tab_delimiter()
+    {
+        var sink = new AzureSink(Conn());
+        Assert.True(sink.TryGetNativeCopy(Out(format: "tsv"), out var copy));
+        Assert.Equal(
+            "copy (select * from {{source}}) to 'az://lake/raw/orders/data.tsv' " +
+            "(format csv, header, delimiter '\\t')", copy!.CopySql);
+    }
+
+    [Fact]
+    public void Json_array_layout_copies_with_format_json_array_true()
+    {
+        var sink = new AzureSink(Conn());
+        Assert.True(sink.TryGetNativeCopy(Out(format: "json", layout: "array"), out var copy));
+        Assert.EndsWith("(format json, array true)", copy!.CopySql, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Tsv_read_defaults_to_the_tsv_suffix_and_tab_delimiter()
+    {
+        var src = new AzureSource(Conn());
+        Assert.True(src.TryGetNativeScan(Ds(format: "tsv", path: "in/data.tsv"), out var scan));
+        Assert.Equal(
+            "read_csv('az://lake/in/data.tsv', header = true, auto_detect = true, delim = '\\t')",
+            scan!.SqlFragment);
+        Assert.Equal("sniff_csv('az://lake/in/data.tsv', delim = '\\t')", scan.SniffFragment);
+    }
+
+    [Fact]
+    public void Json_array_layout_reads_with_format_array()
+    {
+        var src = new AzureSource(Conn());
+        Assert.True(src.TryGetNativeScan(Ds(format: "json", path: "in/data.json", layout: "array"), out var scan));
+        Assert.Equal(
+            "read_json('az://lake/in/data.json', auto_detect = true, format = 'array')", scan!.SqlFragment);
     }
 
     [Fact]

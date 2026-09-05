@@ -97,6 +97,35 @@ public sealed class AzureUniversalWriterTests
     }
 
     [Fact]
+    public async Task Csv_writes_tab_separated_bytes_when_given_a_tab_delimiter()
+    {
+        using var b0 = BuildBatch(0, 3);
+        using var b1 = BuildBatch(100, 5);
+        using var b2 = BuildBatch(200, 2);
+
+        using var ms = new MemoryStream();
+        await AzureBlobFormat.WriteCsvAsync(ms, FixedSchema, [b0, b1, b2], CancellationToken.None, delimiter: '\t');
+
+        var text = ReadCsvText(ms);
+        var lines = text.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        Assert.Equal("id\tname", lines[0]);
+        Assert.Equal(11, lines.Length); // header + 10 rows
+
+        var ids = new List<long>();
+        var names = new List<string>();
+        for (var i = 1; i < lines.Length; i++)
+        {
+            var parts = lines[i].Split('\t');
+            ids.Add(long.Parse(parts[0]));
+            names.Add(parts[1]);
+        }
+
+        Assert.Equal([0, 1, 2, 100, 101, 102, 103, 104, 200, 201], ids);
+        Assert.Equal(["row-0", "row-1", "row-2", "row-100", "row-101", "row-102", "row-103", "row-104", "row-200", "row-201"], names);
+    }
+
+    [Fact]
     public async Task Csv_quotes_values_containing_commas()
     {
         var idBuilder = new Int64Array.Builder();
