@@ -18,12 +18,12 @@ public static class FileFormatCatalog
 
     private static readonly Dictionary<string, FileFormat> Formats = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["csv"] = new("csv", "csv", NativeRead: true, NativeWrite: true, UniversalTier: true, [], CsvOptions),
-        ["tsv"] = new("tsv", "tsv", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
-        ["json"] = new("json", "json", NativeRead: true, NativeWrite: true, UniversalTier: true, [], JsonOptions),
-        ["parquet"] = new("parquet", "parquet", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
-        ["xlsx"] = new("xlsx", "xlsx", NativeRead: true, NativeWrite: true, UniversalTier: false, ["excel"], XlsxOptions),
-        ["avro"] = new("avro", "avro", NativeRead: true, NativeWrite: false, UniversalTier: false, ["avro"], NoOptions),
+        ["csv"] = new("csv", "csv", NativeRead: true, NativeWrite: true, UniversalTier: true, LocalWriteOnly: false, [], CsvOptions),
+        ["tsv"] = new("tsv", "tsv", NativeRead: true, NativeWrite: true, UniversalTier: true, LocalWriteOnly: false, [], NoOptions),
+        ["json"] = new("json", "json", NativeRead: true, NativeWrite: true, UniversalTier: true, LocalWriteOnly: false, [], JsonOptions),
+        ["parquet"] = new("parquet", "parquet", NativeRead: true, NativeWrite: true, UniversalTier: true, LocalWriteOnly: false, [], NoOptions),
+        ["xlsx"] = new("xlsx", "xlsx", NativeRead: true, NativeWrite: true, UniversalTier: false, LocalWriteOnly: true, ["excel"], XlsxOptions),
+        ["avro"] = new("avro", "avro", NativeRead: true, NativeWrite: false, UniversalTier: false, LocalWriteOnly: false, ["avro"], NoOptions),
     };
 
     /// <summary>Every format-scoped option key any format owns. A key here that the resolved format's
@@ -102,7 +102,9 @@ public static class FileFormatCatalog
 
     /// <summary>read_xlsx reads exactly one workbook -- unlike csv/json/parquet, it takes no list literal,
     /// so a multi-file match (e.g. a wildcarded path:) is refused rather than silently reading one file
-    /// of several.</summary>
+    /// of several. A glob in path: is refused even when it happens to match exactly one file today:
+    /// DuckDB's read_xlsx('…/*.xlsx') silently reads one matching workbook with no error, so a glob that
+    /// later matches a second file would silently keep reading only the first instead of failing loudly.</summary>
     private static string XlsxRead(IReadOnlyDictionary<string, object?> options, FormatReadRequest read, string context, IReadOnlyDictionary<string, string>? declared)
     {
         if (read.FileCount != 1)
@@ -110,9 +112,16 @@ public static class FileFormatCatalog
             throw Permanent($"PZ0361: {context}: xlsx reads one workbook per entity; this read matches {read.FileCount} files -- name a single file in path:");
         }
 
+        if (read.UrlArg.IndexOfAny(GlobChars) >= 0)
+        {
+            throw Permanent($"PZ0361: {context}: xlsx reads one workbook per entity; 'path:' must name a single file, not a glob -- DuckDB would silently read only the first match");
+        }
+
         var inner = $"read_xlsx({read.UrlArg}, {XlsxReadArgs(options, context)})";
         return declared is null ? inner : CastProjection(inner, declared, read.DuckDbTypeName);
     }
+
+    private static readonly char[] GlobChars = ['*', '?', '['];
 
     /// <summary>read_xlsx/read_avro take no columns= map: a declared contract is applied as a projecting
     /// cast, which also prunes to the declared columns. A cast failure is DuckDB's own loud error at
@@ -125,8 +134,8 @@ public static class FileFormatCatalog
     private static string JsonReadFormat(FileFormat format, IReadOnlyDictionary<string, object?> options) =>
         JsonLayout(format, options) == "array" ? "array" : "newline_delimited";
 
-    /// <summary>True when DuckDB invents the schema (contract-less csv/json auto_detect) rather than
-    /// reading one the file or the contract declares -- drives the engine's inference lints.</summary>
+    /// <summary>True when DuckDB invents the schema (contract-less csv/json/xlsx auto-detection) rather
+    /// than reading one the file or the contract declares -- drives the engine's inference lints.</summary>
     public static bool SchemaInferred(FileFormat format, IReadOnlyDictionary<string, string>? declared)
     {
         ArgumentNullException.ThrowIfNull(format);
@@ -207,6 +216,20 @@ public static class FileFormatCatalog
         if (!format.NativeWrite)
         {
             throw Permanent($"PZ0361: {context}: format '{format.Name}' is read-only on {connector} -- write parquet, csv or json instead");
+        }
+    }
+
+    /// <summary>PZ0361 when a native COPY write would target a remote (non-local) destination for a
+    /// <see cref="FileFormat.LocalWriteOnly"/> format: DuckDB's excel writer aborts the whole host
+    /// process (std::terminate) on an IO/auth failure mid-write, a crash blast radius no remote object
+    /// store can be trusted not to trigger -- so xlsx write is refused at plan time for every remote
+    /// sink, rather than left to fail unpredictably at execute time.</summary>
+    public static void EnsureRemoteWritable(FileFormat format, string connector, string context)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        if (format.LocalWriteOnly)
+        {
+            throw Permanent($"PZ0361: {context}: xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so {connector} refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json");
         }
     }
 

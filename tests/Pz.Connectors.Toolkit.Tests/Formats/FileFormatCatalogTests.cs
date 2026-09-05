@@ -124,7 +124,7 @@ public sealed class FileFormatCatalogTests
     [Fact]
     public void EnsureUniversalTierSupported_refuses_a_format_without_the_universal_tier()
     {
-        var native = new FileFormat("x", "x", NativeRead: true, NativeWrite: true, UniversalTier: false, [], new HashSet<string>(StringComparer.Ordinal));
+        var native = new FileFormat("x", "x", NativeRead: true, NativeWrite: true, UniversalTier: false, LocalWriteOnly: false, [], new HashSet<string>(StringComparer.Ordinal));
         var ex = Assert.Throws<PzConnectorException>(() =>
             FileFormatCatalog.EnsureUniversalTierSupported(native, Opts(), "sftp", "dataset 'd'"));
         Assert.False(ex.IsTransient);
@@ -273,6 +273,33 @@ public sealed class FileFormatCatalogTests
         var xlsx = FileFormatCatalog.Resolve(o, null, "s3", "dataset 'd'");
         var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.ReadFragment(xlsx, o, Req("['a', 'b']", 2), "dataset 'd'"));
         Assert.Equal("PZ0361: dataset 'd': xlsx reads one workbook per entity; this read matches 2 files -- name a single file in path:", ex.Message);
+    }
+
+    [Fact]
+    public void Xlsx_glob_path_is_PZ0361()
+    {
+        var o = Opts("xlsx");
+        var xlsx = FileFormatCatalog.Resolve(o, null, "s3", "dataset 'd'");
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.ReadFragment(xlsx, o, Req("'s3://b/raw/*.xlsx'"), "dataset 'd'"));
+        Assert.Equal(
+            "PZ0361: dataset 'd': xlsx reads one workbook per entity; 'path:' must name a single file, not a glob -- DuckDB would silently read only the first match",
+            ex.Message);
+    }
+
+    [Fact]
+    public void EnsureRemoteWritable_refuses_xlsx_and_accepts_every_other_writable_format()
+    {
+        var xlsx = FileFormatCatalog.Resolve(Opts("xlsx"), null, "s3", "output 'o'");
+        var ex = Assert.Throws<PzConnectorException>(() => FileFormatCatalog.EnsureRemoteWritable(xlsx, "s3", "output 'o'"));
+        Assert.False(ex.IsTransient);
+        Assert.Equal(
+            "PZ0361: output 'o': xlsx write is localfiles-only; DuckDB's excel writer aborts the whole process when a remote write fails, so s3 refuses it -- write the workbook with the localfiles connector, or choose parquet, csv or json",
+            ex.Message);
+
+        foreach (var name in new[] { "parquet", "csv", "json", "tsv" })
+        {
+            FileFormatCatalog.EnsureRemoteWritable(FileFormatCatalog.Resolve(Opts(name), null, "s3", "output 'o'"), "s3", "output 'o'");
+        }
     }
 
     [Fact]
