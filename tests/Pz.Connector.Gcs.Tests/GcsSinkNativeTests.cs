@@ -73,12 +73,12 @@ public sealed class GcsSinkNativeTests
         var missing = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: null), out _));
         Assert.Contains("'format'", missing.Message, StringComparison.Ordinal);
         Assert.StartsWith("PZ0361: output '", missing.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", missing.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet, tsv)", missing.Message, StringComparison.Ordinal);
 
         var bad = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(Out(format: "avro"), out _));
         Assert.Contains("'avro'", bad.Message, StringComparison.Ordinal);
         Assert.StartsWith("PZ0361: output '", bad.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", bad.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet, tsv)", bad.Message, StringComparison.Ordinal);
     }
 
     [Fact]

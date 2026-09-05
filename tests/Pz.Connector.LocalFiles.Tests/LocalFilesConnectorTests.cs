@@ -742,7 +742,7 @@ public sealed class LocalFilesConnectorTests : IDisposable
 
         var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
         Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet, tsv)", ex.Message, StringComparison.Ordinal);
         Assert.False(ex.IsTransient);
     }
 

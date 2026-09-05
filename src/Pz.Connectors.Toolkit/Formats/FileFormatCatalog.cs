@@ -12,17 +12,21 @@ public static class FileFormatCatalog
 {
     private static readonly IReadOnlySet<string> NoOptions = new HashSet<string>(StringComparer.Ordinal);
 
+    private static readonly IReadOnlySet<string> CsvOptions = new HashSet<string>(StringComparer.Ordinal) { "delimiter" };
+    private static readonly IReadOnlySet<string> JsonOptions = new HashSet<string>(StringComparer.Ordinal) { "layout" };
+
     private static readonly Dictionary<string, FileFormat> Formats = new(StringComparer.OrdinalIgnoreCase)
     {
-        ["csv"] = new("csv", "csv", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
-        ["json"] = new("json", "json", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
+        ["csv"] = new("csv", "csv", NativeRead: true, NativeWrite: true, UniversalTier: true, [], CsvOptions),
+        ["tsv"] = new("tsv", "tsv", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
+        ["json"] = new("json", "json", NativeRead: true, NativeWrite: true, UniversalTier: true, [], JsonOptions),
         ["parquet"] = new("parquet", "parquet", NativeRead: true, NativeWrite: true, UniversalTier: true, [], NoOptions),
     };
 
     /// <summary>Every format-scoped option key any format owns. A key here that the resolved format's
     /// <see cref="FileFormat.OptionKeys"/> does not contain is PZ0362 -- an option on the wrong format is
     /// a mistake, never silently ignored. Grows with the catalog.</summary>
-    private static readonly HashSet<string> AllFormatOptionKeys = new(StringComparer.Ordinal);
+    private static readonly HashSet<string> AllFormatOptionKeys = new(StringComparer.Ordinal) { "delimiter", "layout" };
 
     /// <summary>Canonical names, sorted ordinal -- the order every "supported:" message and the schema
     /// enum use.</summary>
@@ -31,7 +35,9 @@ public static class FileFormatCatalog
     /// <summary>JSON-schema object members (no surrounding braces) for <c>format</c> and every
     /// format-scoped option, to splice into a connector's <c>DatasetConfigSchema</c> "properties".</summary>
     public static string SchemaProperties { get; } =
-        "\"format\": { \"enum\": [" + string.Join(", ", Names.Select(n => "\"" + n + "\"")) + "] }";
+        "\"format\": { \"enum\": [" + string.Join(", ", Names.Select(n => "\"" + n + "\"")) + "] }, " +
+        "\"delimiter\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 1 }, " +
+        "\"layout\": { \"enum\": [\"ndjson\", \"array\"] }";
 
     /// <summary>Resolves <c>format:</c> (falling back to <paramref name="defaultFormat"/>; null means the
     /// connector requires it) and validates the format-scoped options. <paramref name="context"/> is
@@ -77,23 +83,26 @@ public static class FileFormatCatalog
         var declared = read.DeclaredColumns is { Count: > 0 } d ? d : null;
         return format.Name switch
         {
-            "csv" => declared is null
-                ? $"read_csv({read.UrlArg}, header = true, auto_detect = true)"
-                : $"read_csv({read.UrlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared, read.DuckDbTypeName)}}})",
+            "csv" or "tsv" => declared is null
+                ? $"read_csv({read.UrlArg}, header = true, auto_detect = true{DelimiterSuffix(format, options, context, "delim")})"
+                : $"read_csv({read.UrlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared, read.DuckDbTypeName)}}}{DelimiterSuffix(format, options, context, "delim")})",
             "json" => declared is null
-                ? $"read_json({read.UrlArg}, auto_detect = true, format = 'newline_delimited')"
-                : $"read_json({read.UrlArg}, columns = {{{ColumnsMap(declared, read.DuckDbTypeName)}}}, format = 'newline_delimited')",
+                ? $"read_json({read.UrlArg}, auto_detect = true, format = '{JsonReadFormat(format, options)}')"
+                : $"read_json({read.UrlArg}, columns = {{{ColumnsMap(declared, read.DuckDbTypeName)}}}, format = '{JsonReadFormat(format, options)}')",
             "parquet" => $"read_parquet({read.UrlArg})",
             _ => throw new UnreachableException($"format '{format.Name}' has no native read fragment"),
         };
     }
+
+    private static string JsonReadFormat(FileFormat format, IReadOnlyDictionary<string, object?> options) =>
+        JsonLayout(format, options) == "array" ? "array" : "newline_delimited";
 
     /// <summary>True when DuckDB invents the schema (contract-less csv/json auto_detect) rather than
     /// reading one the file or the contract declares -- drives the engine's inference lints.</summary>
     public static bool SchemaInferred(FileFormat format, IReadOnlyDictionary<string, string>? declared)
     {
         ArgumentNullException.ThrowIfNull(format);
-        return format.Name is "csv" or "json" && declared is not { Count: > 0 };
+        return format.Name is "csv" or "tsv" or "json" && declared is not { Count: > 0 };
     }
 
     /// <summary>DuckDB's own sniffer verdict for a SINGLE csv file, or null for every other format --
@@ -103,7 +112,7 @@ public static class FileFormatCatalog
     public static string? SniffFragment(FileFormat format, IReadOnlyDictionary<string, object?> options, string singleUrlLiteral)
     {
         ArgumentNullException.ThrowIfNull(format);
-        return format.Name == "csv" ? $"sniff_csv({singleUrlLiteral})" : null;
+        return format.Name is "csv" or "tsv" ? $"sniff_csv({singleUrlLiteral}{DelimiterSuffix(format, options, "", "delim")})" : null;
     }
 
     /// <summary>The parenthesised COPY options for a native write, e.g. <c>format csv, header</c>.</summary>
@@ -116,10 +125,18 @@ public static class FileFormatCatalog
         return format.Name switch
         {
             "parquet" => "format parquet",
-            "csv" => "format csv, header",
-            "json" => "format json",
+            "csv" or "tsv" => "format csv, header" + CopyDelimiterSuffix(format, options, context),
+            "json" => JsonLayout(format, options) == "array" ? "format json, array true" : "format json",
             _ => throw new UnreachableException($"format '{format.Name}' has no COPY clause"),
         };
+    }
+
+    /// <summary>The COPY-clause delimiter suffix -- COPY's <c>delimiter</c> keyword takes no <c>=</c>,
+    /// unlike <c>read_csv</c>'s <c>delim =</c>, so this cannot reuse <see cref="DelimiterSuffix"/>.</summary>
+    private static string CopyDelimiterSuffix(FileFormat format, IReadOnlyDictionary<string, object?> options, string context)
+    {
+        var delimiter = Delimiter(format, options, context);
+        return delimiter == ',' ? "" : $", delimiter {DelimiterLiteral(delimiter)}";
     }
 
     /// <summary><c>install X</c>/<c>load X</c> for each DuckDB extension the format needs; the engine's
@@ -143,7 +160,7 @@ public static class FileFormatCatalog
         ArgumentNullException.ThrowIfNull(format);
         return format.Name switch
         {
-            "csv" => "read_csv",
+            "csv" or "tsv" => "read_csv",
             "json" => "read_json",
             "parquet" => "read_parquet",
             _ => throw new UnreachableException($"format '{format.Name}' has no read mechanism"),
@@ -169,6 +186,12 @@ public static class FileFormatCatalog
         FileFormat format, IReadOnlyDictionary<string, object?> options, string connector, string context)
     {
         ArgumentNullException.ThrowIfNull(format);
+        if (format.Name == "json" && JsonLayout(format, options) == "array")
+        {
+            throw Permanent($"PZ0361: {context}: json 'layout: array' is native-only; {connector}'s managed json reader/writer handles newline-delimited json only -- " +
+                "use 'layout: ndjson' here, or a connector with a native tier (localfiles, s3, gcs, azureblob)");
+        }
+
         if (!format.UniversalTier)
         {
             var choices = string.Join(", ", Formats.Values.Where(f => f.UniversalTier).Select(f => f.Name).Order(StringComparer.Ordinal));
@@ -177,9 +200,61 @@ public static class FileFormatCatalog
         }
     }
 
+    /// <summary>The csv/tsv field delimiter: tab for tsv, the validated <c>delimiter:</c> for csv, comma
+    /// by default. ASCII only, because the managed writer emits it as one byte.</summary>
+    public static char Delimiter(FileFormat format, IReadOnlyDictionary<string, object?> options, string context)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        ArgumentNullException.ThrowIfNull(options);
+        if (format.Name == "tsv")
+        {
+            return '\t';
+        }
+
+        if (format.Name != "csv" || !options.TryGetValue("delimiter", out var raw))
+        {
+            return ',';
+        }
+
+        var text = raw?.ToString() ?? "";
+        if (text.Length != 1 || !char.IsAscii(text[0]))
+        {
+            throw Permanent($"PZ0362: {context}: 'delimiter' must be exactly one ASCII character (got '{text}')");
+        }
+
+        return text[0];
+    }
+
+    /// <summary><c>layout:</c> of a json entity -- <c>ndjson</c> (default, newline-delimited) or
+    /// <c>array</c> (one top-level JSON array of objects).</summary>
+    public static string JsonLayout(FileFormat format, IReadOnlyDictionary<string, object?> options)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        ArgumentNullException.ThrowIfNull(options);
+        return format.Name == "json" && options.TryGetValue("layout", out var v) && v?.ToString() is { Length: > 0 } layout
+            ? layout
+            : "ndjson";
+    }
+
     private static void ValidateOptions(FileFormat format, IReadOnlyDictionary<string, object?> options, string context)
     {
-        // Every format-scoped option key must appear on its format's OptionKeys; no format admits one yet, so there is nothing to validate.
+        _ = Delimiter(format, options, context);
+        var layout = JsonLayout(format, options);
+        if (layout is not ("ndjson" or "array"))
+        {
+            throw Permanent($"PZ0362: {context}: 'layout' must be 'ndjson' or 'array' (got '{layout}')");
+        }
+    }
+
+    /// <summary>The DuckDB string literal for a delimiter: tab as the two characters <c>\t</c>, which
+    /// read_csv/COPY interpret; anything else as the character itself, quote-doubled.</summary>
+    private static string DelimiterLiteral(char delimiter) =>
+        delimiter == '\t' ? "'\\t'" : $"'{Esc(delimiter.ToString())}'";
+
+    private static string DelimiterSuffix(FileFormat format, IReadOnlyDictionary<string, object?> options, string context, string keyword)
+    {
+        var delimiter = Delimiter(format, options, context);
+        return delimiter == ',' ? "" : $", {keyword} = {DelimiterLiteral(delimiter)}";
     }
 
     private static string ColumnsMap(IReadOnlyDictionary<string, string> declared, Func<string, string, string> duckType) =>

@@ -103,7 +103,7 @@ public sealed class S3SinkTests
         Assert.False(ex.IsTransient);
         Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
         Assert.Contains("prquet", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet, tsv)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -149,7 +149,7 @@ public sealed class S3SinkTests
         });
 
         Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet, tsv)", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]

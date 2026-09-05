@@ -340,7 +340,7 @@ public sealed class JsonFormatTests : IDisposable
 
         Assert.False(ex.IsTransient);
         Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("(supported: csv, json, parquet)", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("(supported: csv, json, parquet, tsv)", ex.Message, StringComparison.Ordinal);
     }
     /// <summary>Mirrors the csv flag — contract-less json auto-detects, so only it declares
     /// <see cref="NativeScan.SchemaInferred"/>.</summary>
