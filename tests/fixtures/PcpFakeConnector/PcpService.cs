@@ -69,6 +69,14 @@ internal sealed class PcpService(
         }
 
         var capabilities = (long)_connector.Capabilities;
+        if (options.SyncState || options.DeclareSyncStateOnly)
+        {
+            // A feed connector owns one opaque token per dataset, which cannot span independent
+            // partition reads -- so PartitionedRead is withdrawn together with declaring SyncState.
+            capabilities = (capabilities & ~(long)ConnectorCapabilities.PartitionedRead)
+                | (long)ConnectorCapabilities.SyncState;
+        }
+
         var hello = new Hello
         {
             Info = new ConnectorInfoMsg
@@ -164,6 +172,13 @@ internal sealed class PcpService(
     public override Task<NativeScanResponse> TryNativeScan(NativeScanRequest request, ServerCallContext context) =>
         Guarded(async () =>
         {
+            if (options.SyncState)
+            {
+                // A feed read has no SQL fragment DuckDB could scan: the token only exists once the
+                // partition has been drained over the data plane.
+                return new NativeScanResponse { Found = false };
+            }
+
             using var linked = LinkOp(request.OpId, context);
             var ct = linked.Token;
             var source = await OpenSourceAsync(ct).ConfigureAwait(false);
@@ -201,9 +216,15 @@ internal sealed class PcpService(
             var ct = linked.Token;
             var spec = SpecMapping.ToDatasetSpec(request.Spec);
             var source = await OpenSourceAsync(ct).ConfigureAwait(false);
-            var partitions = await source
+            var planned = await source
                 .PlanReadAsync(spec, SpecMapping.ToReadHints(request.Hints), ct)
                 .ConfigureAwait(false);
+            // Wrapped at plan time, not at OpenReadStream: the PartitionMsg.sync_state flag below and
+            // the GetReadState lookup both go through the stored plan, so the SAME wrapper instance
+            // must be what the flag was computed from and what later counts the drained rows.
+            IReadOnlyList<IDatasetPartition> partitions = options.SyncState
+                ? planned.Select(p => (IDatasetPartition)new SyncStateReadPartition(p, spec)).ToList()
+                : planned;
             var schema = await source.GetSchemaAsync(spec, ct).ConfigureAwait(false);
             _plans[request.OpId] = new PlannedRead(spec, schema.Schema, partitions);
 
@@ -256,6 +277,52 @@ internal sealed class PcpService(
             var ticket = tickets.Mint(new ReadTicket(
                 plan.Schema, ticketPartition, SpecMapping.ToBatchOptions(request.Options), OpToken(request.OpId)));
             return Task.FromResult(new ReadStreamTicket { Ticket = ByteString.CopyFrom(ticket) });
+        });
+
+    public override Task<NaturalReadShapeResponse> GetNaturalReadShape(
+        NaturalReadShapeRequest request, ServerCallContext context)
+    {
+        if (options.DeclareSyncStateOnly)
+        {
+            throw new RpcException(new Status(StatusCode.Unimplemented, "fixture: --declare-sync-state-only"));
+        }
+
+        return Task.FromResult(new NaturalReadShapeResponse
+        {
+            Shape = options.SyncState
+                ? NaturalReadShapeResponse.Types.Shape.Feed
+                : NaturalReadShapeResponse.Types.Shape.Full,
+        });
+    }
+
+    public override Task<ReadStateResponse> GetReadState(ReadStateRequest request, ServerCallContext context) =>
+        Guarded(() =>
+        {
+            if (options.DeclareSyncStateOnly)
+            {
+                throw new RpcException(new Status(StatusCode.Unimplemented, "fixture: --declare-sync-state-only"));
+            }
+
+            if (!_plans.TryGetValue(request.OpId, out var plan))
+            {
+                throw new RpcException(new Status(StatusCode.NotFound, $"no plan for op '{request.OpId}'"));
+            }
+
+            // Same lookup OpenReadStream uses, so the two RPCs agree on what a partition id means.
+            var partition = ResolvePartition(plan, request.PartitionId);
+            if (partition is not ISyncStatePartition sync)
+            {
+                throw new RpcException(new Status(
+                    StatusCode.FailedPrecondition, $"partition '{request.PartitionId}' did not declare sync_state"));
+            }
+
+            var response = new ReadStateResponse();
+            if (sync.TryGetSyncStateCandidate(out var token) && token is not null)
+            {
+                response.Token = token;
+            }
+
+            return Task.FromResult(response);
         });
 
     // ---- sink -------------------------------------------------------------------------------
@@ -755,6 +822,41 @@ internal sealed class EndlessReadPartition(IDatasetPartition inner) : IDatasetPa
 
             await Task.Delay(PassInterval, ct).ConfigureAwait(false);
         }
+    }
+}
+
+/// <summary>The fixture's feed partition: counts rows as <paramref name="inner"/> drains and, once
+/// the drain completed, exposes <c>"&lt;prior&gt;+&lt;rows&gt;"</c> as the sync-state candidate, where
+/// <c>&lt;prior&gt;</c> is the token the host replayed through <see cref="DatasetSpec.PriorSyncState"/>
+/// (or <c>"0"</c> on a first run). Deterministic and visibly cumulative across runs -- <c>"0+4"</c>,
+/// then <c>"0+4+4"</c> -- so a host-side test can prove the prior token reached the connector, not
+/// just that some token came back. No candidate before the drain finished: nothing in the ABI
+/// promises one, and a host that polls early must see "none", not a partial count.</summary>
+internal sealed class SyncStateReadPartition(IDatasetPartition inner, DatasetSpec spec)
+    : IDatasetPartition, ISyncStatePartition
+{
+    private long _rows;
+    // Written by the data-plane pump once the enumeration ends, read by the GetReadState gRPC thread.
+    private int _drained;
+
+    public async IAsyncEnumerable<RecordBatch> ReadAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var batch in inner.ReadAsync(options, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            _rows += batch.Length;
+            yield return batch;
+        }
+
+        Volatile.Write(ref _drained, 1);
+    }
+
+    public bool TryGetSyncStateCandidate(out string? candidate)
+    {
+        candidate = Volatile.Read(ref _drained) == 1
+            ? $"{spec.PriorSyncState ?? "0"}+{_rows.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
+            : null;
+        return candidate is not null;
     }
 }
 

@@ -147,7 +147,13 @@ internal static class Program
 
 /// <summary>Which failure this fixture stages, and where to serve. Nothing here is configuration:
 /// connection options and credentials reach the connector through the <c>Configure</c> RPC and no
-/// other way.</summary>
+/// other way.
+///
+/// <para><c>--sync-state</c> stages a feed-shaped connector: <c>SyncState</c> declared (and
+/// <c>PartitionedRead</c> withdrawn -- one opaque token cannot span partitions), FEED for every
+/// dataset, no native scan, and a deterministic token per drained partition.
+/// <c>--declare-sync-state-only</c> declares the same capability set but answers UNIMPLEMENTED to
+/// both sync-state RPCs, the shape a conformance vector must FAIL.</para></summary>
 internal sealed record FixtureOptions(
     string SocketPath,
     bool HangHandshake,
@@ -161,7 +167,9 @@ internal sealed record FixtureOptions(
     bool EndlessRead,
     bool IgnoreCancel,
     bool IgnoreShutdown,
-    bool DeclareCheckpointableReads)
+    bool DeclareCheckpointableReads,
+    bool SyncState,
+    bool DeclareSyncStateOnly)
 {
     public static FixtureOptions Parse(string[] args)
     {
@@ -171,6 +179,7 @@ internal sealed record FixtureOptions(
         bool failCheckTransient = false, reportAbortSemanticsNone = false;
         bool useGate = false, endlessRead = false, ignoreCancel = false, ignoreShutdown = false;
         bool declareCheckpointableReads = false;
+        bool syncState = false, declareSyncStateOnly = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -220,6 +229,12 @@ internal sealed record FixtureOptions(
                 case "--declare-checkpointable-reads":
                     declareCheckpointableReads = true;
                     break;
+                case "--sync-state":
+                    syncState = true;
+                    break;
+                case "--declare-sync-state-only":
+                    declareSyncStateOnly = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -238,7 +253,9 @@ internal sealed record FixtureOptions(
             endlessRead,
             ignoreCancel,
             ignoreShutdown,
-            declareCheckpointableReads);
+            declareCheckpointableReads,
+            syncState,
+            declareSyncStateOnly);
     }
 }
 
