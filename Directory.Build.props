@@ -19,11 +19,12 @@
     <MinVerTagPrefix>v</MinVerTagPrefix>
   </PropertyGroup>
 
-  <!-- Shared NuGet package metadata for every packable project. Exactly four ids publish today, and
+  <!-- Shared NuGet package metadata for every packable project. Exactly five ids publish today, and
        each has a real consumer: pz (the product; the Pz.Cli project publishes under that id, see its
        PackageId override), Pz.Connectors.Abstractions (the ABI a connector
-       author compiles against), Pz.Connectors.Toolkit (shared codecs and format helpers), and
-       Pz.Connectors.TestKit (the acceptance suite a connector runs against).
+       author compiles against), Pz.Connectors.Toolkit (shared codecs and format helpers),
+       Pz.Connectors.TestKit (the acceptance suite a connector runs against), and
+       Pz.Connectors.Sdk (the out-of-process connector SDK).
        Packability is opt-OUT: every other project sets <IsPackable>false</IsPackable> explicitly in
        its own .csproj, which flips this Condition off for them. That includes all eight builtin
        connectors, which ship inside the `pz` tool package; publishing them separately produced

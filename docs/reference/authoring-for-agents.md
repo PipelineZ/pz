@@ -256,6 +256,21 @@ directly — the connector's `connector:` name in `connections.yml` and its `Con
 unsigned packaged DuckDB extension is refused at plan time (`PZ0359`) unless the connection sets
 `allow_unsigned_extensions: true`.
 
+**Writing one in C# — `Pz.Connectors.Sdk`.** Implement `ISourceConnector` and/or `ISinkConnector`
+from `Pz.Connectors.Abstractions` exactly as a builtin would, then serve it with one line:
+`return await PzConnectorHost.RunAsync(args, new MyConnector());` (or
+`RunAsync(args, ctx => new MyConnector(ctx.LoggerFactory))` to log to the host). The SDK answers every
+optional RPC from the interfaces your objects actually implement — a source that is not
+`INaturalReadShapeSource` answers UNIMPLEMENTED, a partition that is not `ISyncStatePartition` answers
+FAILED_PRECONDITION — so declare only capabilities you implement; `pz connector test` fails the rest.
+The SDK captures the sync-state token itself when a partition's enumeration completes, before it
+writes end-of-stream: set the candidate anywhere before your iterator returns. Two argv modes only:
+`--pz-socket <path>` (serve) and `--pz-manifest --out <file>` (write `pz.connector.json` from the
+connector object); configuration never travels on argv. Packaging: `dotnet publish -r <rid>` per
+platform (Native AOT by default; `<PzPackaging>self-contained</PzPackaging>` opts out), then
+`dotnet pack -p:PzNativeStaging=<dir>` collects every RID under `runtimes/<rid>/native/` with the
+generated manifest at the nupkg root — the layout `pz restore` already installs.
+
 **PCP error codes:**
 
 | Code | Meaning |
