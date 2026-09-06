@@ -7,6 +7,12 @@
     <PzNativeStaging Condition="'$(PzNativeStaging)' == ''">$(MSBuildProjectDirectory)/bin/pz-native/</PzNativeStaging>
     <PzNativeStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</PzNativeStaging>
 
+    <!-- Set to true when the connector resolves relative paths in its own config (a root/path
+         option): pz then passes the project directory as the `base_dir` connection option, so those
+         paths resolve against the project rather than the process working directory. Off by default:
+         a manifest that says nothing about it must be identical to one written before this existed. -->
+    <PzProjectDirectoryAnchor Condition="'$(PzProjectDirectoryAnchor)' == ''">false</PzProjectDirectoryAnchor>
+
     <!-- The host only ever spawns the binary: a framework-dependent dll in lib/ and a dependency on
          this SDK would only make `pz restore` download things the connector never loads. -->
     <IncludeBuildOutput>false</IncludeBuildOutput>

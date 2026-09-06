@@ -269,7 +269,9 @@ writes end-of-stream: set the candidate anywhere before your iterator returns. T
 connector object); configuration never travels on argv. Packaging: `dotnet publish -r <rid>` per
 platform (Native AOT by default; `<PzPackaging>self-contained</PzPackaging>` opts out), then
 `dotnet pack -p:PzNativeStaging=<dir>` collects every RID under `runtimes/<rid>/native/` with the
-generated manifest at the nupkg root — the layout `pz restore` already installs.
+generated manifest at the nupkg root — the layout `pz restore` already installs. Set
+`<PzProjectDirectoryAnchor>true</PzProjectDirectoryAnchor>` when the connector resolves relative paths
+in its own config; `pz` then passes the project directory as the `base_dir` connection option.
 
 **PCP error codes:**
 

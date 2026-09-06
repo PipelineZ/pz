@@ -4,7 +4,8 @@ internal abstract record HostCommand;
 
 internal sealed record ServeCommand(string SocketPath) : HostCommand;
 
-internal sealed record ManifestCommand(string OutPath, SortedDictionary<string, string> Entrypoints) : HostCommand;
+internal sealed record ManifestCommand(
+    string OutPath, SortedDictionary<string, string> Entrypoints, bool ProjectDirectoryAnchor = false) : HostCommand;
 
 internal sealed record InvalidCommand(string Message) : HostCommand;
 
@@ -16,13 +17,15 @@ internal static class HostArguments
 {
     public const string Usage =
         "usage: <connector> --pz-socket <path>\n" +
-        "       <connector> --pz-manifest --out <file> [--entrypoint <rid>=<package-relative path>]...";
+        "       <connector> --pz-manifest --out <file> [--entrypoint <rid>=<package-relative path>]...\n" +
+        "                   [--project-directory-anchor]";
 
     public static HostCommand Parse(string[] args)
     {
         string? socket = null;
         string? outPath = null;
         var manifest = false;
+        var projectDirectoryAnchor = false;
         var entrypoints = new SortedDictionary<string, string>(StringComparer.Ordinal);
 
         for (var i = 0; i < args.Length; i++)
@@ -62,12 +65,16 @@ internal static class HostArguments
 
                     entrypoints[args[i][..split]] = args[i][(split + 1)..];
                     break;
+                case "--project-directory-anchor":
+                    projectDirectoryAnchor = true;
+                    break;
                 default:
                     return new InvalidCommand($"unrecognized argument '{args[i]}'");
             }
         }
 
-        if (socket is not null && (manifest || outPath is not null || entrypoints.Count > 0))
+        if (socket is not null &&
+            (manifest || outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor))
         {
             return new InvalidCommand("--pz-socket and --pz-manifest are separate modes");
         }
@@ -81,11 +88,11 @@ internal static class HostArguments
         {
             return outPath is null
                 ? new InvalidCommand("--pz-manifest needs --out <file>")
-                : new ManifestCommand(outPath, entrypoints);
+                : new ManifestCommand(outPath, entrypoints, projectDirectoryAnchor);
         }
 
-        return new InvalidCommand(outPath is not null || entrypoints.Count > 0
-            ? "--out/--entrypoint belong to --pz-manifest"
+        return new InvalidCommand(outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor
+            ? "--out/--entrypoint/--project-directory-anchor belong to --pz-manifest"
             : "one of --pz-socket <path> or --pz-manifest is required");
     }
 }

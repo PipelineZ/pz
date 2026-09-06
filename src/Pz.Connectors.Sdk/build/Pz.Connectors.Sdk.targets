@@ -1,7 +1,11 @@
 <Project>
   <PropertyGroup>
-    <!-- The ratified discovery tag for connector packages, appended once. -->
-    <PackageTags Condition="!$(PackageTags.Contains('pipelinez-connector'))">$(PackageTags);pipelinez-connector</PackageTags>
+    <!-- The ratified discovery tag for connector packages, appended once. Two conditions rather than
+         one: a consumer who sets no PackageTags at all must not get a leading ';' (NuGet space-
+         separates the nuspec tags, so ";pipelinez-connector" degrades to a leading space, i.e. two
+         tokens where the intent is one). -->
+    <PackageTags Condition="'$(PackageTags)' == ''">pipelinez-connector</PackageTags>
+    <PackageTags Condition="'$(PackageTags)' != '' and !$(PackageTags.Contains('pipelinez-connector'))">$(PackageTags);pipelinez-connector</PackageTags>
   </PropertyGroup>
 
   <!-- Every path below is computed INSIDE the target that uses it, never in a file-level
@@ -67,18 +71,24 @@
            Text="pz: the packing machine's RID '$(_PzHostRid)' has no staged binary at '$(_PzHostExe)'. The manifest is produced by running the connector, so publish for this RID here before packing." />
     <ItemGroup>
       <_PzStagedRid Include="@(_PzStagedRidDir->'%(Filename)%(Extension)')" />
-      <_PzEntrypointArg Include="--entrypoint %(_PzStagedRid.Identity)=native/$(AssemblyName)"
+      <!-- Each rid=path pair is quoted as ONE argument: an AssemblyName containing a space would
+           otherwise split across two argv entries and fail HostArguments' <rid>=<path> parse with a
+           confusing error instead of a clean one. -->
+      <_PzEntrypointArg Include="--entrypoint &quot;%(_PzStagedRid.Identity)=native/$(AssemblyName)&quot;"
                         Condition="!$([System.String]::Copy('%(_PzStagedRid.Identity)').StartsWith('win'))" />
-      <_PzEntrypointArg Include="--entrypoint %(_PzStagedRid.Identity)=native/$(AssemblyName).exe"
+      <_PzEntrypointArg Include="--entrypoint &quot;%(_PzStagedRid.Identity)=native/$(AssemblyName).exe&quot;"
                         Condition="$([System.String]::Copy('%(_PzStagedRid.Identity)').StartsWith('win'))" />
       <_PzWantedRid Include="$(PzRuntimeIdentifiers)" />
       <_PzMissingRid Include="@(_PzWantedRid)" Exclude="@(_PzStagedRid)" />
     </ItemGroup>
+    <PropertyGroup>
+      <_PzAnchorArg Condition="'$(PzProjectDirectoryAnchor)' == 'true'">--project-directory-anchor</_PzAnchorArg>
+    </PropertyGroup>
     <Warning Condition="'@(_PzMissingRid)' != ''"
              Code="PZSDK002"
              Text="pz: no staged binary for @(_PzMissingRid, ', '); the package will not run there. Publish for those RIDs, or set PzRuntimeIdentifiers to the set you ship." />
     <MakeDir Directories="$(IntermediateOutputPath)" />
-    <Exec Command="&quot;$(_PzHostExe)&quot; --pz-manifest --out &quot;$(_PzManifestPath)&quot; @(_PzEntrypointArg, ' ')" />
+    <Exec Command="&quot;$(_PzHostExe)&quot; --pz-manifest --out &quot;$(_PzManifestPath)&quot; @(_PzEntrypointArg, ' ') $(_PzAnchorArg)" />
     <ItemGroup>
       <None Include="$(_PzManifestPath)" Pack="true" PackagePath="" />
     </ItemGroup>

@@ -22,6 +22,21 @@ public sealed class HostArgumentsTests
         Assert.Equal("native/c.exe", command.Entrypoints["win-x64"]);
     }
 
+    [Fact]
+    public void Manifest_mode_collects_the_project_directory_anchor_flag()
+    {
+        var command = Assert.IsType<ManifestCommand>(HostArguments.Parse(
+            ["--pz-manifest", "--out", "m.json", "--project-directory-anchor"]));
+        Assert.True(command.ProjectDirectoryAnchor);
+    }
+
+    [Fact]
+    public void Manifest_mode_defaults_the_project_directory_anchor_flag_to_false()
+    {
+        var command = Assert.IsType<ManifestCommand>(HostArguments.Parse(["--pz-manifest", "--out", "m.json"]));
+        Assert.False(command.ProjectDirectoryAnchor);
+    }
+
     [Theory]
     // Each case is ONE argv, so the string[] is wrapped: xunit would otherwise spread a bare
     // string[] across the theory's parameters.
@@ -33,6 +48,8 @@ public sealed class HostArgumentsTests
     [InlineData(new object[] { new[] { "--pz-socket", "/tmp/x", "--pz-manifest", "--out", "m.json" } })]
     [InlineData(new object[] { new[] { "--pz-socket", "/tmp/x", "--verbose" } })]
     [InlineData(new object[] { new[] { "--root", "/data" } })]
+    [InlineData(new object[] { new[] { "--pz-socket", "/tmp/x", "--project-directory-anchor" } })]
+    [InlineData(new object[] { new[] { "--project-directory-anchor" } })]
     public void Anything_the_sdk_does_not_own_is_invalid(string[] args)
     {
         Assert.IsType<InvalidCommand>(HostArguments.Parse(args));

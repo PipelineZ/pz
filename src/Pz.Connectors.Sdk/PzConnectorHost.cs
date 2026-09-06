@@ -60,7 +60,9 @@ public static class PzConnectorHost
                     Directory.CreateDirectory(directory);
                 }
 
-                await File.WriteAllTextAsync(manifest.OutPath, ManifestWriter.Render(connector, manifest.Entrypoints))
+                await File.WriteAllTextAsync(
+                        manifest.OutPath,
+                        ManifestWriter.Render(connector, manifest.Entrypoints, manifest.ProjectDirectoryAnchor))
                     .ConfigureAwait(false);
                 return 0;
             case ServeCommand serve:

@@ -26,8 +26,8 @@ your objects actually implement, and `pz connector test` fails a declaration not
 ## Two argv modes
 
 - `--pz-socket <path>` — serve over PCP (what `pz` passes when it spawns you).
-- `--pz-manifest --out <file> [--entrypoint <rid>=<path>]...` — write `pz.connector.json` from the
-  connector object itself (the packaging targets run this for you).
+- `--pz-manifest --out <file> [--entrypoint <rid>=<path>]... [--project-directory-anchor]` — write
+  `pz.connector.json` from the connector object itself (the packaging targets run this for you).
 
 Anything else is refused. Connector configuration only ever arrives through the `Configure` RPC.
 
@@ -43,6 +43,7 @@ dotnet pack    -c Release -p:PzNativeStaging=<dir holding every RID's publish>
 | `PzPackaging` | `aot` | `self-contained` opts a connector out of Native AOT (single-file CoreCLR) |
 | `PzRuntimeIdentifiers` | `linux-x64;linux-arm64;osx-arm64;win-x64` | RIDs a package is expected to ship; a missing one warns (`PZSDK002`) |
 | `PzNativeStaging` | `bin/pz-native/` | where `publish -r` stages each RID and where `pack` collects from |
+| `PzProjectDirectoryAnchor` | `false` | set to `true` when the connector resolves relative paths in its own config; `pz` then passes the project directory as the `base_dir` connection option |
 
 Publish for the packing machine's own RID too, whichever RIDs you ship: the manifest is written by
 running the binary, so a machine that packs without having published its own RID fails with
