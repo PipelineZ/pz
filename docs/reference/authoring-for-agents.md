@@ -240,12 +240,12 @@ in-process loading is reserved for builtins — declared in the package's `pz.co
   Resolved with `RuntimeIdentifierGraph` fallback (a package shipping only `linux-x64` is still
   reachable from `linux-musl-x64`), and rejected if a path would resolve outside the package
   directory.
-- Capabilities honored out of process: everything a connector declares **except**
-  `CheckpointableReads`, `CheckpointableWrites`, and `ChangeCapture`, which the host masks until
-  they are wired over the wire. `SyncState` (opaque-token feeds) is honored: the connector answers
-  `GetNaturalReadShape` (FEED/FULL per dataset, plan-time, offline) and `GetReadState` (the
-  partition's token, pulled by the host after the drain completed). A connector that never
-  implements `GetNaturalReadShape` reads as FULL.
+- The host masks `CheckpointableReads`, `CheckpointableWrites`, and `ChangeCapture` until they are
+  wired over the wire; declared flags whose ABI interface the host shim does not implement
+  (`StreamingPartitions`) take the materialized path. `SyncState` (opaque-token feeds) is honored:
+  the connector answers `GetNaturalReadShape` (FEED/FULL per dataset, plan-time, offline) and
+  `GetReadState` (the partition's token, pulled by the host after the drain completed). A
+  connector that never implements `GetNaturalReadShape` reads as FULL.
 
 This is packaging-time detail an agent authoring `connections.yml`/pipelines never touches
 directly — the connector's `connector:` name in `connections.yml` and its `ConnectionConfigSchema`/

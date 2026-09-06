@@ -146,7 +146,10 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
         {
             // A connector built before this RPC existed has no feed shape to report. FULL is what the
             // ABI resolves for a source that does not implement INaturalReadShapeSource at all, so an
-            // older connector keeps the exact behavior it had.
+            // older connector keeps the exact behavior it had. This is deliberately lenient even for a
+            // connector whose Hello declares SyncState: the shim has no notice channel to report the
+            // contradiction, and `pz connector test`'s sync-state-roundtrip vector is the intended
+            // detector for that author bug.
             return NaturalReadShape.Full;
         }
         catch (RpcException ex)
@@ -217,11 +220,12 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         ReadCoreAsync(options, ct);
 
-    /// <summary>The post-drain <see cref="ISyncStatePartition"/> poll, exposed here so the two
-    /// sync-state wrappers share one implementation. Only ever reached after <see cref="ReadAsync"/>
-    /// completed without throwing, so a NOT_FOUND / FAILED_PRECONDITION here is the connector
-    /// contradicting its own plan -- a protocol violation (PZ0357 via MapControlPlane), never
-    /// retried.</summary>
+    /// <summary>The ISyncStatePartition poll, exposed here so the two sync-state wrappers share one
+    /// implementation. The engine reaches it right after ReadAsync completed without throwing, so a
+    /// NOT_FOUND / FAILED_PRECONDITION here is the connector contradicting its own plan -- a protocol
+    /// violation (PZ0357 via MapControlPlane). A failure that carries an error-detail trailer maps to an
+    /// operational PzConnectorException like any other RPC and follows the engine's normal retry
+    /// policy.</summary>
     internal bool PollSyncState(out string? candidate)
     {
         var request = new ReadStateRequest { OpId = opId, PartitionId = partitionId };
@@ -463,7 +467,9 @@ internal static class ProcessFailureMapping
 {
     /// <summary>ISource.TryGetNativeScan/ISink.TryGetNativeCopy are synchronous in the ABI -- no
     /// CancellationToken to forward -- so this bounds the blocking RPC call they make instead, so a
-    /// hung connector cannot hang the planner forever.</summary>
+    /// hung connector cannot hang the planner forever. It also bounds
+    /// <see cref="ProcessSource.GetNaturalReadShape"/> and <see cref="ProcessPartition.PollSyncState"/>,
+    /// the shim's other synchronous ABI members.</summary>
     public static readonly TimeSpan NativeOperationTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>The RPC that produced <paramref name="ex"/> never had a caller CancellationToken to

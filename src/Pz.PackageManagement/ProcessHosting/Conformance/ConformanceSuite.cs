@@ -579,8 +579,9 @@ public static class ConformanceSuite
 
     /// <summary>A connector declaring <see cref="ConnectorCapabilities.SyncState"/> must (1) resolve
     /// the probe dataset to FEED -- a FULL-shaped read is never polled for a token, so the flag would be
-    /// dead; (2) plan exactly one partition flagged <c>sync_state</c>; (3) answer GetReadState with a
-    /// non-empty token after a complete drain; and (4) accept that token back as
+    /// dead; (2) offer no native scan for that same dataset, since the native tier never polls a token
+    /// either; (3) plan exactly one partition flagged <c>sync_state</c>; (4) answer GetReadState with a
+    /// non-empty token after a complete drain; and (5) accept that token back as
     /// <c>prior_sync_state</c> on a second PlanRead. The second plan is NOT polled before a drain:
     /// nothing in the ABI promises a candidate before a read.</summary>
     private static async Task<VectorVerdict> SyncStateRoundtripAsync(
@@ -608,6 +609,22 @@ public static class ConformanceSuite
         if (shape.Shape != NaturalReadShapeResponse.Types.Shape.Feed)
         {
             return VectorVerdict.Fail("declares SyncState but reads the probe dataset as FULL, so the engine would never poll it for a token");
+        }
+
+        try
+        {
+            var nativeScan = await client.Grpc
+                .TryNativeScanAsync(new NativeScanRequest { OpId = ProcessSource.NewOpId(), Spec = spec }, cancellationToken: ct)
+                .ConfigureAwait(false);
+            if (nativeScan.Found)
+            {
+                return VectorVerdict.Fail(
+                    "declares SyncState and reads FEED but offers a native scan for this dataset -- the native tier never polls a token, so the feed would replay forever");
+            }
+        }
+        catch (RpcException ex)
+        {
+            return VectorVerdict.Fail($"TryNativeScan failed with {ex.StatusCode}");
         }
 
         var opId = ProcessSource.NewOpId();
@@ -642,6 +659,10 @@ public static class ConformanceSuite
         catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
         {
             return VectorVerdict.Fail(SyncStateUnimplementedDetail);
+        }
+        catch (RpcException ex)
+        {
+            return VectorVerdict.Fail($"GetReadState failed with {ex.StatusCode}");
         }
 
         if (!state.HasToken || state.Token.Length == 0)
