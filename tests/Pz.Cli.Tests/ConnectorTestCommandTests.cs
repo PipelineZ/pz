@@ -65,6 +65,58 @@ public sealed class ConnectorTestCommandTests : IDisposable
         Assert.StartsWith("FAIL handshake", lines[0], StringComparison.Ordinal);
     }
 
+    [SkippableFact]
+    public void Connector_test_skips_the_sync_state_vector_for_a_connector_that_does_not_declare_it()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project);
+        var configPath = WriteProbeConfig(project);
+
+        var stdout = RunAndCaptureStdout(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Contains(lines, l => l.StartsWith("SKIP sync-state-roundtrip", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public void Connector_test_passes_the_sync_state_vector_for_a_feed_connector()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project, extraFixtureArgs: "--sync-state", capabilities: FeedCapabilities);
+        var configPath = WriteProbeConfig(project);
+
+        var stdout = RunAndCaptureStdout(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.DoesNotContain(lines, l => l.StartsWith("FAIL", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("PASS sync-state-roundtrip", StringComparison.Ordinal));
+        // The token is connector state, never echoed: only the vector's verdict reaches stdout.
+        Assert.DoesNotContain("0+4", stdout, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public void Connector_test_fails_the_sync_state_vector_for_a_connector_that_declares_but_does_not_implement_it()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project, extraFixtureArgs: "--declare-sync-state-only", capabilities: FeedCapabilities);
+        var configPath = WriteProbeConfig(project);
+
+        var stdout = RunAndCaptureStdout(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+        Assert.Equal(ExitCodes.NodeFailures, exit);
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var failed = Assert.Single(lines, l => l.StartsWith("FAIL", StringComparison.Ordinal));
+        Assert.StartsWith("FAIL sync-state-roundtrip: declares SyncState but does not implement GetNaturalReadShape/GetReadState", failed, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Connector_test_exits_2_with_a_pz_coded_error_for_an_unknown_path()
     {
@@ -99,12 +151,21 @@ public sealed class ConnectorTestCommandTests : IDisposable
 
     // --- fixture staging (mirrors ProcessHostParityTests.WriteProcessPackage) -------------------
 
+    private static readonly string[] LocalFilesCapabilities =
+        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead"];
+
+    /// <summary>What the fixture's --sync-state / --declare-sync-state-only modes report: a feed
+    /// connector withdraws PartitionedRead and declares SyncState.</summary>
+    private static readonly string[] FeedCapabilities =
+        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState"];
+
     /// <summary><paramref name="extraFixtureArgs"/> is baked into the wrapper script itself, appended
     /// AFTER the args <c>ConnectorProcess.Spawn</c> forwards (<c>--pz-socket &lt;path&gt;</c>) -- the
     /// production spawn path has no argv seam for staging a misbehavior switch (config crosses only
     /// through Configure, never argv), so the wrapper script is what stands in for "this specific
     /// package's binary happens to misbehave" without adding one.</summary>
-    private static string WriteProcessPackage(string projectDir, string? extraFixtureArgs = null)
+    private static string WriteProcessPackage(
+        string projectDir, string? extraFixtureArgs = null, string[]? capabilities = null)
     {
         var packageDir = Path.Combine(projectDir, "package");
         var binDir = Path.Combine(packageDir, "bin");
@@ -125,10 +186,7 @@ public sealed class ConnectorTestCommandTests : IDisposable
             ["protocolMajorMax"] = 1,
             // Exactly what LocalFilesConnector declares -- the true set the fixture's Hello reports
             // absent any misbehavior switch, so a mismatch is only ever the switch's doing.
-            ["capabilities"] = new[]
-            {
-                "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead",
-            },
+            ["capabilities"] = capabilities ?? LocalFilesCapabilities,
             ["runtime"] = "process",
             ["entrypoints"] = new Dictionary<string, string>
             {

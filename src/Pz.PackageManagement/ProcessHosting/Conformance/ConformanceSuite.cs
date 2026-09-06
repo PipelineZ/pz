@@ -135,6 +135,10 @@ public static class ConformanceSuite
                 ? SkippedAsync("no read: probe supplied in --config")
                 : PartitionIdStabilityAsync(client, request.ReadProbe, ct));
 
+            await AddVectorAsync(vectors, "sync-state-roundtrip", request.ReadProbe is null
+                ? SkippedAsync("no read: probe supplied in --config")
+                : SyncStateRoundtripAsync(client, process, request.ReadProbe, ct));
+
             await AddVectorAsync(vectors, "ticket-handling", request.ReadProbe is null
                 ? SkippedAsync("ticket-handling requires a read: probe in --config")
                 : TicketHandlingAsync(client, process, request.ReadProbe, ct));
@@ -552,17 +556,107 @@ public static class ConformanceSuite
             : VectorVerdict.Fail("partition ids changed across two PlanRead calls for the same spec");
     }
 
-    private static async Task<List<string>> PlanIdsAsync(PcpClient client, string opId, DatasetSpecMsg spec, CancellationToken ct)
+    private static async Task<List<string>> PlanIdsAsync(PcpClient client, string opId, DatasetSpecMsg spec, CancellationToken ct) =>
+        (await PlanPartitionsAsync(client, opId, spec, ct).ConfigureAwait(false)).Select(p => p.PartitionId).ToList();
+
+    private static async Task<List<PartitionMsg>> PlanPartitionsAsync(PcpClient client, string opId, DatasetSpecMsg spec, CancellationToken ct)
     {
         var request = new PlanReadRequest { OpId = opId, Spec = spec, Hints = new ReadHintsMsg() };
         using var call = client.Grpc.PlanRead(request, cancellationToken: ct);
-        var ids = new List<string>();
+        var partitions = new List<PartitionMsg>();
         await foreach (var partition in call.ResponseStream.ReadAllAsync(ct).ConfigureAwait(false))
         {
-            ids.Add(partition.PartitionId);
+            partitions.Add(partition);
         }
 
-        return ids;
+        return partitions;
+    }
+
+    // ---- vector: sync-state round trip ---------------------------------------------------------------
+
+    private const string SyncStateUnimplementedDetail =
+        "declares SyncState but does not implement GetNaturalReadShape/GetReadState";
+
+    /// <summary>A connector declaring <see cref="ConnectorCapabilities.SyncState"/> must (1) resolve
+    /// the probe dataset to FEED -- a FULL-shaped read is never polled for a token, so the flag would be
+    /// dead; (2) plan exactly one partition flagged <c>sync_state</c>; (3) answer GetReadState with a
+    /// non-empty token after a complete drain; and (4) accept that token back as
+    /// <c>prior_sync_state</c> on a second PlanRead. The second plan is NOT polled before a drain:
+    /// nothing in the ABI promises a candidate before a read.</summary>
+    private static async Task<VectorVerdict> SyncStateRoundtripAsync(
+        PcpClient client, ConnectorProcess process, ConformanceReadProbe probe, CancellationToken ct)
+    {
+        if ((client.Hello.Capabilities & (long)ConnectorCapabilities.SyncState) == 0)
+        {
+            return VectorVerdict.Skip("connector does not declare SyncState");
+        }
+
+        var spec = new DatasetSpecMsg { Source = "conformance", Dataset = probe.Dataset, Options = MessageMapping.ToStruct(probe.Options) };
+
+        NaturalReadShapeResponse shape;
+        try
+        {
+            shape = await client.Grpc
+                .GetNaturalReadShapeAsync(new NaturalReadShapeRequest { OpId = ProcessSource.NewOpId(), Spec = spec }, cancellationToken: ct)
+                .ConfigureAwait(false);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return VectorVerdict.Fail(SyncStateUnimplementedDetail);
+        }
+
+        if (shape.Shape != NaturalReadShapeResponse.Types.Shape.Feed)
+        {
+            return VectorVerdict.Fail("declares SyncState but reads the probe dataset as FULL, so the engine would never poll it for a token");
+        }
+
+        var opId = ProcessSource.NewOpId();
+        var partitions = await PlanPartitionsAsync(client, opId, spec, ct).ConfigureAwait(false);
+        if (partitions.Count != 1)
+        {
+            return VectorVerdict.Fail($"a feed read must plan exactly one partition; PlanRead produced {partitions.Count}");
+        }
+
+        if (!partitions[0].SyncState)
+        {
+            return VectorVerdict.Fail("the feed read's single partition is not flagged sync_state in its PartitionMsg");
+        }
+
+        var openResponse = await client.Grpc
+            .OpenReadStreamAsync(
+                new OpenReadRequest { OpId = opId, PartitionId = partitions[0].PartitionId, Options = new BatchOptionsMsg() },
+                cancellationToken: ct)
+            .ConfigureAwait(false);
+        await foreach (var batch in DataPlane.ReadStreamAsync(process.DataSocketPath, openResponse.Ticket.Memory, ct).ConfigureAwait(false))
+        {
+            batch.Dispose();
+        }
+
+        ReadStateResponse state;
+        try
+        {
+            state = await client.Grpc
+                .GetReadStateAsync(new ReadStateRequest { OpId = opId, PartitionId = partitions[0].PartitionId }, cancellationToken: ct)
+                .ConfigureAwait(false);
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return VectorVerdict.Fail(SyncStateUnimplementedDetail);
+        }
+
+        if (!state.HasToken || state.Token.Length == 0)
+        {
+            return VectorVerdict.Fail("GetReadState returned no token after a complete drain of a sync_state partition");
+        }
+
+        // The token is connector-owned state and may embed anything the connector chose; it never
+        // reaches the verdict text.
+        var replay = spec.Clone();
+        replay.PriorSyncState = state.Token;
+        var second = await PlanPartitionsAsync(client, ProcessSource.NewOpId(), replay, ct).ConfigureAwait(false);
+        return second.Count == 1
+            ? VectorVerdict.Pass()
+            : VectorVerdict.Fail($"PlanRead with the connector's own token as prior_sync_state planned {second.Count} partition(s), not one");
     }
 
     // ---- vector 8: ticket handling -----------------------------------------------------------------
