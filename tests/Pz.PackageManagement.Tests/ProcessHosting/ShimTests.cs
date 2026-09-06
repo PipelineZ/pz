@@ -244,7 +244,7 @@ public sealed class ShimTests : IDisposable
     }
 
     [SkippableFact]
-    public async Task A_connector_that_declares_SyncState_but_answers_unimplemented_fails_the_poll_as_a_protocol_violation()
+    public async Task Unimplemented_natural_read_shape_reads_as_Full_so_a_connector_built_before_the_rpc_keeps_its_behavior()
     {
         Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
 
