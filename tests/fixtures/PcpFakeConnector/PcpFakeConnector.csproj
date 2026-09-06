@@ -1,10 +1,34 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project>
+
+  <!-- A ProjectReference does not import a package's build/ folder, so the fixture imports the SDK's
+       packaging props/targets by path: it is what keeps them under test. The explicit Sdk.props /
+       Sdk.targets form is what puts them where a PackageReference would: NuGet's generated props are
+       imported from Microsoft.Common.props, i.e. BEFORE Microsoft.NET.Sdk.props defaults OutputType
+       to Library, and NuGet's generated targets after the project body. The Sdk="" attribute form
+       cannot express that ordering, and with it the props' OutputType default never fires. -->
+  <Import Project="..\..\..\src\Pz.Connectors.Sdk\build\Pz.Connectors.Sdk.props" />
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
     <!-- A test peer, never shipped: the host-side PCP tests spawn this executable so every one of
-         them talks to a real out-of-process connector, served by the real SDK, rather than a mock. -->
+         them talks to a real out-of-process connector, served by the real SDK, rather than a mock.
+         scripts/verify-sdk-package.sh packs it anyway with -p:IsPackable=true, which is how the
+         packaging targets get proven end to end. -->
     <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- The same ILC rollup demotion Pz.Cli.csproj carries, for the same reason: this repo's
+       TreatWarningsAsErrors promotes ILC's per-assembly rollup (IL2104/IL3053) to errors, and the
+       assemblies that produce it here are third-party ones reached through the LocalFiles connector
+       this fixture serves (Sylvan.Data.Csv, Parquet.Net) and cannot be fixed from this repository.
+       Only the rollup codes are demoted, so a first-party trim/AOT regression still fails the build.
+       The demotion belongs here rather than in the SDK's props: a connector project outside this
+       repository does not treat warnings as errors, and an SDK that silenced them for everyone would
+       hide a real one. -->
+  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+    <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
+    <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053</MSBuildWarningsNotAsErrors>
   </PropertyGroup>
 
   <ItemGroup>
@@ -12,5 +36,8 @@
     <ProjectReference Include="..\..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
     <ProjectReference Include="..\..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
   </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+  <Import Project="..\..\..\src\Pz.Connectors.Sdk\build\Pz.Connectors.Sdk.targets" />
 
 </Project>

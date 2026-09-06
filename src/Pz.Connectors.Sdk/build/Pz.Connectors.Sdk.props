@@ -1,1 +1,33 @@
-<Project></Project>
+<Project>
+  <!-- Defaults for a pz connector project. Every value here may be overridden in the project file,
+       which MSBuild evaluates after this import. -->
+  <PropertyGroup>
+    <PzPackaging Condition="'$(PzPackaging)' == ''">aot</PzPackaging>
+    <PzRuntimeIdentifiers Condition="'$(PzRuntimeIdentifiers)' == ''">linux-x64;linux-arm64;osx-arm64;win-x64</PzRuntimeIdentifiers>
+    <PzNativeStaging Condition="'$(PzNativeStaging)' == ''">$(MSBuildProjectDirectory)/bin/pz-native/</PzNativeStaging>
+    <PzNativeStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</PzNativeStaging>
+
+    <OutputType Condition="'$(OutputType)' == ''">Exe</OutputType>
+    <!-- The host only ever spawns the binary: a framework-dependent dll in lib/ and a dependency on
+         this SDK would only make `pz restore` download things the connector never loads. -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <!-- Self-contained needs a RID; a RID-less build (the usual dev loop) stays framework-dependent. -->
+    <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PzPackaging)' == 'aot'">
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <StripSymbols>true</StripSymbols>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PzPackaging)' == 'self-contained'">
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Native libraries stay beside the executable and ship as files: self-extraction on every
+         spawn is a per-run cost and a temp-directory footprint for nothing. -->
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+</Project>

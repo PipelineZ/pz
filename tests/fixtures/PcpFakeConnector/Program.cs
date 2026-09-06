@@ -6,7 +6,8 @@ namespace PcpFakeConnector;
 /// <c>LocalFilesConnector</c>. Configuration and credentials arrive only through the <c>Configure</c>
 /// RPC. The argv switches below choose which failure to stage -- they are test switches, which is why
 /// argv is the right surface for them and the wrong surface for config. Everything the SDK owns
-/// (<c>--pz-socket</c>) is passed through to it untouched.</summary>
+/// (<c>--pz-socket</c>, and the <c>--pz-manifest</c> mode the packaging targets invoke) is passed
+/// through to it untouched.</summary>
 internal static class Program
 {
     public static async Task<int> Main(string[] args)
@@ -69,7 +70,8 @@ internal sealed record FixtureOptions(
     bool StableIds)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
-    /// (<c>--pz-socket &lt;path&gt;</c>) is passed through verbatim so its own parser stays the one
+    /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
+    /// &lt;rid&gt;=&lt;path&gt;</c>) is passed through verbatim so its own parser stays the one
     /// authority on it.</summary>
     public static (FixtureOptions Options, string[] Passthrough) Parse(string[] args)
     {
@@ -90,6 +92,19 @@ internal sealed record FixtureOptions(
                     if (++i >= args.Length)
                     {
                         throw new ArgumentException("--pz-socket needs a socket path");
+                    }
+
+                    passthrough.Add(args[i]);
+                    break;
+                case "--pz-manifest":
+                    passthrough.Add(args[i]);
+                    break;
+                case "--out":
+                case "--entrypoint":
+                    passthrough.Add(args[i]);
+                    if (++i >= args.Length)
+                    {
+                        throw new ArgumentException($"{args[i - 1]} needs a value");
                     }
 
                     passthrough.Add(args[i]);
@@ -146,7 +161,7 @@ internal sealed record FixtureOptions(
 
         if (passthrough.Count == 0)
         {
-            throw new ArgumentException("--pz-socket <path> is required");
+            throw new ArgumentException("--pz-socket <path> or --pz-manifest is required");
         }
 
         return (new FixtureOptions(

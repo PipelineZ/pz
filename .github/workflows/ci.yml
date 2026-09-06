@@ -81,14 +81,18 @@ jobs:
       - run: dotnet test tests/Pz.Connector.LocalFiles.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
       - run: dotnet test tests/Pz.DuckDb.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
 
-  # The Native AOT runtime proof: publishes the linux-x64 native image and drives init/run/restore/
-  # PZ0360/PCP-spawn/MCP against it. The AOT *compile-time* analyzers already gate every build
-  # (TreatWarningsAsErrors), but the six third-party assemblies whose internals warn (see
-  # Pz.Cli.csproj) can only be proven safe by running the paths that cross them -- which the ordinary
-  # test suite never does, since tests run on CoreCLR.
+  # The Native AOT runtime proof, host side then connector side: verify-aot.sh publishes the
+  # linux-x64 native image and drives init/run/restore/PZ0360/PCP-spawn/MCP against it;
+  # verify-sdk-package.sh publishes the SDK fixture through Pz.Connectors.Sdk's packaging targets and
+  # takes the resulting package all the way to a conformance-tested run. The AOT *compile-time*
+  # analyzers already gate every build (TreatWarningsAsErrors), but the six third-party assemblies
+  # whose internals warn (see Pz.Cli.csproj) can only be proven safe by running the paths that cross
+  # them -- which the ordinary test suite never does, since tests run on CoreCLR.
   verify-aot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was the budget for the host-side proof alone; the connector-side one adds a second Native
+    # AOT compilation plus a self-contained publish and two packs.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
         with:
@@ -97,6 +101,10 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: scripts/verify-aot.sh
+      # The connector-side packaging proof: the fixture published through Pz.Connectors.Sdk's targets
+      # (AOT, then self-contained), packed, restored from a local feed, run, and conformance-tested.
+      # Lives in this job because it needs the same Native AOT toolchain.
+      - run: scripts/verify-sdk-package.sh
 
   # The Rust workspace's own gate: absent from build-test/pack-and-verify above so a contributor
   # without cargo still gets a green build-test. fmt/clippy/test cover rust/ itself; the conformance

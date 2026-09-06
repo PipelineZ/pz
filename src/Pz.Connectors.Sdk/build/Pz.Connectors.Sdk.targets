@@ -1,1 +1,85 @@
-<Project></Project>
+<Project>
+  <PropertyGroup>
+    <!-- The ratified discovery tag for connector packages, appended once. -->
+    <PackageTags Condition="!$(PackageTags.Contains('pipelinez-connector'))">$(PackageTags);pipelinez-connector</PackageTags>
+    <!-- PzNativeStaging may arrive as a global property (-p:), which the props file cannot normalize;
+         every path below goes through this trailing-slash-safe copy. -->
+    <_PzStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</_PzStaging>
+    <_PzStageDir>$(_PzStaging)$(RuntimeIdentifier)/</_PzStageDir>
+    <_PzManifestPath>$(IntermediateOutputPath)pz.connector.json</_PzManifestPath>
+  </PropertyGroup>
+
+  <Target Name="PzValidatePackaging" BeforeTargets="BeforeBuild;GenerateNuspec">
+    <Error Condition="'$(PzPackaging)' != 'aot' and '$(PzPackaging)' != 'self-contained'"
+           Code="PZSDK004"
+           Text="PzPackaging must be 'aot' or 'self-contained' (got '$(PzPackaging)')." />
+  </Target>
+
+  <!-- After `dotnet publish -r <rid>`: the publish output, minus symbols, becomes
+       <PzNativeStaging>/<rid>/, which `dotnet pack` later ships as runtimes/<rid>/native/. Native
+       dependencies sit beside the executable in the publish output and travel with it. -->
+  <Target Name="PzStageNative" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' != ''">
+    <ItemGroup>
+      <_PzPublished Include="$(PublishDir)**/*"
+                    Exclude="$(PublishDir)**/*.pdb;$(PublishDir)**/*.dbg;$(PublishDir)**/*.dsym/**" />
+    </ItemGroup>
+    <RemoveDir Directories="$(_PzStageDir)" />
+    <Copy SourceFiles="@(_PzPublished)"
+          DestinationFiles="@(_PzPublished->'$(_PzStageDir)%(RecursiveDir)%(Filename)%(Extension)')" />
+    <Message Importance="high" Text="pz: staged $(RuntimeIdentifier) connector binary in $(_PzStageDir)" />
+  </Target>
+
+  <Target Name="_PzFindStagedRids">
+    <ItemGroup>
+      <_PzStagedRidDir Include="$([System.IO.Directory]::GetDirectories('$(_PzStaging)'))"
+                       Condition="Exists('$(_PzStaging)')" />
+    </ItemGroup>
+  </Target>
+
+  <!-- The manifest is produced by RUNNING the connector for the packing machine's own RID, so the
+       manifest and the handshake come from one object and cannot disagree. -->
+  <Target Name="PzGenerateManifest" DependsOnTargets="_PzFindStagedRids">
+    <Error Condition="'@(_PzStagedRidDir)' == ''"
+           Code="PZSDK001"
+           Text="pz: no staged connector binary under '$(_PzStaging)'. Run `dotnet publish -r &lt;rid&gt;` for at least one RID before `dotnet pack`." />
+    <PropertyGroup>
+      <_PzHostRid>$(NETCoreSdkRuntimeIdentifier)</_PzHostRid>
+      <_PzHostExe>$(_PzStaging)$(_PzHostRid)/$(AssemblyName)</_PzHostExe>
+      <_PzHostExe Condition="$(_PzHostRid.StartsWith('win'))">$(_PzHostExe).exe</_PzHostExe>
+    </PropertyGroup>
+    <Error Condition="!Exists('$(_PzHostExe)')"
+           Code="PZSDK003"
+           Text="pz: the packing machine's RID '$(_PzHostRid)' has no staged binary at '$(_PzHostExe)'. The manifest is produced by running the connector, so publish for this RID here before packing." />
+    <ItemGroup>
+      <_PzStagedRid Include="@(_PzStagedRidDir->'%(Filename)%(Extension)')" />
+      <_PzEntrypointArg Include="--entrypoint %(_PzStagedRid.Identity)=native/$(AssemblyName)"
+                        Condition="!$([System.String]::Copy('%(_PzStagedRid.Identity)').StartsWith('win'))" />
+      <_PzEntrypointArg Include="--entrypoint %(_PzStagedRid.Identity)=native/$(AssemblyName).exe"
+                        Condition="$([System.String]::Copy('%(_PzStagedRid.Identity)').StartsWith('win'))" />
+      <_PzWantedRid Include="$(PzRuntimeIdentifiers)" />
+      <_PzMissingRid Include="@(_PzWantedRid)" Exclude="@(_PzStagedRid)" />
+    </ItemGroup>
+    <Warning Condition="'@(_PzMissingRid)' != ''"
+             Code="PZSDK002"
+             Text="pz: no staged binary for @(_PzMissingRid, ', '); the package will not run there. Publish for those RIDs, or set PzRuntimeIdentifiers to the set you ship." />
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <Exec Command="&quot;$(_PzHostExe)&quot; --pz-manifest --out &quot;$(_PzManifestPath)&quot; @(_PzEntrypointArg, ' ')" />
+    <ItemGroup>
+      <None Include="$(_PzManifestPath)" Pack="true" PackagePath="" />
+    </ItemGroup>
+  </Target>
+
+  <!-- One target run per staged RID directory (target batching on Identity): its files pack flat
+       under runtimes/<rid>/native/, which the pz host flattens into <package>/native/ for its RID. -->
+  <Target Name="_PzCollectOneRid" DependsOnTargets="_PzFindStagedRids" Outputs="%(_PzStagedRidDir.Identity)">
+    <PropertyGroup>
+      <_PzRidDir>%(_PzStagedRidDir.FullPath)</_PzRidDir>
+      <_PzRid>%(_PzStagedRidDir.Filename)%(_PzStagedRidDir.Extension)</_PzRid>
+    </PropertyGroup>
+    <ItemGroup>
+      <None Include="$(_PzRidDir)/**/*" Pack="true" PackagePath="runtimes/$(_PzRid)/native/" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="PzCollectNativeAssets" BeforeTargets="_GetPackageFiles" DependsOnTargets="PzGenerateManifest;_PzCollectOneRid" />
+</Project>
