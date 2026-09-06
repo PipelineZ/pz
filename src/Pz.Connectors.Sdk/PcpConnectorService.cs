@@ -40,7 +40,6 @@ internal sealed class PcpConnectorService(
     internal TicketRegistry Tickets => tickets;
 
     private sealed record PlannedRead(
-        DatasetSpec Spec,
         Schema Schema,
         IReadOnlyList<IDatasetPartition> Partitions,
         ConcurrentDictionary<string, SyncStateCapture> Captures);
@@ -84,6 +83,7 @@ internal sealed class PcpConnectorService(
         }
 
         _config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
+        hooks.OnConfigure?.Invoke();
 
         // One log event per Configure, always -- fields carry the connection NAME (instance_id) and the
         // connector's own identity, never a config VALUE. The reverse channel is not open yet at this
@@ -182,7 +182,7 @@ internal sealed class PcpConnectorService(
             // PartitionMsg flags below were computed from are what OpenReadStream mints tickets for and
             // what GetReadState answers about.
             _plans[request.OpId] = new PlannedRead(
-                spec, schema.Schema, partitions, new ConcurrentDictionary<string, SyncStateCapture>(StringComparer.Ordinal));
+                schema.Schema, partitions, new ConcurrentDictionary<string, SyncStateCapture>(StringComparer.Ordinal));
 
             for (var i = 0; i < partitions.Count; i++)
             {

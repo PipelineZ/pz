@@ -18,11 +18,15 @@ internal sealed class StagedConnector(FixtureOptions options) : ISourceConnector
     /// <see cref="ConnectorName"/>: a connector that is not the one the manifest registers.</summary>
     private const string ImposterName = "localfiles-pcp-imposter";
 
-    /// <summary>Written to stderr the first time the SDK opens the connector -- which it does only after
-    /// Configure -- but ONLY under <c>--misreport-name</c>, so no other mode's stderr changes shape. A
-    /// host-side test asserts this line never appears, which is how it proves the identity gate ran
-    /// BEFORE any config value crossed.</summary>
-    private const string ConfiguredMarker = "PcpFakeConnector: Configure ran";
+    /// <summary>Written to stderr from inside the Configure RPC itself (via <c>PcpServerHooks.OnConfigure</c>,
+    /// wired in <c>Program.cs</c>) -- but ONLY under <c>--misreport-name</c>, so no other mode's stderr
+    /// changes shape. A host-side test asserts this line never appears after a name-mismatch handshake
+    /// failure, which is how it proves Configure itself never ran, i.e. no config value crossed after
+    /// an identity mismatch. Marking it from Configure directly (rather than from the first
+    /// <see cref="ISourceConnector.OpenAsync"/>/<see cref="ISinkConnector.OpenAsync"/>, which the SDK
+    /// reaches lazily and much later) is what keeps the marker's absence proving the strong claim
+    /// instead of the merely-true-but-weaker "no source/sink was ever opened".</summary>
+    internal const string ConfiguredMarker = "PcpFakeConnector: Configure ran";
 
     private readonly LocalFilesConnector _inner = new();
 
@@ -85,24 +89,14 @@ internal sealed class StagedConnector(FixtureOptions options) : ISourceConnector
 
     async ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct)
     {
-        MarkConfigured();
         var source = await ((ISourceConnector)_inner).OpenAsync(config, ct).ConfigureAwait(false);
         return options.SyncState ? new StagedFeedSource(source, options) : new StagedSource(source, options);
     }
 
     async ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct)
     {
-        MarkConfigured();
         var sink = await ((ISinkConnector)_inner).OpenAsync(config, ct).ConfigureAwait(false);
         return new StagedSink(sink, options);
-    }
-
-    private void MarkConfigured()
-    {
-        if (options.MisreportName)
-        {
-            Console.Error.WriteLine(ConfiguredMarker);
-        }
     }
 }
 

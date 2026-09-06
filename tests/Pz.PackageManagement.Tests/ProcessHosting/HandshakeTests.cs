@@ -96,7 +96,10 @@ public sealed class HandshakeTests : IDisposable
         process.Exited += () => exited.TrySetResult();
 
         // A real connection config, not ConnectorConfig.Empty: the point of this fact is that these
-        // values never cross to a connector that is not the one the manifest registers.
+        // values never cross to a connector that is not the one the manifest registers -- Configure is
+        // the only RPC that carries them, and the fixture writes its marker from inside Configure
+        // itself (via PcpServerHooks.OnConfigure), so the marker's absence below proves Configure was
+        // never called at all, not merely that nothing downstream of it ran.
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
         var ex = await Assert.ThrowsAsync<ConnectorHostException>(() => PcpClient.ConnectAndConfigureAsync(
             process, LocalFilesManifest(), "test-instance", config, CancellationToken.None));

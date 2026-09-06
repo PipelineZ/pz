@@ -127,6 +127,41 @@ public sealed class HonestMappingTests
         Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
     }
 
+    [Fact]
+    public async Task OnConfigure_fires_exactly_once_on_a_successful_Configure()
+    {
+        var calls = 0;
+        var service = new PcpConnectorService(
+            new FakeSourceConnector(ConnectorCapabilities.None, feed: false),
+            new TicketRegistry(),
+            new HostChannelPeer(),
+            new PcpServerHooks { OnConfigure = () => Interlocked.Increment(ref calls) },
+            new NullLifetime());
+
+        await service.Handshake(new HandshakeRequest { ProtocolMajor = ProtocolVersion.Major }, Context());
+        Assert.Equal(0, calls);
+
+        await service.Configure(new ConfigureRequest { InstanceId = "test", Config = new Struct() }, Context());
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task OnConfigure_does_not_fire_on_a_Configure_rejected_before_handshake()
+    {
+        var calls = 0;
+        var service = new PcpConnectorService(
+            new FakeSourceConnector(ConnectorCapabilities.None, feed: false),
+            new TicketRegistry(),
+            new HostChannelPeer(),
+            new PcpServerHooks { OnConfigure = () => Interlocked.Increment(ref calls) },
+            new NullLifetime());
+
+        await Assert.ThrowsAsync<RpcException>(() =>
+            service.Configure(new ConfigureRequest { InstanceId = "i", Config = new Struct() }, Context()));
+
+        Assert.Equal(0, calls);
+    }
+
     // --- helpers ---
 
     private static PcpConnectorService NewService(IConnector connector) =>

@@ -38,6 +38,9 @@ internal static class Program
                 : null,
             IgnoreCancel = options.IgnoreCancel,
             IgnoreShutdown = options.IgnoreShutdown,
+            OnConfigure = options.MisreportName
+                ? () => Console.Error.WriteLine(StagedConnector.ConfiguredMarker)
+                : null,
         };
 
         return await PzConnectorHost.RunAsync(passthrough, _ => new StagedConnector(options), hooks).ConfigureAwait(false);
