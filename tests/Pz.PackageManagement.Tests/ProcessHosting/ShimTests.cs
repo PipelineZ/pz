@@ -153,6 +153,117 @@ public sealed class ShimTests : IDisposable
         Assert.Equal(new LocalFilesConnector().Capabilities, sourceConnector.Capabilities);
     }
 
+    /// <summary>The capability set the fixture's <c>--sync-state</c>/<c>--declare-sync-state-only</c>
+    /// modes report: a feed connector withdraws PartitionedRead (one opaque token cannot span
+    /// partitions) and declares SyncState. The manifest must say the same or the handshake refuses.</summary>
+    private static ConnectorCapabilities FeedCapabilities =>
+        (new LocalFilesConnector().Capabilities & ~ConnectorCapabilities.PartitionedRead) | ConnectorCapabilities.SyncState;
+
+    private static DatasetSpec SmallCsvSpec(string? priorSyncState = null) =>
+        new("files", "orders", new Dictionary<string, object?>
+        {
+            ["path"] = "small.csv",
+            ["format"] = "csv",
+            ["columns"] = CsvColumns,
+        })
+        { PriorSyncState = priorSyncState };
+
+    private static async Task<long> DrainAsync(IDatasetPartition partition)
+    {
+        long rows = 0;
+        await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+        {
+            rows += batch.Length;
+            batch.Dispose();
+        }
+
+        return rows;
+    }
+
+    [SkippableFact]
+    public async Task SyncState_crosses_the_shim_and_the_partition_polls_the_connector_for_its_token()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 7);
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--sync-state"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(FeedCapabilities), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        // Unmasked: the planner sees SyncState exactly as it would on an in-process feed connector.
+        Assert.Equal(ConnectorCapabilities.SyncState, connector.Capabilities & ConnectorCapabilities.SyncState);
+
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+        var natural = Assert.IsAssignableFrom<INaturalReadShapeSource>(source);
+        Assert.Equal(NaturalReadShape.Feed, natural.GetNaturalReadShape(SmallCsvSpec()));
+
+        var partition = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(), ReadHints.None, CancellationToken.None));
+        var sync = Assert.IsAssignableFrom<ISyncStatePartition>(partition);
+
+        // Nothing before the drain: the ABI promises no candidate until the read completed.
+        Assert.False(sync.TryGetSyncStateCandidate(out var early));
+        Assert.Null(early);
+
+        Assert.Equal(7, await DrainAsync(partition));
+        Assert.True(sync.TryGetSyncStateCandidate(out var token));
+        Assert.Equal("0+7", token);
+
+        // Replay: the token goes back as PriorSyncState and the connector visibly builds on it.
+        var replay = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(token), ReadHints.None, CancellationToken.None));
+        Assert.Equal(7, await DrainAsync(replay));
+        Assert.True(((ISyncStatePartition)replay).TryGetSyncStateCandidate(out var next));
+        Assert.Equal("0+7+7", next);
+    }
+
+    [SkippableFact]
+    public async Task Partition_without_the_sync_state_flag_is_not_an_ISyncStatePartition()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 3);
+
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+
+        // A plain connector answers FULL -- and the engine's `is ISyncStatePartition` check must be
+        // false for its partitions, which is why the flag selects a TYPE, not a property.
+        Assert.Equal(NaturalReadShape.Full, Assert.IsAssignableFrom<INaturalReadShapeSource>(source).GetNaturalReadShape(SmallCsvSpec()));
+        var partition = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(), ReadHints.None, CancellationToken.None));
+        Assert.False(partition is ISyncStatePartition);
+    }
+
+    [SkippableFact]
+    public async Task A_connector_that_declares_SyncState_but_answers_unimplemented_fails_the_poll_as_a_protocol_violation()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 3);
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--declare-sync-state-only"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(FeedCapabilities), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+
+        // UNIMPLEMENTED on the plan-time shape probe is the compatibility answer: FULL, no error.
+        Assert.Equal(NaturalReadShape.Full, Assert.IsAssignableFrom<INaturalReadShapeSource>(source).GetNaturalReadShape(SmallCsvSpec()));
+    }
+
     // ---- Step 1: write path, through the shim end to end -------------------------------------
 
     [SkippableFact]
