@@ -649,11 +649,24 @@ public static class ConformanceSuite
             return VectorVerdict.Fail("GetReadState returned no token after a complete drain of a sync_state partition");
         }
 
-        // The token is connector-owned state and may embed anything the connector chose; it never
-        // reaches the verdict text.
+        // The token is connector-owned state and may embed anything the connector chose; the replay
+        // request carries it as prior_sync_state, so a rejecting connector could echo it back in an
+        // RpcException's status detail -- caught below and reduced to a status code, never the raw
+        // message, to keep it out of the verdict text.
         var replay = spec.Clone();
         replay.PriorSyncState = state.Token;
-        var second = await PlanPartitionsAsync(client, ProcessSource.NewOpId(), replay, ct).ConfigureAwait(false);
+        List<PartitionMsg> second;
+        try
+        {
+            second = await PlanPartitionsAsync(client, ProcessSource.NewOpId(), replay, ct).ConfigureAwait(false);
+        }
+        catch (RpcException ex)
+        {
+            // Status code only: the request carried the connector's own token, and a connector that
+            // rejects it may echo it in the status detail.
+            return VectorVerdict.Fail($"PlanRead with the connector's own token as prior_sync_state failed with {ex.StatusCode}");
+        }
+
         return second.Count == 1
             ? VectorVerdict.Pass()
             : VectorVerdict.Fail($"PlanRead with the connector's own token as prior_sync_state planned {second.Count} partition(s), not one");
