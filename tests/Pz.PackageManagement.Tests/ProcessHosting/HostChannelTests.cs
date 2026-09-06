@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Runtime.Versioning;
 using Pz.Connector.LocalFiles;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol.V1;
@@ -11,14 +10,14 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 /// <summary>Drives <see cref="HostChannelPump"/> against the real out-of-process <c>PcpFakeConnector</c>
 /// fixture's <c>--use-gate</c> mode: the wire-level proof that a connector-authored <c>GateAcquire</c>/
 /// <c>GateComplete</c> round trip really reaches a host-side <see cref="IOperationGate"/>, and that a
-/// <c>LogEvent</c> reaches the log sink with its fields intact. Unix-only, same reasoning as
-/// <c>HandshakeTests</c>/<c>ShimTests</c>.</summary>
-[SupportedOSPlatform("linux")]
+/// <c>LogEvent</c> reaches the log sink with its fields intact.</summary>
+[Trait("Category", "Pcp")]
 public sealed class HostChannelTests : IDisposable
 {
-    // Mirrors PcpService.GateOpLabel -- there is no shared constant across the host/fixture boundary
-    // (op labels are connector-authored strings, never a shared contract type), so the wire value is
-    // asserted literally, same as every other fixture-reported string this test suite checks.
+    // Mirrors StagedSource.GateOpLabel in tests/fixtures/PcpFakeConnector/StagedConnector.cs -- there
+    // is no shared constant across the host/fixture boundary (op labels are connector-authored
+    // strings, never a shared contract type), so the wire value is asserted literally, same as every
+    // other fixture-reported string this test suite checks.
     private const string ExpectedOpLabel = "localfiles-pcp.read_partition";
 
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(10);
@@ -28,8 +27,6 @@ public sealed class HostChannelTests : IDisposable
     [SkippableFact]
     public async Task UseGate_read_produces_one_ExecuteAsync_per_partition_with_the_static_op_label()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 25);
 
@@ -69,8 +66,6 @@ public sealed class HostChannelTests : IDisposable
     [SkippableFact]
     public async Task LogEvent_from_Configure_reaches_the_sink_with_fields_intact()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
-
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
@@ -97,8 +92,6 @@ public sealed class HostChannelTests : IDisposable
     [SkippableFact]
     public async Task Disposing_the_pump_ends_it_quietly_with_no_pending_gate_operations()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
-
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });

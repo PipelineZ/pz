@@ -13,9 +13,10 @@ namespace Pz.EndToEnd.Tests;
 /// A second fact runs the same dataset over the same fixture WITHOUT <c>--sync-state</c> and proves
 /// no sync state is written, so the token above is the connector's doing, not the host's.
 ///
-/// <para>Linux only: the fixture serves unix domain sockets, and <c>File.SetUnixFileMode</c> below
-/// is platform-gated by the analyzer.</para></summary>
+/// <para>Linux only: the staged package's entrypoint is a <c>#!/bin/sh</c> wrapper, and
+/// <c>File.SetUnixFileMode</c> below is platform-gated by the analyzer.</para></summary>
 [SupportedOSPlatform("linux")]
+[Trait("Category", "Pcp")]
 public sealed class ProcessSyncStateTests : IDisposable
 {
     private const string PackageId = "LocalFilesPcp";
@@ -27,7 +28,7 @@ public sealed class ProcessSyncStateTests : IDisposable
     [SkippableFact]
     public void Feed_connector_over_pcp_persists_its_token_and_gets_it_back_next_run()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var dir = NewProjectDir();
         WriteProject(dir);
@@ -54,7 +55,7 @@ public sealed class ProcessSyncStateTests : IDisposable
     [SkippableFact]
     public void Same_fixture_without_feed_mode_resolves_full_and_writes_no_sync_state()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var dir = NewProjectDir();
         WriteProject(dir);

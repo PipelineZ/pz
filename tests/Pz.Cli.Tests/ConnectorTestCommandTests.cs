@@ -10,9 +10,10 @@ namespace Pz.Cli.Tests;
 /// staged as a process-hosted package exactly the way <c>ProcessHostParityTests</c> stages it, so this
 /// exercises the same manifest/entrypoint/lock path a restored package would.
 ///
-/// <para>Linux only: the fixture serves the protocol over unix domain sockets and does not implement
-/// the named-pipe transport.</para></summary>
+/// <para>Linux only: the staged package's entrypoint is a <c>#!/bin/sh</c> wrapper, which is
+/// POSIX-only.</para></summary>
 [SupportedOSPlatform("linux")]
+[Trait("Category", "Pcp")]
 [Collection("console-and-env-serialized")]
 public sealed class ConnectorTestCommandTests : IDisposable
 {
@@ -25,7 +26,7 @@ public sealed class ConnectorTestCommandTests : IDisposable
     [SkippableFact]
     public void Connector_test_passes_every_vector_against_a_well_behaved_fixture()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var project = NewProjectDir();
         var packageDir = WriteProcessPackage(project);
@@ -51,7 +52,7 @@ public sealed class ConnectorTestCommandTests : IDisposable
     [SkippableFact]
     public void Connector_test_reports_the_handshake_vector_failed_against_a_capability_mismatch()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var project = NewProjectDir();
         var packageDir = WriteProcessPackage(project, extraFixtureArgs: "--misreport-capabilities");
@@ -68,7 +69,7 @@ public sealed class ConnectorTestCommandTests : IDisposable
     [SkippableFact]
     public void Connector_test_skips_the_sync_state_vector_for_a_connector_that_does_not_declare_it()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var project = NewProjectDir();
         var packageDir = WriteProcessPackage(project);
@@ -84,7 +85,7 @@ public sealed class ConnectorTestCommandTests : IDisposable
     [SkippableFact]
     public void Connector_test_passes_the_sync_state_vector_for_a_feed_connector()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var project = NewProjectDir();
         var packageDir = WriteProcessPackage(project, extraFixtureArgs: "--sync-state", capabilities: FeedCapabilities);
@@ -103,7 +104,7 @@ public sealed class ConnectorTestCommandTests : IDisposable
     [SkippableFact]
     public void Connector_test_fails_the_sync_state_vector_for_a_connector_that_declares_but_does_not_implement_it()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var project = NewProjectDir();
         var packageDir = WriteProcessPackage(project, extraFixtureArgs: "--declare-sync-state-only", capabilities: FeedCapabilities);
@@ -134,7 +135,7 @@ public sealed class ConnectorTestCommandTests : IDisposable
     [SkippableFact]
     public void Connector_test_exits_2_with_a_pz_coded_error_for_an_unknown_config_path()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var project = NewProjectDir();
         var packageDir = WriteProcessPackage(project);

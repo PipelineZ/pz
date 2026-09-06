@@ -24,13 +24,14 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: dotnet build Pz.slnx -c Release
-      # Tests run on ubuntu only. Both legs BUILD (cross-platform compile safety); the ubuntu leg also runs
-      # the full suite, where Linux Docker lets every Testcontainers suite (Postgres/MinIO/Azurite) actually
-      # RUN. The windows runner's Docker daemon is reachable but can't run the Linux images those suites
-      # need, and not every suite's docker gate skips on that condition -- so windows stays build-only rather
-      # than running suites that would fail on a can't-pull-linux-image error. PZ_TESTS_OFFLINE=1 skips
-      # network-dependent tests (e.g. the live api.github.com smoke, whose SkipIfOffline() gate keys only on
-      # this env var) to keep CI hermetic -- the stub-server suites cover the same logic offline.
+      # Both legs BUILD (cross-platform compile safety); the ubuntu leg runs the full suite, where Linux
+      # Docker lets every Testcontainers suite (Postgres/MinIO/Azurite) actually RUN. The windows leg
+      # below runs only the Category=Pcp subset: the windows runner's Docker daemon is reachable but
+      # can't run the Linux images the docker suites need, and not every suite's docker gate skips on
+      # that condition -- so windows stays build-only for everything else rather than running suites
+      # that would fail on a can't-pull-linux-image error. PZ_TESTS_OFFLINE=1 skips network-dependent
+      # tests (e.g. the live api.github.com smoke, whose SkipIfOffline() gate keys only on this env var)
+      # to keep CI hermetic -- the stub-server suites cover the same logic offline.
       # --blame-hang: a hung test must name itself. On 2026-07-22 a run sat silent for 25 minutes
       # (last suite output 11:38, workflow-level cancel 12:07) and the log couldn't say which test
       # stalled -- passing tests print nothing at normal verbosity, so silence hides the culprit.
@@ -38,6 +39,13 @@ jobs:
       # every thread's stack, and prints the in-flight test names instead.
       - run: dotnet test Pz.slnx -c Release --no-build --filter "Category!=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
         if: runner.os == 'Linux'
+        env:
+          PZ_TESTS_OFFLINE: '1'
+      # Windows runs the PCP suites only: the fixture and the SDK serve AF_UNIX sockets, which
+      # Windows 10+ supports, and this is the one place win-x64 connectors get proven end to end.
+      # Everything else stays Linux-only for the docker reason above.
+      - run: dotnet test Pz.slnx -c Release --no-build --filter "Category=Pcp" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+        if: runner.os == 'Windows'
         env:
           PZ_TESTS_OFFLINE: '1'
 

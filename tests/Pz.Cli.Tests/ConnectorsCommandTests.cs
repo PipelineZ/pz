@@ -11,6 +11,7 @@ namespace Pz.Cli.Tests;
 /// Joins "console-and-env-serialized" (see its definition in RestoreCommandTests.cs) both
 /// for <see cref="CliLocalFeedFixture"/> and because it redirects Console.Out/Error and mutates the
 /// process-global DATA_DIR/OUT_DIR environment variables.</summary>
+[Trait("Category", "Pcp")]
 [Collection("console-and-env-serialized")]
 public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposable
 {
@@ -78,12 +79,13 @@ public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposab
     /// PcpFakeConnector fixture, exactly the way <c>ConnectorTestCommandTests</c> stages it) and asserts
     /// the hosted row's exact name, package id, version, and tiers fields. The capabilities column
     /// requires the connector's Hello, so this is the one listing test that actually spawns the
-    /// connector process. Linux only: the fixture serves unix domain sockets.</summary>
+    /// connector process. Linux only: the staged package's entrypoint is a <c>#!/bin/sh</c> wrapper,
+    /// which is POSIX-only.</summary>
     [SkippableFact]
     [SupportedOSPlatform("linux")]
     public void Connectors_lists_hosted_connector_with_package_attribution()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         WriteProject("""
             name: connectors_test

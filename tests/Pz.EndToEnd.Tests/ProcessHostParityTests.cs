@@ -17,9 +17,10 @@ namespace Pz.EndToEnd.Tests;
 /// to a real <c>LocalFilesConnector</c>: the two runs therefore differ in HOW the connector is reached
 /// and in nothing else, which is what makes a byte comparison meaningful rather than a coincidence.</para>
 ///
-/// <para>Linux only: the fixture serves the protocol over unix domain sockets and does not implement
-/// the named-pipe transport.</para></summary>
+/// <para>Linux only: the staged package's entrypoint is a <c>#!/bin/sh</c> wrapper, which is
+/// POSIX-only.</para></summary>
 [SupportedOSPlatform("linux")]
+[Trait("Category", "Pcp")]
 public sealed class ProcessHostParityTests : IDisposable
 {
     private const string PackageId = "LocalFilesPcp";
@@ -40,7 +41,7 @@ public sealed class ProcessHostParityTests : IDisposable
     [SkippableFact]
     public void Process_hosted_connector_plans_and_runs_identically_on_the_native_tier()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var builtin = RunProject(BuiltinConnector, forceUniversal: false);
         var process = RunProject(ProcessConnector, forceUniversal: false);
@@ -61,7 +62,7 @@ public sealed class ProcessHostParityTests : IDisposable
     [SkippableFact]
     public void Process_hosted_connector_moves_the_same_rows_over_the_universal_tier()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var builtin = RunProject(BuiltinConnector, forceUniversal: true);
         var process = RunProject(ProcessConnector, forceUniversal: true);
@@ -111,7 +112,7 @@ public sealed class ProcessHostParityTests : IDisposable
     [SkippableFact]
     public void Validate_opens_a_process_connector_with_no_run_directory()
     {
-        Skip.If(OperatingSystem.IsWindows(), "PcpFakeConnector serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var dir = NewProjectDir();
         WriteProject(dir, ProcessConnector, forceUniversal: false);
