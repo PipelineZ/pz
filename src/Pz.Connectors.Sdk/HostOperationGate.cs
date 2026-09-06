@@ -13,7 +13,10 @@ namespace Pz.Connectors.Sdk;
 /// host from re-granting a request nobody is awaiting. Pacing (the wait for the grant) and budget
 /// reporting work in full; retrying a transient failure stays with the engine's node-level retry.
 /// The transient exception is still reported in <c>GateComplete.transient_error</c> so the host's
-/// gate observes it, then rethrown unchanged to the caller.</para></summary>
+/// gate observes it, then rethrown unchanged to the caller. <c>GateComplete</c> is sent best-effort
+/// on every outcome, cancellation included -- it is the only thing that lets the host's
+/// <c>IOperationGate.ExecuteAsync</c> return and release its permit, so a cancelled gated read must
+/// never leave it unsent.</para></summary>
 internal sealed class HostOperationGate(HostChannelPeer peer) : IOperationGate
 {
     public async Task<T> ExecuteAsync<T>(
@@ -36,8 +39,11 @@ internal sealed class HostOperationGate(HostChannelPeer peer) : IOperationGate
             {
                 result = await op(ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex)
             {
+                // Catch-all, cancellation included: whatever op raises, the host still granted a
+                // permit for this request and needs a GateComplete to release it. A cancelled read is
+                // reported below as a non-success completion rather than silently dropped.
                 failure = ex;
             }
 
@@ -53,8 +59,24 @@ internal sealed class HostOperationGate(HostChannelPeer peer) : IOperationGate
                     Hint = string.Empty,
                 };
             }
+            else if (failure is OperationCanceledException)
+            {
+                complete.GateComplete.TransientError = new PzErrorDetail
+                {
+                    Code = string.Empty,
+                    Message = "operation cancelled",
+                    IsTransient = false,
+                    RetryAfterMs = 0,
+                    Hint = string.Empty,
+                };
+            }
 
-            await peer.SendAsync(complete, ct).ConfigureAwait(false);
+            // Best-effort, on CancellationToken.None: `ct` may be the very token that just cancelled
+            // `op`, so sending the completion on it would drop it exactly when the host's gate permit
+            // most needs to hear about it -- leaving IOperationGate.ExecuteAsync in flight on the host
+            // until pump teardown. Mirrors HostChannelPeer.SendBestEffortAsync's own swallow: a channel
+            // that is gone by now has nowhere for this to land anyway.
+            await peer.SendBestEffortAsync(complete).ConfigureAwait(false);
 
             if (failure is not null)
             {
