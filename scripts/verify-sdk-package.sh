@@ -45,6 +45,9 @@ verify_mode() {
   [[ -x "${stage}${RID}/PcpFakeConnector" ]] || { echo "FAIL: no staged binary at ${stage}${RID}/PcpFakeConnector"; exit 1; }
   if [[ "${mode}" == "aot" ]]; then
     [[ ! -f "${stage}${RID}/PcpFakeConnector.dll" ]] || { echo "FAIL: AOT publish staged a managed dll"; exit 1; }
+  else
+    # Single-file bundles the runtime into the executable; a loose CoreLib means it did not apply.
+    [[ ! -f "${stage}${RID}/System.Private.CoreLib.dll" ]] || { echo "FAIL: self-contained publish is not single-file"; exit 1; }
   fi
 
   echo "-- dotnet pack --"
@@ -64,7 +67,10 @@ verify_mode() {
   grep -qx "runtimes/${RID}/native/PcpFakeConnector" <<<"${listing}" || { echo "FAIL: binary missing from runtimes/${RID}/native/"; echo "${listing}"; exit 1; }
   grep -qx "pz.connector.json" <<<"${listing}" || { echo "FAIL: manifest missing from nupkg root"; exit 1; }
   ! grep -q '^lib/' <<<"${listing}" || { echo "FAIL: lib/ must not be packed"; exit 1; }
-  ! unzip -p "${nupkg}" "${PKG_ID}.nuspec" | grep -q '<dependency ' || { echo "FAIL: nuspec declares dependencies"; exit 1; }
+  local nuspec
+  nuspec="$(unzip -p "${nupkg}" "${PKG_ID}.nuspec")"
+  [[ -n "${nuspec}" ]] || { echo "FAIL: could not read ${PKG_ID}.nuspec out of the nupkg"; exit 1; }
+  ! grep -q '<dependency ' <<<"${nuspec}" || { echo "FAIL: nuspec declares dependencies"; echo "${nuspec}"; exit 1; }
   local manifest
   manifest="$(unzip -p "${nupkg}" pz.connector.json)"
   grep -q '"runtime": "process"' <<<"${manifest}" || { echo "FAIL: manifest runtime"; echo "${manifest}"; exit 1; }

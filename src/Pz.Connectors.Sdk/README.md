@@ -3,6 +3,13 @@
 Write a [PipelineZ](https://pipelinez.dev) connector in C# the way a builtin is written, and serve it
 out of process (PCP) from one line.
 
+```xml
+<!-- MyConnector.csproj -->
+<PropertyGroup>
+  <OutputType>Exe</OutputType>
+</PropertyGroup>
+```
+
 ```csharp
 // Program.cs
 using Pz.Connectors.Sdk;
@@ -36,6 +43,10 @@ dotnet pack    -c Release -p:PzNativeStaging=<dir holding every RID's publish>
 | `PzPackaging` | `aot` | `self-contained` opts a connector out of Native AOT (single-file CoreCLR) |
 | `PzRuntimeIdentifiers` | `linux-x64;linux-arm64;osx-arm64;win-x64` | RIDs a package is expected to ship; a missing one warns (`PZSDK002`) |
 | `PzNativeStaging` | `bin/pz-native/` | where `publish -r` stages each RID and where `pack` collects from |
+
+Publish for the packing machine's own RID too, whichever RIDs you ship: the manifest is written by
+running the binary, so a machine that packs without having published its own RID fails with
+`PZSDK003`.
 
 The nupkg carries `runtimes/<rid>/native/<binary>` per RID and the generated manifest at its root;
 `pz restore` installs the host's RID and `pz run` spawns it. See

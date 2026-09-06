@@ -2,12 +2,16 @@
   <PropertyGroup>
     <!-- The ratified discovery tag for connector packages, appended once. -->
     <PackageTags Condition="!$(PackageTags.Contains('pipelinez-connector'))">$(PackageTags);pipelinez-connector</PackageTags>
-    <!-- PzNativeStaging may arrive as a global property (-p:), which the props file cannot normalize;
-         every path below goes through this trailing-slash-safe copy. -->
-    <_PzStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</_PzStaging>
-    <_PzStageDir>$(_PzStaging)$(RuntimeIdentifier)/</_PzStageDir>
-    <_PzManifestPath>$(IntermediateOutputPath)pz.connector.json</_PzManifestPath>
   </PropertyGroup>
+
+  <!-- Every path below is computed INSIDE the target that uses it, never in a file-level
+       PropertyGroup. This file is imported from wherever a consumer's build puts package targets,
+       which is before the .NET SDK infers RuntimeIdentifier and sets IntermediateOutputPath: an
+       import-time $(RuntimeIdentifier) would be empty on any implicit-RID publish (PublishAot with
+       no -r, a single-entry RuntimeIdentifiers) while the target's own condition, evaluated later,
+       is true. Computing at execution time is what makes the file import-position independent.
+       _PzStaging is also the trailing-slash-safe copy of PzNativeStaging, which may arrive as a
+       global property (-p:) the props file never gets to normalize. -->
 
   <Target Name="PzValidatePackaging" BeforeTargets="BeforeBuild;GenerateNuspec">
     <Error Condition="'$(PzPackaging)' != 'aot' and '$(PzPackaging)' != 'self-contained'"
@@ -19,6 +23,10 @@
        <PzNativeStaging>/<rid>/, which `dotnet pack` later ships as runtimes/<rid>/native/. Native
        dependencies sit beside the executable in the publish output and travel with it. -->
   <Target Name="PzStageNative" AfterTargets="Publish" Condition="'$(RuntimeIdentifier)' != ''">
+    <PropertyGroup>
+      <_PzStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</_PzStaging>
+      <_PzStageDir>$(_PzStaging)$(RuntimeIdentifier)/</_PzStageDir>
+    </PropertyGroup>
     <ItemGroup>
       <_PzPublished Include="$(PublishDir)**/*"
                     Exclude="$(PublishDir)**/*.pdb;$(PublishDir)**/*.dbg;$(PublishDir)**/*.dsym/**" />
@@ -30,6 +38,9 @@
   </Target>
 
   <Target Name="_PzFindStagedRids">
+    <PropertyGroup>
+      <_PzStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</_PzStaging>
+    </PropertyGroup>
     <ItemGroup>
       <_PzStagedRidDir Include="$([System.IO.Directory]::GetDirectories('$(_PzStaging)'))"
                        Condition="Exists('$(_PzStaging)')" />
@@ -39,6 +50,10 @@
   <!-- The manifest is produced by RUNNING the connector for the packing machine's own RID, so the
        manifest and the handshake come from one object and cannot disagree. -->
   <Target Name="PzGenerateManifest" DependsOnTargets="_PzFindStagedRids">
+    <PropertyGroup>
+      <_PzStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</_PzStaging>
+      <_PzManifestPath>$(IntermediateOutputPath)pz.connector.json</_PzManifestPath>
+    </PropertyGroup>
     <Error Condition="'@(_PzStagedRidDir)' == ''"
            Code="PZSDK001"
            Text="pz: no staged connector binary under '$(_PzStaging)'. Run `dotnet publish -r &lt;rid&gt;` for at least one RID before `dotnet pack`." />

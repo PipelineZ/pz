@@ -7,7 +7,6 @@
     <PzNativeStaging Condition="'$(PzNativeStaging)' == ''">$(MSBuildProjectDirectory)/bin/pz-native/</PzNativeStaging>
     <PzNativeStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</PzNativeStaging>
 
-    <OutputType Condition="'$(OutputType)' == ''">Exe</OutputType>
     <!-- The host only ever spawns the binary: a framework-dependent dll in lib/ and a dependency on
          this SDK would only make `pz restore` download things the connector never loads. -->
     <IncludeBuildOutput>false</IncludeBuildOutput>

@@ -1,15 +1,11 @@
-<Project>
+<Project Sdk="Microsoft.NET.Sdk">
 
   <!-- A ProjectReference does not import a package's build/ folder, so the fixture imports the SDK's
-       packaging props/targets by path: it is what keeps them under test. The explicit Sdk.props /
-       Sdk.targets form is what puts them where a PackageReference would: NuGet's generated props are
-       imported from Microsoft.Common.props, i.e. BEFORE Microsoft.NET.Sdk.props defaults OutputType
-       to Library, and NuGet's generated targets after the project body. The Sdk="" attribute form
-       cannot express that ordering, and with it the props' OutputType default never fires. -->
+       packaging props/targets by path: it is what keeps them under test. -->
   <Import Project="..\..\..\src\Pz.Connectors.Sdk\build\Pz.Connectors.Sdk.props" />
-  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
 
   <PropertyGroup>
+    <OutputType>Exe</OutputType>
     <!-- A test peer, never shipped: the host-side PCP tests spawn this executable so every one of
          them talks to a real out-of-process connector, served by the real SDK, rather than a mock.
          scripts/verify-sdk-package.sh packs it anyway with -p:IsPackable=true, which is how the
@@ -37,7 +33,6 @@
     <ProjectReference Include="..\..\..\connectors\Pz.Connector.LocalFiles\Pz.Connector.LocalFiles.csproj" />
   </ItemGroup>
 
-  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
   <Import Project="..\..\..\src\Pz.Connectors.Sdk\build\Pz.Connectors.Sdk.targets" />
 
 </Project>
