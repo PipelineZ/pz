@@ -159,6 +159,12 @@ public sealed class ShimTests : IDisposable
     private static ConnectorCapabilities FeedCapabilities =>
         (new LocalFilesConnector().Capabilities & ~ConnectorCapabilities.PartitionedRead) | ConnectorCapabilities.SyncState;
 
+    /// <summary>What <c>--sync-state --stable-ids</c> reports: the feed set plus StablePartitionIds --
+    /// NativeScan, NativeCopy, ReplaceWrites, BoundedWindow, StablePartitionIds, SyncState. The manifest
+    /// must say the same or the handshake refuses.</summary>
+    private static ConnectorCapabilities IdentifiedFeedCapabilities =>
+        FeedCapabilities | ConnectorCapabilities.StablePartitionIds;
+
     private static DatasetSpec SmallCsvSpec(string? priorSyncState = null) =>
         new("files", "orders", new Dictionary<string, object?>
         {
@@ -218,6 +224,33 @@ public sealed class ShimTests : IDisposable
         Assert.Equal(7, await DrainAsync(replay));
         Assert.True(((ISyncStatePartition)replay).TryGetSyncStateCandidate(out var next));
         Assert.Equal("0+7+7", next);
+    }
+
+    [SkippableFact]
+    public async Task Stable_ids_and_sync_state_together_build_the_identified_sync_state_shim()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 5);
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--sync-state", "--stable-ids"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(IdentifiedFeedCapabilities), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+        var partition = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(), ReadHints.None, CancellationToken.None));
+
+        var identified = Assert.IsAssignableFrom<IIdentifiedPartition>(partition);
+        Assert.Equal("orders:0", identified.PartitionId);
+        var sync = Assert.IsAssignableFrom<ISyncStatePartition>(partition);
+
+        Assert.Equal(5, await DrainAsync(partition));
+        Assert.True(sync.TryGetSyncStateCandidate(out var token));
+        Assert.Equal("0+5", token);
     }
 
     [SkippableFact]

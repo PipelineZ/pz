@@ -1,57 +1,21 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Server.Kestrel.Core;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using Pz.Connectors.Protocol;
+using Pz.Connectors.Sdk;
 
 namespace PcpFakeConnector;
 
-/// <summary>A real out-of-process PCP peer, written in C# on purpose: the protocol is meant to be
-/// language-neutral, and a fixture that shares the host's language proves the wire format is
-/// implementable by someone who is not the host.
-///
-/// <para>It serves the <c>PzConnector</c> service over gRPC on the unix socket it is handed and raw
-/// Arrow IPC on <c>&lt;socket&gt;.data</c>, delegating every call to a real
+/// <summary>A real out-of-process PCP peer served by the real SDK, delegating every call to a real
 /// <c>LocalFilesConnector</c>. Configuration and credentials arrive only through the <c>Configure</c>
-/// RPC. The argv switches below choose which failure to stage — they are test switches, which is why
-/// argv is the right surface for them and the wrong surface for config.</para></summary>
+/// RPC. The argv switches below choose which failure to stage -- they are test switches, which is why
+/// argv is the right surface for them and the wrong surface for config. Everything the SDK owns
+/// (<c>--pz-socket</c>) is passed through to it untouched.</summary>
 internal static class Program
 {
-    /// <summary>How long the fixture survives with no control connection before deciding it has been
-    /// orphaned. A host that means to keep the connector alive keeps its control connection open (or
-    /// its HTTP/2 pool from dropping it) and ends the process with the <c>Shutdown</c> RPC; anything
-    /// else — a crashed host, a killed test run — leaves the connector with no one to serve, and it
-    /// exits rather than lingering.</summary>
-    private static readonly TimeSpan OrphanExitGrace = TimeSpan.FromSeconds(5);
-
-    /// <summary>How long the fixture waits for its FIRST control connection. A host that dies between
-    /// spawning the process and dialing it leaves a connector that has nothing to wait for and no
-    /// connection-close to notice, so idle-exit alone would leave it running forever. Twice the
-    /// handshake timeout: a host still within its own handshake budget has not failed yet.</summary>
-    private static readonly TimeSpan FirstConnectionDeadline = ProtocolConstants.HandshakeTimeout * 2;
-
-    /// <summary>Kept under <see cref="ProtocolConstants.ShutdownGrace"/>. The generic host defaults to
-    /// 30 s, which is three times the grace the host allows between the <c>Shutdown</c> RPC and a kill
-    /// — so on the default the fixture would be killed for being slow at something it was told to
-    /// do.</summary>
-    private static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(5);
-
     public static async Task<int> Main(string[] args)
     {
-        if (OperatingSystem.IsWindows())
-        {
-            await Console.Error.WriteLineAsync(
-                "PcpFakeConnector serves the protocol over unix domain sockets only; the named-pipe " +
-                "transport is not implemented in this fixture.").ConfigureAwait(false);
-            return 3;
-        }
-
         FixtureOptions options;
+        string[] passthrough;
         try
         {
-            options = FixtureOptions.Parse(args);
+            (options, passthrough) = FixtureOptions.Parse(args);
         }
         catch (ArgumentException ex)
         {
@@ -66,96 +30,28 @@ internal static class Program
             return 1;
         }
 
-        var dataSocketPath = options.SocketPath + ProtocolConstants.DataSocketSuffix;
-        DeleteIfExists(options.SocketPath);
-        DeleteIfExists(dataSocketPath);
-
-        var exit = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var watch = new ControlConnectionWatch(
-            FirstConnectionDeadline,
-            OrphanExitGrace,
-            onNeverConnected: () =>
-            {
-                Console.Error.WriteLine(
-                    $"PcpFakeConnector: no control connection within {FirstConnectionDeadline.TotalSeconds:0}s " +
-                    "of the socket being served; the host never dialed. Exiting rather than orphaning.");
-                exit.TrySetResult(3);
-            },
-            onOrphaned: () => exit.TrySetResult(0));
-        var tickets = new TicketRegistry();
-
-        await using var dataPlane = DataPlaneListener.Start(dataSocketPath, tickets);
-
-        // No args to the builder: the failure switches are bare `--flag`s, and the command-line
-        // configuration provider would swallow the argument that follows one of them as its value.
-        // The content root is pinned to the binary's own directory so an appsettings.json in whatever
-        // working directory the host happened to spawn from cannot steer the fixture.
-        var builder = WebApplication.CreateBuilder(
-            new WebApplicationOptions { ContentRootPath = AppContext.BaseDirectory });
-        builder.Logging.ClearProviders();
-        builder.Logging.AddConsole(console => console.LogToStandardErrorThreshold = LogLevel.Trace);
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
-        builder.WebHost.ConfigureKestrel(kestrel => kestrel.ListenUnixSocket(options.SocketPath, listen =>
+        var hooks = new PcpServerHooks
         {
-            listen.Protocols = HttpProtocols.Http2;
-            listen.Use(next => async connection =>
-            {
-                watch.Opened();
-                try
-                {
-                    await next(connection).ConfigureAwait(false);
-                }
-                finally
-                {
-                    watch.Closed();
-                }
-            });
-        }));
-        builder.Services.AddGrpc();
-        builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = HostShutdownTimeout);
-        builder.Services.AddSingleton(options);
-        builder.Services.AddSingleton(tickets);
-        // Singleton: the configured connector, its open plans and its write sessions are per-process
-        // state that every later RPC resolves against.
-        builder.Services.AddSingleton<PcpService>();
+            HangHandshake = options.HangHandshake
+                ? ct => Task.Delay(Timeout.InfiniteTimeSpan, ct)
+                : null,
+            IgnoreCancel = options.IgnoreCancel,
+            IgnoreShutdown = options.IgnoreShutdown,
+        };
 
-        var app = builder.Build();
-        app.MapGrpcService<PcpService>();
-
-        await app.StartAsync().ConfigureAwait(false);
-        // Kestrel creates the socket file on bind, so this is the earliest point it can be locked down.
-        SocketPermissions.RestrictToOwner(options.SocketPath);
-        // The first-connection clock starts now, not at process start: the host cannot dial before this.
-        watch.Start();
-
-        // SIGINT/SIGTERM and the Shutdown RPC both land here, via IHostApplicationLifetime.
-        await using var stopping = app.Lifetime.ApplicationStopping.Register(() => exit.TrySetResult(0))
-            .ConfigureAwait(false);
-        var exitCode = await exit.Task.ConfigureAwait(false);
-        await app.StopAsync().ConfigureAwait(false);
-        return exitCode;
-    }
-
-    private static void DeleteIfExists(string path)
-    {
-        if (File.Exists(path))
-        {
-            File.Delete(path);
-        }
+        return await PzConnectorHost.RunAsync(passthrough, _ => new StagedConnector(options), hooks).ConfigureAwait(false);
     }
 }
 
-/// <summary>Which failure this fixture stages, and where to serve. Nothing here is configuration:
-/// connection options and credentials reach the connector through the <c>Configure</c> RPC and no
-/// other way.
+/// <summary>Which failure this fixture stages. Nothing here is configuration.
 ///
 /// <para><c>--sync-state</c> stages a feed-shaped connector: <c>SyncState</c> declared (and
 /// <c>PartitionedRead</c> withdrawn -- one opaque token cannot span partitions), FEED for every
 /// dataset, no native scan, and a deterministic token per drained partition.
-/// <c>--declare-sync-state-only</c> declares the same capability set but answers UNIMPLEMENTED to
-/// both sync-state RPCs, the shape a conformance vector must FAIL.</para></summary>
+/// <c>--declare-sync-state-only</c> declares the same capability set but implements none of it, the
+/// shape a conformance vector must FAIL. <c>--stable-ids</c> declares <c>StablePartitionIds</c> and
+/// gives every partition the id <c>&lt;dataset&gt;:&lt;ordinal&gt;</c>.</para></summary>
 internal sealed record FixtureOptions(
-    string SocketPath,
     bool HangHandshake,
     bool DieImmediately,
     bool WrongProtocolMajor,
@@ -169,29 +65,34 @@ internal sealed record FixtureOptions(
     bool IgnoreShutdown,
     bool DeclareCheckpointableReads,
     bool SyncState,
-    bool DeclareSyncStateOnly)
+    bool DeclareSyncStateOnly,
+    bool StableIds)
 {
-    public static FixtureOptions Parse(string[] args)
+    /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
+    /// (<c>--pz-socket &lt;path&gt;</c>) is passed through verbatim so its own parser stays the one
+    /// authority on it.</summary>
+    public static (FixtureOptions Options, string[] Passthrough) Parse(string[] args)
     {
-        string? socketPath = null;
+        var passthrough = new List<string>();
         bool hangHandshake = false, dieImmediately = false, wrongProtocolMajor = false;
         bool misreportCapabilities = false, misreportName = false;
         bool failCheckTransient = false, reportAbortSemanticsNone = false;
         bool useGate = false, endlessRead = false, ignoreCancel = false, ignoreShutdown = false;
         bool declareCheckpointableReads = false;
-        bool syncState = false, declareSyncStateOnly = false;
+        bool syncState = false, declareSyncStateOnly = false, stableIds = false;
 
         for (var i = 0; i < args.Length; i++)
         {
             switch (args[i])
             {
                 case "--pz-socket":
+                    passthrough.Add(args[i]);
                     if (++i >= args.Length)
                     {
                         throw new ArgumentException("--pz-socket needs a socket path");
                     }
 
-                    socketPath = args[i];
+                    passthrough.Add(args[i]);
                     break;
                 case "--hang-handshake":
                     hangHandshake = true;
@@ -235,128 +136,22 @@ internal sealed record FixtureOptions(
                 case "--declare-sync-state-only":
                     declareSyncStateOnly = true;
                     break;
+                case "--stable-ids":
+                    stableIds = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
         }
 
-        return new FixtureOptions(
-            socketPath ?? throw new ArgumentException("--pz-socket <path> is required"),
-            hangHandshake,
-            dieImmediately,
-            wrongProtocolMajor,
-            misreportCapabilities,
-            misreportName,
-            failCheckTransient,
-            reportAbortSemanticsNone,
-            useGate,
-            endlessRead,
-            ignoreCancel,
-            ignoreShutdown,
-            declareCheckpointableReads,
-            syncState,
-            declareSyncStateOnly);
-    }
-}
-
-/// <summary>Both sockets are owner-only. A unix socket's file permissions are the whole access control
-/// on this transport, and the socket carries credentials in one direction and data in the other.</summary>
-internal static class SocketPermissions
-{
-    public static void RestrictToOwner(string path)
-    {
-        if (OperatingSystem.IsWindows())
+        if (passthrough.Count == 0)
         {
-            return;
+            throw new ArgumentException("--pz-socket <path> is required");
         }
 
-        // The bind that created the file already applied the process umask, so there is a window in
-        // which the file may be group/world readable. The host creates the containing directory 0700,
-        // which is what actually closes it; this narrows the file itself as well.
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
-    }
-}
-
-/// <summary>Orphan prevention, on both sides of the first connection: fires
-/// <paramref name="onNeverConnected"/> if the host never dials within
-/// <paramref name="startupDeadline"/>, and <paramref name="onOrphaned"/> once the last control
-/// connection has been gone for <paramref name="idleGrace"/>. A host that dies before connecting and
-/// one that dies after leave the same orphan, and only the two timers together cover both.</summary>
-internal sealed class ControlConnectionWatch(
-    TimeSpan startupDeadline,
-    TimeSpan idleGrace,
-    Action onNeverConnected,
-    Action onOrphaned)
-{
-    private readonly Lock _gate = new();
-    private int _open;
-    private bool _everConnected;
-    private CancellationTokenSource? _countdown;
-
-    /// <summary>Starts the first-connection clock. Called once the socket is actually listening, so the
-    /// deadline measures the host's silence and not the fixture's own startup.</summary>
-    public void Start()
-    {
-        CancellationTokenSource countdown;
-        lock (_gate)
-        {
-            if (_everConnected)
-            {
-                return;
-            }
-
-            countdown = new CancellationTokenSource();
-            _countdown = countdown;
-        }
-
-        _ = CountdownAsync(countdown, startupDeadline, onNeverConnected);
-    }
-
-    public void Opened()
-    {
-        lock (_gate)
-        {
-            _open++;
-            _everConnected = true;
-            ClearCountdown();
-        }
-    }
-
-    public void Closed()
-    {
-        CancellationTokenSource countdown;
-        lock (_gate)
-        {
-            if (--_open > 0)
-            {
-                return;
-            }
-
-            countdown = new CancellationTokenSource();
-            _countdown = countdown;
-        }
-
-        _ = CountdownAsync(countdown, idleGrace, onOrphaned);
-    }
-
-    private void ClearCountdown()
-    {
-        _countdown?.Cancel();
-        _countdown?.Dispose();
-        _countdown = null;
-    }
-
-    private static async Task CountdownAsync(CancellationTokenSource countdown, TimeSpan delay, Action onElapsed)
-    {
-        try
-        {
-            await Task.Delay(delay, countdown.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
-        onElapsed();
+        return (new FixtureOptions(
+            hangHandshake, dieImmediately, wrongProtocolMajor, misreportCapabilities, misreportName,
+            failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
+            declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds), passthrough.ToArray());
     }
 }
