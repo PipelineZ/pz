@@ -418,6 +418,20 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         Err(source_unimplemented())
     }
 
+    async fn get_natural_read_shape(
+        &self,
+        _request: Request<pb::NaturalReadShapeRequest>,
+    ) -> Result<Response<pb::NaturalReadShapeResponse>, Status> {
+        Err(source_unimplemented())
+    }
+
+    async fn get_read_state(
+        &self,
+        _request: Request<pb::ReadStateRequest>,
+    ) -> Result<Response<pb::ReadStateResponse>, Status> {
+        Err(source_unimplemented())
+    }
+
     async fn try_native_copy(
         &self,
         request: Request<pb::NativeCopyRequest>,
