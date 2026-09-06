@@ -240,6 +240,12 @@ in-process loading is reserved for builtins — declared in the package's `pz.co
   Resolved with `RuntimeIdentifierGraph` fallback (a package shipping only `linux-x64` is still
   reachable from `linux-musl-x64`), and rejected if a path would resolve outside the package
   directory.
+- Capabilities honored out of process: everything a connector declares **except**
+  `CheckpointableReads`, `CheckpointableWrites`, and `ChangeCapture`, which the host masks until
+  they are wired over the wire. `SyncState` (opaque-token feeds) is honored: the connector answers
+  `GetNaturalReadShape` (FEED/FULL per dataset, plan-time, offline) and `GetReadState` (the
+  partition's token, pulled by the host after the drain completed). A connector that never
+  implements `GetNaturalReadShape` reads as FULL.
 
 This is packaging-time detail an agent authoring `connections.yml`/pipelines never touches
 directly — the connector's `connector:` name in `connections.yml` and its `ConnectionConfigSchema`/
@@ -268,9 +274,12 @@ The target is a package directory containing `pz.connector.json` or a bare entry
 `--config` names the connection to configure and the `read:`/`write:` dataset(s) to probe (a
 `connection:` block plus optional `read: { dataset: ... }` and/or `write: { output: ..., mode: ...,
 schema_policy: ... }`). Every applicable vector runs regardless of earlier failures, printed as one
-`PASS`/`FAIL`/`SKIP <vector>[: detail]` line each. Exit codes: `0` every applicable vector passed,
-`1` one or more vectors failed, `2` a config/usage problem (bad target, malformed manifest or
-`--config`) meant no vector could even be attempted.
+`PASS`/`FAIL`/`SKIP <vector>[: detail]` line each. A connector declaring `SyncState` additionally
+runs `sync-state-roundtrip` (FEED shape, one `sync_state` partition, a non-empty token after a full
+drain, and that token accepted back as `prior_sync_state`); it is skipped for connectors that do not
+declare the flag. Exit codes: `0` every applicable vector passed, `1` one or more vectors failed,
+`2` a config/usage problem (bad target, malformed manifest or `--config`) meant no vector could even
+be attempted.
 
 ## Recommended tool loop
 
