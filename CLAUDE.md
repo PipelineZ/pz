@@ -73,9 +73,10 @@ Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-b
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
 green. Five jobs: `build-test`, an ubuntu+windows matrix where both legs build but only ubuntu runs
 the full `dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — windows instead
-runs just the `Category=Pcp` filter, which today proves the PCP suites build and skip cleanly there:
-the fixture's AF_UNIX listener fails to initialize on the windows runner (Winsock 10106), so every
-direct-spawn fact stays Windows-skipped; windows otherwise stays build-only because the docker suites
+runs just the `Category=Pcp` filter: the fixture's AF_UNIX listener fails to initialize on the windows
+runner (Winsock 10106), so every direct-spawn fact stays Windows-skipped there, but `ShimTests`'
+~20 pure-serialization facts (carrying the trait at class level, no socket involved) actually run and
+assert on windows; windows otherwise stays build-only because the docker suites
 can't pull Linux images there; `pack-and-verify` (ubuntu), which runs `scripts/verify-tool-install.sh`
 so the install path a stranger's first five commands depend on cannot silently rot; `format-extensions`
 (ubuntu), which runs the `Category=DuckDbExtension` tests (xlsx/avro, needing network to install

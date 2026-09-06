@@ -144,7 +144,7 @@ internal sealed class ControlConnectionWatch(
     private CancellationTokenSource? _countdown;
 
     /// <summary>Starts the first-connection clock. Called once the socket is actually listening, so the
-    /// deadline measures the host's silence and not the fixture's own startup.</summary>
+    /// deadline measures the host's silence and not the connector's own startup.</summary>
     public void Start()
     {
         CancellationTokenSource countdown;

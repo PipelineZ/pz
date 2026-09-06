@@ -13,7 +13,17 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK_DIR="$(mktemp -d)"
-trap 'rm -rf "${WORK_DIR}"' EXIT
+# Delete the staged publish/nupkg/restore only on success: a CI failure is exactly when a human needs
+# to inspect what got built, so a failing run keeps the directory and says where it is.
+cleanup() {
+  local status=$?
+  if [[ ${status} -eq 0 ]]; then
+    rm -rf "${WORK_DIR}"
+  else
+    echo "FAIL: leaving work dir for inspection: ${WORK_DIR}" >&2
+  fi
+}
+trap cleanup EXIT
 
 RID="linux-x64"
 if [[ "$(uname -m)" == "aarch64" ]]; then RID="linux-arm64"; fi

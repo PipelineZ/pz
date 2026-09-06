@@ -1,4 +1,3 @@
-using System.Globalization;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using Google.Protobuf;
