@@ -74,3 +74,46 @@ internal sealed class SyncPartition(int rows, string? prior) : CountingPartition
         return candidate is not null;
     }
 }
+
+/// <summary>Opens exactly one gate-aware source, and only when the test releases it: two RPCs can
+/// therefore be parked past the "already open" fast path at the same time, which is the only shape in
+/// which a second gate handover is observable.</summary>
+internal sealed class GateCountingSourceConnector : ISourceConnector
+{
+    private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public GateAwareSource Source { get; } = new();
+
+    public int Opens { get; private set; }
+
+    /// <summary>Completes once <see cref="OpenAsync"/> has been entered, so a test can start a second
+    /// RPC knowing the first holds the open gate and the source is still unset.</summary>
+    public Task Entered => _entered.Task;
+
+    public void ReleaseOpen() => _release.TrySetResult();
+
+    public ConnectorInfo Info => new("gated", "1.0.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.GatedOperations;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+        ValueTask.FromResult(new ValidationResult([]));
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+        ValueTask.FromResult(new ConnectionCheck(true, null));
+
+    public async ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct)
+    {
+        Opens++;
+        _entered.TrySetResult();
+        await _release.Task.WaitAsync(ct);
+        return Source;
+    }
+}
+
+internal sealed class GateAwareSource : PlainSource, IOperationGateAware
+{
+    public int GateHandovers { get; private set; }
+
+    public void UseOperationGate(IOperationGate gate) => GateHandovers++;
+}

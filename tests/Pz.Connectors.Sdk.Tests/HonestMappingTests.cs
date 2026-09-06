@@ -92,6 +92,25 @@ public sealed class HonestMappingTests
     }
 
     [Fact]
+    public async Task The_gate_is_handed_to_an_opened_source_exactly_once()
+    {
+        var connector = new GateCountingSourceConnector();
+        var service = await ConfiguredAsync(connector);
+
+        // Both RPCs are past the "source already open" fast path before either can finish opening, so
+        // both reach the open gate: the ABI allows exactly one UseOperationGate per opened ISource.
+        var first = service.GetSchema(new GetSchemaRequest { OpId = "op", Spec = Spec() }, Context());
+        await connector.Entered;
+        var second = PlanAsync(service, "op");
+        connector.ReleaseOpen();
+        await first;
+        await second;
+
+        Assert.Equal(1, connector.Opens);
+        Assert.Equal(1, connector.Source.GateHandovers);
+    }
+
+    [Fact]
     public async Task TryNativeScan_is_not_found_when_the_source_offers_none()
     {
         var service = await ConfiguredAsync(new FakeSourceConnector(ConnectorCapabilities.None, feed: false));

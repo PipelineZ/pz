@@ -518,13 +518,22 @@ internal sealed class PcpConnectorService(
         await _openGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            _source ??= await sourceConnector.OpenAsync(RequireConfig(), ct).ConfigureAwait(false);
-            if (_source is IOperationGateAware aware)
+            if (_source is not null)
+            {
+                return _source;
+            }
+
+            // The handover happens only on the branch that actually opened the source: the ABI gives
+            // an opened ISource exactly one UseOperationGate, and two RPCs racing the first open both
+            // pass the unlocked fast path above.
+            var opened = await sourceConnector.OpenAsync(RequireConfig(), ct).ConfigureAwait(false);
+            if (opened is IOperationGateAware aware)
             {
                 aware.UseOperationGate(_gate);
             }
 
-            return _source;
+            _source = opened;
+            return opened;
         }
         finally
         {
@@ -547,13 +556,20 @@ internal sealed class PcpConnectorService(
         await _openGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            _sink ??= await sinkConnector.OpenAsync(RequireConfig(), ct).ConfigureAwait(false);
-            if (_sink is IOperationGateAware aware)
+            if (_sink is not null)
+            {
+                return _sink;
+            }
+
+            // One UseOperationGate per opened ISink, for the same reason as the source path above.
+            var opened = await sinkConnector.OpenAsync(RequireConfig(), ct).ConfigureAwait(false);
+            if (opened is IOperationGateAware aware)
             {
                 aware.UseOperationGate(_gate);
             }
 
-            return _sink;
+            _sink = opened;
+            return opened;
         }
         finally
         {

@@ -24,28 +24,35 @@ internal sealed class HostChannelPeer
     private readonly Queue<LogEvent> _logBacklog = new();
     private bool _isAttached;
 
+    /// <summary>The tail of the log send sequence. Every log send is chained onto it while
+    /// <see cref="_attachGate"/> is held, so the order sends are started is the order the events were
+    /// produced -- and the backlog, chained first inside <see cref="Attach"/>, cannot be overtaken by
+    /// a live <see cref="QueueLog"/> from another thread.</summary>
+    private Task _logChain = Task.CompletedTask;
+
     private TaskCompletionSource<IServerStreamWriter<HostChannelUp>> _attached =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>Called once per <c>HostChannel</c> RPC, right as it starts serving. Unblocks every send
-    /// (log or gate) that was already waiting on this channel to open, then flushes the held logs.</summary>
+    /// (log or gate) that was already waiting on this channel to open, then flushes the held logs.
+    /// The backlog is chained onto the log sequence before the gate is released, so it is ahead of any
+    /// log queued after this returns.</summary>
     public void Attach(IServerStreamWriter<HostChannelUp> writer)
     {
         TaskCompletionSource<IServerStreamWriter<HostChannelUp>> signal;
-        LogEvent[] backlog;
         lock (_attachGate)
         {
             signal = _attached;
             _isAttached = true;
-            backlog = _logBacklog.ToArray();
-            _logBacklog.Clear();
+            while (_logBacklog.Count > 0)
+            {
+                _logChain = ChainLogAsync(_logChain, _logBacklog.Dequeue());
+            }
         }
 
+        // After the chain is built: each chained send waits on this signal, so the writer is in place
+        // by the time any of them reaches it.
         signal.TrySetResult(writer);
-        foreach (var log in backlog)
-        {
-            _ = SendBestEffortAsync(new HostChannelUp { Log = log });
-        }
     }
 
     public void Detach()
@@ -58,8 +65,10 @@ internal sealed class HostChannelPeer
         }
     }
 
-    /// <summary>Best-effort, in order: sent now if a channel is attached, otherwise held (bounded)
-    /// until the next <see cref="Attach"/> flushes the backlog ahead of anything newer.</summary>
+    /// <summary>Best-effort, in order: sent once a channel is attached, otherwise held (bounded)
+    /// until the next <see cref="Attach"/> flushes the backlog ahead of anything newer. Both paths run
+    /// under the attach gate, so producing an event and placing it in the send sequence is one
+    /// step -- concurrent callers cannot reorder each other, and neither can outrun the backlog.</summary>
     public void QueueLog(LogEvent log)
     {
         lock (_attachGate)
@@ -74,9 +83,21 @@ internal sealed class HostChannelPeer
                 _logBacklog.Enqueue(log);
                 return;
             }
-        }
 
-        _ = SendBestEffortAsync(new HostChannelUp { Log = log });
+            _logChain = ChainLogAsync(_logChain, log);
+        }
+    }
+
+    /// <summary>One link of the log sequence: never faults (<see cref="SendBestEffortAsync"/> swallows),
+    /// so the chain can never be poisoned by a channel that closed under it.</summary>
+    private async Task ChainLogAsync(Task previous, LogEvent log)
+    {
+        // Off the caller's stack first: this link is created while the attach gate is held, and the
+        // send path takes that same gate. Ordering does not depend on the yield -- it comes from
+        // awaiting the previous link, which completes only once its own send is done.
+        await Task.Yield();
+        await previous.ConfigureAwait(false);
+        await SendBestEffortAsync(new HostChannelUp { Log = log }).ConfigureAwait(false);
     }
 
     /// <summary>Registers interest in a grant BEFORE the GateAcquire is sent, so a grant that arrives

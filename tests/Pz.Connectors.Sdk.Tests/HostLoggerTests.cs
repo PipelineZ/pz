@@ -45,6 +45,25 @@ public sealed class HostLoggerTests
         Assert.Equal("299", writer.Written[^1].Log.Message);
     }
 
+    [Fact]
+    public async Task A_log_produced_while_the_backlog_is_flushing_lands_after_it()
+    {
+        var peer = new HostChannelPeer();
+        var logger = new HostLoggerProvider(peer).CreateLogger("x");
+        logger.LogInformation("held one");
+        logger.LogInformation("held two");
+
+        var writer = new AwaitableStreamWriter(expected: 3)
+        {
+            OnFirstWrite = () => logger.LogInformation("live"),
+        };
+        peer.Attach(writer);
+        await writer.Done.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(
+            ["held one", "held two", "live"], writer.Written.Select(m => m.Log.Message).ToArray());
+    }
+
     private sealed class AwaitableStreamWriter(int expected) : IServerStreamWriter<HostChannelUp>
     {
         private readonly TaskCompletionSource _done = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -52,17 +71,28 @@ public sealed class HostLoggerTests
         public Task Done => _done.Task;
         public WriteOptions? WriteOptions { get; set; }
 
+        /// <summary>Runs once the first message is on the wire -- the window in which a live log
+        /// could overtake the backlog being flushed.</summary>
+        public Action? OnFirstWrite { get; set; }
+
         public Task WriteAsync(HostChannelUp message)
         {
+            Action? first = null;
             lock (Written)
             {
                 Written.Add(message);
+                if (Written.Count == 1)
+                {
+                    first = OnFirstWrite;
+                }
+
                 if (Written.Count == expected)
                 {
                     _done.TrySetResult();
                 }
             }
 
+            first?.Invoke();
             return Task.CompletedTask;
         }
     }
