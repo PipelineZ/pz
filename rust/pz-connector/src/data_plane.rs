@@ -9,6 +9,8 @@ use arrow::ipc::reader::StreamReader;
 use tokio::io::AsyncReadExt;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::error::PzError;
 use crate::server::SessionState;
@@ -54,6 +56,14 @@ async fn serve_connection(mut stream: UnixStream, tickets: Arc<TicketRegistry>) 
 
     let TicketEntry::Write(session) = entry;
 
+    // The data plane carries no headers of its own, so the stream's span hangs off the trace context
+    // the `BeginWrite` RPC captured into this session.
+    let span = tracing::info_span!("pcp", otel.name = "pcp.write_stream", otel.kind = "server");
+    span.set_parent(session.parent.clone());
+    serve_write(stream, session).instrument(span).await;
+}
+
+async fn serve_write(stream: UnixStream, session: Arc<SessionState>) {
     // Every early-return from here on happens AFTER the ticket resolved to a real session, so every one
     // of them must signal `drained` explicitly -- otherwise a `CommitWrite` awaiting this session's
     // drained receiver would hang on a sender that was silently dropped instead of failing cleanly.

@@ -23,6 +23,18 @@ getrandom = "0.2"
 anyhow = "1"
 thiserror = "1"
 
+# Telemetry: the host hands an OTLP endpoint in HostInfo; spans (`tracing`) and meters are exported
+# from this process directly. The otlp crate MUST resolve to the same tonic 0.12 line above -- a
+# second tonic/prost in Cargo.lock means the pins below drifted from each other.
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
+tracing-opentelemetry = "0.28"
+tower-http = { version = "0.6", features = ["trace"] }
+http = "1"
+
 [dev-dependencies]
 tempfile = "3"
 # test-util (tokio::time::pause/advance) is deliberately not enabled in [dependencies] -- it changes

@@ -17,6 +17,7 @@ mod config;
 mod data_plane;
 mod error;
 mod server;
+mod telemetry;
 mod ticket;
 
 pub use config::Config;
@@ -25,3 +26,4 @@ pub use server::{
     serve_sink, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink, SinkConnector,
     WriteAttempt, WriteResult, WriteSession,
 };
+pub use telemetry::meter;
