@@ -7,6 +7,9 @@ out of process (PCP) from one line.
 <!-- MyConnector.csproj -->
 <PropertyGroup>
   <OutputType>Exe</OutputType>
+  <!-- Restore reads this line, not the SDK's packaging files: it is what pulls the Native AOT
+       compiler pack. PzPackaging=self-contained turns it back off. -->
+  <PublishAot>true</PublishAot>
 </PropertyGroup>
 ```
 
@@ -44,6 +47,14 @@ dotnet pack    -c Release -p:PzNativeStaging=<dir holding every RID's publish>
 | `PzRuntimeIdentifiers` | `linux-x64;linux-arm64;osx-arm64;win-x64` | RIDs a package is expected to ship; a missing one warns (`PZSDK002`) |
 | `PzNativeStaging` | `bin/pz-native/` | where `publish -r` stages each RID and where `pack` collects from |
 | `PzProjectDirectoryAnchor` | `false` | set to `true` when the connector resolves relative paths in its own config; `pz` then passes the project directory as the `base_dir` connection option |
+
+`<PublishAot>true</PublishAot>` belongs in the project file itself (or on the command line as
+`-p:PublishAot=true`): NuGet restore evaluates a project with every package's build files excluded,
+so the compiler pack Native AOT needs is only restored when the project asks for it, never because
+the SDK's targets derived it from `PzPackaging`. A publish that would silently fall back to a CoreCLR
+layout fails with `PZSDK005` instead. `self-contained` turns `PublishAot` off again, so the line
+costs a connector that opts out nothing but a download; switching such a connector to Native AOT
+from the command line takes both flags (`-p:PzPackaging=aot -p:PublishAot=true`).
 
 Publish for the packing machine's own RID too, whichever RIDs you ship: the manifest is written by
 running the binary, so a machine that packs without having published its own RID fails with

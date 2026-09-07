@@ -24,5 +24,8 @@
 
   <!-- What each PzPackaging value means (PublishAot, PublishSingleFile, ...) is decided in the
        .targets, not here: this file is imported before the project body, so a <PzPackaging> the
-       project sets would not be visible to a condition evaluated at this point. -->
+       project sets would not be visible to a condition evaluated at this point. Setting PublishAot
+       here would not buy restore anything either: NuGet evaluates the restore graph with every
+       package's props and targets excluded, so the Native AOT compiler pack is only restored when the
+       project file itself carries <PublishAot>true</PublishAot> (the .targets explain). -->
 </Project>

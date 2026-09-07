@@ -269,10 +269,13 @@ FAILED_PRECONDITION — so declare only capabilities you implement; `pz connecto
 The SDK captures the sync-state token itself when a partition's enumeration completes, before it
 writes end-of-stream: set the candidate anywhere before your iterator returns. Two argv modes only:
 `--pz-socket <path>` (serve) and `--pz-manifest --out <file>` (write `pz.connector.json` from the
-connector object); configuration never travels on argv. Packaging: `dotnet publish -r <rid>` per
-platform (Native AOT by default; `<PzPackaging>self-contained</PzPackaging>` opts out), then
-`dotnet pack -p:PzNativeStaging=<dir>` collects every RID under `runtimes/<rid>/native/` with the
-generated manifest at the nupkg root — the layout `pz restore` already installs. Set
+connector object); configuration never travels on argv. Packaging: the project file carries
+`<PublishAot>true</PublishAot>` (NuGet restore never sees the SDK's own build files, so the Native
+AOT compiler pack is restored only when the project asks for it; a publish that would otherwise fall
+back to a CoreCLR layout fails with `PZSDK005`), then `dotnet publish -r <rid>` per platform (Native
+AOT by default; `<PzPackaging>self-contained</PzPackaging>` opts out and turns `PublishAot` back
+off), then `dotnet pack -p:PzNativeStaging=<dir>` collects every RID under `runtimes/<rid>/native/`
+with the generated manifest at the nupkg root — the layout `pz restore` already installs. Set
 `<PzProjectDirectoryAnchor>true</PzProjectDirectoryAnchor>` when the connector resolves relative paths
 in its own config; `pz` then passes the project directory as the `base_dir` connection option.
 
