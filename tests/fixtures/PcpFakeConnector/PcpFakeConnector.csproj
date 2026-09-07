@@ -20,8 +20,9 @@
        Only the rollup codes are demoted, so a first-party trim/AOT regression still fails the build.
        The demotion belongs here rather than in the SDK's props: a connector project outside this
        repository does not treat warnings as errors, and an SDK that silenced them for everyone would
-       hide a real one. -->
-  <PropertyGroup Condition="'$(PublishAot)' == 'true'">
+       hide a real one. Conditioned on PzPackaging rather than PublishAot: the SDK derives PublishAot
+       in its .targets, imported below this group, so PublishAot is still empty here. -->
+  <PropertyGroup Condition="'$(PzPackaging)' == 'aot'">
     <ILLinkTreatWarningsAsErrors>false</ILLinkTreatWarningsAsErrors>
     <WarningsNotAsErrors>$(WarningsNotAsErrors);IL2104;IL3053</WarningsNotAsErrors>
     <MSBuildWarningsNotAsErrors>$(MSBuildWarningsNotAsErrors);IL2104;IL3053</MSBuildWarningsNotAsErrors>

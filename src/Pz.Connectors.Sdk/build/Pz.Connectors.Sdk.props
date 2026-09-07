@@ -1,6 +1,7 @@
 <Project>
   <!-- Defaults for a pz connector project. Every value here may be overridden in the project file,
-       which MSBuild evaluates after this import. -->
+       which MSBuild evaluates after this import. Only defaults and unconditional settings belong
+       here: anything derived from a value the project may set has to wait for the .targets. -->
   <PropertyGroup>
     <PzPackaging Condition="'$(PzPackaging)' == ''">aot</PzPackaging>
     <PzRuntimeIdentifiers Condition="'$(PzRuntimeIdentifiers)' == ''">linux-x64;linux-arm64;osx-arm64;win-x64</PzRuntimeIdentifiers>
@@ -21,18 +22,7 @@
     <SelfContained Condition="'$(RuntimeIdentifier)' != ''">true</SelfContained>
   </PropertyGroup>
 
-  <PropertyGroup Condition="'$(PzPackaging)' == 'aot'">
-    <PublishAot>true</PublishAot>
-    <IsAotCompatible>true</IsAotCompatible>
-    <StripSymbols>true</StripSymbols>
-  </PropertyGroup>
-
-  <PropertyGroup Condition="'$(PzPackaging)' == 'self-contained'">
-    <PublishAot>false</PublishAot>
-    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
-    <!-- Native libraries stay beside the executable and ship as files: self-extraction on every
-         spawn is a per-run cost and a temp-directory footprint for nothing. -->
-    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
-  </PropertyGroup>
+  <!-- What each PzPackaging value means (PublishAot, PublishSingleFile, ...) is decided in the
+       .targets, not here: this file is imported before the project body, so a <PzPackaging> the
+       project sets would not be visible to a condition evaluated at this point. -->
 </Project>

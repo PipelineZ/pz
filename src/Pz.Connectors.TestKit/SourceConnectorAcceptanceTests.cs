@@ -250,6 +250,10 @@ public abstract class SourceConnectorAcceptanceTests
 
         using var cts = new CancellationTokenSource();
         var batchesSeen = 0;
+        // Completed the instant the token is cancelled: the 5 s budget below is measured from HERE.
+        // Measured from the start of the read it would also cover planning and the first full batch,
+        // which is the connector's throughput on a loaded machine, not its cancellation latency.
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var readTask = Task.Run(async () =>
         {
             try
@@ -261,6 +265,7 @@ public abstract class SourceConnectorAcceptanceTests
                     if (Volatile.Read(ref batchesSeen) == 1)
                     {
                         cts.Cancel();
+                        cancelled.TrySetResult();
                     }
                 }
             }
@@ -268,8 +273,15 @@ public abstract class SourceConnectorAcceptanceTests
             {
                 // Clean cancellation is an acceptable termination for this test.
             }
+            finally
+            {
+                // A read that ends before its first batch (a failure, an empty partition) must not
+                // leave the fact waiting on a cancellation that never happened.
+                cancelled.TrySetResult();
+            }
         });
 
+        await cancelled.Task;
         var winner = await Task.WhenAny(readTask, Task.Delay(TimeSpan.FromSeconds(5)));
 
         Assert.Same(readTask, winner);

@@ -129,6 +129,60 @@ public sealed class ConnectorTestCommandTests : IDisposable
         Assert.Contains("PZ0354", stderr, StringComparison.Ordinal);
     }
 
+    /// <summary>The probe config is interpolated from the environment the way connections.yml is:
+    /// the same <c>${VAR}</c> in both files resolves to the same value, so a connector's CI can keep
+    /// one probe file with no literal address or credential in it.</summary>
+    [SkippableFact]
+    public void Connector_test_interpolates_environment_variables_in_the_probe_config()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project);
+        var configPath = WriteProbeConfig(project);
+        // The absolute root: becomes a reference; only the environment knows the real directory.
+        File.WriteAllText(configPath, File.ReadAllText(configPath).Replace($"root: {project}", "root: ${PZ_TEST_PROBE_ROOT}", StringComparison.Ordinal));
+        Environment.SetEnvironmentVariable("PZ_TEST_PROBE_ROOT", project);
+        try
+        {
+            var stdout = RunAndCaptureStdout(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+            Assert.Equal(ExitCodes.Ok, exit);
+            Assert.Contains("PASS handshake", stdout, StringComparison.Ordinal);
+            Assert.DoesNotContain("FAIL", stdout, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PZ_TEST_PROBE_ROOT", null);
+        }
+    }
+
+    /// <summary>An undeclared variable is the same PZ0103 connections.yml raises, every one of them at
+    /// once, under the config/usage exit 2 -- never a probe run against a literal "${VAR}".</summary>
+    [SkippableFact]
+    public void Connector_test_exits_2_naming_every_undeclared_environment_variable_in_the_probe_config()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project);
+        var configPath = Path.Combine(project, "probe.yml");
+        File.WriteAllText(configPath, """
+            connection:
+              root: ${PZ_TEST_UNSET_ROOT}
+            read:
+              dataset: orders
+              path: ${PZ_TEST_UNSET_PATH}
+            """);
+
+        var stderr = RunAndCaptureStderr(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0103", stderr, StringComparison.Ordinal);
+        Assert.Contains("PZ_TEST_UNSET_ROOT", stderr, StringComparison.Ordinal);
+        Assert.Contains("PZ_TEST_UNSET_PATH", stderr, StringComparison.Ordinal);
+    }
+
     /// <summary>A missing/mistyped --config path must be a PZ-coded exit 2, not YamlMapper's raw
     /// FileNotFoundException escaping as an unhandled exception under exit 1 -- exit 1 is reserved for
     /// "a vector failed", which never even started here.</summary>

@@ -77,6 +77,15 @@ internal static class ConnectorTestCommand
                 Console.Error.WriteLine($"error {ex.Error}");
                 return ExitCodes.ConfigError;
             }
+            catch (PzValidationException ex)
+            {
+                foreach (var error in ex.Errors)
+                {
+                    Console.Error.WriteLine($"error {error}");
+                }
+
+                return ExitCodes.ConfigError;
+            }
 
             var request = new ConformanceRequest(entrypoint, packageName, manifest, "conformance", connection, readProbe, writeProbe);
 
@@ -193,7 +202,10 @@ internal static class ConnectorTestCommand
     /// (<c>dataset:</c> plus dataset options) and/or <c>write:</c> (<c>output:</c>, <c>mode:</c>,
     /// <c>schema_policy:</c>, plus output options) -- whichever of the two is present is what tells the
     /// suite which direction(s) it has anything to probe, per <see cref="ConformanceSuite"/>'s own
-    /// direction-gating doc.</summary>
+    /// direction-gating doc. <c>${VAR}</c> references are substituted from the process environment
+    /// throughout the file, exactly as a connection block in connections.yml is: the probe config
+    /// carries the same credentials, and a broker address or password that had to be pasted in
+    /// literally would end up committed beside the connector's own CI script.</summary>
     private static (ConnectorConfig Connection, ConformanceReadProbe? Read, ConformanceWriteProbe? Write) LoadProbeConfig(
         string? configPath)
     {
@@ -211,7 +223,15 @@ internal static class ConnectorTestCommand
             throw ConfigShapeError(configPath, $"--config file '{configPath}' does not exist", "check the --config path and retry");
         }
 
-        var root = YamlMapper.LoadFile(configPath, configPath);
+        var errors = new List<PzError>();
+        var root = (Dictionary<string, object?>)EnvInterpolator.InterpolateTree(
+            YamlMapper.LoadFile(configPath, configPath), SharedInputHelpers.SnapshotEnvironment(), configPath, errors)!;
+        if (errors.Count > 0)
+        {
+            // Every undeclared variable at once, the way connections.yml reports them.
+            throw new PzValidationException(errors);
+        }
+
         var connection = new ConnectorConfig(AsMap(root.GetValueOrDefault("connection")));
 
         ConformanceReadProbe? read = null;
