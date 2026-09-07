@@ -19,29 +19,48 @@ use tower_http::classify::{GrpcErrorsAsFailures, SharedClassifier};
 use tower_http::trace::TraceLayer;
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 
 /// Upper bound on flushing at shutdown: inside the host's ten-second shutdown grace.
 pub(crate) const FLUSH_BOUND: Duration = Duration::from_secs(3);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(2);
-const METER_NAME: &str = "pz.connector";
+/// The instrumentation scope every span and instrument this SDK emits is attributed to.
+const SCOPE_NAME: &str = "pz.connector";
+/// The one gRPC service this process serves; a request path outside it was never routed to a handler.
+const SERVICE_PATH_PREFIX: &str = "/pz.connector.v1.PzConnector/";
+/// The RPC that gets no span: a `HostChannel` call is a bidirectional stream the host may hold open
+/// for this instance's whole lifetime, so a span around it would span the process, not an operation.
+const UNTRACED_RPC: &str = "HostChannel";
 
 struct Providers {
-    tracer: TracerProvider,
+    /// `None` when a `tracing` subscriber was already installed and the OpenTelemetry layer could
+    /// therefore not be: with no layer feeding it, a tracer provider would only ever export nothing.
+    tracer: Option<TracerProvider>,
     meter: SdkMeterProvider,
 }
 
 static PROVIDERS: OnceLock<Providers> = OnceLock::new();
 
+/// Whether a span opened now can actually reach the collector. False before [`start`] runs and after
+/// a `start` that could not install its layer -- in both cases spans are left unrecorded rather than
+/// built and dropped.
+fn traces_enabled() -> bool {
+    PROVIDERS.get().is_some_and(|p| p.tracer.is_some())
+}
+
 /// The meter a connector author records on. Backed by the global provider [`start`] installs; with no
 /// endpoint the global default is a no-op provider, so this is always safe to call.
 pub fn meter() -> opentelemetry::metrics::Meter {
-    global::meter(METER_NAME)
+    global::meter(SCOPE_NAME)
 }
 
-/// Builds and installs providers once. A malformed endpoint or a second call changes nothing: the
-/// host validated the endpoint, and a connector must not fail its handshake over telemetry.
+/// Builds and installs providers once; a second call changes nothing. The two failures it reports --
+/// an endpoint that is not an absolute http(s) URL, and a `tracing` subscriber the connector author
+/// installed before `serve_sink` ran -- are told to the caller rather than swallowed, but neither is
+/// fatal: the caller prints them and completes the handshake. Metrics survive the second failure
+/// (they need no subscriber); traces do not, and [`traces_enabled`] reports that for the rest of the
+/// process's life so no span is ever built only to be dropped.
 pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> Result<(), String> {
     if PROVIDERS.get().is_some() {
         return Ok(());
@@ -88,35 +107,72 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
 
     global::set_text_map_propagator(TraceContextPropagator::new());
     global::set_meter_provider(meter.clone());
-    // INFO, not the registry's "everything": the transport stack under this process (h2, hyper,
-    // tonic) opens a TRACE-level span per HTTP/2 frame, and an unfiltered layer exports every one of
-    // them as an OTLP span -- hundreds of `queue_frame`/`FramedWrite::buffer` spans drowning the
-    // handful of `pcp.*` ones the host actually asked for. The SDK's own spans, and any a connector
-    // author opens at INFO or above, are the ones that survive this cut.
+
+    // The transport crates are silenced because the OTLP exporter itself runs on them: exporting a
+    // span opens h2/hyper/tonic spans, which the layer would turn into spans to export, which open
+    // more -- a feedback loop that buried the handful of `pcp.*` spans under hundreds of
+    // `queue_frame`/`FramedWrite::buffer` ones the first time this ran against a real collector.
+    // Everything else stays at DEBUG so a connector author's own instrumentation is exported.
+    let filter = Targets::new()
+        .with_default(LevelFilter::DEBUG)
+        .with_target("h2", LevelFilter::OFF)
+        .with_target("hyper", LevelFilter::OFF)
+        .with_target("hyper_util", LevelFilter::OFF)
+        .with_target("tonic", LevelFilter::OFF)
+        .with_target("tower", LevelFilter::OFF);
     let layer = tracing_opentelemetry::layer()
-        .with_tracer(tracer.tracer(METER_NAME))
-        .with_filter(LevelFilter::INFO);
-    // Ignored if the connector author installed their own subscriber first: theirs wins, and the
-    // OpenTelemetry layer is simply absent.
-    let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer));
-    let _ = PROVIDERS.set(Providers { tracer, meter });
+        .with_tracer(tracer.tracer(SCOPE_NAME))
+        .with_filter(filter);
+
+    if tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer)).is_err()
+    {
+        // The author installed their own subscriber before `serve_sink` ran; theirs wins and the
+        // OpenTelemetry layer is simply absent. The provider it would have fed is shut down rather
+        // than left holding a batch worker that exports nothing for the life of the process -- on
+        // the blocking pool, because a batch processor's shutdown blocks on its own runtime task and
+        // doing that inline would deadlock an author's single-threaded runtime.
+        tokio::task::spawn_blocking(move || {
+            let _ = tracer.shutdown();
+        });
+        let _ = PROVIDERS.set(Providers {
+            tracer: None,
+            meter,
+        });
+        return Err(
+            "a tracing subscriber was already installed; spans will not be exported".to_string(),
+        );
+    }
+
+    let _ = PROVIDERS.set(Providers {
+        tracer: Some(tracer),
+        meter,
+    });
     Ok(())
 }
 
-/// Flush and tear down, bounded by [`FLUSH_BOUND`]. Late spans are dropped rather than delaying exit.
+/// Shuts both providers down concurrently -- `shutdown` flushes on the way out -- and waits at most
+/// [`FLUSH_BOUND`] for them. The bound is on this await, not on the work: a shutdown that overruns is
+/// abandoned here and keeps running on the blocking pool, so late spans are dropped rather than
+/// delaying exit, though dropping the runtime afterwards may still join those threads.
+///
+/// Concurrently, not in sequence: against an unreachable collector a sequential pair would let the
+/// tracer spend the whole budget and leave the meter no time at all.
 pub(crate) async fn flush_and_shutdown() {
     let Some(providers) = PROVIDERS.get() else {
         return;
     };
-    let work = tokio::task::spawn_blocking(|| {
-        for result in providers.tracer.force_flush() {
-            let _ = result;
+    let traces = tokio::task::spawn_blocking(|| {
+        if let Some(tracer) = providers.tracer.as_ref() {
+            let _ = tracer.shutdown();
         }
-        let _ = providers.tracer.shutdown();
-        let _ = providers.meter.force_flush();
+    });
+    let metrics = tokio::task::spawn_blocking(|| {
         let _ = providers.meter.shutdown();
     });
-    let _ = tokio::time::timeout(FLUSH_BOUND, work).await;
+    let _ = tokio::time::timeout(FLUSH_BOUND, async {
+        let _ = tokio::join!(traces, metrics);
+    })
+    .await;
 }
 
 struct HeaderExtractor<'a>(&'a http::HeaderMap);
@@ -139,10 +195,20 @@ pub(crate) fn extract_parent(headers: &http::HeaderMap) -> opentelemetry::Contex
     TraceContextPropagator::new().extract(&HeaderExtractor(headers))
 }
 
+/// The span name for a request path, or `None` for the paths that get none: anything outside this
+/// process's one gRPC service (tonic answers those itself, no handler ever runs) and
+/// [`UNTRACED_RPC`].
+fn span_name(path: &str) -> Option<String> {
+    let rpc = path.strip_prefix(SERVICE_PATH_PREFIX)?;
+    if rpc.is_empty() || rpc == UNTRACED_RPC {
+        return None;
+    }
+    Some(format!("pcp.{rpc}"))
+}
+
 /// One `pcp.<Rpc>` server span per control-plane request, parented on the request's `traceparent`
-/// and tagged with the connection name once `Configure` has run. `HostChannel` gets no span: it
-/// lives as long as the process. Applied as a tower layer so the span wraps the whole RPC future,
-/// streaming responses included, with no per-handler code.
+/// and tagged with the connection name once `Configure` has run. Applied as a tower layer so the
+/// span wraps the whole RPC future, streaming responses included, with no per-handler code.
 #[derive(Clone)]
 pub(crate) struct PcpMakeSpan {
     pub(crate) instance: Arc<Mutex<Option<String>>>,
@@ -150,23 +216,27 @@ pub(crate) struct PcpMakeSpan {
 
 impl<B> tower_http::trace::MakeSpan<B> for PcpMakeSpan {
     fn make_span(&mut self, request: &http::Request<B>) -> Span {
-        if PROVIDERS.get().is_none() {
+        if !traces_enabled() {
             return Span::none();
         }
-        let rpc = request.uri().path().rsplit('/').next().unwrap_or("");
-        if rpc == "HostChannel" || rpc.is_empty() {
+        let Some(name) = span_name(request.uri().path()) else {
             return Span::none();
-        }
-        let name = format!("pcp.{rpc}");
-        let instance = self.instance.lock().unwrap().clone().unwrap_or_default();
+        };
         let span = tracing::info_span!(
             "pcp",
             otel.name = %name,
             otel.kind = "server",
-            pz.instance = %instance
+            pz.instance = tracing::field::Empty
         );
-        let parent = extract_parent(request.headers());
-        span.set_parent(parent);
+        // Recorded only once `Configure` has named the instance: the RPCs that run before it
+        // (`Validate`, `CheckConnection` under `pz connector test`) carry no instance, and an empty
+        // string is a worse answer than an absent attribute.
+        if let Some(instance) = self.instance.lock().unwrap().as_deref() {
+            if !instance.is_empty() {
+                span.record("pz.instance", instance);
+            }
+        }
+        span.set_parent(extract_parent(request.headers()));
         span
     }
 }
@@ -218,8 +288,68 @@ mod tests {
     }
 
     #[test]
-    fn a_non_http_endpoint_is_refused_without_installing_anything() {
+    fn an_rpc_path_becomes_a_pcp_span_name() {
+        assert_eq!(
+            span_name("/pz.connector.v1.PzConnector/BeginWrite").as_deref(),
+            Some("pcp.BeginWrite")
+        );
+        assert_eq!(
+            span_name("/pz.connector.v1.PzConnector/Handshake").as_deref(),
+            Some("pcp.Handshake")
+        );
+    }
+
+    #[test]
+    fn the_paths_that_get_no_span_are_excluded() {
+        // Lives as long as the process, so a span around it would measure the process.
+        assert_eq!(span_name("/pz.connector.v1.PzConnector/HostChannel"), None);
+        // Never routed to a handler: tonic answers an unknown path itself.
+        assert_eq!(span_name("/grpc.health.v1.Health/Check"), None);
+        assert_eq!(span_name("/pz.connector.v1.PzConnector/"), None);
+        assert_eq!(span_name(""), None);
+        assert_eq!(span_name("/"), None);
+    }
+
+    /// One test, not four, because `PROVIDERS` and the `tracing` global dispatcher are per-process
+    /// and xunit-style parallel tests would race on them: the whole ordered story of what `start`
+    /// installs -- and what it refuses to install -- has to be told in a single test body.
+    #[tokio::test]
+    async fn start_reports_a_bad_endpoint_and_a_pre_installed_subscriber() {
         assert!(start("not-a-url", "x", "0", "").is_err());
         assert!(PROVIDERS.get().is_none());
+        assert!(!traces_enabled());
+
+        // A subscriber the "connector author" installed before serve_sink ever ran.
+        tracing::subscriber::set_global_default(tracing_subscriber::registry())
+            .expect("no other test installs a global subscriber");
+
+        let err = start("http://127.0.0.1:1", "x", "0", "run-1")
+            .expect_err("an already-installed subscriber must be reported, not swallowed");
+        assert!(err.contains("already installed"), "unexpected error: {err}");
+
+        // Metrics survive (they need no subscriber); traces are off for good, so no span is built.
+        let providers = PROVIDERS.get().expect("the meter provider is still stored");
+        assert!(providers.tracer.is_none());
+        assert!(!traces_enabled());
+
+        // Idempotent: a second call neither rebuilds anything nor reports the failure again.
+        assert!(start("http://127.0.0.1:1", "x", "0", "run-1").is_ok());
+        assert!(!traces_enabled());
+
+        // With traces off, the layer opens nothing at all.
+        let mut make = PcpMakeSpan {
+            instance: Arc::new(Mutex::new(Some("inst".to_string()))),
+        };
+        let request = http::Request::builder()
+            .uri("/pz.connector.v1.PzConnector/BeginWrite")
+            .body(())
+            .unwrap();
+        assert!(
+            tower_http::trace::MakeSpan::make_span(&mut make, &request).is_none(),
+            "no span may be built when nothing can export it"
+        );
+
+        // The bounded flush is a no-op for traces and still returns for metrics.
+        flush_and_shutdown().await;
     }
 }

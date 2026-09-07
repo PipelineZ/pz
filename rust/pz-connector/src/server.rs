@@ -357,13 +357,14 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         }
 
         // Built here, not at Configure, so Validate/CheckConnection under `pz connector test` are
-        // covered. A telemetry failure is reported on stderr and never fails the handshake.
+        // covered. A telemetry failure is reported on stderr and never fails the handshake -- it can
+        // mean traces are off while metrics still work, which is why it does not say "disabled".
         if let Some(host) = msg.host_info.as_ref() {
             if let Some(endpoint) = host.otel_endpoint.as_deref() {
                 if let Err(e) =
                     telemetry::start(endpoint, self.decl.name, self.decl.version, &host.run_id)
                 {
-                    eprintln!("pz-connector: telemetry disabled: {e}");
+                    eprintln!("pz-connector: telemetry: {e}");
                 }
             }
         }
