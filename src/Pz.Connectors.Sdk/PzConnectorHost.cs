@@ -24,10 +24,23 @@ public static class PzConnectorHost
     public static Task<int> RunAsync(string[] args, Func<PzConnectorContext, IConnector> create)
     {
         ArgumentNullException.ThrowIfNull(create);
-        return RunAsync(args, create, hooks: null);
+        return RunAsync(args, create, new PzConnectorHostOptions(), hooks: null);
     }
 
-    internal static async Task<int> RunAsync(string[] args, Func<PzConnectorContext, IConnector> create, PcpServerHooks? hooks)
+    /// <summary>Like the two-argument overload, with <see cref="PzConnectorHostOptions"/> -- the way to
+    /// have additional <c>ActivitySource</c>/<c>Meter</c> names exported alongside the SDK's own.</summary>
+    public static Task<int> RunAsync(string[] args, Func<PzConnectorContext, IConnector> create, PzConnectorHostOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(create);
+        ArgumentNullException.ThrowIfNull(options);
+        return RunAsync(args, create, options, hooks: null);
+    }
+
+    internal static Task<int> RunAsync(string[] args, Func<PzConnectorContext, IConnector> create, PcpServerHooks? hooks) =>
+        RunAsync(args, create, new PzConnectorHostOptions(), hooks);
+
+    internal static async Task<int> RunAsync(
+        string[] args, Func<PzConnectorContext, IConnector> create, PzConnectorHostOptions options, PcpServerHooks? hooks)
     {
         ArgumentNullException.ThrowIfNull(args);
         var command = HostArguments.Parse(args);
@@ -43,7 +56,8 @@ public static class PzConnectorHost
             logging.SetMinimumLevel(LogLevel.Trace);
             logging.AddProvider(new HostLoggerProvider(peer));
         });
-        var connector = create(new PzConnectorContext(loggerFactory));
+        using var telemetry = new ConnectorTelemetry(options);
+        var connector = create(new PzConnectorContext(loggerFactory, telemetry));
         if (connector is not (ISourceConnector or ISinkConnector))
         {
             throw new ArgumentException(
@@ -66,7 +80,7 @@ public static class PzConnectorHost
                     .ConfigureAwait(false);
                 return 0;
             case ServeCommand serve:
-                return await PcpServer.ServeAsync(serve.SocketPath, connector, peer, hooks ?? PcpServerHooks.None)
+                return await PcpServer.ServeAsync(serve.SocketPath, connector, peer, telemetry, hooks ?? PcpServerHooks.None)
                     .ConfigureAwait(false);
             default:
                 throw new InvalidOperationException($"unhandled command {command.GetType().Name}");

@@ -29,7 +29,7 @@ internal static class PcpServer
     private static readonly TimeSpan HostShutdownTimeout = TimeSpan.FromSeconds(5);
 
     public static async Task<int> ServeAsync(
-        string socketPath, IConnector connector, HostChannelPeer peer, PcpServerHooks hooks)
+        string socketPath, IConnector connector, HostChannelPeer peer, ConnectorTelemetry telemetry, PcpServerHooks hooks)
     {
         var dataSocketPath = socketPath + ProtocolConstants.DataSocketSuffix;
         DeleteIfExists(socketPath);
@@ -81,6 +81,7 @@ internal static class PcpServer
         builder.Services.AddSingleton(tickets);
         builder.Services.AddSingleton(peer);
         builder.Services.AddSingleton(hooks);
+        builder.Services.AddSingleton(telemetry);
         builder.Services.AddSingleton<PcpConnectorService>();
 
         var app = builder.Build();
@@ -97,6 +98,9 @@ internal static class PcpServer
             .ConfigureAwait(false);
         var exitCode = await exit.Task.ConfigureAwait(false);
         await app.StopAsync().ConfigureAwait(false);
+        // After the server has stopped, so nothing can start a span this flush would miss; bounded by
+        // ConnectorTelemetry.FlushBound so a dead collector cannot push this exit past the host's grace.
+        telemetry.FlushAndDispose();
         return exitCode;
     }
 

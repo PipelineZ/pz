@@ -135,6 +135,7 @@ public sealed class HonestMappingTests
             new FakeSourceConnector(ConnectorCapabilities.None, feed: false),
             new TicketRegistry(),
             new HostChannelPeer(),
+            new ConnectorTelemetry(new PzConnectorHostOptions()),
             new PcpServerHooks { OnConfigure = () => Interlocked.Increment(ref calls) },
             new NullLifetime());
 
@@ -153,6 +154,7 @@ public sealed class HonestMappingTests
             new FakeSourceConnector(ConnectorCapabilities.None, feed: false),
             new TicketRegistry(),
             new HostChannelPeer(),
+            new ConnectorTelemetry(new PzConnectorHostOptions()),
             new PcpServerHooks { OnConfigure = () => Interlocked.Increment(ref calls) },
             new NullLifetime());
 
@@ -165,7 +167,8 @@ public sealed class HonestMappingTests
     // --- helpers ---
 
     private static PcpConnectorService NewService(IConnector connector) =>
-        new(connector, new TicketRegistry(), new HostChannelPeer(), PcpServerHooks.None, new NullLifetime());
+        new(connector, new TicketRegistry(), new HostChannelPeer(), new ConnectorTelemetry(new PzConnectorHostOptions()),
+            PcpServerHooks.None, new NullLifetime());
 
     private static async Task<PcpConnectorService> ConfiguredAsync(IConnector connector)
     {

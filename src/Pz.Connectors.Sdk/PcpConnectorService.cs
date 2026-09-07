@@ -23,6 +23,7 @@ internal sealed class PcpConnectorService(
     IConnector connector,
     TicketRegistry tickets,
     HostChannelPeer peer,
+    ConnectorTelemetry telemetry,
     PcpServerHooks hooks,
     IHostApplicationLifetime lifetime) : PzConnector.PzConnectorBase
 {
@@ -66,6 +67,15 @@ internal sealed class PcpConnectorService(
             DatasetConfigSchema = connector.DatasetConfigSchema,
         };
         hello.Transports.Add(ProtocolConstants.TransportPipe);
+
+        // The endpoint is the host's own; absent means the host is not exporting either. Built here
+        // rather than at Configure so Validate/CheckConnection (which `pz connector test` calls
+        // without Configure) are covered too.
+        if (request.HostInfo is { HasOtelEndpoint: true } hostInfo)
+        {
+            telemetry.Start(hostInfo.OtelEndpoint, connector.Info, hostInfo.RunId);
+        }
+
         _handshaken = true;
         return hello;
     }
@@ -83,6 +93,7 @@ internal sealed class PcpConnectorService(
         }
 
         _config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
+        telemetry.InstanceId = request.InstanceId;
         hooks.OnConfigure?.Invoke();
 
         // One log event per Configure, always -- fields carry the connection NAME (instance_id) and the
