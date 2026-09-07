@@ -2,9 +2,19 @@
   <!-- Derived from PzPackaging HERE, after the project body, so a <PzPackaging> set in the project
        file wins over the props default the same way a -p: global property does. This import still
        precedes the .NET SDK's own publish, ILCompiler, ILLink and analyzer targets, which is where
-       PublishAot, PublishSingleFile and IsAotCompatible are read. The one thing set this late cannot
-       drive is the SDK's implicit-RID inference from PublishAot on a RID-less publish, which the
-       packaging flow never relies on: staging only happens under `dotnet publish -r <rid>`. -->
+       PublishAot, PublishSingleFile and IsAotCompatible are read at build and publish time.
+
+       What a value derived here can never drive is RESTORE. NuGet evaluates the restore graph with
+       every package's build/ props and targets excluded (ExcludeRestorePackageImports, and MSBuild's
+       own ImportProjectExtensionProps/Targets gate while MSBuildIsRestoring), so for a connector that
+       references this SDK as a package (every connector outside this repository) restore never
+       sees the PublishAot below, and the .NET SDK adds the Native AOT compiler pack to the restore
+       graph only when PublishAot is true at that point. The project file must carry
+       <PublishAot>true</PublishAot> itself (or the command line -p:PublishAot=true); the
+       'self-contained' group below turns it back off. PzRequireNativeAotPack is what makes a project
+       that forgot it fail instead of shipping a CoreCLR layout by mistake. (The fixture in this
+       repository imports these files by path inside its project body, which restore does see, so it
+       cannot stand in for a package consumer; scripts/verify-sdk-package.sh publishes one.) -->
   <PropertyGroup Condition="'$(PzPackaging)' == 'aot'">
     <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
@@ -14,6 +24,11 @@
   <PropertyGroup Condition="'$(PzPackaging)' == 'self-contained'">
     <PublishAot>false</PublishAot>
     <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
+    <!-- A project that carries <PublishAot>true</PublishAot> (as the README's project does, for
+         restore's sake) has already had UseAppHost decided false from it by the .NET SDK's RID
+         inference, which runs before this file; single-file needs the apphost, so it is turned back
+         on here rather than leaving the opt-out to fail with NETSDK1098. -->
+    <UseAppHost Condition="'$(RuntimeIdentifier)' != ''">true</UseAppHost>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <!-- Native libraries stay beside the executable and ship as files: self-extraction on every
          spawn is a per-run cost and a temp-directory footprint for nothing. -->
@@ -42,6 +57,17 @@
     <Error Condition="'$(PzPackaging)' != 'aot' and '$(PzPackaging)' != 'self-contained'"
            Code="PZSDK004"
            Text="PzPackaging must be 'aot' or 'self-contained' (got '$(PzPackaging)')." />
+  </Target>
+
+  <!-- ILCompilerTargetsPath is the sentinel the Native AOT compiler package's own props set once
+       the pack has been restored; the .NET SDK imports the native publish pipeline only when it is
+       non-empty, and stays silent when it is not. Empty here with PublishAot true means restore never
+       saw PublishAot (see the note at the top of this file), and the publish about to run would stage
+       a plain self-contained CoreCLR layout under the name of a native binary. -->
+  <Target Name="PzRequireNativeAotPack" BeforeTargets="PrepareForPublish"
+          Condition="'$(PublishAot)' == 'true' and '$(ILCompilerTargetsPath)' == ''">
+    <Error Code="PZSDK005"
+           Text="pz: PzPackaging is 'aot' but the Native AOT compiler pack was not restored, so this publish would produce a self-contained CoreCLR layout instead of a native binary. Add &lt;PublishAot&gt;true&lt;/PublishAot&gt; to the project file (or pass -p:PublishAot=true) and restore again: NuGet restore evaluates the project without any package's build files, so the pack is only restored when the project itself asks for it. To opt out of Native AOT set &lt;PzPackaging&gt;self-contained&lt;/PzPackaging&gt; instead." />
   </Target>
 
   <!-- After `dotnet publish -r <rid>`: the publish output, minus symbols, becomes

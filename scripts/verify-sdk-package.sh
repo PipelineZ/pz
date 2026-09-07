@@ -8,6 +8,12 @@
 # LocalFilesConnector served by the real SDK, so a green run here proves the SDK, its targets, the
 # manifest self-description and the host's restore layout agree end to end.
 #
+# The fixture imports the SDK's props/targets by path, though, which is not how a connector outside
+# this repository gets them: it references the SDK as a NuGet package, and its packaging files then
+# arrive through obj/*.nuget.g.{props,targets} -- files NuGet excludes while it evaluates the restore
+# graph. The last section packs the SDK into a feed and publishes a consumer against it, so the one
+# path every real connector takes (restore, publish, pack, all through the package) is proven too.
+#
 # Linux only: Native AOT cannot cross-compile between OSes and the host's runner is Linux.
 set -euo pipefail
 
@@ -181,9 +187,184 @@ EOF
   echo "mode ${mode}: OK"
 }
 
+# The consumer below is what a stranger's connector project looks like: the SDK and the ABI as
+# PackageReferences from a feed, nothing imported by path, the project file as the README documents
+# it. Written outside the repository so none of its Directory.Build.* applies.
+SDK_PKG_VERSION="0.0.0-sdk-verify"
+CONSUMER_ROOT="${WORK_DIR}/consumer"
+
+write_consumer() {
+  local dir="$1" properties="$2"
+  mkdir -p "${dir}"
+  cat > "${dir}/SdkConsumer.csproj" <<EOF
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>${SDK_TFM}</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Version>1.0.0</Version>
+${properties}
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Pz.Connectors.Sdk" Version="${SDK_PKG_VERSION}" />
+    <PackageReference Include="Pz.Connectors.Abstractions" Version="${SDK_PKG_VERSION}" />
+  </ItemGroup>
+</Project>
+EOF
+  cat > "${dir}/Program.cs" <<'EOF'
+using Pz.Connectors.Sdk;
+
+return await PzConnectorHost.RunAsync(args, new SdkConsumer.NullSinkConnector());
+EOF
+  cat > "${dir}/NullSinkConnector.cs" <<'EOF'
+using Apache.Arrow;
+using Pz.Connectors.Abstractions;
+
+namespace SdkConsumer;
+
+// The smallest sink the ABI admits: counts what it is handed and keeps nothing.
+public sealed class NullSinkConnector : ISinkConnector
+{
+    public ConnectorInfo Info => new("nullsink", "1.0.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+        ValueTask.FromResult(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+        ValueTask.FromResult(new ConnectionCheck(true));
+    public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+        ValueTask.FromResult<ISink>(new NullSink());
+}
+
+internal sealed class NullSink : ISink
+{
+    public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
+    {
+        copy = null;
+        return false;
+    }
+
+    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
+        ValueTask.FromResult<ISinkWriteSession>(new NullSession());
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+internal sealed class NullSession : ISinkWriteSession
+{
+    private long _rows, _batches;
+
+    public ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
+    {
+        _rows += batch.Length;
+        _batches++;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<WriteResult> CommitAsync(CancellationToken ct) => ValueTask.FromResult(new WriteResult(_rows, _batches));
+    public ValueTask AbortAsync(CancellationToken ct) => ValueTask.CompletedTask;
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+EOF
+}
+
+# Exact-ish ELF check without depending on file(1): the four magic bytes.
+is_elf() { [[ "$(head -c 4 "$1" | od -An -tx1 | tr -d ' \n')" == "7f454c46" ]]; }
+ilcompiler_rid_pack_count() { grep -c -i "\"runtime.${RID}.microsoft.dotnet.ilcompiler/" "$1/obj/project.assets.json" || true; }
+
+verify_consumer_through_package() {
+  local feed="${CONSUMER_ROOT}/feed"
+  mkdir -p "${feed}"
+  echo
+  echo "== consumer through the packaged SDK (${SDK_PKG_VERSION}) =="
+  echo "-- dotnet pack Pz.Connectors.Abstractions + Pz.Connectors.Sdk --"
+  # One MinVerVersionOverride for both: the SDK's nuspec depends on the ABI at the version the same
+  # override gives it, so the consumer resolves both from this feed and nothing else.
+  dotnet pack "${ROOT_DIR}/src/Pz.Connectors.Abstractions" -c Release -p:MinVerVersionOverride="${SDK_PKG_VERSION}" \
+    -o "${feed}" --nologo -v quiet
+  dotnet pack "${ROOT_DIR}/src/Pz.Connectors.Sdk" -c Release -p:MinVerVersionOverride="${SDK_PKG_VERSION}" \
+    -o "${feed}" --nologo -v quiet
+  [[ -f "${feed}/Pz.Connectors.Sdk.${SDK_PKG_VERSION}.nupkg" ]] || { echo "FAIL: no SDK nupkg in ${feed}"; ls "${feed}"; exit 1; }
+  # The global package cache keys on id+version, so a copy an earlier run left there would shadow
+  # the pack just made. The version string is one only this script produces.
+  local cache="${NUGET_PACKAGES:-${HOME}/.nuget/packages}"
+  rm -rf "${cache}/pz.connectors.sdk/${SDK_PKG_VERSION}" "${cache}/pz.connectors.abstractions/${SDK_PKG_VERSION}"
+  cat > "${CONSUMER_ROOT}/NuGet.Config" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <clear />
+    <add key="sdk-verify" value="${feed}" />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+  </packageSources>
+</configuration>
+EOF
+  SDK_TFM="$(dotnet msbuild "${ROOT_DIR}/src/Pz.Connectors.Sdk" -getProperty:TargetFramework --nologo)"
+  [[ -n "${SDK_TFM}" ]] || { echo "FAIL: could not read the SDK's TargetFramework"; exit 1; }
+
+  # (1) The documented project: PublishAot in the project body, PzPackaging left at its default.
+  local aot="${CONSUMER_ROOT}/aot" stage
+  write_consumer "${aot}" "    <PublishAot>true</PublishAot>"
+  echo "-- documented project, PzPackaging default: dotnet publish -r ${RID} --"
+  dotnet publish "${aot}" -c Release -r "${RID}" --nologo -v quiet
+  local packs
+  packs="$(ilcompiler_rid_pack_count "${aot}")"
+  [[ "${packs}" -gt 0 ]] || { echo "FAIL: restore did not bring runtime.${RID}.Microsoft.DotNet.ILCompiler into project.assets.json"; exit 1; }
+  stage="${aot}/bin/pz-native/${RID}"
+  is_elf "${stage}/SdkConsumer" || { echo "FAIL: staged SdkConsumer is not an ELF binary"; ls -la "${stage}"; exit 1; }
+  ! compgen -G "${stage}/*.dll" >/dev/null || { echo "FAIL: AOT publish staged a managed dll"; ls "${stage}"; exit 1; }
+  [[ ! -f "${stage}/libcoreclr.so" ]] || { echo "FAIL: AOT publish staged the CoreCLR runtime"; ls "${stage}"; exit 1; }
+  echo "ok: ${packs} ILCompiler RID-pack assets entries; staged $(ls "${stage}" | tr '\n' ' ')"
+
+  echo "-- same project, dotnet pack --"
+  dotnet pack "${aot}" -c Release -p:PzRuntimeIdentifiers="${RID}" -o "${CONSUMER_ROOT}/out" --nologo -v quiet
+  local nupkg="${CONSUMER_ROOT}/out/SdkConsumer.1.0.0.nupkg" listing
+  [[ -f "${nupkg}" ]] || { echo "FAIL: no nupkg at ${nupkg}"; exit 1; }
+  listing="$(unzip -Z1 "${nupkg}")"
+  grep -qx "runtimes/${RID}/native/SdkConsumer" <<<"${listing}" || { echo "FAIL: binary missing from runtimes/${RID}/native/"; echo "${listing}"; exit 1; }
+  grep -qx "pz.connector.json" <<<"${listing}" || { echo "FAIL: manifest missing from nupkg root"; exit 1; }
+  ! grep -q '^lib/' <<<"${listing}" || { echo "FAIL: lib/ must not be packed"; echo "${listing}"; exit 1; }
+  grep -q '"name": "nullsink"' <<<"$(unzip -p "${nupkg}" pz.connector.json)" || { echo "FAIL: manifest name"; exit 1; }
+  echo "ok: nupkg layout"
+
+  # (2) The same project switched to self-contained from the command line, as a -p: global
+  # property: single-file CoreCLR, PublishAot off, exactly what a project-level opt-out yields.
+  echo "-- documented project, -p:PzPackaging=self-contained --"
+  dotnet publish "${aot}" -c Release -r "${RID}" -p:PzPackaging=self-contained --nologo -v quiet
+  [[ -x "${stage}/SdkConsumer" ]] || { echo "FAIL: no staged binary after the self-contained publish"; exit 1; }
+  [[ ! -f "${stage}/System.Private.CoreLib.dll" ]] || { echo "FAIL: -p:PzPackaging=self-contained is not single-file"; ls "${stage}"; exit 1; }
+  echo "ok: single-file; staged $(ls "${stage}" | wc -l) files"
+
+  # (3) A project that forgot PublishAot: restore cannot have brought the compiler pack, and the
+  # publish must say so (PZSDK005) rather than stage a CoreCLR layout as if it were native.
+  local plain="${CONSUMER_ROOT}/plain" output
+  write_consumer "${plain}" ""
+  echo "-- project without PublishAot: dotnet publish must fail with PZSDK005 --"
+  if output="$(dotnet publish "${plain}" -c Release -r "${RID}" --nologo -v quiet 2>&1)"; then
+    echo "FAIL: publish without PublishAot succeeded; staged: $(ls "${plain}/bin/pz-native/${RID}" 2>/dev/null | wc -l) files"; exit 1
+  fi
+  grep -q "PZSDK005" <<<"${output}" || { echo "FAIL: publish failed for another reason"; echo "${output}"; exit 1; }
+  [[ "$(ilcompiler_rid_pack_count "${plain}")" == "0" ]] || { echo "FAIL: expected no ILCompiler pack in a restore that never saw PublishAot"; exit 1; }
+  [[ ! -d "${plain}/bin/pz-native" ]] || { echo "FAIL: a failed publish still staged output"; exit 1; }
+  echo "ok: PZSDK005"
+
+  # (4) The project-level opt-out kafka ships with: no PublishAot anywhere, single-file CoreCLR.
+  local sc="${CONSUMER_ROOT}/self-contained"
+  write_consumer "${sc}" "    <PzPackaging>self-contained</PzPackaging>"
+  echo "-- project-level <PzPackaging>self-contained</PzPackaging>: dotnet publish -r ${RID} --"
+  dotnet publish "${sc}" -c Release -r "${RID}" --nologo -v quiet
+  stage="${sc}/bin/pz-native/${RID}"
+  [[ -x "${stage}/SdkConsumer" ]] || { echo "FAIL: no staged binary at ${stage}/SdkConsumer"; exit 1; }
+  [[ ! -f "${stage}/System.Private.CoreLib.dll" ]] || { echo "FAIL: self-contained publish is not single-file"; ls "${stage}"; exit 1; }
+  echo "ok: single-file; staged $(ls "${stage}" | wc -l) files"
+}
+
 verify_project_level_packaging
 verify_mode aot
 verify_mode self-contained
+verify_consumer_through_package
 
 echo
-echo "== PASS: Pz.Connectors.Sdk packaging verified in both modes =="
+echo "== PASS: Pz.Connectors.Sdk packaging verified in both modes, by path and through the package =="
