@@ -6,6 +6,12 @@ using Pz.Connectors.Sdk;
 
 namespace Pz.Connectors.Sdk.Tests;
 
+/// <summary>Shares one collection with <see cref="TraceContextServerInterceptorTests"/>: an
+/// <c>ActivitySource</c> listener registered by <c>AddSource</c> matches every instance with that
+/// name process-wide, not just the one it was built from, so a test here asserting "no listener" can
+/// otherwise observe another class's concurrently-running exporting <c>ConnectorTelemetry</c>. See
+/// <see cref="ConnectorTelemetrySerializedCollection"/>.</summary>
+[Collection("connector-telemetry-serialized")]
 public sealed class ConnectorTelemetryTests
 {
     private static readonly ConnectorInfo Info = new("fake", "1.2.3", ProtocolVersion.Major);
@@ -109,3 +115,12 @@ public sealed class ConnectorTelemetryTests
         }
     }
 }
+
+/// <summary>Forces <see cref="ConnectorTelemetryTests"/> and <see cref="TraceContextServerInterceptorTests"/>
+/// to run sequentially with each other -- both build real OTel providers over the one process-wide
+/// <c>ActivitySource</c> name, so any assertion that nothing is listening is only true while no other
+/// class's exporting <c>ConnectorTelemetry</c> is concurrently alive. One shared collection beats an
+/// assembly-wide <c>[CollectionBehavior(DisableTestParallelization = true)]</c>: every other class in
+/// this assembly stays parallel-eligible.</summary>
+[CollectionDefinition("connector-telemetry-serialized")]
+public class ConnectorTelemetrySerializedCollection;

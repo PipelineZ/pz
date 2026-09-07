@@ -75,7 +75,8 @@ internal static class PcpServer
                 }
             });
         }));
-        builder.Services.AddGrpc();
+        builder.Services.AddSingleton<TraceContextServerInterceptor>();
+        builder.Services.AddGrpc(grpc => grpc.Interceptors.Add<TraceContextServerInterceptor>());
         builder.Services.Configure<HostOptions>(host => host.ShutdownTimeout = HostShutdownTimeout);
         builder.Services.AddSingleton(connector);
         builder.Services.AddSingleton(tickets);
