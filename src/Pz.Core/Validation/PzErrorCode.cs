@@ -413,6 +413,14 @@ public static class PzErrorCode
     /// value; the message names the option, the format and the entity.</summary>
     public const string FileFormatOptionInvalid = "PZ0362";
 
+    /// <summary>A token-resumed dataset (feed-shaped, or <c>sync: {mode: cdc}</c>) sits on a connector
+    /// whose read path is native-only (<see cref="Pz.Connectors.Abstractions.INativeOnlySource"/>). A
+    /// native scan lands rows in one DuckDB statement without draining a partition, so it can never
+    /// observe the sync-state token the dataset resumes from; a native-capable connector with an arrow
+    /// path is simply routed to that path, but a native-only one has nothing to fall back to. Next step is
+    /// a connector with an arrow read path, or a full or cursor-incremental read of the dataset.</summary>
+    public const string SyncStateNativeOnly = "PZ0363";
+
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";

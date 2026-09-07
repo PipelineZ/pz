@@ -111,4 +111,62 @@ public sealed class SyncPlanningTests
 
         Assert.Contains(plan.Nodes, n => n.Kind == NodeKind.SourceLoad);
     }
+
+    // A native scan lands rows in one DuckDB statement without ever draining a partition, so it can never
+    // observe the opaque token a feed resumes from: planned onto the native tier, a feed dataset would
+    // replay from the same token every run and never advance. The native tier is an optimization the
+    // planner is free to skip, so a native-capable connector's feed dataset takes the arrow path -- a
+    // tier fallback with a reason, never an error.
+    [Fact]
+    public async Task Feed_dataset_on_native_capable_connector_plans_arrow_stream()
+    {
+        var dataset = new DatasetDef("orders", new Dictionary<string, object?> { ["table"] = "orders" }, null);
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSource(
+            dataset, new StubNativeShapeSource(ConnectorCapabilities.NativeScan | ConnectorCapabilities.SyncState, NaturalReadShape.Feed),
+            TestDags.FeedCompatibleOutput());
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SourceLoad);
+        Assert.Equal(EdgeStrategy.ArrowStream, node.Strategy);
+        Assert.Contains("sync token", node.Reason);
+        Assert.Contains("read=feed", node.Reason);
+        Assert.DoesNotContain("SECRET_MARKER", node.Reason);
+    }
+
+    [Fact]
+    public async Task Cdc_dataset_on_native_capable_connector_plans_arrow_stream()
+    {
+        // Cdc is the other token-resumed shape: its candidate is captured from the drained partition
+        // exactly like a feed's, so the native tier would strand it the same way.
+        var dataset = new DatasetDef("orders", new Dictionary<string, object?> { ["table"] = "orders" }, null,
+            new SyncModeDef(SyncMode.Cdc, null));
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSource(
+            dataset, new StubNativeShapeSource(ConnectorCapabilities.NativeScan | ConnectorCapabilities.ChangeCapture, NaturalReadShape.Full),
+            TestDags.FeedCompatibleOutput());
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SourceLoad);
+        Assert.Equal(EdgeStrategy.ArrowStream, node.Strategy);
+        Assert.Contains("sync token", node.Reason);
+        Assert.Contains("read=cdc", node.Reason);
+    }
+
+    [Fact]
+    public async Task Feed_dataset_on_native_only_connector_is_PZ0363()
+    {
+        // No arrow path exists to fall back to, so this is a real refusal rather than a tier choice.
+        var dataset = new DatasetDef("orders", new Dictionary<string, object?> { ["table"] = "orders" }, null);
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSource(
+            dataset, new StubFeedNativeOnlySource(), TestDags.FeedCompatibleOutput());
+
+        var ex = await Assert.ThrowsAsync<PzValidationException>(
+            () => new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.SyncStateNativeOnly);
+        Assert.Contains("orders", error.ToString());
+        Assert.Contains("stub", error.ToString());
+        Assert.DoesNotContain("SECRET_MARKER", error.ToString());
+    }
 }

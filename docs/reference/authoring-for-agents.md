@@ -245,7 +245,10 @@ in-process loading is reserved for builtins — declared in the package's `pz.co
   (`StreamingPartitions`) take the materialized path. `SyncState` (opaque-token feeds) is honored:
   the connector answers `GetNaturalReadShape` (FEED/FULL per dataset, plan-time, offline) and
   `GetReadState` (the partition's token, pulled by the host after the drain completed). A
-  connector that never implements `GetNaturalReadShape` reads as FULL.
+  connector that never implements `GetNaturalReadShape` reads as FULL. A FEED dataset always takes
+  the arrow path: the token is captured from the drained partition, which a native scan never
+  drains, so the planner routes around any native scan the connector offers for it (a native-only
+  connector is refused, `PZ0363`).
 
 This is packaging-time detail an agent authoring `connections.yml`/pipelines never touches
 directly — the connector's `connector:` name in `connections.yml` and its `ConnectionConfigSchema`/
@@ -284,6 +287,7 @@ in its own config; `pz` then passes the project directory as the `base_dir` conn
 | `PZ0358` | The connector process died unexpectedly mid-operation. |
 | `PZ0359` | An unsigned packaged DuckDB extension was refused for a native scan/copy; set `allow_unsigned_extensions: true` on the connection to allow it. |
 | `PZ0360` | An external connector package declares runtime `"dotnet"` (or ships no manifest) — external connectors are hosted out of process only. Use a `runtime: "process"` (PCP) package or a builtin. |
+| `PZ0363` | A token-resumed dataset (feed-shaped, or `sync: {mode: cdc}`) sits on a native-only connector; a native scan never drains the partition the sync token is captured from, so the dataset could never advance. Use a connector with an arrow read path, or a full / cursor-incremental read. |
 
 **`pz connector test <entrypoint-or-package-dir> [--config file.yml]`** — runs black-box PCP
 protocol conformance checks against one out-of-process connector, independent of any pz project.

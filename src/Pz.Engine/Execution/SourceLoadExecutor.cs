@@ -188,7 +188,12 @@ public sealed class SourceLoadExecutor : INodeExecutor
             spec = spec with { PriorSyncState = priorSync.Token };
         }
 
-        if (ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.NativeScan && source.TryGetNativeScan(spec, out var scan))
+        // The plan is only as trustworthy as the build that wrote it, so the executor keys the native
+        // tier on the resolved shape itself: a token-resumed dataset (feed or cdc) advances from the
+        // candidate polled off its drained partition below, and a native scan never drains one -- it
+        // would land rows and strand the token every run. Same rule the planner applies.
+        if (shape is not (ResolvedReadShape.Feed or ResolvedReadShape.Cdc) &&
+            ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.NativeScan && source.TryGetNativeScan(spec, out var scan))
         {
             // No separate extract/ingest split for the native-scan tier: DuckDB reads and loads in one
             // statement, so there is no seam to split on.

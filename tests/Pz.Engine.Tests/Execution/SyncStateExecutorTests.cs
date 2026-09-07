@@ -8,6 +8,7 @@ using Pz.Core.Validation;
 using Pz.DuckDb;
 using Pz.Engine.Execution;
 using Pz.Engine.Dispatch;
+using Pz.Engine.Planning;
 using Pz.Engine.State;
 
 namespace Pz.Engine.Tests.Execution;
@@ -37,11 +38,12 @@ public sealed class SyncStateExecutorTests : IAsyncLifetime
         try { Directory.Delete(_dir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
-    private RunContext Context(ISourceConnector connector, SyncStateStore? syncState = null, string runId = "test-run")
+    private RunContext Context(ISourceConnector connector, SyncStateStore? syncState = null, string runId = "test-run",
+        ExecutionPlan? plan = null)
     {
         var reg = new ConnectorRegistry();
         reg.AddSource("syncstub", connector);
-        return new RunContext(_duck, reg, new RunPaths(_dir, runId), NullRunEvents.Instance, SyncState: syncState);
+        return new RunContext(_duck, reg, new RunPaths(_dir, runId), NullRunEvents.Instance, plan, SyncState: syncState);
     }
 
     private static DagNode SourceLoadNode()
@@ -110,6 +112,28 @@ public sealed class SyncStateExecutorTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Native_scan_plan_is_ignored_for_a_feed_dataset_so_the_candidate_is_still_captured()
+    {
+        // The planner never puts a feed dataset on the native tier, but a plan can only be trusted as far as
+        // the build that wrote it: the executor keys on the resolved shape itself, so a NativeScan strategy
+        // for a feed dataset still drains the partition (whose token is the whole point) instead of running
+        // the scan fragment, which would land rows and strand the token forever.
+        var source = new SyncStubSource(partitionCount: 1, candidate: "new-token", nativeScan: "(values (91),(92)) t(id)");
+        var node = SourceLoadNode();
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1, "stale")],
+            MemoryBudget.Compute(new EngineConfig()));
+        var ctx = Context(new SyncStubConnector(source), plan: plan);
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, result.RowsMoved);
+        Assert.NotNull(result.SyncStateCandidate);
+        Assert.Equal("new-token", result.SyncStateCandidate!.Token);
+    }
+
+    [Fact]
     public async Task No_candidate_when_partition_reports_none()
     {
         var source = new SyncStubSource(partitionCount: 1, candidate: null);
@@ -130,17 +154,20 @@ public sealed class SyncStateExecutorTests : IAsyncLifetime
 /// unconditionally implements <see cref="INaturalReadShapeSource"/>, resolving Feed, so
 /// <see cref="ReadShapeResolver"/> routes these tests through the sync-state machinery
 /// (prior-token replay, PZ0316's runtime guard, candidate capture).</summary>
-internal sealed class SyncStubSource(int partitionCount, string? candidate) : ISource, INaturalReadShapeSource
+internal sealed class SyncStubSource(int partitionCount, string? candidate, string? nativeScan = null)
+    : ISource, INaturalReadShapeSource
 {
     public string? ObservedPriorSyncState { get; private set; }
 
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
         new(new DatasetSchema(StubSchema.IdSchema));
 
+    /// <summary>Offers <paramref name="nativeScan"/> as a DuckDB fragment when one was given; the executor
+    /// must never take it for this feed-shaped source.</summary>
     public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
     {
-        scan = null;
-        return false;
+        scan = nativeScan is null ? null : new NativeScan(nativeScan, []) { Mechanism = "stub_scan" };
+        return scan is not null;
     }
 
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct)
