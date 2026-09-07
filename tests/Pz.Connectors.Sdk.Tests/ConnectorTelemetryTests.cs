@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Sdk;
 
@@ -64,5 +66,46 @@ public sealed class ConnectorTelemetryTests
         // rather than blocking on a collector that will never answer.
         var flush = Task.Run(telemetry.FlushAndDispose);
         await flush.WaitAsync(ConnectorTelemetry.FlushBound * 2);
+    }
+
+    [Fact]
+    public async Task Flush_against_a_collector_that_accepts_but_never_answers_is_bounded_in_aggregate()
+    {
+        // A listener that accepts the TCP connection but never writes an HTTP/gRPC response is the
+        // case ForceFlush-then-Shutdown-sequentially would double-charge: each provider's own send
+        // blocks for the full bound waiting on a reply that never comes. Proves the two Shutdowns run
+        // concurrently rather than adding their bounds together.
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (true)
+                {
+                    using var client = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
+                    await Task.Delay(Timeout.InfiniteTimeSpan).ConfigureAwait(false);
+                }
+            }
+            catch (Exception)
+            {
+                // Listener stopped from the finally block below; nothing left to accept.
+            }
+        });
+
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            using var telemetry = new ConnectorTelemetry(new PzConnectorHostOptions());
+            telemetry.Start($"http://127.0.0.1:{port}", Info, "");
+            using (telemetry.ActivitySource.StartActivity("pending")) { }
+
+            var flush = Task.Run(telemetry.FlushAndDispose);
+            await flush.WaitAsync(ConnectorTelemetry.FlushBound * 2);
+        }
+        finally
+        {
+            listener.Stop();
+        }
     }
 }

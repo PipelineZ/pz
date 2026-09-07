@@ -104,8 +104,11 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
         }
     }
 
-    /// <summary>Flush, bounded by <see cref="FlushBound"/>, then tear down. Anything not exported by
-    /// the bound is dropped: a late span is worth less than an on-time exit.</summary>
+    /// <summary>Shutdown -- which performs a final flush itself, so no separate ForceFlush is needed --
+    /// bounded by <see cref="FlushBound"/> IN AGGREGATE across both providers, then tear down. The two
+    /// Shutdowns run concurrently so a slow/unreachable collector on one signal never adds its bound to
+    /// the other's; disposal waits for both to return, since disposing a provider mid-Shutdown is unsafe.
+    /// Anything not exported by the bound is dropped: a late span is worth less than an on-time exit.</summary>
     public void FlushAndDispose()
     {
         TracerProvider? tracer;
@@ -119,10 +122,9 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
         }
 
         var bound = (int)FlushBound.TotalMilliseconds;
-        tracer?.ForceFlush(bound);
-        meter?.ForceFlush(bound);
-        tracer?.Shutdown(bound);
-        meter?.Shutdown(bound);
+        Task.WaitAll(
+            Task.Run(() => tracer?.Shutdown(bound)),
+            Task.Run(() => meter?.Shutdown(bound)));
         tracer?.Dispose();
         meter?.Dispose();
     }
