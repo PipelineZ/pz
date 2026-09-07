@@ -61,6 +61,11 @@ message HostInfo {
   string pz_version = 1;
   // transports the host can open; v1 defines "pipe" (Arrow IPC over UDS/named pipe).
   repeated string transports = 2;
+  // The run these sockets are scoped to; empty on run-less verbs (validate, plan, connector test).
+  string run_id = 3;
+  // Absolute http(s) OTLP/grpc collector URL the host itself exports to. Absent means the connector
+  // builds no telemetry providers at all -- every span/meter call in the child stays a no-op.
+  optional string otel_endpoint = 4;
 }
 message Hello {
   ConnectorInfoMsg info = 1;
