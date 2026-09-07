@@ -328,6 +328,72 @@ internal sealed class StubFeedSource(ConnectorCapabilities capabilities) : ISour
     public ValueTask DisposeAsync() => default;
 }
 
+/// <summary>Source connector that BOTH offers a native scan for every dataset AND resolves a caller-chosen
+/// natural read shape -- the shape a token-resumed (feed) dataset on a native-capable connector takes. A
+/// native scan lands rows without ever draining a partition, so it can never observe the sync-state
+/// token the feed resumes from; the planner must route such a dataset to the arrow path instead. With
+/// <see cref="NaturalReadShape.Full"/> and a dataset declaring <c>sync: {mode: cdc}</c> the resolver yields
+/// Cdc, the other token-resumed shape.</summary>
+internal sealed class StubNativeShapeSource(ConnectorCapabilities capabilities, NaturalReadShape natural)
+    : ISourceConnector, ISource, INaturalReadShapeSource
+{
+    public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => capabilities;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call GetSchemaAsync");
+
+    public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = new NativeScan("select 'SECRET_MARKER'", []) { Mechanism = "stub_scan" };
+        return true;
+    }
+
+    public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call PlanReadAsync");
+
+    public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) => natural;
+
+    public ValueTask DisposeAsync() => default;
+}
+
+/// <summary>The native-only (<see cref="INativeOnlySource"/>) twin of <see cref="StubNativeShapeSource"/>,
+/// always resolving Feed: a feed dataset here has no arrow path to fall back to, so the planner cannot
+/// route around the native tier and must refuse (PZ0363).</summary>
+internal sealed class StubFeedNativeOnlySource : ISourceConnector, ISource, INativeOnlySource, INaturalReadShapeSource
+{
+    public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeScan | ConnectorCapabilities.SyncState;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call GetSchemaAsync");
+
+    public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = new NativeScan("select 'SECRET_MARKER'", []) { Mechanism = "stub_scan" };
+        return true;
+    }
+
+    public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+        throw new InvalidOperationException("native-only source: no universal read path");
+
+    public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) => NaturalReadShape.Feed;
+
+    public ValueTask DisposeAsync() => default;
+}
+
 /// <summary>Source connector with ONLY a native path (<see cref="INativeOnlySource"/>): TryGetNativeScan
 /// always succeeds; PlanReadAsync always throws permanently, per the marker interface's contract.</summary>
 internal sealed class StubNativeOnlySource : ISourceConnector, ISource, INativeOnlySource

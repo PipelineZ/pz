@@ -369,6 +369,33 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "remove files_per_partition (the native path hands DuckDB the file list in one scan and needs no coalescing)"));
         }
 
+        // A token-resumed dataset (feed or cdc) advances its sync state from the candidate the executor
+        // polls off the drained partition (ISyncStatePartition), and a native scan lands rows in one
+        // DuckDB statement without ever draining one -- planned onto the native tier, such a dataset
+        // would replay from the same token every run and never advance, with nothing to say so. The
+        // native tier is an optimization the planner may skip, so the dataset takes the arrow path
+        // (a tier fallback with a reason, like the unsigned-extension one below). Only a native-only
+        // connector has no arrow path to fall back to: that is a real refusal. Ordered before the
+        // force_universal return so plan.json names the actual reason rather than the flag.
+        if (shape is ResolvedReadShape.Feed or ResolvedReadShape.Cdc)
+        {
+            if (connector is INativeOnlySource)
+            {
+                errors.Add(new PzError(PzErrorCode.SyncStateNativeOnly,
+                    $"source '{def.Source.Name}' dataset '{def.Dataset.Name}' resumes from a sync token " +
+                    $"({readToken}), but connector '{def.Source.Connector}' reads natively only -- a native " +
+                    "scan never drains the partition the token is captured from, so the dataset could never advance",
+                    def.Source.FilePath, null,
+                    "use a connector with an arrow read path for this dataset, or read it as full or " +
+                    "cursor-incremental (`sync: {mode: incremental}`)"));
+                return Universal(node, $"arrow stream: {PzErrorCode.SyncStateNativeOnly} refused", declaredPartitions, readToken);
+            }
+
+            return Universal(node,
+                $"arrow stream: the dataset resumes from a sync token ({readToken}), which only a drained " +
+                "partition can capture -- the native tier never drains one", declaredPartitions, readToken);
+        }
+
         if (forceUniversal)
         {
             // Mirrors the sink-side force_universal x INativeOnlySink collision check.
