@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Sockets;
 using Apache.Arrow.Ipc;
 using Pz.Connectors.Abstractions;
@@ -16,17 +17,19 @@ internal sealed class DataPlaneListener : IAsyncDisposable
 {
     private readonly Socket _listener;
     private readonly TicketRegistry _tickets;
+    private readonly ActivitySource _source;
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _acceptLoop;
 
-    private DataPlaneListener(Socket listener, TicketRegistry tickets)
+    private DataPlaneListener(Socket listener, TicketRegistry tickets, ActivitySource source)
     {
         _listener = listener;
         _tickets = tickets;
+        _source = source;
         _acceptLoop = Task.Run(AcceptLoopAsync);
     }
 
-    public static DataPlaneListener Start(string socketPath, TicketRegistry tickets)
+    public static DataPlaneListener Start(string socketPath, TicketRegistry tickets, ActivitySource source)
     {
         if (File.Exists(socketPath))
         {
@@ -46,7 +49,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
             throw;
         }
 
-        return new DataPlaneListener(listener, tickets);
+        return new DataPlaneListener(listener, tickets, source);
     }
 
     private async Task AcceptLoopAsync()
@@ -154,7 +157,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
     private async Task ServeReadAsync(Socket connection, Stream stream, ReadTicket read)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token, read.OpToken);
-        await ServeReadAsync(stream, read, linked.Token).ConfigureAwait(false);
+        await ServeReadAsync(stream, read, _source, linked.Token).ConfigureAwait(false);
         connection.Shutdown(SocketShutdown.Send);
     }
 
@@ -163,8 +166,11 @@ internal sealed class DataPlaneListener : IAsyncDisposable
     /// purpose: the host polls GetReadState the moment it observes end-of-stream, so a token stored
     /// any later could be missed. A drain that throws or is cancelled never reaches the capture, and
     /// the host's truncation marker is what it sees instead.</summary>
-    internal static async Task ServeReadAsync(Stream stream, ReadTicket read, CancellationToken ct)
+    internal static async Task ServeReadAsync(Stream stream, ReadTicket read, ActivitySource source, CancellationToken ct)
     {
+        // Parented on the ticket-minting RPC: the pipe carries no headers. That RPC's span has already
+        // ended by now, which is ordinary for a span whose work outlives the request that started it.
+        using var activity = source.StartActivity("pcp.read_stream", ActivityKind.Server, read.Parent);
         using var writer = new ArrowStreamWriter(stream, read.Schema, leaveOpen: true);
         await writer.WriteStartAsync(ct).ConfigureAwait(false);
         await foreach (var batch in read.Partition.ReadAsync(read.Options, ct).ConfigureAwait(false))
@@ -188,6 +194,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
 
     private async Task ServeWriteAsync(Stream stream, WriteTicket write)
     {
+        using var activity = _source.StartActivity("pcp.write_stream", ActivityKind.Server, write.Parent);
         var state = write.Session;
         var pump = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!state.TryBeginPump(pump.Task))

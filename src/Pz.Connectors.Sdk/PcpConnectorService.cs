@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using Apache.Arrow;
 using Google.Protobuf;
@@ -234,7 +235,8 @@ internal sealed class PcpConnectorService(
                 partition,
                 SpecMapping.ToBatchOptions(request.Options),
                 OpToken(request.OpId),
-                plan.Captures.GetOrAdd(request.PartitionId, _ => new SyncStateCapture())));
+                plan.Captures.GetOrAdd(request.PartitionId, _ => new SyncStateCapture()),
+                Activity.Current?.Context ?? default));
             return Task.FromResult(new ReadStreamTicket { Ticket = ByteString.CopyFrom(ticket) });
         });
 
@@ -325,7 +327,7 @@ internal sealed class PcpConnectorService(
             return new WriteSessionTicket
             {
                 SessionId = state.SessionId,
-                Ticket = ByteString.CopyFrom(tickets.Mint(new WriteTicket(state))),
+                Ticket = ByteString.CopyFrom(tickets.Mint(new WriteTicket(state, Activity.Current?.Context ?? default))),
                 // Without this every PCP sink would look like DiscardsAll to the host, whatever it
                 // actually wraps -- the sink's own declaration crosses verbatim.
                 AbortSemantics = SpecMapping.ToAbortSemanticsMsg(sink.AbortSemantics),

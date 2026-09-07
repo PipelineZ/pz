@@ -49,7 +49,7 @@ internal static class PcpServer
             onOrphaned: () => exit.TrySetResult(0));
         var tickets = new TicketRegistry();
 
-        await using var dataPlane = DataPlaneListener.Start(dataSocketPath, tickets);
+        await using var dataPlane = DataPlaneListener.Start(dataSocketPath, tickets, telemetry.ActivitySource);
 
         // No args to the builder: nothing on argv is configuration. The content root is pinned to the
         // binary's own directory so an appsettings.json in whatever working directory the host spawned
