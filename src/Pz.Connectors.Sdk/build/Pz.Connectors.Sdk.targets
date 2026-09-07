@@ -1,4 +1,25 @@
 <Project>
+  <!-- Derived from PzPackaging HERE, after the project body, so a <PzPackaging> set in the project
+       file wins over the props default the same way a -p: global property does. This import still
+       precedes the .NET SDK's own publish, ILCompiler, ILLink and analyzer targets, which is where
+       PublishAot, PublishSingleFile and IsAotCompatible are read. The one thing set this late cannot
+       drive is the SDK's implicit-RID inference from PublishAot on a RID-less publish, which the
+       packaging flow never relies on: staging only happens under `dotnet publish -r <rid>`. -->
+  <PropertyGroup Condition="'$(PzPackaging)' == 'aot'">
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <StripSymbols>true</StripSymbols>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(PzPackaging)' == 'self-contained'">
+    <PublishAot>false</PublishAot>
+    <PublishSingleFile Condition="'$(RuntimeIdentifier)' != ''">true</PublishSingleFile>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- Native libraries stay beside the executable and ship as files: self-extraction on every
+         spawn is a per-run cost and a temp-directory footprint for nothing. -->
+    <IncludeNativeLibrariesForSelfExtract>false</IncludeNativeLibrariesForSelfExtract>
+  </PropertyGroup>
+
   <PropertyGroup>
     <!-- The ratified discovery tag for connector packages, appended once. Two conditions rather than
          one: a consumer who sets no PackageTags at all must not get a leading ';' (NuGet space-
