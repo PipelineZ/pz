@@ -13,9 +13,10 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 /// entrypoint is the <c>PcpFakeConnector</c> fixture: manifest gate at load, nothing spawned until an
 /// open, and every spawned process reaped by dispose.
 ///
-/// <para>Unix-only, same reasoning as its siblings: the fixture serves unix domain sockets only, and
-/// the entrypoint is a shell wrapper that needs a unix exec bit.</para></summary>
+/// <para>Linux only: the package layout stages a <c>#!/bin/sh</c> wrapper as the entrypoint, which
+/// needs a unix exec bit and a shell to run it.</para></summary>
 [SupportedOSPlatform("linux")]
+[Trait("Category", "Pcp")]
 public sealed class ProcessConnectorHostTests : IDisposable
 {
     private const string PackageId = "Pz.Connector.LocalFilesPcp";
@@ -29,7 +30,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public async Task Load_registers_the_connector_without_spawning_anything()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var packagesRoot = NewPackageLayout();
         var socketRoot = NewTempDir();
@@ -52,7 +53,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public async Task Unknown_connector_name_is_PZ0305()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         await using var host = ProcessConnectorHost.LoadFromDirectory(
             NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir());
@@ -65,7 +66,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public void Package_with_no_binary_for_this_rid_is_PZ0354_at_load()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         // A RID nothing can fall back to: the expansion walks OS ancestry, and this OS is not in it.
         var packagesRoot = NewPackageLayout(rid: "nosuchos-x64");
@@ -80,7 +81,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public void Package_declaring_the_dotnet_runtime_is_PZ0354_at_load()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var packagesRoot = NewPackageLayout(runtime: "dotnet");
 
@@ -95,7 +96,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public void Package_outside_the_protocol_range_is_PZ0306_at_load()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var packagesRoot = NewPackageLayout();
         File.WriteAllText(
@@ -123,7 +124,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public void Missing_package_directory_is_PZ0304()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var ex = Assert.Throws<ConnectorHostException>(() => ProcessConnectorHost.LoadFromDirectory(
             NewTempDir(), [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir()));
@@ -136,7 +137,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public async Task First_open_spawns_and_dispose_reaps()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
@@ -177,7 +178,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public async Task Load_and_spawn_succeed_against_an_entrypoint_restored_without_the_executable_bit()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
@@ -204,7 +205,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public async Task Capabilities_the_process_shims_do_not_implement_are_masked_out()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         // The package DECLARES CheckpointableReads and the fixture reports it at handshake, so the two
         // agree -- this is not a misdeclaration the handshake could catch. There is no PCP wiring for
@@ -237,7 +238,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public async Task Host_wired_cancellation_ends_in_OperationCanceledException_and_dispose_reaps()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 200);

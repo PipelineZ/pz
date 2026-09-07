@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Runtime.Versioning;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Google.Protobuf;
@@ -16,9 +15,11 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 /// interfaces (<see cref="ISourceConnector"/>/<see cref="ISinkConnector"/>), never the raw
 /// <see cref="PcpClient.Grpc"/> client <see cref="DataPlaneTests"/> and <see cref="HandshakeTests"/>
 /// use -- this is the proof that the shim, not just the wire underneath it, behaves like an in-process
-/// connector. Unix-only, same reasoning as its siblings: the fixture serves unix domain sockets
-/// only.</summary>
-[SupportedOSPlatform("linux")]
+/// connector.
+///
+/// <para>Every fact skips on Windows: the fixture's AF_UNIX listener fails to initialize there
+/// (Winsock 10106), so the transport this suite proves is not yet available on that runner.</para></summary>
+[Trait("Category", "Pcp")]
 public sealed class ShimTests : IDisposable
 {
     private readonly List<string> _tempDirs = [];
@@ -28,7 +29,7 @@ public sealed class ShimTests : IDisposable
     [SkippableFact]
     public async Task Read_path_round_trips_schema_and_rows_through_the_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         const int rowCount = 150;
         var dataDir = NewTempDir();
@@ -88,7 +89,7 @@ public sealed class ShimTests : IDisposable
     [SkippableFact]
     public async Task Native_scan_probe_round_trips_through_the_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 5);
@@ -121,7 +122,7 @@ public sealed class ShimTests : IDisposable
     [SkippableFact]
     public async Task Capabilities_the_shims_do_not_implement_are_masked_out_of_their_surface()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         // Manifest and Hello AGREE that the connector has CheckpointableReads, so the handshake's own
         // set-equality gate is satisfied -- this is not a misdeclaration. The shims still must not
@@ -153,12 +154,156 @@ public sealed class ShimTests : IDisposable
         Assert.Equal(new LocalFilesConnector().Capabilities, sourceConnector.Capabilities);
     }
 
+    /// <summary>The capability set the fixture's <c>--sync-state</c>/<c>--declare-sync-state-only</c>
+    /// modes report: a feed connector withdraws PartitionedRead (one opaque token cannot span
+    /// partitions) and declares SyncState. The manifest must say the same or the handshake refuses.</summary>
+    private static ConnectorCapabilities FeedCapabilities =>
+        (new LocalFilesConnector().Capabilities & ~ConnectorCapabilities.PartitionedRead) | ConnectorCapabilities.SyncState;
+
+    /// <summary>What <c>--sync-state --stable-ids</c> reports: the feed set plus StablePartitionIds --
+    /// NativeScan, NativeCopy, ReplaceWrites, BoundedWindow, StablePartitionIds, SyncState. The manifest
+    /// must say the same or the handshake refuses.</summary>
+    private static ConnectorCapabilities IdentifiedFeedCapabilities =>
+        FeedCapabilities | ConnectorCapabilities.StablePartitionIds;
+
+    private static DatasetSpec SmallCsvSpec(string? priorSyncState = null) =>
+        new("files", "orders", new Dictionary<string, object?>
+        {
+            ["path"] = "small.csv",
+            ["format"] = "csv",
+            ["columns"] = CsvColumns,
+        })
+        { PriorSyncState = priorSyncState };
+
+    private static async Task<long> DrainAsync(IDatasetPartition partition)
+    {
+        long rows = 0;
+        await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+        {
+            rows += batch.Length;
+            batch.Dispose();
+        }
+
+        return rows;
+    }
+
+    [SkippableFact]
+    public async Task SyncState_crosses_the_shim_and_the_partition_polls_the_connector_for_its_token()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 7);
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--sync-state"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(FeedCapabilities), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        // Unmasked: the planner sees SyncState exactly as it would on an in-process feed connector.
+        Assert.Equal(ConnectorCapabilities.SyncState, connector.Capabilities & ConnectorCapabilities.SyncState);
+
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+        var natural = Assert.IsAssignableFrom<INaturalReadShapeSource>(source);
+        Assert.Equal(NaturalReadShape.Feed, natural.GetNaturalReadShape(SmallCsvSpec()));
+
+        var partition = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(), ReadHints.None, CancellationToken.None));
+        var sync = Assert.IsAssignableFrom<ISyncStatePartition>(partition);
+
+        // Nothing before the drain: the ABI promises no candidate until the read completed.
+        Assert.False(sync.TryGetSyncStateCandidate(out var early));
+        Assert.Null(early);
+
+        Assert.Equal(7, await DrainAsync(partition));
+        Assert.True(sync.TryGetSyncStateCandidate(out var token));
+        Assert.Equal("0+7", token);
+
+        // Replay: the token goes back as PriorSyncState and the connector visibly builds on it.
+        var replay = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(token), ReadHints.None, CancellationToken.None));
+        Assert.Equal(7, await DrainAsync(replay));
+        Assert.True(((ISyncStatePartition)replay).TryGetSyncStateCandidate(out var next));
+        Assert.Equal("0+7+7", next);
+    }
+
+    [SkippableFact]
+    public async Task Stable_ids_and_sync_state_together_build_the_identified_sync_state_shim()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 5);
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--sync-state", "--stable-ids"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(IdentifiedFeedCapabilities), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+        var partition = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(), ReadHints.None, CancellationToken.None));
+
+        var identified = Assert.IsAssignableFrom<IIdentifiedPartition>(partition);
+        Assert.Equal("orders:0", identified.PartitionId);
+        var sync = Assert.IsAssignableFrom<ISyncStatePartition>(partition);
+
+        Assert.Equal(5, await DrainAsync(partition));
+        Assert.True(sync.TryGetSyncStateCandidate(out var token));
+        Assert.Equal("0+5", token);
+    }
+
+    [SkippableFact]
+    public async Task Partition_without_the_sync_state_flag_is_not_an_ISyncStatePartition()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 3);
+
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+
+        // A plain connector answers FULL -- and the engine's `is ISyncStatePartition` check must be
+        // false for its partitions, which is why the flag selects a TYPE, not a property.
+        Assert.Equal(NaturalReadShape.Full, Assert.IsAssignableFrom<INaturalReadShapeSource>(source).GetNaturalReadShape(SmallCsvSpec()));
+        var partition = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(), ReadHints.None, CancellationToken.None));
+        Assert.False(partition is ISyncStatePartition);
+    }
+
+    [SkippableFact]
+    public async Task Unimplemented_natural_read_shape_reads_as_Full_so_a_connector_built_before_the_rpc_keeps_its_behavior()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 3);
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--declare-sync-state-only"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(FeedCapabilities), "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+
+        // UNIMPLEMENTED on the plan-time shape probe is the compatibility answer: FULL, no error.
+        Assert.Equal(NaturalReadShape.Full, Assert.IsAssignableFrom<INaturalReadShapeSource>(source).GetNaturalReadShape(SmallCsvSpec()));
+    }
+
     // ---- Step 1: write path, through the shim end to end -------------------------------------
 
     [SkippableFact]
     public async Task Write_path_commits_two_batches_through_the_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
@@ -205,7 +350,7 @@ public sealed class ShimTests : IDisposable
     [SkippableFact]
     public async Task Abort_path_leaves_no_destination_file()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
@@ -243,7 +388,7 @@ public sealed class ShimTests : IDisposable
     [SkippableFact]
     public async Task Killing_the_process_mid_read_surfaces_a_transient_PzConnectorException()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "big.csv"), 20_000);
@@ -300,7 +445,7 @@ public sealed class ShimTests : IDisposable
     [SkippableFact]
     public async Task Killing_the_process_mid_write_surfaces_a_transient_PzConnectorException()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         var dataDir = NewTempDir();
         var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
@@ -354,7 +499,7 @@ public sealed class ShimTests : IDisposable
     [SkippableFact]
     public async Task AbortSemantics_surfaces_the_connectors_reported_value_not_the_shims_default()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         var dataDir = NewTempDir();
         // The wrapped LocalFilesConnector is always DiscardsAll -- the same value ProcessSink defaults

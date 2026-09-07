@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>SDK for writing PipelineZ (pz) out-of-process (PCP) connectors in C#: serves any Pz.Connectors.Abstractions connector over PCP and packs it as a pz-installable connector package.</Description>
+    <!-- The SDK is compiled into every connector's Native AOT image, so it is held to the same
+         zero trim/AOT-warning bar as the pz binary itself. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <!-- Kestrel and the gRPC server live in the ASP.NET Core shared framework. A FrameworkReference
+         (not Microsoft.NET.Sdk.Web) keeps this a plain class library with no web-app conventions. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.36.0" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.83.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The one normative copy of the wire contract lives in Pz.Connectors.Protocol; this project
+         compiles the SERVER half of it into itself so connectors never depend on the host's client
+         assembly. Access=Internal: no generated gRPC type is part of the SDK's public surface. -->
+    <Protobuf Include="..\Pz.Connectors.Protocol\pz_connector.proto" GrpcServices="Server" Access="Internal" ProtoRoot="..\Pz.Connectors.Protocol\" />
+    <Compile Include="..\Pz.Connectors.Protocol\ProtocolConstants.cs" Link="Protocol\ProtocolConstants.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The packaging targets travel inside the nupkg; a connector that references the package
+         imports them automatically. -->
+    <None Include="build\Pz.Connectors.Sdk.props" Pack="true" PackagePath="build\" />
+    <None Include="build\Pz.Connectors.Sdk.targets" Pack="true" PackagePath="build\" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <!-- This project packs its own README (below) as PackageReadmeFile instead of the repo-root one
+         Directory.Build.props packs for every other packable project; both target the same in-package
+         path, so the shared item is removed here to avoid a duplicate-file pack error. -->
+    <None Remove="..\..\README.md" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Connectors.Sdk.Tests" />
+    <InternalsVisibleTo Include="PcpFakeConnector" />
+  </ItemGroup>
+
+</Project>

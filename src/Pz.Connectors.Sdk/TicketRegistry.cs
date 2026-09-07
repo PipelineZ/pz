@@ -3,7 +3,7 @@ using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
 
-namespace PcpFakeConnector;
+namespace Pz.Connectors.Sdk;
 
 /// <summary>What a minted data-plane ticket authorizes. A ticket names one direction and one
 /// already-planned unit of work, so the data plane never has to interpret configuration.</summary>
@@ -12,12 +12,15 @@ internal abstract record TicketEntry;
 /// <summary>Connector -> host: the data plane writes <paramref name="Schema"/> then every batch
 /// <paramref name="Partition"/> yields. The schema is captured at OpenReadStream time so an empty
 /// partition still produces a well-formed stream; the ABI requires it to equal the batches' schema
-/// exactly.</summary>
+/// exactly. <paramref name="Capture"/> is where the data plane parks the partition's sync-state
+/// candidate once the drain completed cleanly, before it writes end-of-stream -- GetReadState answers
+/// from it and never asks the partition again.</summary>
 internal sealed record ReadTicket(
     Schema Schema,
     IDatasetPartition Partition,
     BatchOptions Options,
-    CancellationToken OpToken) : TicketEntry;
+    CancellationToken OpToken,
+    SyncStateCapture Capture) : TicketEntry;
 
 /// <summary>Host -> connector: the data plane reads batches off the stream into
 /// <paramref name="Session"/> until end-of-stream, then releases CommitWrite.</summary>
@@ -123,4 +126,32 @@ internal sealed class TicketRegistry
     }
 
     private static string Key(ReadOnlySpan<byte> ticket) => Convert.ToHexString(ticket);
+}
+
+/// <summary>The sync-state candidate of one planned partition, captured exactly once by the data
+/// plane after a clean drain. Absent until then; a truncated or cancelled drain never completes it,
+/// so a failed read can never advance state.</summary>
+internal sealed class SyncStateCapture
+{
+    private readonly Lock _gate = new();
+    private bool _completed;
+    private string? _token;
+
+    public void Complete(string? token)
+    {
+        lock (_gate)
+        {
+            _completed = true;
+            _token = token;
+        }
+    }
+
+    public bool TryGet(out string? token)
+    {
+        lock (_gate)
+        {
+            token = _completed ? _token : null;
+            return _completed && token is not null;
+        }
+    }
 }

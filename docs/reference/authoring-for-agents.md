@@ -240,6 +240,12 @@ in-process loading is reserved for builtins — declared in the package's `pz.co
   Resolved with `RuntimeIdentifierGraph` fallback (a package shipping only `linux-x64` is still
   reachable from `linux-musl-x64`), and rejected if a path would resolve outside the package
   directory.
+- The host masks `CheckpointableReads`, `CheckpointableWrites`, and `ChangeCapture` until they are
+  wired over the wire; declared flags whose ABI interface the host shim does not implement
+  (`StreamingPartitions`) take the materialized path. `SyncState` (opaque-token feeds) is honored:
+  the connector answers `GetNaturalReadShape` (FEED/FULL per dataset, plan-time, offline) and
+  `GetReadState` (the partition's token, pulled by the host after the drain completed). A
+  connector that never implements `GetNaturalReadShape` reads as FULL.
 
 This is packaging-time detail an agent authoring `connections.yml`/pipelines never touches
 directly — the connector's `connector:` name in `connections.yml` and its `ConnectionConfigSchema`/
@@ -249,6 +255,23 @@ directly — the connector's `connector:` name in `connections.yml` and its `Con
 `max_concurrency`/`rate_limit`/`retry`, default `false`. A native scan/copy that would load an
 unsigned packaged DuckDB extension is refused at plan time (`PZ0359`) unless the connection sets
 `allow_unsigned_extensions: true`.
+
+**Writing one in C# — `Pz.Connectors.Sdk`.** Implement `ISourceConnector` and/or `ISinkConnector`
+from `Pz.Connectors.Abstractions` exactly as a builtin would, then serve it with one line:
+`return await PzConnectorHost.RunAsync(args, new MyConnector());` (or
+`RunAsync(args, ctx => new MyConnector(ctx.LoggerFactory))` to log to the host). The SDK answers every
+optional RPC from the interfaces your objects actually implement — a source that is not
+`INaturalReadShapeSource` answers UNIMPLEMENTED, a partition that is not `ISyncStatePartition` answers
+FAILED_PRECONDITION — so declare only capabilities you implement; `pz connector test` fails the rest.
+The SDK captures the sync-state token itself when a partition's enumeration completes, before it
+writes end-of-stream: set the candidate anywhere before your iterator returns. Two argv modes only:
+`--pz-socket <path>` (serve) and `--pz-manifest --out <file>` (write `pz.connector.json` from the
+connector object); configuration never travels on argv. Packaging: `dotnet publish -r <rid>` per
+platform (Native AOT by default; `<PzPackaging>self-contained</PzPackaging>` opts out), then
+`dotnet pack -p:PzNativeStaging=<dir>` collects every RID under `runtimes/<rid>/native/` with the
+generated manifest at the nupkg root — the layout `pz restore` already installs. Set
+`<PzProjectDirectoryAnchor>true</PzProjectDirectoryAnchor>` when the connector resolves relative paths
+in its own config; `pz` then passes the project directory as the `base_dir` connection option.
 
 **PCP error codes:**
 
@@ -268,9 +291,12 @@ The target is a package directory containing `pz.connector.json` or a bare entry
 `--config` names the connection to configure and the `read:`/`write:` dataset(s) to probe (a
 `connection:` block plus optional `read: { dataset: ... }` and/or `write: { output: ..., mode: ...,
 schema_policy: ... }`). Every applicable vector runs regardless of earlier failures, printed as one
-`PASS`/`FAIL`/`SKIP <vector>[: detail]` line each. Exit codes: `0` every applicable vector passed,
-`1` one or more vectors failed, `2` a config/usage problem (bad target, malformed manifest or
-`--config`) meant no vector could even be attempted.
+`PASS`/`FAIL`/`SKIP <vector>[: detail]` line each. A connector declaring `SyncState` additionally
+runs `sync-state-roundtrip` (FEED shape, one `sync_state` partition, a non-empty token after a full
+drain, and that token accepted back as `prior_sync_state`); it is skipped for connectors that do not
+declare the flag. Exit codes: `0` every applicable vector passed, `1` one or more vectors failed,
+`2` a config/usage problem (bad target, malformed manifest or `--config`) meant no vector could even
+be attempted.
 
 ## Recommended tool loop
 

@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Net.Sockets;
-using System.Runtime.Versioning;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
 using Apache.Arrow.Types;
@@ -18,9 +17,11 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 /// <summary>Drives <see cref="DataPlane"/> against the real out-of-process <c>PcpFakeConnector</c>
 /// fixture: control-plane RPCs (via <see cref="PcpClient"/>) mint the tickets, <see cref="DataPlane"/>
 /// then dials the raw <c>.data</c> socket the same way a connector-hosted <c>ISource</c>/<c>ISink</c>
-/// would. Unix-only, same reasoning as <c>HandshakeTests</c>: the fixture serves unix domain sockets
-/// only.</summary>
-[SupportedOSPlatform("linux")]
+/// would.
+///
+/// <para>Every fact skips on Windows: the fixture's AF_UNIX listener fails to initialize there
+/// (Winsock 10106), so the transport this suite proves is not yet available on that runner.</para></summary>
+[Trait("Category", "Pcp")]
 public sealed class DataPlaneTests : IDisposable
 {
     private readonly List<string> _tempDirs = [];
@@ -28,7 +29,7 @@ public sealed class DataPlaneTests : IDisposable
     [SkippableFact]
     public async Task Read_stream_round_trips_rows_and_schema()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         const int rowCount = 150;
         var dataDir = NewTempDir();
@@ -98,7 +99,7 @@ public sealed class DataPlaneTests : IDisposable
     [SkippableFact]
     public async Task Write_stream_round_trips_rows_and_commit_reports_them()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
@@ -153,7 +154,7 @@ public sealed class DataPlaneTests : IDisposable
     [SkippableFact]
     public async Task Bad_ticket_read_surfaces_PZ0357()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the fixture serves unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = NewTempDir() });
@@ -180,7 +181,7 @@ public sealed class DataPlaneTests : IDisposable
     [SkippableFact]
     public async Task Cancelled_read_connect_does_not_leak_the_socket()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
         Skip.If(!Directory.Exists("/proc/self/fd"), "no /proc/self/fd fd-table introspection on this platform");
 
         var socketDir = NewSocketDir();
@@ -242,7 +243,7 @@ public sealed class DataPlaneTests : IDisposable
     [SkippableFact]
     public async Task Truncated_stream_surfaces_as_PZ0357_not_a_clean_completion()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         // No fixture read-failure switch exists (PcpFakeConnector's argv only stages handshake/check
         // failures), so this simulates the connector side of the NORMATIVE truncation convention
@@ -309,7 +310,7 @@ public sealed class DataPlaneTests : IDisposable
     [SkippableFact]
     public async Task Crash_mid_stream_without_end_marker_surfaces_as_PZ0357()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         // Schema + one COMPLETE batch, then a plain close with no Arrow end-of-stream marker at all --
         // the shape a SIGKILLed connector leaves behind between two well-formed messages. Apache.Arrow's
@@ -370,7 +371,7 @@ public sealed class DataPlaneTests : IDisposable
     [SkippableFact]
     public async Task Proper_end_of_stream_marker_completes_cleanly()
     {
-        Skip.If(OperatingSystem.IsWindows(), "the raw-socket peer below speaks unix domain sockets only");
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
         // The positive twin of Crash_mid_stream_without_end_marker_surfaces_as_PZ0357: the same schema
         // and one complete batch, but terminated with a real WriteEndAsync -- proves the tail-marker

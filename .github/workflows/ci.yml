@@ -24,13 +24,14 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: dotnet build Pz.slnx -c Release
-      # Tests run on ubuntu only. Both legs BUILD (cross-platform compile safety); the ubuntu leg also runs
-      # the full suite, where Linux Docker lets every Testcontainers suite (Postgres/MinIO/Azurite) actually
-      # RUN. The windows runner's Docker daemon is reachable but can't run the Linux images those suites
-      # need, and not every suite's docker gate skips on that condition -- so windows stays build-only rather
-      # than running suites that would fail on a can't-pull-linux-image error. PZ_TESTS_OFFLINE=1 skips
-      # network-dependent tests (e.g. the live api.github.com smoke, whose SkipIfOffline() gate keys only on
-      # this env var) to keep CI hermetic -- the stub-server suites cover the same logic offline.
+      # Both legs BUILD (cross-platform compile safety); the ubuntu leg runs the full suite, where Linux
+      # Docker lets every Testcontainers suite (Postgres/MinIO/Azurite) actually RUN. The windows leg
+      # below runs only the Category=Pcp subset: the windows runner's Docker daemon is reachable but
+      # can't run the Linux images the docker suites need, and not every suite's docker gate skips on
+      # that condition -- so windows stays build-only for everything else rather than running suites
+      # that would fail on a can't-pull-linux-image error. PZ_TESTS_OFFLINE=1 skips network-dependent
+      # tests (e.g. the live api.github.com smoke, whose SkipIfOffline() gate keys only on this env var)
+      # to keep CI hermetic -- the stub-server suites cover the same logic offline.
       # --blame-hang: a hung test must name itself. On 2026-07-22 a run sat silent for 25 minutes
       # (last suite output 11:38, workflow-level cancel 12:07) and the log couldn't say which test
       # stalled -- passing tests print nothing at normal verbosity, so silence hides the culprit.
@@ -38,6 +39,16 @@ jobs:
       # every thread's stack, and prints the in-flight test names instead.
       - run: dotnet test Pz.slnx -c Release --no-build --filter "Category!=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
         if: runner.os == 'Linux'
+        env:
+          PZ_TESTS_OFFLINE: '1'
+      # Windows runs the PCP suites only. The fixture's AF_UNIX listener fails to initialize on this
+      # runner (Winsock 10106), so every direct-spawn fact stays Windows-skipped -- but ShimTests
+      # carries the Pcp trait at class level too, and its ~20 pure-serialization facts (wire message
+      # <-> Abstractions round-trips, no socket involved) genuinely execute here: a real assertion, not
+      # just a skip. Proving the transport itself on windows is a follow-up. Everything else stays
+      # Linux-only for the docker reason above.
+      - run: dotnet test Pz.slnx -c Release --no-build --filter "Category=Pcp" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+        if: runner.os == 'Windows'
         env:
           PZ_TESTS_OFFLINE: '1'
 
@@ -81,14 +92,18 @@ jobs:
       - run: dotnet test tests/Pz.Connector.LocalFiles.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
       - run: dotnet test tests/Pz.DuckDb.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
 
-  # The Native AOT runtime proof: publishes the linux-x64 native image and drives init/run/restore/
-  # PZ0360/PCP-spawn/MCP against it. The AOT *compile-time* analyzers already gate every build
-  # (TreatWarningsAsErrors), but the six third-party assemblies whose internals warn (see
-  # Pz.Cli.csproj) can only be proven safe by running the paths that cross them -- which the ordinary
-  # test suite never does, since tests run on CoreCLR.
+  # The Native AOT runtime proof, host side then connector side: verify-aot.sh publishes the
+  # linux-x64 native image and drives init/run/restore/PZ0360/PCP-spawn/MCP against it;
+  # verify-sdk-package.sh publishes the SDK fixture through Pz.Connectors.Sdk's packaging targets and
+  # takes the resulting package all the way to a conformance-tested run. The AOT *compile-time*
+  # analyzers already gate every build (TreatWarningsAsErrors), but the six third-party assemblies
+  # whose internals warn (see Pz.Cli.csproj) can only be proven safe by running the paths that cross
+  # them -- which the ordinary test suite never does, since tests run on CoreCLR.
   verify-aot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was the budget for the host-side proof alone; the connector-side one adds a second Native
+    # AOT compilation plus a self-contained publish and two packs.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
         with:
@@ -97,6 +112,10 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: scripts/verify-aot.sh
+      # The connector-side packaging proof: the fixture published through Pz.Connectors.Sdk's targets
+      # (AOT, then self-contained), packed, restored from a local feed, run, and conformance-tested.
+      # Lives in this job because it needs the same Native AOT toolchain.
+      - run: scripts/verify-sdk-package.sh
 
   # The Rust workspace's own gate: absent from build-test/pack-and-verify above so a contributor
   # without cargo still gets a green build-test. fmt/clippy/test cover rust/ itself; the conformance

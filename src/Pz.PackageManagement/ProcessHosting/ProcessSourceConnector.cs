@@ -38,7 +38,8 @@ public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess pr
         ValueTask.FromResult<ISource>(new ProcessSource(client, process));
 }
 
-internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) : ISource, IOperationGateAware, IGatedShim
+internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
+    : ISource, IOperationGateAware, IGatedShim, INaturalReadShapeSource
 {
     /// <summary>Holds whatever gate the engine hands this instance -- see
     /// <see cref="IOperationGateAware"/>'s own contract (called once, after <c>OpenAsync</c> returns,
@@ -129,6 +130,44 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
         return true;
     }
 
+    public NaturalReadShape GetNaturalReadShape(DatasetSpec spec)
+    {
+        // Synchronous in the ABI and called once per dataset at plan time, off the hot path -- the
+        // same brief block under an internal deadline TryGetNativeScan accepts, for the same reason.
+        var request = new NaturalReadShapeRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
+        NaturalReadShapeResponse response;
+        try
+        {
+            using var call = client.Grpc.GetNaturalReadShapeAsync(request, cancellationToken: cts.Token);
+            response = call.ResponseAsync.GetAwaiter().GetResult();
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented && !cts.IsCancellationRequested)
+        {
+            // A connector built before this RPC existed has no feed shape to report. FULL is what the
+            // ABI resolves for a source that does not implement INaturalReadShapeSource at all, so an
+            // older connector keeps the exact behavior it had. This is deliberately lenient even for a
+            // connector whose Hello declares SyncState: the shim has no notice channel to report the
+            // contradiction, and `pz connector test`'s sync-state-roundtrip vector is the intended
+            // detector for that author bug.
+            return NaturalReadShape.Full;
+        }
+        catch (RpcException ex)
+        {
+            throw cts.IsCancellationRequested
+                ? ProcessFailureMapping.NativeOperationTimedOut("GetNaturalReadShape")
+                : ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
+        }
+
+        return response.Shape == NaturalReadShapeResponse.Types.Shape.Feed
+            ? NaturalReadShape.Feed
+            : NaturalReadShape.Full;
+    }
+
     public async ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(
         DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
@@ -150,9 +189,8 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process) 
             using var call = client.Grpc.PlanRead(request, cancellationToken: ct);
             await foreach (var partition in call.ResponseStream.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                partitions.Add(stableIds
-                    ? new ProcessIdentifiedPartition(client, process, opId, partition.PartitionId)
-                    : new ProcessPartition(client, process, opId, partition.PartitionId));
+                partitions.Add(ProcessPartitions.Create(
+                    client, process, opId, partition.PartitionId, stableIds, partition.SyncState));
             }
         }
         catch (RpcException ex)
@@ -181,6 +219,37 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
 {
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         ReadCoreAsync(options, ct);
+
+    /// <summary>The ISyncStatePartition poll, exposed here so the two sync-state wrappers share one
+    /// implementation. The engine reaches it right after ReadAsync completed without throwing, so a
+    /// NOT_FOUND / FAILED_PRECONDITION here is the connector contradicting its own plan -- a protocol
+    /// violation (PZ0357 via MapControlPlane). A failure that carries an error-detail trailer maps to an
+    /// operational PzConnectorException like any other RPC and follows the engine's normal retry
+    /// policy.</summary>
+    internal bool PollSyncState(out string? candidate)
+    {
+        var request = new ReadStateRequest { OpId = opId, PartitionId = partitionId };
+        using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
+        ReadStateResponse response;
+        try
+        {
+            using var call = client.Grpc.GetReadStateAsync(request, cancellationToken: cts.Token);
+            response = call.ResponseAsync.GetAwaiter().GetResult();
+        }
+        catch (RpcException ex)
+        {
+            throw cts.IsCancellationRequested
+                ? ProcessFailureMapping.NativeOperationTimedOut("GetReadState")
+                : ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
+        }
+
+        candidate = response.HasToken ? response.Token : null;
+        return candidate is not null;
+    }
 
     private async IAsyncEnumerable<RecordBatch> ReadCoreAsync(
         BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
@@ -264,6 +333,52 @@ internal sealed class ProcessIdentifiedPartition(PcpClient client, ConnectorProc
         _inner.ReadAsync(options, ct);
 }
 
+/// <summary>Chooses the partition type from the plan's two per-partition facts. The sync-state flag
+/// selects a TYPE rather than setting a property because the engine's contract is
+/// <c>partitions[0] is ISyncStatePartition</c>: a partition whose PartitionMsg.sync_state was false
+/// must fail that check, not answer "no candidate".</summary>
+internal static class ProcessPartitions
+{
+    public static IDatasetPartition Create(
+        PcpClient client, ConnectorProcess process, string opId, string partitionId, bool stableId, bool syncState) =>
+        (stableId, syncState) switch
+        {
+            (false, false) => new ProcessPartition(client, process, opId, partitionId),
+            (true, false) => new ProcessIdentifiedPartition(client, process, opId, partitionId),
+            (false, true) => new ProcessSyncStatePartition(client, process, opId, partitionId),
+            (true, true) => new ProcessIdentifiedSyncStatePartition(client, process, opId, partitionId),
+        };
+}
+
+/// <summary>Composition over <see cref="ProcessPartition"/> for a partition whose plan entry declared
+/// <c>sync_state</c>; see <see cref="ProcessPartitions"/>.</summary>
+internal sealed class ProcessSyncStatePartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
+    : IDatasetPartition, ISyncStatePartition
+{
+    private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
+        _inner.ReadAsync(options, ct);
+
+    public bool TryGetSyncStateCandidate(out string? candidate) => _inner.PollSyncState(out candidate);
+}
+
+/// <summary>Both <see cref="IIdentifiedPartition"/> (StablePartitionIds declared) and
+/// <see cref="ISyncStatePartition"/> (plan entry declared <c>sync_state</c>); see
+/// <see cref="ProcessPartitions"/>.</summary>
+internal sealed class ProcessIdentifiedSyncStatePartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
+    : IIdentifiedPartition, ISyncStatePartition
+{
+    private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public string PartitionId => partitionId;
+
+    public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
+        _inner.ReadAsync(options, ct);
+
+    public bool TryGetSyncStateCandidate(out string? candidate) => _inner.PollSyncState(out candidate);
+}
+
 /// <summary>Shared IConnector-surface plumbing (Info/Capabilities/schemas/Validate/CheckConnection) --
 /// identical on the source and sink shim, so both hold one of these instead of duplicating it.</summary>
 internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess process)
@@ -320,17 +435,19 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
 ///
 /// <para>The shims forward the wrapped connector's Hello capability flags verbatim, including flags
 /// whose ABI interfaces they do not implement -- there is no PCP wiring behind
-/// <see cref="ICheckpointingPartition"/>, <see cref="ICheckpointingSinkSession"/>,
-/// <see cref="ISyncStatePartition"/>, or change capture, and the reverse channel's WriteAck/ReadState
-/// messages are read and dropped. Surfacing those flags unmasked would make the planner accept a
-/// checkpointed / sync-state / cdc dataset on this connector and then silently degrade it to a plain
-/// full read. Masking them here is what makes the planner REFUSE such a dataset (PZ0319/PZ0338/...)
-/// instead, which is the correct answer until each one is actually implemented over the wire.</para></summary>
+/// <see cref="ICheckpointingPartition"/>, <see cref="ICheckpointingSinkSession"/>, or change capture,
+/// and the reverse channel's WriteAck/ReadState messages stay reserved for those checkpoint tokens.
+/// Surfacing those flags unmasked would make the planner accept a checkpointed / cdc dataset on this
+/// connector and then silently degrade it to a plain full read. Masking them here is what makes the
+/// planner REFUSE such a dataset (PZ0319/PZ0338/...) instead, which is the correct answer until each
+/// one is actually implemented over the wire. <see cref="ConnectorCapabilities.SyncState"/> IS wired
+/// (<see cref="INaturalReadShapeSource"/> over GetNaturalReadShape, <see cref="ISyncStatePartition"/>
+/// over GetReadState) and crosses untouched.</para></summary>
 internal static class ProcessCapabilities
 {
     private const ConnectorCapabilities Unimplemented =
         ConnectorCapabilities.CheckpointableReads | ConnectorCapabilities.CheckpointableWrites |
-        ConnectorCapabilities.SyncState | ConnectorCapabilities.ChangeCapture;
+        ConnectorCapabilities.ChangeCapture;
 
     public static ConnectorCapabilities Mask(ConnectorCapabilities declared) => declared & ~Unimplemented;
 }
@@ -350,7 +467,9 @@ internal static class ProcessFailureMapping
 {
     /// <summary>ISource.TryGetNativeScan/ISink.TryGetNativeCopy are synchronous in the ABI -- no
     /// CancellationToken to forward -- so this bounds the blocking RPC call they make instead, so a
-    /// hung connector cannot hang the planner forever.</summary>
+    /// hung connector cannot hang the planner forever. It also bounds
+    /// <see cref="ProcessSource.GetNaturalReadShape"/> and <see cref="ProcessPartition.PollSyncState"/>,
+    /// the shim's other synchronous ABI members.</summary>
     public static readonly TimeSpan NativeOperationTimeout = TimeSpan.FromSeconds(30);
 
     /// <summary>The RPC that produced <paramref name="ex"/> never had a caller CancellationToken to

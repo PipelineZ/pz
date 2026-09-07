@@ -14,8 +14,10 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// host-side, <c>GateBudget</c> feeds <see cref="IOperationGate.ReportBudget"/>, and <c>LogEvent</c>
 /// reaches <paramref name="logSink"/> (level, message, fields -- wired to <c>Pz.Diagnostics</c> connector
 /// logging by whoever constructs this pump; never config values). <c>WriteAck</c>/<c>ReadState</c>
-/// (checkpointing/sync-state) are read and ignored here -- out of scope for this pump, tracked for
-/// whichever task wires <c>ICheckpointingPartition</c>/<c>ISyncStatePartition</c> through PCP.
+/// are read and ignored here: they are reserved for mid-stream checkpoint tokens
+/// (<c>ICheckpointingSinkSession</c>/<c>ICheckpointingPartition</c>), which are not wired over PCP.
+/// Sync-state tokens do NOT travel this channel -- the host pulls them with GetReadState after the
+/// drain, because a push here could land after the host already observed end-of-stream and polled.
 ///
 /// <para>Lifetime is independent of the shims: <see cref="Start"/> takes an already-resolved
 /// <see cref="IOperationGate"/> (the shim only HOLDS one, via <see cref="IOperationGateAware"/>, for
@@ -117,7 +119,7 @@ public sealed class HostChannelPump : IAsyncDisposable
                 SafeLog(msg.Log);
                 break;
             default:
-                // WriteAck / ReadState / None: not this pump's concern (see class doc).
+                // WriteAck / ReadState / None: reserved for checkpoint tokens, not wired (see class doc).
                 break;
         }
     }

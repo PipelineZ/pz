@@ -97,7 +97,7 @@ this tag; `release.yml` builds, tests (linux), packs, and pushes every package t
 
 ### What publishes, and what deliberately does not
 
-Four ids publish, and each has a real consumer:
+Five ids publish, and each has a real consumer:
 
 | Package | Who installs it |
 |---|---|
@@ -105,6 +105,7 @@ Four ids publish, and each has a real consumer:
 | `Pz.Connectors.Abstractions` | a connector author, as the ABI they compile against |
 | `Pz.Connectors.Toolkit` | a connector author, for the shared format codecs |
 | `Pz.Connectors.TestKit` | a connector author, for the acceptance suite |
+| `Pz.Connectors.Sdk` | a connector author, to serve and package an out-of-process connector |
 
 **`Pz.Cli` publishes as `pz`.** The project keeps its name; `<PackageId>pz</PackageId>` in
 `src/Pz.Cli/Pz.Cli.csproj` is the only place a published id differs from a project name, and

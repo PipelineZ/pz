@@ -59,6 +59,11 @@ scripts/verify-tool-install.sh
 # Native AOT runtime proof (publish native image → init/run/restore/PZ0360/PCP-spawn/MCP).
 # Also a PR CI gate (ci.yml's verify-aot job). Linux only.
 scripts/verify-aot.sh
+
+# Connector packaging proof (publish AOT, then self-contained, through Pz.Connectors.Sdk's
+# targets → pack → restore from a local feed → run both directions → `pz connector test`).
+# Also a PR CI gate (ci.yml's verify-aot job, alongside verify-aot.sh). Linux only.
+scripts/verify-sdk-package.sh
 ```
 
 `PZ_TESTS_OFFLINE=1` skips network-dependent tests. Tests that download a DuckDB extension carry
@@ -67,12 +72,17 @@ Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-b
 
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
 green. Five jobs: `build-test`, an ubuntu+windows matrix where both legs build but only ubuntu runs
-`dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — windows is build-only,
-because the docker suites can't pull Linux images there; `pack-and-verify` (ubuntu), which runs
-`scripts/verify-tool-install.sh` so the install path a stranger's first five commands depend on
-cannot silently rot; `format-extensions` (ubuntu), which runs the `Category=DuckDbExtension` tests
-(xlsx/avro, needing network to install DuckDB's excel/avro extensions) that `build-test` excludes;
-`verify-aot` (ubuntu), the Native AOT runtime proof; and `rust` (ubuntu), the Rust workspace's own
+the full `dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — windows instead
+runs just the `Category=Pcp` filter: the fixture's AF_UNIX listener fails to initialize on the windows
+runner (Winsock 10106), so every direct-spawn fact stays Windows-skipped there, but `ShimTests`'
+~20 pure-serialization facts (carrying the trait at class level, no socket involved) actually run and
+assert on windows; windows otherwise stays build-only because the docker suites
+can't pull Linux images there; `pack-and-verify` (ubuntu), which runs `scripts/verify-tool-install.sh`
+so the install path a stranger's first five commands depend on cannot silently rot; `format-extensions`
+(ubuntu), which runs the `Category=DuckDbExtension` tests (xlsx/avro, needing network to install
+DuckDB's excel/avro extensions) that `build-test` excludes; `verify-aot` (ubuntu), the Native AOT
+runtime proof, followed in the same job by `scripts/verify-sdk-package.sh` (the connector packaging
+proof, since both need the Native AOT toolchain); and `rust` (ubuntu), the Rust workspace's own
 fmt/clippy/test plus the conformance script. `release.yml` stays tag-triggered.
 
 ## Architecture
@@ -104,6 +114,7 @@ DuckDB is the buffer manager — the .NET side only ever holds in-flight Arrow b
 | `src/Pz.PackageManagement` | in-proc NuGet resolution, `pz.lock.json`, the out-of-process connector host (PCP) |
 | `src/Pz.Connectors.Abstractions` | **the connector ABI — the contract of the ecosystem**; may reference Apache.Arrow only |
 | `src/Pz.Connectors.TestKit` | acceptance/contract test suite every connector runs against |
+| `src/Pz.Connectors.Sdk` | the C# out-of-process connector SDK: serves any Abstractions connector over PCP (`PzConnectorHost.RunAsync`), prints its own manifest, ships the MSBuild packaging targets (Native AOT per RID by default) — published; the fixture `tests/fixtures/PcpFakeConnector` is built on it |
 | `src/Pz.Diagnostics` | typed events, ActivitySource, meters; console/NDJSON renderers over one event stream |
 | `src/Pz.State.Http` | pluggable state backend: `IKeyedStateStore` over a server's run-scoped HTTP state endpoints (ETag/`If-Match` CAS), keyed state only — referenced directly by `Pz.Cli` |
 | `src/Pz.State.SqlServer` | pluggable state backend: `IKeyedStateStore`/`IRunArtifactStore` over SQL Server, schema creation/migration, batched event persistence — referenced directly by `Pz.Cli`, not loaded as a connector |
@@ -137,7 +148,8 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   First-party code stays at zero trim/AOT warnings (analyzers error); the third-party
   assemblies whose internals warn (NuGet/Newtonsoft, SqlClient, DuckDB.NET, Sylvan, Parquet.Net,
   the Google stack) are runtime-proven by `scripts/verify-aot.sh` (a CI gate), which
-  drives init/run/restore/PZ0360/PCP-spawn/MCP against the native image.
+  drives init/run/restore/PZ0360/PCP-spawn/MCP against the native image. External C# connectors are
+  written against `Pz.Connectors.Sdk`, which serves the Abstractions ABI over PCP.
 - **DAG edges come from `ref()`/`source()`/`sink()` template calls at render time** (sandboxed
   Scriban, whitelisted functions only), never from parsing SQL. DuckDB still validates rendered SQL
   via EXPLAIN/PREPARE (validation tier 4). One narrow exception covers *derivation*, not edges:

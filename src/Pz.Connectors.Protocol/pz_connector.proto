@@ -16,6 +16,19 @@ service PzConnector {
   rpc TryNativeScan(NativeScanRequest) returns (NativeScanResponse);
   rpc PlanRead(PlanReadRequest) returns (stream PartitionMsg);
   rpc OpenReadStream(OpenReadRequest) returns (ReadStreamTicket);
+  // Plan-time, offline, side-effect-free: the connector's INaturalReadShapeSource answer for one
+  // dataset. A connector that has no such answer returns FULL; a host treats UNIMPLEMENTED the same
+  // way, so a connector built against an earlier v1 proto keeps working.
+  rpc GetNaturalReadShape(NaturalReadShapeRequest) returns (NaturalReadShapeResponse);
+  // Post-drain poll for a partition's opaque sync-state token (ISyncStatePartition). A pull, not a
+  // reverse-channel push: the data socket and HostChannel are independent streams, so a pushed token
+  // could arrive after the host observed end-of-stream and already polled -- a silently lost token.
+  // The host polls immediately after the partition's data stream ends, so the candidate must be
+  // observable before the connector writes end-of-stream on the data plane, and the plan for op_id
+  // must still resolve after the drain -- a connector that frees its plan at end-of-stream answers
+  // NOT_FOUND and fails the read. A connector that mints its token on a separate task and answers "no
+  // candidate" loses the token: the engine persists nothing and the feed replays next run.
+  rpc GetReadState(ReadStateRequest) returns (ReadStateResponse);
 
   // sink
   rpc TryNativeCopy(NativeCopyRequest) returns (NativeCopyResponse);
@@ -122,6 +135,21 @@ message OpenReadRequest {
   optional string resume_checkpoint = 4; // ICheckpointingPartition resume token
 }
 message ReadStreamTicket { bytes ticket = 1; } // exactly 16 random bytes, single-use
+message NaturalReadShapeRequest { string op_id = 1; DatasetSpecMsg spec = 2; } // op_id is for log correlation only: the host attaches no cancel ladder to this plan-time probe.
+message NaturalReadShapeResponse {
+  // Mirrors Pz.Connectors.Abstractions.NaturalReadShape. FULL is the zero value on purpose: an
+  // absent/defaulted answer means "not a feed".
+  enum Shape { FULL = 0; FEED = 1; }
+  Shape shape = 1;
+}
+// partition_id resolves against the plan made under op_id, exactly as OpenReadRequest does.
+// Unknown op or partition -> NOT_FOUND; a partition whose PartitionMsg.sync_state was false ->
+// FAILED_PRECONDITION.
+message ReadStateRequest { string op_id = 1; string partition_id = 2; }
+message ReadStateResponse {
+  // Absent = no candidate (ISyncStatePartition.TryGetSyncStateCandidate returned false).
+  optional string token = 1;
+}
 
 message NativeCopyRequest { string op_id = 1; OutputSpecMsg spec = 2; }
 message NativeCopyResponse {

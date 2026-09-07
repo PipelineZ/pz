@@ -1,9 +1,9 @@
 using System.Net.Sockets;
-using Apache.Arrow;
 using Apache.Arrow.Ipc;
+using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
 
-namespace PcpFakeConnector;
+namespace Pz.Connectors.Sdk;
 
 /// <summary>The connector side of the PCP data plane: a bare stream listener on
 /// <c>&lt;control socket&gt;.data</c> that speaks Arrow IPC and nothing else.
@@ -106,7 +106,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
             }
             catch (Exception ex) when (ex is OperationCanceledException or IOException or SocketException)
             {
-                // The host hung up or the fixture is shutting down. A write stream's loss already
+                // The host hung up or the connector is shutting down. A write stream's loss already
                 // faulted its Drained gate; a read stream's loss reaches the host as the truncated
                 // message written above.
             }
@@ -115,7 +115,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
                 // stderr is the diagnostics-of-last-resort channel, and it is never protocol: the
                 // truncation tells the host the stream failed, this says why.
                 await Console.Error.WriteLineAsync(
-                    $"PcpFakeConnector: data-plane connection failed: {ex}").ConfigureAwait(false);
+                    $"pz connector: data-plane connection failed: {ex}").ConfigureAwait(false);
             }
         }
         finally
@@ -154,23 +154,36 @@ internal sealed class DataPlaneListener : IAsyncDisposable
     private async Task ServeReadAsync(Socket connection, Stream stream, ReadTicket read)
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(_stopping.Token, read.OpToken);
-        var ct = linked.Token;
+        await ServeReadAsync(stream, read, linked.Token).ConfigureAwait(false);
+        connection.Shutdown(SocketShutdown.Send);
+    }
 
+    /// <summary>Schema, every batch, then -- only after a clean drain -- the partition's sync-state
+    /// candidate is captured and end-of-stream is written. The capture sits BEFORE end-of-stream on
+    /// purpose: the host polls GetReadState the moment it observes end-of-stream, so a token stored
+    /// any later could be missed. A drain that throws or is cancelled never reaches the capture, and
+    /// the host's truncation marker is what it sees instead.</summary>
+    internal static async Task ServeReadAsync(Stream stream, ReadTicket read, CancellationToken ct)
+    {
         using var writer = new ArrowStreamWriter(stream, read.Schema, leaveOpen: true);
         await writer.WriteStartAsync(ct).ConfigureAwait(false);
         await foreach (var batch in read.Partition.ReadAsync(read.Options, ct).ConfigureAwait(false))
         {
-            // The fixture stands where the engine stands in-proc, so it owns every batch the
-            // partition yields and disposes it the moment it is on the wire.
+            // The SDK stands where the engine stands in-proc: it owns every batch the partition
+            // yields and disposes it the moment it is on the wire.
             using (batch)
             {
                 await writer.WriteRecordBatchAsync(batch, ct).ConfigureAwait(false);
             }
         }
 
+        if (read.Partition is ISyncStatePartition sync)
+        {
+            read.Capture.Complete(sync.TryGetSyncStateCandidate(out var candidate) ? candidate : null);
+        }
+
         await writer.WriteEndAsync(ct).ConfigureAwait(false);
         await stream.FlushAsync(ct).ConfigureAwait(false);
-        connection.Shutdown(SocketShutdown.Send);
     }
 
     private async Task ServeWriteAsync(Stream stream, WriteTicket write)

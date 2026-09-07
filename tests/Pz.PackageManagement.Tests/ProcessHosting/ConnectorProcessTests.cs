@@ -14,8 +14,15 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 /// are no-op fictions on Windows, hence the platform attribute below -- same reasoning
 /// <see cref="Pz.Cli.Tests.RunRetentionFailureTests"/> already uses for the same trick. Every fact
 /// still carries its own <c>Skip.If(OperatingSystem.IsWindows(), ...)</c> so a Windows run reports
-/// these as skipped rather than simply absent.</summary>
+/// these as skipped rather than simply absent.
+///
+/// <para>Unlike this suite's siblings, these facts spawn bash scripts directly (not the
+/// <c>PcpFakeConnector</c> fixture) to drive <see cref="ConnectorProcess"/> lifecycle mechanics --
+/// spawn failure, stderr capture, socket-dir permissions, process-group kill via <c>pgrep</c> -- so
+/// every fact here stays Windows-skipped even though the AF_UNIX transport itself is now proven
+/// elsewhere in this category.</para></summary>
 [SupportedOSPlatform("linux")]
+[Trait("Category", "Pcp")]
 public sealed class ConnectorProcessTests : IDisposable
 {
     private readonly List<string> _socketDirs = [];
