@@ -51,6 +51,22 @@ public sealed class ProcessConnectorHostTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Load_with_telemetry_still_spawns_nothing_and_registers_the_connector()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var packagesRoot = NewPackageLayout();
+        var socketRoot = NewTempDir();
+
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            packagesRoot, [new ConnectorPackageRef(PackageId, PackageVersion)], socketRoot,
+            telemetry: new HostTelemetry("run-1", new Uri("http://127.0.0.1:4317")));
+
+        Assert.Equal(ConnectorName, host.Get(ConnectorName).Info.Name);
+        Assert.Empty(Directory.GetDirectories(socketRoot));
+    }
+
+    [SkippableFact]
     public async Task Unknown_connector_name_is_PZ0305()
     {
         Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
@@ -250,7 +266,8 @@ public sealed class ProcessConnectorHostTests : IDisposable
             NewPackageLayout(extraArgs: ["--endless-read", "--ignore-cancel"]),
             [new ConnectorPackageRef(PackageId, PackageVersion)],
             socketRoot, warn: null, logSink: null,
-            cancelGrace: TimeSpan.FromMilliseconds(500), shutdownGrace: TimeSpan.FromMilliseconds(500));
+            cancelGrace: TimeSpan.FromMilliseconds(500), shutdownGrace: TimeSpan.FromMilliseconds(500),
+            telemetry: HostTelemetry.None);
 
         var connector = (ISourceConnector)host.Get(ConnectorName);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });

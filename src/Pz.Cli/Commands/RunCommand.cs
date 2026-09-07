@@ -271,7 +271,7 @@ internal static class RunCommand
         try
         {
             (registry, host) = await ConnectorRegistryFactory.CreateAsync(
-                project, projectDir, noLockCheck, ct, runId);
+                project, projectDir, noLockCheck, ct, runId, otelEndpoint);
         }
         catch (PzValidationException ex)
         {

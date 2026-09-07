@@ -20,9 +20,14 @@ internal static class ConnectorRegistryFactory
     ///
     /// <para><paramref name="runId"/> scopes an out-of-process connector's sockets to the run directory;
     /// a verb with no run (validate/plan/connectors/mcp) passes none and gets a temp root the returned
-    /// <see cref="ConnectorHosts"/> owns and deletes. See <see cref="ProcessSocketRoot"/>.</para></summary>
+    /// <see cref="ConnectorHosts"/> owns and deletes. See <see cref="ProcessSocketRoot"/>.</para>
+    ///
+    /// <para><paramref name="otelEndpoint"/> is the same OTLP endpoint the engine exports to;
+    /// out-of-process connectors receive it in their handshake and export their own spans there. Null
+    /// keeps every child telemetry-free.</para></summary>
     public static async Task<(ConnectorRegistry Registry, ConnectorHosts? Hosts)> CreateAsync(
-        PzProject project, string projectDir, bool noLockCheck, CancellationToken ct, string? runId = null)
+        PzProject project, string projectDir, bool noLockCheck, CancellationToken ct, string? runId = null,
+        Uri? otelEndpoint = null)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -109,11 +114,12 @@ internal static class ConnectorRegistryFactory
             {
                 var (socketRoot, owned) = ProcessSocketRoot.Resolve(projectDir, runId);
                 ownedSocketRoot = owned ? socketRoot : null;
-                // logSink stays null: pz has no connector-log seam on the in-process side either, so
-                // there is nothing for a connector's LogEvent to fan into that would not be a new event
-                // contract invented here. HostChannelPump drops them.
+                // logSink stays null: connector LogEvents have no run-event contract yet, so
+                // HostChannelPump drops them. Telemetry is different: the child exports its own spans
+                // straight to the collector, so all it needs from here is where and under which run.
                 processHost = ProcessConnectorHost.LoadFromDirectory(
-                    packagesDir, outOfProcessRefs, socketRoot, warn: Warn);
+                    packagesDir, outOfProcessRefs, socketRoot, warn: Warn,
+                    telemetry: new HostTelemetry(runId, otelEndpoint));
             }
         }
         catch (Exception ex)
