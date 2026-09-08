@@ -78,9 +78,11 @@ public sealed class ConnectorTelemetryTests
     public async Task Flush_against_a_collector_that_accepts_but_never_answers_is_bounded_in_aggregate()
     {
         // A listener that accepts the TCP connection but never writes an HTTP/gRPC response is the
-        // case ForceFlush-then-Shutdown-sequentially would double-charge: each provider's own send
-        // blocks for the full bound waiting on a reply that never comes. Proves the two Shutdowns run
-        // concurrently rather than adding their bounds together.
+        // case a sequential shutdown would double-charge: each provider's own send blocks for its
+        // full ExportTimeout waiting on a reply that never comes. What is proven is the concurrency
+        // itself, by the elapsed time: run in parallel the pair costs about one ExportTimeout (2 s),
+        // in sequence about two (4 s), so an elapsed time under FlushBound (3 s) separates them. The
+        // outer WaitAsync stays a hang guard, not the claim -- 6 s passes either way.
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         _ = Task.Run(async () =>
@@ -106,8 +108,14 @@ public sealed class ConnectorTelemetryTests
             telemetry.Start($"http://127.0.0.1:{port}", Info, "");
             using (telemetry.ActivitySource.StartActivity("pending")) { }
 
+            var stopwatch = Stopwatch.StartNew();
             var flush = Task.Run(telemetry.FlushAndDispose);
             await flush.WaitAsync(ConnectorTelemetry.FlushBound * 2);
+            stopwatch.Stop();
+
+            Assert.True(
+                stopwatch.Elapsed < ConnectorTelemetry.FlushBound,
+                $"the two provider Shutdowns did not overlap: flush took {stopwatch.Elapsed}");
         }
         finally
         {
