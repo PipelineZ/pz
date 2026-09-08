@@ -218,3 +218,5 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   citation to a document outside this repository.
 - Versioning is MinVer from git tags (`v*` prefix); releases are tag-triggered and publish via NuGet
   trusted publishing (see `CONTRIBUTING.md`).
+- **Every release tag gets a `CHANGELOG.md` entry, in the same PR that cuts the tag.** Keep a
+  Changelog format, breaking changes first with a migration note. No tag without one.
