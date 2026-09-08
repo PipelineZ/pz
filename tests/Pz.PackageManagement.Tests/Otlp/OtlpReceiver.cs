@@ -52,7 +52,12 @@ internal sealed class OtlpReceiver : IAsyncDisposable
         return new OtlpReceiver(app, store, new Uri(address));
     }
 
-    public async Task<IReadOnlyList<Span>> WaitForSpansAsync(Func<IReadOnlyList<Span>, bool> ready, TimeSpan timeout)
+    /// <summary>Waits until <paramref name="ready"/> accepts what has arrived. A timeout throws a
+    /// <see cref="TimeoutException"/> naming every span received so far plus whatever
+    /// <paramref name="diagnostics"/> returns (a test passes the connector's stderr tail), so a failure
+    /// says what the child actually did rather than only that it never exported.</summary>
+    public async Task<IReadOnlyList<Span>> WaitForSpansAsync(
+        Func<IReadOnlyList<Span>, bool> ready, TimeSpan timeout, Func<string>? diagnostics = null)
     {
         using var cts = new CancellationTokenSource(timeout);
         while (true)
@@ -64,12 +69,21 @@ internal sealed class OtlpReceiver : IAsyncDisposable
                 return spans;
             }
 
-            await changed.WaitAsync(cts.Token);
+            try
+            {
+                await changed.WaitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException(
+                    $"no matching span export within {timeout}; spans so far: [{string.Join(", ", Spans.Select(s => s.Name))}]"
+                    + Describe(diagnostics));
+            }
         }
     }
 
     public async Task<IReadOnlyList<ResourceMetrics>> WaitForMetricsAsync(
-        Func<IReadOnlyList<ResourceMetrics>, bool> ready, TimeSpan timeout)
+        Func<IReadOnlyList<ResourceMetrics>, bool> ready, TimeSpan timeout, Func<string>? diagnostics = null)
     {
         using var cts = new CancellationTokenSource(timeout);
         while (true)
@@ -81,8 +95,24 @@ internal sealed class OtlpReceiver : IAsyncDisposable
                 return metrics;
             }
 
-            await changed.WaitAsync(cts.Token);
+            try
+            {
+                await changed.WaitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                var names = ResourceMetrics.SelectMany(r => r.ScopeMetrics).SelectMany(s => s.Metrics).Select(m => m.Name);
+                throw new TimeoutException(
+                    $"no matching metric export within {timeout}; instruments so far: [{string.Join(", ", names)}]"
+                    + Describe(diagnostics));
+            }
         }
+    }
+
+    private static string Describe(Func<string>? diagnostics)
+    {
+        var text = diagnostics?.Invoke();
+        return string.IsNullOrWhiteSpace(text) ? string.Empty : Environment.NewLine + "connector stderr:" + Environment.NewLine + text;
     }
 
     public async ValueTask DisposeAsync()

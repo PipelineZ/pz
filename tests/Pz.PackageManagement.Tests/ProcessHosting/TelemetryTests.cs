@@ -91,7 +91,8 @@ public sealed class TelemetryTests : IDisposable
         // `client` disposed above: Shutdown RPC -> the child flushed before exiting.
 
         var spans = await receiver.WaitForSpansAsync(
-            s => s.Any(x => x.Name == "pcp.read_stream") && s.Any(x => x.Name == "pcp.CommitWrite"), WaitTimeout);
+            s => s.Any(x => x.Name == "pcp.read_stream") && s.Any(x => x.Name == "pcp.CommitWrite"), WaitTimeout,
+            () => process.StderrTail);
 
         var planRead = Assert.Single(spans, s => s.Name == "pcp.PlanRead");
         Assert.Equal(traceId, Hex(planRead.TraceId));
@@ -119,7 +120,7 @@ public sealed class TelemetryTests : IDisposable
         // exports on the same Shutdown, but on its own connection, so this needs its own gate rather
         // than riding on the span wait above.
         var metrics = await receiver.WaitForMetricsAsync(
-            m => m.Any(r => Instruments(r).Any(i => i.Name == FixtureCounter)), WaitTimeout);
+            m => m.Any(r => Instruments(r).Any(i => i.Name == FixtureCounter)), WaitTimeout, () => process.StderrTail);
         var metricResource = Assert.Single(metrics, r => Instruments(r).Any(i => i.Name == FixtureCounter));
         Assert.Contains(metricResource.Resource.Attributes,
             a => a.Key == "service.name" && a.Value.StringValue == "pz-connector");

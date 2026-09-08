@@ -66,8 +66,15 @@ public sealed class RustSinkTelemetryTests : IDisposable
         ActivitySource.AddActivityListener(listener);
         using var source = new ActivitySource(sourceName);
 
+        // Phase timings ride along on a failure: a flush that missed its bound looks exactly like a
+        // connector that never exported unless the report says how long each step took.
+        var clock = Stopwatch.StartNew();
+        var marks = new List<string>();
+        void Mark(string phase) => marks.Add($"{phase}@{clock.ElapsedMilliseconds}ms");
+
         await using var process = ConnectorProcess.Spawn(binary!, NewSocketDir(), "memory-sink");
         var config = new ConnectorConfig(new Dictionary<string, object?>());
+        string Diagnostics() => string.Join(" ", marks) + Environment.NewLine + process.StderrTail;
 
         string traceId, hostSpanId;
         using (var root = source.StartActivity("node.SinkWrite")!)
@@ -77,6 +84,7 @@ public sealed class RustSinkTelemetryTests : IDisposable
 
             await using var client = await PcpClient.ConnectAndConfigureAsync(
                 process, null, "mem", config, new HostTelemetry("run-rs", receiver.Endpoint), CancellationToken.None);
+            Mark("configured");
             var connector = new ProcessSinkConnector(client, process);
             await using var sink = await connector.OpenAsync(config, CancellationToken.None);
             var schema = BuildSchema();
@@ -89,14 +97,18 @@ public sealed class RustSinkTelemetryTests : IDisposable
 
             var result = await session.CommitAsync(CancellationToken.None);
             Assert.Equal(3, result.RowsWritten);
+            Mark("committed");
         }
+
+        Mark("client-disposed");
 
         // A batching receiver can flush pcp.CommitWrite before pcp.write_stream's own export lands, so
         // wait on all three spans this assertion block needs rather than just the last one issued.
         var spans = await receiver.WaitForSpansAsync(
             s => s.Any(x => x.Name == "pcp.BeginWrite") && s.Any(x => x.Name == "pcp.write_stream")
                 && s.Any(x => x.Name == "pcp.CommitWrite"),
-            WaitTimeout);
+            WaitTimeout,
+            Diagnostics);
 
         var begin = Assert.Single(spans, s => s.Name == "pcp.BeginWrite");
         Assert.Equal(traceId, Hex(begin.TraceId));
@@ -121,7 +133,7 @@ public sealed class RustSinkTelemetryTests : IDisposable
         // longer than this test, so what lands here is the flush the Shutdown RPC drove -- the same
         // bounded shutdown the spans above rode on, over its own connection.
         var metrics = await receiver.WaitForMetricsAsync(
-            m => m.Any(r => Instruments(r).Any(i => i.Name == ExampleCounter)), WaitTimeout);
+            m => m.Any(r => Instruments(r).Any(i => i.Name == ExampleCounter)), WaitTimeout, Diagnostics);
         var metricResource = Assert.Single(metrics, r => Instruments(r).Any(i => i.Name == ExampleCounter));
         Assert.Contains(metricResource.Resource.Attributes,
             a => a.Key == "service.name" && a.Value.StringValue == "pz-connector");

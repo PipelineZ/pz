@@ -4,6 +4,7 @@
 //! the data plane carries none, so a write stream inherits the `BeginWrite` RPC's context through
 //! its `SessionState`.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -112,14 +113,34 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
     // span opens h2/hyper/tonic spans, which the layer would turn into spans to export, which open
     // more -- a feedback loop that buries the handful of `pcp.*` spans under hundreds of
     // `queue_frame`/`FramedWrite::buffer` ones. Everything else stays at DEBUG so a connector
-    // author's own instrumentation is exported.
+    // author's own instrumentation is exported. The OpenTelemetry crates' own internal events are
+    // kept out of the export for the same reason and go to stderr instead (below).
     let filter = Targets::new()
         .with_default(LevelFilter::DEBUG)
         .with_target("h2", LevelFilter::OFF)
         .with_target("hyper", LevelFilter::OFF)
         .with_target("hyper_util", LevelFilter::OFF)
         .with_target("tonic", LevelFilter::OFF)
-        .with_target("tower", LevelFilter::OFF);
+        .with_target("tower", LevelFilter::OFF)
+        .with_target("opentelemetry", LevelFilter::OFF)
+        .with_target("opentelemetry_sdk", LevelFilter::OFF)
+        .with_target("opentelemetry-otlp", LevelFilter::OFF)
+        .with_target("opentelemetry_otlp", LevelFilter::OFF);
+    // A failed export is otherwise invisible: the SDK reports it as a `tracing` warning under its own
+    // crate targets, and nothing would be listening. Those warnings go to stderr, which the host
+    // keeps as the process's failure tail, so a connector that exports nothing can say why.
+    let internal = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_ansi(false)
+        .with_target(true)
+        .without_time()
+        .with_filter(
+            Targets::new()
+                .with_target("opentelemetry", LevelFilter::WARN)
+                .with_target("opentelemetry_sdk", LevelFilter::WARN)
+                .with_target("opentelemetry-otlp", LevelFilter::WARN)
+                .with_target("opentelemetry_otlp", LevelFilter::WARN),
+        );
     // Source location, thread identity and the busy/idle timing fields are off: they would put
     // `code.filepath` (this crate's absolute path on whoever built the binary), `code.lineno`,
     // `thread.*`, `busy_ns` and `idle_ns` on every exported span, which the C# SDK's spans do not
@@ -132,7 +153,10 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
         .with_tracked_inactivity(false)
         .with_filter(filter);
 
-    if tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer)).is_err()
+    if tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(layer).with(internal),
+    )
+    .is_err()
     {
         // The author installed their own subscriber before `serve_sink` ran; theirs wins and the
         // OpenTelemetry layer is simply absent. The provider it would have fed is shut down rather
@@ -169,18 +193,42 @@ pub(crate) async fn flush_and_shutdown() {
     let Some(providers) = PROVIDERS.get() else {
         return;
     };
-    let traces = tokio::task::spawn_blocking(|| {
-        if let Some(tracer) = providers.tracer.as_ref() {
-            let _ = tracer.shutdown();
-        }
-    });
-    let metrics = tokio::task::spawn_blocking(|| {
-        let _ = providers.meter.shutdown();
-    });
-    let _ = tokio::time::timeout(FLUSH_BOUND, async {
+    let traces_done = Arc::new(AtomicBool::new(false));
+    let metrics_done = Arc::new(AtomicBool::new(false));
+    let traces = {
+        let done = traces_done.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(tracer) = providers.tracer.as_ref() {
+                let _ = tracer.shutdown();
+            }
+            done.store(true, Ordering::Release);
+        })
+    };
+    let metrics = {
+        let done = metrics_done.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = providers.meter.shutdown();
+            done.store(true, Ordering::Release);
+        })
+    };
+    let started = std::time::Instant::now();
+    if tokio::time::timeout(FLUSH_BOUND, async {
         let _ = tokio::join!(traces, metrics);
     })
-    .await;
+    .await
+    .is_err()
+    {
+        // The bound is the contract: exit is never delayed, so whatever was still in flight is lost.
+        // Say so, because a connector that exported nothing is otherwise indistinguishable from one
+        // that had nothing to export.
+        eprintln!(
+            "telemetry: flush exceeded {}ms after {}ms; still pending: traces={} metrics={}",
+            FLUSH_BOUND.as_millis(),
+            started.elapsed().as_millis(),
+            !traces_done.load(Ordering::Acquire),
+            !metrics_done.load(Ordering::Acquire),
+        );
+    }
 }
 
 struct HeaderExtractor<'a>(&'a http::HeaderMap);
