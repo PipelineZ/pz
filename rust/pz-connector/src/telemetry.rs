@@ -120,14 +120,16 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
         .with_target("hyper_util", LevelFilter::OFF)
         .with_target("tonic", LevelFilter::OFF)
         .with_target("tower", LevelFilter::OFF);
-    // Source location and thread identity are off: they would put `code.filepath` (this crate's
-    // absolute path on whoever built the binary), `code.lineno` and `thread.*` on every exported span,
-    // which the C# SDK's spans do not carry -- an operator reading one trace must not find the two
-    // SDKs disagreeing about what a `pcp.*` span means.
+    // Source location, thread identity and the busy/idle timing fields are off: they would put
+    // `code.filepath` (this crate's absolute path on whoever built the binary), `code.lineno`,
+    // `thread.*`, `busy_ns` and `idle_ns` on every exported span, which the C# SDK's spans do not
+    // carry -- an operator reading one trace must not find the two SDKs disagreeing about what a
+    // `pcp.*` span means.
     let layer = tracing_opentelemetry::layer()
         .with_tracer(tracer.tracer(SCOPE_NAME))
         .with_location(false)
         .with_threads(false)
+        .with_tracked_inactivity(false)
         .with_filter(filter);
 
     if tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer)).is_err()
@@ -213,7 +215,9 @@ fn span_name(path: &str) -> Option<String> {
 }
 
 /// One `pcp.<Rpc>` server span per control-plane request, parented on the request's `traceparent`
-/// and tagged with the connection name once `Configure` has run. Applied as a tower layer so the
+/// and tagged `pz.instance` with the host's instance id (the `instance_id` sent with `Configure`:
+/// a connection name when the host threaded one in, else `<connector>#<n>`) once `Configure` has
+/// run. Applied as a tower layer so the
 /// span wraps the whole RPC future, streaming responses included, with no per-handler code.
 #[derive(Clone)]
 pub(crate) struct PcpMakeSpan {

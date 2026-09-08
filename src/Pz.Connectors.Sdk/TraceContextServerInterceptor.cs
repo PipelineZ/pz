@@ -13,35 +13,74 @@ namespace Pz.Connectors.Sdk;
 /// span.</summary>
 internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry) : Interceptor
 {
+    // Each handler restores the ambient activity itself: a root span's Stop sets Activity.Current to
+    // its (null) parent, not to whatever was current before the RPC, so anything the hosting
+    // pipeline runs after the handler would otherwise lose its correlation on header-less RPCs.
     public override async Task<TResponse> UnaryServerHandler<TRequest, TResponse>(
         TRequest request, ServerCallContext context, UnaryServerMethod<TRequest, TResponse> continuation)
     {
+        var ambient = Activity.Current;
         using var activity = Begin(context);
-        return await continuation(request, context).ConfigureAwait(false);
+        try
+        {
+            return await continuation(request, context).ConfigureAwait(false);
+        }
+        finally
+        {
+            activity?.Stop();
+            Activity.Current = ambient;
+        }
     }
 
     public override async Task ServerStreamingServerHandler<TRequest, TResponse>(
         TRequest request, IServerStreamWriter<TResponse> responseStream, ServerCallContext context,
         ServerStreamingServerMethod<TRequest, TResponse> continuation)
     {
+        var ambient = Activity.Current;
         using var activity = Begin(context);
-        await continuation(request, responseStream, context).ConfigureAwait(false);
+        try
+        {
+            await continuation(request, responseStream, context).ConfigureAwait(false);
+        }
+        finally
+        {
+            activity?.Stop();
+            Activity.Current = ambient;
+        }
     }
 
     public override async Task<TResponse> ClientStreamingServerHandler<TRequest, TResponse>(
         IAsyncStreamReader<TRequest> requestStream, ServerCallContext context,
         ClientStreamingServerMethod<TRequest, TResponse> continuation)
     {
+        var ambient = Activity.Current;
         using var activity = Begin(context);
-        return await continuation(requestStream, context).ConfigureAwait(false);
+        try
+        {
+            return await continuation(requestStream, context).ConfigureAwait(false);
+        }
+        finally
+        {
+            activity?.Stop();
+            Activity.Current = ambient;
+        }
     }
 
     public override async Task DuplexStreamingServerHandler<TRequest, TResponse>(
         IAsyncStreamReader<TRequest> requestStream, IServerStreamWriter<TResponse> responseStream,
         ServerCallContext context, DuplexStreamingServerMethod<TRequest, TResponse> continuation)
     {
+        var ambient = Activity.Current;
         using var activity = Begin(context);
-        await continuation(requestStream, responseStream, context).ConfigureAwait(false);
+        try
+        {
+            await continuation(requestStream, responseStream, context).ConfigureAwait(false);
+        }
+        finally
+        {
+            activity?.Stop();
+            Activity.Current = ambient;
+        }
     }
 
     /// <summary>Null when nothing is exporting (no listener, so <c>StartActivity</c> is the BCL no-op)

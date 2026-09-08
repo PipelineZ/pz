@@ -33,8 +33,10 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
 
     public Meter Meter { get; } = new(SourceName);
 
-    /// <summary>The connection name this process serves, known from Configure onward. A span tag, not
-    /// a resource attribute, because providers are built at Handshake, before Configure runs.</summary>
+    /// <summary>The host's id for this connector instance (the <c>instance_id</c> it sent with Configure:
+    /// a connection name when the host threaded one in, else <c>&lt;connector&gt;#&lt;n&gt;</c>), known from
+    /// Configure onward. A span tag, not a resource attribute, because providers are built at Handshake,
+    /// before Configure runs.</summary>
     public string? InstanceId { get; set; }
 
     public bool IsExporting

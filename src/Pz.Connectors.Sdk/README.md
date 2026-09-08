@@ -63,7 +63,8 @@ one of its own spans is current. The SDK then:
   resource `service.name=pz-connector`, `service.version=<your ConnectorInfo.Version>`,
   `pz.connector.name`, `pz.run.id`;
 - opens a `pcp.<Rpc>` server span per RPC — every RPC but `HostChannel`, which lives as long as the
-  process — under the engine's node span, tagged `pz.instance` (the connection name), plus a
+  process — under the engine's node span, tagged `pz.instance` (the host's id for this connector
+  instance: today `<connector name>#<n>`, the n-th open of that connector in the run), plus a
   `pcp.read_stream`/`pcp.write_stream` span around each data-plane transfer. An RPC that arrives with
   no `traceparent` starts a new trace rather than attaching to anything;
 - flushes on shutdown, bounded to three seconds.
