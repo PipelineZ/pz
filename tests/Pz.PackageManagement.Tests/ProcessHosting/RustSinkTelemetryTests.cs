@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Google.Protobuf;
+using OpenTelemetry.Proto.Metrics.V1;
 using OpenTelemetry.Proto.Trace.V1;
 using Pz.Connectors.Abstractions;
 using Pz.PackageManagement.Hosting;
@@ -10,7 +11,8 @@ using Pz.PackageManagement.Tests.Otlp;
 
 namespace Pz.PackageManagement.Tests.ProcessHosting;
 
-/// <summary>The Rust SDK's half of trace propagation, against the built <c>memory_sink</c> example.
+/// <summary>The Rust SDK's half of telemetry export -- spans and meters -- against the built
+/// <c>memory_sink</c> example.
 /// Skips when the example is not built (scripts/rust-conformance.sh builds it and then runs this
 /// category), so a contributor without cargo still gets a green suite.</summary>
 [Trait("Category", "RustPcp")]
@@ -39,8 +41,16 @@ public sealed class RustSinkTelemetryTests : IDisposable
         return File.Exists(path) ? path : null;
     }
 
+    /// <summary>The instrument <c>rust/pz-connector/examples/memory_sink.rs</c> records one
+    /// <c>begin_write</c> on. Spelled out rather than referenced: the example is a separate executable
+    /// this assembly spawns.</summary>
+    private const string ExampleCounter = "pz.memory_sink.begin_write_calls";
+
+    private static IEnumerable<Metric> Instruments(ResourceMetrics resource) =>
+        resource.ScopeMetrics.SelectMany(s => s.Metrics);
+
     [SkippableFact]
-    public async Task Write_spans_from_the_rust_sdk_land_under_the_host_span()
+    public async Task Write_spans_and_meters_from_the_rust_sdk_reach_the_collector()
     {
         Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
         var binary = MemorySinkPath();
@@ -105,6 +115,22 @@ public sealed class RustSinkTelemetryTests : IDisposable
         Assert.Contains(resource.Attributes, a => a.Key == "service.name" && a.Value.StringValue == "pz-connector");
         Assert.Contains(resource.Attributes, a => a.Key == "pz.connector.name" && a.Value.StringValue == "memory-sink");
         Assert.Contains(resource.Attributes, a => a.Key == "pz.run.id" && a.Value.StringValue == "run-rs");
+
+        // The meter half: the example's counter, recorded inside begin_write on the meter the SDK's
+        // provider backs, arrives under the same resource. The PeriodicReader's export interval is far
+        // longer than this test, so what lands here is the flush the Shutdown RPC drove -- the same
+        // bounded shutdown the spans above rode on, over its own connection.
+        var metrics = await receiver.WaitForMetricsAsync(
+            m => m.Any(r => Instruments(r).Any(i => i.Name == ExampleCounter)), WaitTimeout);
+        var metricResource = Assert.Single(metrics, r => Instruments(r).Any(i => i.Name == ExampleCounter));
+        Assert.Contains(metricResource.Resource.Attributes,
+            a => a.Key == "service.name" && a.Value.StringValue == "pz-connector");
+        Assert.Contains(metricResource.Resource.Attributes,
+            a => a.Key == "pz.connector.name" && a.Value.StringValue == "memory-sink");
+        Assert.Contains(metricResource.Resource.Attributes,
+            a => a.Key == "pz.run.id" && a.Value.StringValue == "run-rs");
+        var counter = Assert.Single(Instruments(metricResource), i => i.Name == ExampleCounter);
+        Assert.Equal(1, Assert.Single(counter.Sum.DataPoints).AsInt);
     }
 
     private string NewSocketDir()

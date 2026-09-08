@@ -1,6 +1,8 @@
+using System.Diagnostics.Metrics;
 using Apache.Arrow;
 using Pz.Connector.LocalFiles;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Sdk;
 
 namespace PcpFakeConnector;
 
@@ -8,8 +10,22 @@ namespace PcpFakeConnector;
 /// staged misbehavior applied as a decoration: the SDK sees an ordinary connector object and answers
 /// honestly from what it implements, which is exactly what makes each switch reach the wire the way
 /// a real misbehaving connector would.</summary>
-internal sealed class StagedConnector(FixtureOptions options) : ISourceConnector, ISinkConnector
+internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext context)
+    : ISourceConnector, ISinkConnector
 {
+    /// <summary>The one instrument this fixture records on, so a host-side test can prove that a
+    /// connector's own metrics reach the collector the host named -- the meter half of the telemetry
+    /// contract, which the span assertions alone leave unproven. A static, connector-authored name;
+    /// nothing derived from configuration ever becomes an instrument name or a label.</summary>
+    internal const string ConfigureCounterName = "pz.fixture.configure_calls";
+
+    private readonly Counter<long> _configureCalls = context.Meter.CreateCounter<long>(ConfigureCounterName);
+
+    /// <summary>Counts one Configure, driven from the SDK's Configure hook (wired in <c>Program.cs</c>):
+    /// Configure is the SDK's own RPC handler, not a connector method, so this cannot be recorded from
+    /// inside the connector object itself.</summary>
+    internal void RecordConfigure() => _configureCalls.Add(1);
+
     /// <summary>The name this fixture registers under, distinct from the builtin's "localfiles" so a
     /// parity test can name both in one project.</summary>
     public const string ConnectorName = "localfiles-pcp";

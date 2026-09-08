@@ -31,6 +31,9 @@ internal static class Program
             return 1;
         }
 
+        // The hooks are built before the SDK constructs the connector, so the Configure hook reaches the
+        // instance through this holder rather than capturing it directly.
+        StagedConnector? connector = null;
         var hooks = new PcpServerHooks
         {
             HangHandshake = options.HangHandshake
@@ -38,12 +41,19 @@ internal static class Program
                 : null,
             IgnoreCancel = options.IgnoreCancel,
             IgnoreShutdown = options.IgnoreShutdown,
-            OnConfigure = options.MisreportName
-                ? () => Console.Error.WriteLine(StagedConnector.ConfiguredMarker)
-                : null,
+            OnConfigure = () =>
+            {
+                connector?.RecordConfigure();
+                if (options.MisreportName)
+                {
+                    Console.Error.WriteLine(StagedConnector.ConfiguredMarker);
+                }
+            },
         };
 
-        return await PzConnectorHost.RunAsync(passthrough, _ => new StagedConnector(options), hooks).ConfigureAwait(false);
+        return await PzConnectorHost
+            .RunAsync(passthrough, context => connector = new StagedConnector(options, context), hooks)
+            .ConfigureAwait(false);
     }
 }
 

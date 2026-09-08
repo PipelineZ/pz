@@ -3,6 +3,7 @@ using System.Globalization;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Google.Protobuf;
+using OpenTelemetry.Proto.Metrics.V1;
 using OpenTelemetry.Proto.Trace.V1;
 using Pz.Connector.LocalFiles;
 using Pz.Connectors.Abstractions;
@@ -13,9 +14,10 @@ using Pz.PackageManagement.Tests.Otlp;
 
 namespace Pz.PackageManagement.Tests.ProcessHosting;
 
-/// <summary>Trace propagation end to end, against the real fixture and a real OTLP receiver: the
-/// child's <c>pcp.*</c> spans arrive at the endpoint the host named, in the HOST's trace, under the
-/// host's span; and with no endpoint nothing arrives at all.</summary>
+/// <summary>Telemetry end to end, against the real fixture and a real OTLP receiver: the child's
+/// <c>pcp.*</c> spans arrive at the endpoint the host named, in the HOST's trace, under the host's
+/// span; the connector's own instrument arrives on the metrics signal with the same resource; and with
+/// no endpoint neither signal produces anything at all.</summary>
 [Trait("Category", "Pcp")]
 public sealed class TelemetryTests : IDisposable
 {
@@ -111,7 +113,29 @@ public sealed class TelemetryTests : IDisposable
         Assert.Contains(resource.Attributes, a => a.Key == "service.name" && a.Value.StringValue == "pz-connector");
         Assert.Contains(resource.Attributes, a => a.Key == "pz.connector.name" && a.Value.StringValue == "localfiles-pcp");
         Assert.Contains(resource.Attributes, a => a.Key == "pz.run.id" && a.Value.StringValue == "run-123");
+
+        // The metrics half of the same contract: the fixture's counter, recorded inside Configure on
+        // the SDK-provided Meter, reaches the same endpoint under the same resource. The MeterProvider
+        // exports on the same Shutdown, but on its own connection, so this needs its own gate rather
+        // than riding on the span wait above.
+        var metrics = await receiver.WaitForMetricsAsync(
+            m => m.Any(r => Instruments(r).Any(i => i.Name == FixtureCounter)), WaitTimeout);
+        var metricResource = Assert.Single(metrics, r => Instruments(r).Any(i => i.Name == FixtureCounter));
+        Assert.Contains(metricResource.Resource.Attributes,
+            a => a.Key == "service.name" && a.Value.StringValue == "pz-connector");
+        Assert.Contains(metricResource.Resource.Attributes,
+            a => a.Key == "pz.connector.name" && a.Value.StringValue == "localfiles-pcp");
+        var counter = Assert.Single(Instruments(metricResource), i => i.Name == FixtureCounter);
+        Assert.Equal(1, Assert.Single(counter.Sum.DataPoints).AsInt);
     }
+
+    /// <summary>The instrument name <c>PcpFakeConnector</c>'s <c>StagedConnector</c> records one Configure
+    /// on. Spelled out rather than referenced: the fixture is a separate executable this assembly spawns,
+    /// not a project reference.</summary>
+    private const string FixtureCounter = "pz.fixture.configure_calls";
+
+    private static IEnumerable<Metric> Instruments(ResourceMetrics resource) =>
+        resource.ScopeMetrics.SelectMany(s => s.Metrics);
 
     [SkippableFact]
     public async Task Without_an_endpoint_the_connector_exports_nothing()
@@ -144,6 +168,7 @@ public sealed class TelemetryTests : IDisposable
         // "nothing arrived by now" is a deterministic statement, not a race.
         Assert.True(process.HasExited);
         Assert.Empty(receiver.Spans);
+        Assert.Empty(receiver.ResourceMetrics);
     }
 
     // ---- helpers copied from HostChannelTests / ShimTests (private there) ----------------------

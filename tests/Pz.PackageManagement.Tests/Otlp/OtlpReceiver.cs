@@ -68,6 +68,23 @@ internal sealed class OtlpReceiver : IAsyncDisposable
         }
     }
 
+    public async Task<IReadOnlyList<ResourceMetrics>> WaitForMetricsAsync(
+        Func<IReadOnlyList<ResourceMetrics>, bool> ready, TimeSpan timeout)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        while (true)
+        {
+            var changed = _store.Changed;
+            var metrics = ResourceMetrics;
+            if (ready(metrics))
+            {
+                return metrics;
+            }
+
+            await changed.WaitAsync(cts.Token);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         await _app.StopAsync();

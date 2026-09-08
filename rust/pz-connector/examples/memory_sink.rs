@@ -4,13 +4,27 @@
 //! persisted -- there is no destination); `commit` reports the row/batch counts the conformance suite
 //! checks, and `abort` simply drops whatever was buffered.
 
+use std::sync::LazyLock;
+
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
+use opentelemetry::metrics::Counter;
 use pz_connector::{
     Config, ConnectorDecl, NativeCopy, OutputSpec, PzError, Sink, SinkConnector, WriteResult,
     WriteSession,
 };
+
+/// The one instrument this example records on, so the host-side telemetry test can prove a connector's
+/// own metrics reach the collector the host named. Built lazily rather than at startup: `meter()`
+/// resolves against the global provider, which `serve_sink` installs only once the host's handshake has
+/// named an endpoint. A static, connector-authored name -- nothing from the output spec ever becomes an
+/// instrument name or a label.
+static BEGIN_WRITE_CALLS: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    pz_connector::meter()
+        .u64_counter("pz.memory_sink.begin_write_calls")
+        .build()
+});
 
 struct MemorySinkConnector;
 
@@ -53,6 +67,8 @@ impl Sink for MemorySink {
         spec: OutputSpec,
         schema: SchemaRef,
     ) -> Result<Box<dyn WriteSession>, PzError> {
+        BEGIN_WRITE_CALLS.add(1, &[]);
+
         if spec.output == CONFORMANCE_PROBE_MISSING_OUTPUT {
             return Err(PzError::transient(
                 format!(
