@@ -1,4 +1,5 @@
 using Pz.Connectors.TestKit.Reference;
+using Pz.Core.Model;
 using Pz.Engine.Execution;
 
 namespace Pz.Engine.Tests.Execution;
@@ -43,5 +44,42 @@ public sealed class ConnectorRegistryTests
 
         Assert.True(registry.TryGetSource("dup", out _));
         Assert.True(registry.TryGetSink("dup", out _));
+    }
+
+    private static ConnectionDef Connection(string name, string connector) =>
+        new(name, connector, new Dictionary<string, object?> { ["root"] = "/data" }, [], "connections.yml");
+
+    // The connection name rides to an out-of-process host under the reserved key, so the host can name
+    // the instance (pz.instance on its spans) after the connection rather than by ordinal. A builtin
+    // gets the authored values and nothing else: it would receive the key as an unknown option.
+    [Fact]
+    public void ConfigFor_threads_the_connection_name_in_for_hosted_connectors_only()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("builtin", new InMemoryConnector());
+        registry.AddSink("hosted", new InMemoryConnector(), hosted: true);
+
+        var builtin = registry.ConfigFor(Connection("orders", "builtin"));
+        Assert.Equal(["root"], builtin.Values.Keys);
+
+        var hosted = registry.ConfigFor(Connection("orders", "hosted"));
+        Assert.Equal("orders", hosted.GetString(ConnectorRegistry.InstanceIdKey));
+        Assert.Equal("/data", hosted.GetString("root"));
+    }
+
+    // The key is host bookkeeping, never an authored option: whatever connections.yml says under it
+    // is replaced by the connection's own name, and the authored dictionary itself is left untouched.
+    [Fact]
+    public void ConfigFor_overrides_an_authored_instance_key_without_mutating_the_definition()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("hosted", new InMemoryConnector(), hosted: true);
+        var authored = new Dictionary<string, object?> { [ConnectorRegistry.InstanceIdKey] = "spoofed" };
+        var connection = new ConnectionDef("orders", "hosted", authored, [], "connections.yml");
+
+        var config = registry.ConfigFor(connection);
+
+        Assert.Equal("orders", config.GetString(ConnectorRegistry.InstanceIdKey));
+        Assert.Equal("spoofed", authored[ConnectorRegistry.InstanceIdKey]);
     }
 }

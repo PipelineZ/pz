@@ -89,11 +89,29 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
     public string ConnectionConfigSchema => _inner.ConnectionConfigSchema;
     public string DatasetConfigSchema => _inner.DatasetConfigSchema;
 
-    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
-        _inner.ValidateAsync(config, ct);
+    /// <summary>The host strips its own bookkeeping key (<c>__pz_instance</c>, the connection name it
+    /// names the instance after) before any config crosses to the connector. A connector is the only
+    /// place that can prove it never arrived, so every config this fixture is handed is checked.</summary>
+    private static void RefuseHostKeys(ConnectorConfig config)
+    {
+        foreach (var key in config.Values.Keys)
+        {
+            if (key.StartsWith("__pz", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"fixture: host bookkeeping key '{key}' reached the connector");
+            }
+        }
+    }
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
+    {
+        RefuseHostKeys(config);
+        return _inner.ValidateAsync(config, ct);
+    }
 
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
     {
+        RefuseHostKeys(config);
         if (options.FailCheckTransient)
         {
             throw new PzConnectorException(
@@ -105,12 +123,14 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
 
     async ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct)
     {
+        RefuseHostKeys(config);
         var source = await ((ISourceConnector)_inner).OpenAsync(config, ct).ConfigureAwait(false);
         return options.SyncState ? new StagedFeedSource(source, options) : new StagedSource(source, options);
     }
 
     async ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct)
     {
+        RefuseHostKeys(config);
         var sink = await ((ISinkConnector)_inner).OpenAsync(config, ct).ConfigureAwait(false);
         return new StagedSink(sink, options);
     }

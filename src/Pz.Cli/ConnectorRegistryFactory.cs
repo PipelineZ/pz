@@ -162,7 +162,9 @@ internal static class ConnectorRegistryFactory
 
     /// <summary>Registers every connector one host reports under both directions it implements. Which
     /// directions a hosted connector actually offers is the caller's question, exactly as it is for a
-    /// builtin — a connector implementing only one interface registers only on that side.</summary>
+    /// builtin — a connector implementing only one interface registers only on that side. Registered
+    /// as hosted, so the engine threads each connection's name in under
+    /// <see cref="ConnectorRegistry.InstanceIdKey"/> for the host to name the instance by.</summary>
     private static void Register(
         IReadOnlyList<ConnectorInfo> installed, Func<string, IConnector> get, ConnectorRegistry registry,
         IReadOnlyList<ConnectorRequirement> nonBuiltin)
@@ -172,12 +174,12 @@ internal static class ConnectorRegistryFactory
             var instance = get(info.Name);
             if (instance is ISourceConnector source)
             {
-                RegisterOrThrowCollision(() => registry.AddSource(info.Name, source), info.Name, nonBuiltin);
+                RegisterOrThrowCollision(() => registry.AddSource(info.Name, source, hosted: true), info.Name, nonBuiltin);
             }
 
             if (instance is ISinkConnector sink)
             {
-                RegisterOrThrowCollision(() => registry.AddSink(info.Name, sink), info.Name, nonBuiltin);
+                RegisterOrThrowCollision(() => registry.AddSink(info.Name, sink, hosted: true), info.Name, nonBuiltin);
             }
         }
     }

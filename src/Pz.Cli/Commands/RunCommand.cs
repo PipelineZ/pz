@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Diagnostics;
 using Pz.Cli;
 using Pz.Cli.Otel;
 using Pz.Cli.Rendering;
@@ -9,6 +10,7 @@ using Pz.Core.Model;
 using Pz.Core.Templating;
 using Pz.Core.Validation;
 using Pz.Diagnostics.Events;
+using Pz.Diagnostics.Otel;
 using Pz.DuckDb;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Events;
@@ -209,6 +211,20 @@ internal static class RunCommand
         // `pz retry` reaches this same seam through ExecuteRun, so both verbs are covered here.
         using var runDirLock = RunDirLock.Acquire(paths.RunDir);
 
+        // The ONLY place OTel providers get wired up — a no-op when otelEndpoint is null (OTel not
+        // configured), so PzActivitySource/PzMeters emission in the engine stays the documented
+        // zero-cost no-op. Wired this early so the run span below covers every phase, and disposed
+        // (flushed) at this method's natural exit, which is AFTER the run summary is printed below and
+        // after the connector hosts (declared later, so disposed earlier) have shut down.
+        await using var otel = OtelProviders.Create(otelEndpoint);
+
+        // Root span for the whole run, from here through finalize. Opened before the connector hosts
+        // spawn so every RPC the plan phase issues (handshake, configure, plan) joins this trace rather
+        // than starting one of its own; RunOrchestrator parents each node span on it.
+        using var runActivity = PzActivitySource.Instance.StartActivity("run");
+        runActivity?.SetTag("pz.run.id", runId);
+        runActivity?.SetTag("pz.run.project", project.Name);
+
         // Every run-time "note: " line routes through this one seam instead of a bare Console.WriteLine
         // per site, for two reasons. (1) json mode's "every stdout line parses as JSON" contract (spelled
         // out at the summary line below) must hold for every note -- the state-backend note, the
@@ -360,12 +376,6 @@ internal static class RunCommand
             Notice, Breakers: breakers, Reuse: reuse, SyncState: syncStateStore,
             RateLimiters: rateLimiters, SchemaBaselines: backends.Schemas, OnSourceDrift: project.OnSourceDrift);
 
-        // The ONLY place OTel providers get wired up — a no-op when
-        // otelEndpoint is null (OTel not configured), so PzActivitySource/PzMeters emission in the
-        // engine stays the documented zero-cost no-op. Disposed (flushed) at this method's natural
-        // exit, which is AFTER the run summary is printed below.
-        await using var otel = OtelProviders.Create(otelEndpoint);
-
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         ConsoleCancelEventHandler cancelHandler = (_, args) =>
         {
@@ -377,7 +387,8 @@ internal static class RunCommand
         RunResult result;
         try
         {
-            var options = new RunOptions(project.Engine.Threads, failFast, selection, project.Name, carriedForward);
+            var options = new RunOptions(project.Engine.Threads, failFast, selection, project.Name, carriedForward,
+                runActivity);
             result = await new RunOrchestrator(new KindDispatchingExecutor(), runCtx)
                 .ExecuteAsync(fullDag, options, linkedCts.Token);
         }

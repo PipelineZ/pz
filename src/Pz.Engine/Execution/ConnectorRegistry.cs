@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using Pz.Connectors.Abstractions;
+using Pz.Core.Model;
 
 namespace Pz.Engine.Execution;
 
@@ -10,8 +11,16 @@ namespace Pz.Engine.Execution;
 /// list every registered connector rather than look one up by name.</summary>
 public sealed class ConnectorRegistry
 {
+    /// <summary>Reserved connection key carrying the named connection an open belongs to, so an
+    /// out-of-process host can name the instance after the connection (<c>pz.instance</c> on its spans)
+    /// instead of by ordinal. Set by <see cref="ConfigFor"/> for hosted connectors only; the host strips
+    /// it before anything crosses to the connector, and a builtin never sees it. Never authored in
+    /// <c>connections.yml</c>: an authored value is overwritten.</summary>
+    public const string InstanceIdKey = "__pz_instance";
+
     private readonly Dictionary<string, ISourceConnector> _sources = [];
     private readonly Dictionary<string, ISinkConnector> _sinks = [];
+    private readonly HashSet<string> _hosted = new(StringComparer.Ordinal);
 
     /// <summary>Registers a source connector under <paramref name="name"/>. Throws
     /// <see cref="InvalidOperationException"/> if a source connector is already registered under that
@@ -21,25 +30,57 @@ public sealed class ConnectorRegistry
     /// same name as both a source and a sink (as builtins do for "localfiles") is unaffected. Callers
     /// must catch this exception (see <c>Pz.Cli.ConnectorRegistryFactory</c>, which translates it into a
     /// user-facing <c>PzValidationException</c>) — kept as a plain BCL exception rather than
-    /// <c>PzValidationException</c> so the Engine stays Core-free.</summary>
-    public void AddSource(string name, ISourceConnector connector)
+    /// <c>PzValidationException</c> so the Engine stays Core-free.
+    ///
+    /// <para><paramref name="hosted"/> marks a connector served by an out-of-process host, which is what
+    /// makes <see cref="ConfigFor"/> thread the connection name in under <see cref="InstanceIdKey"/>.</para></summary>
+    public void AddSource(string name, ISourceConnector connector, bool hosted = false)
     {
         if (!_sources.TryAdd(name, connector))
         {
             throw new InvalidOperationException(
                 $"a source connector named '{name}' is already registered; refusing to silently replace it");
         }
+
+        if (hosted)
+        {
+            _hosted.Add(name);
+        }
     }
 
     /// <summary>Registers a sink connector under <paramref name="name"/>. See <see cref="AddSource"/> for
-    /// the duplicate-name invariant this enforces.</summary>
-    public void AddSink(string name, ISinkConnector connector)
+    /// the duplicate-name invariant this enforces and for <paramref name="hosted"/>.</summary>
+    public void AddSink(string name, ISinkConnector connector, bool hosted = false)
     {
         if (!_sinks.TryAdd(name, connector))
         {
             throw new InvalidOperationException(
                 $"a sink connector named '{name}' is already registered; refusing to silently replace it");
         }
+
+        if (hosted)
+        {
+            _hosted.Add(name);
+        }
+    }
+
+    /// <summary>The connection config for one open, validate or check of <paramref name="connection"/>:
+    /// its authored values, plus -- when its connector is hosted out of process -- the connection name
+    /// under <see cref="InstanceIdKey"/>. Every engine call that hands a connector a
+    /// <see cref="ConnectorConfig"/> goes through here, so the instance id a host reports is the
+    /// connection name wherever the engine knows one.</summary>
+    public ConnectorConfig ConfigFor(ConnectionDef connection)
+    {
+        if (!_hosted.Contains(connection.Connector))
+        {
+            return new ConnectorConfig(connection.Connection);
+        }
+
+        var values = new Dictionary<string, object?>(connection.Connection, StringComparer.Ordinal)
+        {
+            [InstanceIdKey] = connection.Name,
+        };
+        return new ConnectorConfig(values);
     }
 
     public bool TryGetSource(string name, [NotNullWhen(true)] out ISourceConnector? connector) =>
