@@ -279,7 +279,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         // relies on below (class doc above), so opening it this early adds no network behavior --
         // including under force_universal.
         await using var source = connectorFound
-            ? await connector!.OpenAsync(new ConnectorConfig(def.Source.Connection), ct).ConfigureAwait(false)
+            ? await connector!.OpenAsync(connectors.ConfigFor(def.Source), ct).ConfigureAwait(false)
             : null;
         var spec = SpecBuilder.ForSourceLoad(def);
         ResolvedReadShape? shape = source is null ? null : ReadShapeResolver.Resolve(def.Dataset, source, spec);
@@ -726,7 +726,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "use on_delete: ignore, or an ApplyDeletes-capable sink (postgres, sqlserver)"));
         }
 
-        await using var sink = await connector.OpenAsync(new ConnectorConfig(def.Sink.Connection), ct).ConfigureAwait(false);
+        await using var sink = await connector.OpenAsync(connectors.ConfigFor(def.Sink), ct).ConfigureAwait(false);
         var spec = SpecBuilder.ForSinkOutput(def);
         if (forceUniversal)
         {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
@@ -14,17 +15,22 @@ internal abstract record TicketEntry;
 /// partition still produces a well-formed stream; the ABI requires it to equal the batches' schema
 /// exactly. <paramref name="Capture"/> is where the data plane parks the partition's sync-state
 /// candidate once the drain completed cleanly, before it writes end-of-stream -- GetReadState answers
-/// from it and never asks the partition again.</summary>
+/// from it and never asks the partition again. <paramref name="Parent"/> is the OpenReadStream RPC's
+/// span context: the data plane carries no headers, so the stream inherits the context of the RPC
+/// that minted its ticket.</summary>
 internal sealed record ReadTicket(
     Schema Schema,
     IDatasetPartition Partition,
     BatchOptions Options,
     CancellationToken OpToken,
-    SyncStateCapture Capture) : TicketEntry;
+    SyncStateCapture Capture,
+    ActivityContext Parent) : TicketEntry;
 
 /// <summary>Host -> connector: the data plane reads batches off the stream into
-/// <paramref name="Session"/> until end-of-stream, then releases CommitWrite.</summary>
-internal sealed record WriteTicket(WriteSessionState Session) : TicketEntry;
+/// <paramref name="Session"/> until end-of-stream, then releases CommitWrite.
+/// <paramref name="Parent"/> is the BeginWrite RPC's span context, so the write stream served later
+/// on the data plane nests under it.</summary>
+internal sealed record WriteTicket(WriteSessionState Session, ActivityContext Parent) : TicketEntry;
 
 /// <summary>One open sink write session, reachable from the control plane by session id and from the
 /// data plane by ticket.

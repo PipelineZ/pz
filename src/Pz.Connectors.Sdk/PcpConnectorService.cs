@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Globalization;
 using Apache.Arrow;
 using Google.Protobuf;
@@ -23,6 +24,7 @@ internal sealed class PcpConnectorService(
     IConnector connector,
     TicketRegistry tickets,
     HostChannelPeer peer,
+    ConnectorTelemetry telemetry,
     PcpServerHooks hooks,
     IHostApplicationLifetime lifetime) : PzConnector.PzConnectorBase
 {
@@ -66,6 +68,15 @@ internal sealed class PcpConnectorService(
             DatasetConfigSchema = connector.DatasetConfigSchema,
         };
         hello.Transports.Add(ProtocolConstants.TransportPipe);
+
+        // The endpoint is the host's own; absent means the host is not exporting either. Built here
+        // rather than at Configure so Validate/CheckConnection (which `pz connector test` calls
+        // without Configure) are covered too.
+        if (request.HostInfo is { HasOtelEndpoint: true } hostInfo)
+        {
+            telemetry.Start(hostInfo.OtelEndpoint, connector.Info, hostInfo.RunId);
+        }
+
         _handshaken = true;
         return hello;
     }
@@ -83,6 +94,7 @@ internal sealed class PcpConnectorService(
         }
 
         _config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
+        telemetry.InstanceId = request.InstanceId;
         hooks.OnConfigure?.Invoke();
 
         // One log event per Configure, always -- fields carry the connection NAME (instance_id) and the
@@ -223,7 +235,8 @@ internal sealed class PcpConnectorService(
                 partition,
                 SpecMapping.ToBatchOptions(request.Options),
                 OpToken(request.OpId),
-                plan.Captures.GetOrAdd(request.PartitionId, _ => new SyncStateCapture())));
+                plan.Captures.GetOrAdd(request.PartitionId, _ => new SyncStateCapture()),
+                Activity.Current?.Context ?? default));
             return Task.FromResult(new ReadStreamTicket { Ticket = ByteString.CopyFrom(ticket) });
         });
 
@@ -314,7 +327,7 @@ internal sealed class PcpConnectorService(
             return new WriteSessionTicket
             {
                 SessionId = state.SessionId,
-                Ticket = ByteString.CopyFrom(tickets.Mint(new WriteTicket(state))),
+                Ticket = ByteString.CopyFrom(tickets.Mint(new WriteTicket(state, Activity.Current?.Context ?? default))),
                 // Without this every PCP sink would look like DiscardsAll to the host, whatever it
                 // actually wraps -- the sink's own declaration crosses verbatim.
                 AbortSemantics = SpecMapping.ToAbortSemanticsMsg(sink.AbortSemantics),

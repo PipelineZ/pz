@@ -28,7 +28,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
         var relation = StagingNames.ForSinkInput(def.Output.Input);
 
         await using var sink = await connector.OpenAsync(
-            new ConnectorConfig(def.Sink.Connection), ct).ConfigureAwait(false);
+            ctx.Connectors.ConfigFor(def.Sink), ct).ConfigureAwait(false);
 
         // Hand a gate-aware sink its operation gate before any plan/write call. The gate exists even
         // with no pacing registry (op-level retry alone).

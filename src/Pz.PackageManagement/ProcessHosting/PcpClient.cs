@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
 using Grpc.Core;
+using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
@@ -89,7 +90,19 @@ public sealed class PcpClient : IAsyncDisposable
     public static Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
         ConnectorConfig config, CancellationToken ct) =>
-        ConnectAndConfigureAsync(process, manifest, instanceId, config, ProtocolConstants.HandshakeTimeout, ct);
+        ConnectAndConfigureAsync(process, manifest, instanceId, config, HostTelemetry.None, ProtocolConstants.HandshakeTimeout, ct);
+
+    public static Task<PcpClient> ConnectAndConfigureAsync(
+        ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
+        ConnectorConfig config, TimeSpan handshakeTimeout, CancellationToken ct) =>
+        ConnectAndConfigureAsync(process, manifest, instanceId, config, HostTelemetry.None, handshakeTimeout, ct);
+
+    /// <summary>Same discipline, with what the connector should know about the run and where to
+    /// export telemetry (<see cref="HostTelemetry"/>), carried in the handshake's <c>HostInfo</c>.</summary>
+    public static Task<PcpClient> ConnectAndConfigureAsync(
+        ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
+        ConnectorConfig config, HostTelemetry telemetry, CancellationToken ct) =>
+        ConnectAndConfigureAsync(process, manifest, instanceId, config, telemetry, ProtocolConstants.HandshakeTimeout, ct);
 
     /// <summary>Same as the five-argument overload, with an injectable handshake timeout — the only
     /// reason this overload exists is so a test can force a short one instead of waiting out the real
@@ -116,7 +129,7 @@ public sealed class PcpClient : IAsyncDisposable
     /// <c>handshakeCts</c>, not the caller's) and still maps to PZ0356.</para></summary>
     public static async Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
-        ConnectorConfig config, TimeSpan handshakeTimeout, CancellationToken ct)
+        ConnectorConfig config, HostTelemetry telemetry, TimeSpan handshakeTimeout, CancellationToken ct)
     {
         // h2c: SocketsHttpHandler refuses to negotiate HTTP/2 over a plaintext transport (there is no
         // TLS/ALPN here to advertise it) unless this switch is set. Idempotent, so setting it on every
@@ -164,7 +177,8 @@ public sealed class PcpClient : IAsyncDisposable
             },
         });
 
-        var grpc = new PzConnector.PzConnectorClient(channel);
+        // Every call, including the reverse channel, goes through the trace-context interceptor.
+        var grpc = new PzConnector.PzConnectorClient(channel.Intercept(new TraceContextInterceptor()));
 
         Hello hello;
         using (var handshakeCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
@@ -172,8 +186,16 @@ public sealed class PcpClient : IAsyncDisposable
             handshakeCts.CancelAfter(handshakeTimeout);
             try
             {
-                var request = new HandshakeRequest { ProtocolMajor = ProtocolVersion.Major, HostInfo = new HostInfo() };
+                var request = new HandshakeRequest
+                {
+                    ProtocolMajor = ProtocolVersion.Major,
+                    HostInfo = new HostInfo { RunId = telemetry.RunId ?? string.Empty },
+                };
                 request.HostInfo.Transports.Add(ProtocolConstants.TransportPipe);
+                if (telemetry.OtelEndpoint is { } endpoint)
+                {
+                    request.HostInfo.OtelEndpoint = endpoint.AbsoluteUri;
+                }
                 hello = await grpc.HandshakeAsync(request, cancellationToken: handshakeCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)

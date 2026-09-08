@@ -18,12 +18,15 @@ use tokio_stream::Stream;
 use tonic::transport::server::Connected;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
+use tracing::Span;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::config::Config;
 use crate::data_plane;
 use crate::error::{to_status, PzError};
 use crate::pb;
 use crate::pb::pz_connector_server::{PzConnector, PzConnectorServer};
+use crate::telemetry;
 use crate::ticket::{TicketEntry, TicketRegistry, TICKET_LENGTH};
 
 /// Protocol major this SDK speaks, mirrored from `Pz.Connectors.Abstractions.ProtocolVersion.Major`.
@@ -171,6 +174,9 @@ pub(crate) struct SessionState {
     /// `Cancel`/a `Shutdown`-triggered sweep use it to force a blocking read to fail, unblocking a pump
     /// that would otherwise wait forever for bytes the host is never going to send.
     data_conn: StdMutex<Option<StdUnixStream>>,
+    /// The `BeginWrite` RPC's trace context, captured when the session was created: the data plane
+    /// carries no headers, so the write stream served later is parented here.
+    pub(crate) parent: opentelemetry::Context,
 }
 
 impl SessionState {
@@ -178,6 +184,7 @@ impl SessionState {
         op_id: String,
         ticket: [u8; TICKET_LENGTH],
         session: Box<dyn WriteSession>,
+        parent: opentelemetry::Context,
     ) -> Arc<Self> {
         let (tx, rx) = oneshot::channel();
         Arc::new(SessionState {
@@ -187,6 +194,7 @@ impl SessionState {
             drained_tx: StdMutex::new(Some(tx)),
             drained_rx: AsyncMutex::new(Some(rx)),
             data_conn: StdMutex::new(None),
+            parent,
         })
     }
 
@@ -216,6 +224,7 @@ impl SessionState {
             "test-op".to_string(),
             TicketRegistry::generate(),
             Box::new(NullSession),
+            opentelemetry::Context::new(),
         )
     }
 
@@ -290,6 +299,9 @@ struct PzConnectorService<C: SinkConnector> {
     /// RPC can actually end the connection instead of leaving an in-flight stream that graceful
     /// shutdown would otherwise wait on forever.
     shutdown_rx: tokio::sync::watch::Receiver<bool>,
+    /// The configured connection's instance id, tagged onto every control-plane span. Shared with the
+    /// tower layer that makes those spans, which runs before any handler and so cannot read `config`.
+    instance: Arc<StdMutex<Option<String>>>,
 }
 
 impl<C: SinkConnector> PzConnectorService<C> {
@@ -331,7 +343,8 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         &self,
         request: Request<pb::HandshakeRequest>,
     ) -> Result<Response<pb::Hello>, Status> {
-        let host_major = request.into_inner().protocol_major;
+        let msg = request.into_inner();
+        let host_major = msg.protocol_major;
         if host_major != PROTOCOL_MAJOR {
             // Refused here rather than silently answering with our own major and letting the host
             // discover the mismatch some other way: the host's own `PcpClient` already treats a
@@ -341,6 +354,19 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             return Err(Status::failed_precondition(format!(
                 "host speaks protocol major {host_major}, this connector (pz-connector Rust SDK) speaks major {PROTOCOL_MAJOR}"
             )));
+        }
+
+        // Built here, not at Configure, so Validate/CheckConnection under `pz connector test` are
+        // covered. A telemetry failure is reported on stderr and never fails the handshake -- it can
+        // mean traces are off while metrics still work, which is why it does not say "disabled".
+        if let Some(host) = msg.host_info.as_ref() {
+            if let Some(endpoint) = host.otel_endpoint.as_deref() {
+                if let Err(e) =
+                    telemetry::start(endpoint, self.decl.name, self.decl.version, &host.run_id)
+                {
+                    eprintln!("pz-connector: telemetry: {e}");
+                }
+            }
         }
 
         Ok(Response::new(pb::Hello {
@@ -361,6 +387,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::ConfigureRequest>,
     ) -> Result<Response<pb::ConfigureResponse>, Status> {
         let msg = request.into_inner();
+        *self.instance.lock().unwrap() = Some(msg.instance_id.clone());
         *self.config.lock().unwrap() = Some(Config::from_struct(msg.config.as_ref()));
         Ok(Response::new(pb::ConfigureResponse {}))
     }
@@ -481,7 +508,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         // `abort_write` can revoke it later, and that means the bytes have to exist before the `Arc`
         // the registry entry wraps does.
         let ticket_bytes = TicketRegistry::generate();
-        let state = SessionState::new(msg.op_id, ticket_bytes, session);
+        let state = SessionState::new(msg.op_id, ticket_bytes, session, Span::current().context());
         self.sessions
             .lock()
             .unwrap()
@@ -941,6 +968,7 @@ async fn serve_sink_inner<C: SinkConnector>(
     // session's data connection after `service` itself has been moved into the server builder.
     let sessions: Arc<StdMutex<HashMap<String, Arc<SessionState>>>> =
         Arc::new(StdMutex::new(HashMap::new()));
+    let instance = Arc::new(StdMutex::new(None));
     let service = PzConnectorService {
         decl,
         connector,
@@ -950,6 +978,7 @@ async fn serve_sink_inner<C: SinkConnector>(
         tickets: tickets.clone(),
         shutdown_tx: shutdown_tx.clone(),
         shutdown_rx: shutdown_rx.clone(),
+        instance: instance.clone(),
     };
 
     let data_plane_task =
@@ -971,6 +1000,7 @@ async fn serve_sink_inner<C: SinkConnector>(
 
     let mut server_shutdown = shutdown_rx.clone();
     let serve_result = Server::builder()
+        .layer(telemetry::rpc_layer(instance))
         .add_service(PzConnectorServer::new(service))
         .serve_with_incoming_shutdown(incoming, async move {
             let _ = server_shutdown.wait_for(|stopped| *stopped).await;
@@ -991,6 +1021,9 @@ async fn serve_sink_inner<C: SinkConnector>(
         state.force_unblock();
     }
     let _ = data_plane_task.await;
+
+    // After every pump has ended, so nothing can start a span this flush would miss.
+    telemetry::flush_and_shutdown().await;
 
     serve_result.map_err(|e| anyhow::anyhow!("control-plane server failed: {e}"))?;
     Ok("received the Shutdown RPC (or the control-plane listener otherwise stopped)".to_string())

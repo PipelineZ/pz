@@ -3,14 +3,33 @@
 //! against. Every write's batches accumulate under its output name in memory (nothing is ever actually
 //! persisted -- there is no destination); `commit` reports the row/batch counts the conformance suite
 //! checks, and `abort` simply drops whatever was buffered.
+//!
+//! `--own-subscriber` makes it install its own `tracing` subscriber (a `fmt` layer to stderr) with
+//! `pz_connector::layer()` composed in before serving, the shape a connector with its own logging
+//! takes; the host-side telemetry facts run it both ways.
+
+use std::sync::LazyLock;
 
 use arrow::array::RecordBatch;
 use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
+use opentelemetry::metrics::Counter;
 use pz_connector::{
     Config, ConnectorDecl, NativeCopy, OutputSpec, PzError, Sink, SinkConnector, WriteResult,
     WriteSession,
 };
+use tracing_subscriber::layer::{Layer, SubscriberExt};
+
+/// The one instrument this example records on, so the host-side telemetry test can prove a connector's
+/// own metrics reach the collector the host named. Built lazily rather than at startup: `meter()`
+/// resolves against the global provider, which `serve_sink` installs only once the host's handshake has
+/// named an endpoint. A static, connector-authored name -- nothing from the output spec ever becomes an
+/// instrument name or a label.
+static BEGIN_WRITE_CALLS: LazyLock<Counter<u64>> = LazyLock::new(|| {
+    pz_connector::meter()
+        .u64_counter("pz.memory_sink.begin_write_calls")
+        .build()
+});
 
 struct MemorySinkConnector;
 
@@ -53,6 +72,8 @@ impl Sink for MemorySink {
         spec: OutputSpec,
         schema: SchemaRef,
     ) -> Result<Box<dyn WriteSession>, PzError> {
+        BEGIN_WRITE_CALLS.add(1, &[]);
+
         if spec.output == CONFORMANCE_PROBE_MISSING_OUTPUT {
             return Err(PzError::transient(
                 format!(
@@ -108,6 +129,19 @@ impl WriteSession for MemoryWriteSession {
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().any(|a| a == "--own-subscriber") {
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(std::io::stderr)
+                        .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+                )
+                .with(pz_connector::layer()),
+        )
+        .expect("memory_sink: the first subscriber in the process");
+    }
+
     let decl = ConnectorDecl {
         name: "memory-sink",
         version: env!("CARGO_PKG_VERSION"),

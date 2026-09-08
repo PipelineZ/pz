@@ -4,8 +4,10 @@ using System.Runtime.Versioning;
 using System.Text.Json;
 using Pz.Connector.LocalFiles;
 using Pz.Connectors.Abstractions;
+using System.Diagnostics;
 using Pz.PackageManagement.Hosting;
 using Pz.PackageManagement.ProcessHosting;
+using Pz.PackageManagement.Tests.Otlp;
 
 namespace Pz.PackageManagement.Tests.ProcessHosting;
 
@@ -47,6 +49,22 @@ public sealed class ProcessConnectorHostTests : IDisposable
 
         // Identity answered from the manifest, so nothing was started to answer it: a spawn is exactly
         // what creates a subdirectory of the run-scoped socket root.
+        Assert.Empty(Directory.GetDirectories(socketRoot));
+    }
+
+    [SkippableFact]
+    public async Task Load_with_telemetry_still_spawns_nothing_and_registers_the_connector()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var packagesRoot = NewPackageLayout();
+        var socketRoot = NewTempDir();
+
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            packagesRoot, [new ConnectorPackageRef(PackageId, PackageVersion)], socketRoot,
+            telemetry: new HostTelemetry("run-1", new Uri("http://127.0.0.1:4317")));
+
+        Assert.Equal(ConnectorName, host.Get(ConnectorName).Info.Name);
         Assert.Empty(Directory.GetDirectories(socketRoot));
     }
 
@@ -169,6 +187,63 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.False(Directory.Exists(socketDir));
     }
 
+    /// <summary>The engine threads the connection name in under <see cref="ProcessConnectorHost.InstanceIdKey"/>;
+    /// the host names the instance after it and strips the key before anything crosses to the connector.
+    /// The fixture throws on any config that still carries a host key, so every RPC below doubles as
+    /// the strip's proof: Validate and CheckConnection put their config on the wire, Configure is what
+    /// Open rides on. The spans that arrive at the collector then say what the instance was called.</summary>
+    [SkippableFact]
+    public async Task Instance_key_names_the_instance_and_never_reaches_the_connector()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        await using var receiver = await OtlpReceiver.StartAsync();
+        var sourceName = "pz-host-" + Guid.NewGuid().ToString("N");
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == sourceName,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+        };
+        ActivitySource.AddActivityListener(listener);
+        using var tracing = new ActivitySource(sourceName);
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 3);
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir(),
+            telemetry: new HostTelemetry("run-1", receiver.Endpoint));
+        var connector = (ISourceConnector)host.Get(ConnectorName);
+        var config = new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["root"] = dataDir,
+            [ProcessConnectorHost.InstanceIdKey] = "orders",
+        });
+
+        using (tracing.StartActivity("node.SourceLoad"))
+        {
+            Assert.True((await connector.ValidateAsync(config, CancellationToken.None)).IsValid);
+            Assert.True((await connector.CheckConnectionAsync(config, CancellationToken.None)).Ok);
+            await using var source = await connector.OpenAsync(config, CancellationToken.None);
+            var spec = new DatasetSpec("files", "orders", new Dictionary<string, object?>
+            {
+                ["path"] = "small.csv",
+                ["format"] = "csv",
+                ["columns"] = CsvColumns,
+            });
+            await source.GetSchemaAsync(spec, CancellationToken.None);
+        }
+
+        await host.DisposeAsync();
+
+        var spans = await receiver.WaitForSpansAsync(
+            s => s.Any(x => x.Name == "pcp.GetSchema"), TimeSpan.FromSeconds(20));
+        var getSchema = Assert.Single(spans, s => s.Name == "pcp.GetSchema");
+        Assert.Contains(getSchema.Attributes, a => a.Key == "pz.instance" && a.Value.StringValue == "orders");
+        // The throwaway instances Validate and CheckConnection spawned were named the same way.
+        Assert.All(spans.Where(s => s.Name is "pcp.Validate" or "pcp.CheckConnection"),
+            s => Assert.Contains(s.Attributes, a => a.Key == "pz.instance" && a.Value.StringValue == "orders"));
+    }
+
     /// <summary>The exact shape a real <c>pz restore</c> leaves behind on Unix: a materialized package
     /// whose entrypoint carries no execute bit at all, because nothing in the NuGet extraction path
     /// sets one (see ManifestReader.ResolveEntrypoint's doc comment). Load AND a real spawn must both
@@ -250,7 +325,8 @@ public sealed class ProcessConnectorHostTests : IDisposable
             NewPackageLayout(extraArgs: ["--endless-read", "--ignore-cancel"]),
             [new ConnectorPackageRef(PackageId, PackageVersion)],
             socketRoot, warn: null, logSink: null,
-            cancelGrace: TimeSpan.FromMilliseconds(500), shutdownGrace: TimeSpan.FromMilliseconds(500));
+            cancelGrace: TimeSpan.FromMilliseconds(500), shutdownGrace: TimeSpan.FromMilliseconds(500),
+            telemetry: HostTelemetry.None);
 
         var connector = (ISourceConnector)host.Get(ConnectorName);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });

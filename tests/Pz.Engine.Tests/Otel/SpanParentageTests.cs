@@ -68,6 +68,39 @@ public sealed class SpanParentageTests : IAsyncLifetime
         return new CompiledDag([sourceNode, pipelineNode, sinkNode]);
     }
 
+    /// <summary>The CLI opens the <c>run</c> span itself, around every phase, and hands it in: node spans
+    /// then parent on that span and no second <c>run</c> span opens, so the trace keeps the documented
+    /// run -&gt; node shape with the plan phase inside it.</summary>
+    [Fact]
+    public async Task A_run_span_handed_in_by_the_caller_is_the_only_run_span_and_the_parent_of_every_node()
+    {
+        var activities = new ConcurrentBag<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == PzActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activities.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        string runSpanId;
+        using (var callerRun = PzActivitySource.Instance.StartActivity("run")!)
+        {
+            runSpanId = callerRun.SpanId.ToHexString();
+            var orchestrator = new RunOrchestrator(new KindDispatchingExecutor(), _ctx);
+            var result = await orchestrator.ExecuteAsync(
+                ThreeNodeDag(rows: 5), new RunOptions(MaxConcurrency: 4, RunActivity: callerRun), default);
+            Assert.Equal(RunStatus.Success, result.Status);
+        }
+
+        var runSpan = Assert.Single(activities,
+            a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == _runId);
+        Assert.Equal(runSpanId, runSpan.SpanId.ToHexString());
+
+        var nodeSpans = activities.Where(a => a.OperationName.StartsWith("node.") && a.ParentSpanId == runSpan.SpanId);
+        Assert.Equal(3, nodeSpans.Count());
+    }
+
     [Fact]
     public async Task Run_node_stage_span_tree_parents_correctly_and_rows_metric_sums()
     {

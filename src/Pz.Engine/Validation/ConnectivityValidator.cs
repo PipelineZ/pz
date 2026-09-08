@@ -49,7 +49,7 @@ public static class ConnectivityValidator
                 : null;
             if (connector is not null)
             {
-                connectionProbes.Add(ProbeConnectionAsync(connector, connection.Connection, "connection",
+                connectionProbes.Add(ProbeConnectionAsync(connector, registry.ConfigFor(connection), "connection",
                     connection.Name, connection.FilePath, ct));
             }
         }
@@ -67,19 +67,20 @@ public static class ConnectivityValidator
                 continue;
             }
 
-            await ProbeSourceSchemasAsync(connector, source, errors, fetchedSchemas, ct).ConfigureAwait(false);
+            await ProbeSourceSchemasAsync(connector, registry.ConfigFor(source), source, errors, fetchedSchemas, ct)
+                .ConfigureAwait(false);
         }
 
         return new ConnectivityResult(errors, fetchedSchemas);
     }
 
     private static async Task<PzError?> ProbeConnectionAsync(IConnector connector,
-        IReadOnlyDictionary<string, object?> connection, string kind, string name, string filePath, CancellationToken ct)
+        ConnectorConfig config, string kind, string name, string filePath, CancellationToken ct)
     {
         try
         {
             var check = await WithTimeoutAsync(
-                t => connector.CheckConnectionAsync(new ConnectorConfig(connection), t), ct).ConfigureAwait(false);
+                t => connector.CheckConnectionAsync(config, t), ct).ConfigureAwait(false);
             if (check.Ok)
             {
                 return null;
@@ -107,14 +108,14 @@ public static class ConnectivityValidator
     /// <summary>Opens <paramref name="source"/> exactly once and fetches every declared
     /// dataset's schema through it; any failure while opening or fetching is caught and reported as one
     /// PZ0330 naming the source, without aborting probing of any OTHER source.</summary>
-    private static async Task ProbeSourceSchemasAsync(ISourceConnector connector, ConnectionDef source,
-        List<PzError> errors, Dictionary<string, string> fetchedSchemas, CancellationToken ct)
+    private static async Task ProbeSourceSchemasAsync(ISourceConnector connector, ConnectorConfig config,
+        ConnectionDef source, List<PzError> errors, Dictionary<string, string> fetchedSchemas, CancellationToken ct)
     {
         ISource? opened = null;
         try
         {
             opened = await WithTimeoutAsync(
-                t => connector.OpenAsync(new ConnectorConfig(source.Connection), t), ct).ConfigureAwait(false);
+                t => connector.OpenAsync(config, t), ct).ConfigureAwait(false);
             foreach (var dataset in source.Datasets)
             {
                 await ProbeDatasetSchemaAsync(opened, source, dataset, errors, fetchedSchemas, ct).ConfigureAwait(false);

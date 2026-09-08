@@ -135,7 +135,7 @@ internal static class CdcCommand
                 continue;
             }
 
-            var opened = await connector.OpenAsync(new ConnectorConfig(source.Connection), ct);
+            var opened = await connector.OpenAsync(registry.ConfigFor(source), ct);
             try
             {
                 foreach (var (_, dataset) in group)
@@ -251,7 +251,7 @@ internal static class CdcCommand
         }
 
         var spec = SpecBuilder.ForSourceLoad(new SourceDatasetDef(source, dataset));
-        var opened = await connector.OpenAsync(new ConnectorConfig(source.Connection), ct);
+        var opened = await connector.OpenAsync(registry.ConfigFor(source), ct);
         string? positionName;
         try
         {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Extensions.Hosting;
@@ -9,6 +10,8 @@ namespace Pz.Connectors.Sdk.Tests;
 
 public sealed class HonestMappingTests
 {
+    private static readonly ActivitySource Source = new("test");
+
     [Fact]
     public async Task Hello_reports_the_connector_verbatim()
     {
@@ -83,7 +86,7 @@ public sealed class HonestMappingTests
         Assert.Equal(0, partition.Polls);
 
         using var stream = new MemoryStream();
-        await DataPlaneListener.ServeReadAsync(stream, entry, CancellationToken.None);
+        await DataPlaneListener.ServeReadAsync(stream, entry, Source, CancellationToken.None);
         Assert.Equal(1, partition.Polls);
 
         var after = await service.GetReadState(new ReadStateRequest { OpId = "op", PartitionId = "0" }, Context());
@@ -135,6 +138,7 @@ public sealed class HonestMappingTests
             new FakeSourceConnector(ConnectorCapabilities.None, feed: false),
             new TicketRegistry(),
             new HostChannelPeer(),
+            new ConnectorTelemetry(new PzConnectorHostOptions()),
             new PcpServerHooks { OnConfigure = () => Interlocked.Increment(ref calls) },
             new NullLifetime());
 
@@ -153,6 +157,7 @@ public sealed class HonestMappingTests
             new FakeSourceConnector(ConnectorCapabilities.None, feed: false),
             new TicketRegistry(),
             new HostChannelPeer(),
+            new ConnectorTelemetry(new PzConnectorHostOptions()),
             new PcpServerHooks { OnConfigure = () => Interlocked.Increment(ref calls) },
             new NullLifetime());
 
@@ -165,7 +170,8 @@ public sealed class HonestMappingTests
     // --- helpers ---
 
     private static PcpConnectorService NewService(IConnector connector) =>
-        new(connector, new TicketRegistry(), new HostChannelPeer(), PcpServerHooks.None, new NullLifetime());
+        new(connector, new TicketRegistry(), new HostChannelPeer(), new ConnectorTelemetry(new PzConnectorHostOptions()),
+            PcpServerHooks.None, new NullLifetime());
 
     private static async Task<PcpConnectorService> ConfiguredAsync(IConnector connector)
     {

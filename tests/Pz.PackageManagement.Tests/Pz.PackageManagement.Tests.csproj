@@ -17,6 +17,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The in-proc OTLP receiver (Otlp/OtlpReceiver.cs) is a gRPC server: it is what proves an
+         out-of-process connector really exports to the endpoint the host handed it, not merely that
+         its spans nest. Vendored from opentelemetry-proto v1.5.0 (Apache-2.0). -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <PackageReference Include="Google.Protobuf" Version="3.36.0" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.83.0" PrivateAssets="All" />
+    <Protobuf Include="Otlp\proto\**\*.proto" ProtoRoot="Otlp\proto" GrpcServices="Server" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Pz.PackageManagement\Pz.PackageManagement.csproj" />
     <ProjectReference Include="..\..\src\Pz.Core\Pz.Core.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />

@@ -96,12 +96,14 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
             }
         }
 
-        // Root span for the whole run, wrapping everything below via
-        // this using-declaration's scope (which is the rest of the method, both the happy path and the
-        // outer catch's Fatal-report path) so it always closes exactly once, on every exit. With no
-        // listener registered anywhere (the common case — see PzActivitySource), StartActivity returns
-        // null and every access below is a null-conditional no-op.
-        using var runActivity = PzActivitySource.Instance.StartActivity("run");
+        // Root span for the run. The CLI opens one around every phase (so the plan phase's connector
+        // spans share the trace) and hands it in; a caller that hands none in gets one here, wrapping
+        // everything below via this using-declaration's scope (which is the rest of the method, both
+        // the happy path and the outer catch's Fatal-report path) so it always closes exactly once, on
+        // every exit. With no listener registered anywhere (the common case — see PzActivitySource),
+        // StartActivity returns null and every access below is a null-conditional no-op.
+        using var ownedRunActivity = options.RunActivity is null ? PzActivitySource.Instance.StartActivity("run") : null;
+        var runActivity = options.RunActivity ?? ownedRunActivity;
         runActivity?.SetTag("pz.run.id", ctx.Paths.RunId);
         runActivity?.SetTag("pz.run.project", options.ProjectName);
 

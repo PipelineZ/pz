@@ -26,6 +26,13 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// and <see cref="DisposeAsync"/> is where all of them go through the shutdown ladder.</para></summary>
 public sealed class ProcessConnectorHost : IAsyncDisposable
 {
+    /// <summary>Reserved config key carrying the named connection an open belongs to, which names the
+    /// spawned instance (<c>pz.instance</c> on its spans). Never authored in <c>connections.yml</c> — the
+    /// engine's registry sets it (its <c>ConnectorRegistry.InstanceIdKey</c> spells the same key; the two
+    /// are pinned equal by test, since neither assembly may reference the other), and it is stripped
+    /// before anything crosses to the connector.</summary>
+    public const string InstanceIdKey = "__pz_instance";
+
     private readonly Dictionary<string, LazyProcessConnector> _connectorsByName;
 
     private ProcessConnectorHost(Dictionary<string, LazyProcessConnector> connectorsByName) =>
@@ -43,14 +50,16 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
     /// own owner-only socket directory under. <paramref name="logSink"/> receives every connector
     /// <c>LogEvent</c> (level, message, fields) off the reverse channel — wired to <c>Pz.Diagnostics</c>
     /// by whoever constructs this host; null drops them. <paramref name="warn"/> reports declarations
-    /// this host accepts but will not act on.</para></summary>
+    /// this host accepts but will not act on. <paramref name="telemetry"/> is handed to every spawned
+    /// instance's handshake; null means <see cref="HostTelemetry.None"/>.</para></summary>
     public static ProcessConnectorHost LoadFromDirectory(
         string packagesRoot, IReadOnlyList<ConnectorPackageRef> required, string socketRootDir,
         Action<string>? warn = null,
-        Action<int, string, IReadOnlyDictionary<string, string>>? logSink = null) =>
+        Action<int, string, IReadOnlyDictionary<string, string>>? logSink = null,
+        HostTelemetry? telemetry = null) =>
         LoadFromDirectory(
             packagesRoot, required, socketRootDir, warn, logSink,
-            ProtocolConstants.CancelGrace, ProtocolConstants.ShutdownGrace);
+            ProtocolConstants.CancelGrace, ProtocolConstants.ShutdownGrace, telemetry ?? HostTelemetry.None);
 
     /// <summary>Same load, with the cancel/shutdown grace windows injectable. Compressed values let a
     /// test observe the full ladder without waiting out the real 5s/10s windows; production always goes
@@ -59,7 +68,7 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
         string packagesRoot, IReadOnlyList<ConnectorPackageRef> required, string socketRootDir,
         Action<string>? warn,
         Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
-        TimeSpan cancelGrace, TimeSpan shutdownGrace)
+        TimeSpan cancelGrace, TimeSpan shutdownGrace, HostTelemetry telemetry)
     {
         var connectorsByName = new Dictionary<string, LazyProcessConnector>(StringComparer.Ordinal);
         var rid = RuntimeInformation.RuntimeIdentifier;
@@ -126,7 +135,7 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
             }
 
             var connector = new LazyProcessConnector(
-                name, packageRef, manifest, entrypoint, socketRootDir, logSink, cancelGrace, shutdownGrace);
+                name, packageRef, manifest, entrypoint, socketRootDir, logSink, cancelGrace, shutdownGrace, telemetry);
 
             var dropped = connector.DeclaredCapabilities & ~connector.Capabilities;
             if (dropped != ConnectorCapabilities.None)
@@ -205,6 +214,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     private readonly Action<int, string, IReadOnlyDictionary<string, string>>? _logSink;
     private readonly TimeSpan _cancelGrace;
     private readonly TimeSpan _shutdownGrace;
+    private readonly HostTelemetry _telemetry;
     private readonly ConcurrentBag<ProcessInstance> _instances = [];
 
     private string _connectionConfigSchema = string.Empty;
@@ -214,7 +224,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     public LazyProcessConnector(
         string name, ConnectorPackageRef packageRef, ConnectorManifest manifest, string entrypoint,
         string socketRootDir, Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
-        TimeSpan cancelGrace, TimeSpan shutdownGrace)
+        TimeSpan cancelGrace, TimeSpan shutdownGrace, HostTelemetry telemetry)
     {
         _packageRef = packageRef;
         _manifest = manifest;
@@ -223,6 +233,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         _logSink = logSink;
         _cancelGrace = cancelGrace;
         _shutdownGrace = shutdownGrace;
+        _telemetry = telemetry;
         Info = new ConnectorInfo(name, packageRef.Version, ProtocolVersion.Major);
         DeclaredCapabilities = ParseCapabilities(manifest.Capabilities);
     }
@@ -247,13 +258,15 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
     public string DatasetConfigSchema => Volatile.Read(ref _datasetConfigSchema);
 
+    // Every call below forwards `instance.Config`, never the caller's `config`: the caller's may carry
+    // ProcessConnectorHost.InstanceIdKey, and Validate/CheckConnection put the config they are given on the wire.
     public async ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         var instance = await SpawnAsync(config, track: false, ct).ConfigureAwait(false);
         await using (instance.ConfigureAwait(false))
         {
             return await new ProcessSourceConnector(instance.Client, instance.Process)
-                .ValidateAsync(config, ct).ConfigureAwait(false);
+                .ValidateAsync(instance.Config, ct).ConfigureAwait(false);
         }
     }
 
@@ -263,7 +276,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         await using (instance.ConfigureAwait(false))
         {
             return await new ProcessSourceConnector(instance.Client, instance.Process)
-                .CheckConnectionAsync(config, ct).ConfigureAwait(false);
+                .CheckConnectionAsync(instance.Config, ct).ConfigureAwait(false);
         }
     }
 
@@ -271,7 +284,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     {
         var instance = await SpawnAsync(config, track: true, ct).ConfigureAwait(false);
         var source = await new ProcessSourceConnector(instance.Client, instance.Process)
-            .OpenAsync(config, ct).ConfigureAwait(false);
+            .OpenAsync(instance.Config, ct).ConfigureAwait(false);
         instance.Shim = (IGatedShim)source;
         return source;
     }
@@ -280,7 +293,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     {
         var instance = await SpawnAsync(config, track: true, ct).ConfigureAwait(false);
         var sink = await new ProcessSinkConnector(instance.Client, instance.Process)
-            .OpenAsync(config, ct).ConfigureAwait(false);
+            .OpenAsync(instance.Config, ct).ConfigureAwait(false);
         instance.Shim = (IGatedShim)sink;
         return sink;
     }
@@ -308,7 +321,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         {
             var (instanceId, connectorConfig) = SplitInstanceId(config, ordinal);
             client = await PcpClient
-                .ConnectAndConfigureAsync(process, _manifest, instanceId, connectorConfig, ct)
+                .ConnectAndConfigureAsync(process, _manifest, instanceId, connectorConfig, _telemetry, ct)
                 .ConfigureAwait(false);
             client.CancelGrace = _cancelGrace;
             client.ShutdownGrace = _shutdownGrace;
@@ -316,7 +329,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
             Volatile.Write(ref _connectionConfigSchema, client.Hello.ConnectionConfigSchema);
             Volatile.Write(ref _datasetConfigSchema, client.Hello.DatasetConfigSchema);
 
-            instance = new ProcessInstance(process, client);
+            instance = new ProcessInstance(process, client, connectorConfig);
             // Opened once per instance, right after Configure and before the shim exists: the gate the
             // engine will hand that shim arrives later (IOperationGateAware, after OpenAsync returns),
             // which is what DeferredOperationGate bridges.
@@ -349,24 +362,20 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     }
 
     /// <summary>Instance id for Configure: the connection name when the caller threaded one in under
-    /// <see cref="InstanceIdKey"/>, else a stable per-open id. The key is stripped from what crosses to
+    /// <see cref="ProcessConnectorHost.InstanceIdKey"/>, else a stable per-open id. The key is stripped from what crosses to
     /// the connector — it is host bookkeeping, not a connection option a connector's
     /// ConnectionConfigSchema ever declared.</summary>
     private (string InstanceId, ConnectorConfig Config) SplitInstanceId(ConnectorConfig config, int ordinal)
     {
-        if (config.GetString(InstanceIdKey) is not { Length: > 0 } name)
+        if (config.GetString(ProcessConnectorHost.InstanceIdKey) is not { Length: > 0 } name)
         {
             return ($"{Info.Name}#{ordinal}", config);
         }
 
         var values = new Dictionary<string, object?>(config.Values, StringComparer.Ordinal);
-        values.Remove(InstanceIdKey);
+        values.Remove(ProcessConnectorHost.InstanceIdKey);
         return (name, new ConnectorConfig(values));
     }
-
-    /// <summary>Reserved config key carrying the named connection this open belongs to. Never authored
-    /// in <c>connections.yml</c> — the registry layer sets it, and it never reaches the connector.</summary>
-    internal const string InstanceIdKey = "__pz_instance";
 
     /// <summary>Manifest capability NAMES → the flags value. Names only, matched exactly against the
     /// declared members: <see cref="Enum.TryParse{T}(string, bool, out T)"/> on its own would also accept
@@ -411,11 +420,16 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     /// <summary>One spawned connector: its process, its control-plane client, and its reverse-channel
     /// pump. Disposal order is fixed — the pump first (so nothing of it is still touching
     /// <c>client.Grpc</c>), then the client, whose own ladder ends the process.</summary>
-    private sealed class ProcessInstance(ConnectorProcess process, PcpClient client) : IAsyncDisposable
+    private sealed class ProcessInstance(ConnectorProcess process, PcpClient client, ConnectorConfig config)
+        : IAsyncDisposable
     {
         public ConnectorProcess Process => process;
 
         public PcpClient Client => client;
+
+        /// <summary>The config this instance was Configure()'d with: the caller's, minus
+        /// <see cref="ProcessConnectorHost.InstanceIdKey"/>. The only config that may be forwarded to the shims.</summary>
+        public ConnectorConfig Config => config;
 
         public HostChannelPump? Pump { get; set; }
 

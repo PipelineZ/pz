@@ -69,7 +69,7 @@ public static class ConnectorConfigValidator
                     new HashSet<string>(StringComparer.Ordinal));
             }
 
-            await ValidateCrossFieldAsync(connector, source.Connection, "connection", source.Name, source.FilePath,
+            await ValidateCrossFieldAsync(connector, registry.ConfigFor(source), "connection", source.Name, source.FilePath,
                 errors, requiredFlaggedKeys, ct).ConfigureAwait(false);
         }
 
@@ -90,7 +90,7 @@ public static class ConnectorConfigValidator
 
             // Sink OUTPUT options are NOT schema-validated in v0: they are already validated at
             // plan/probe time by the connectors themselves.
-            await ValidateCrossFieldAsync(connector, sink.Connection, "connection", sink.Name, sink.FilePath,
+            await ValidateCrossFieldAsync(connector, registry.ConfigFor(sink), "connection", sink.Name, sink.FilePath,
                 errors, requiredFlaggedKeys, ct).ConfigureAwait(false);
         }
 
@@ -377,10 +377,10 @@ public static class ConnectorConfigValidator
     }
 
     private static async Task ValidateCrossFieldAsync(IConnector connector,
-        IReadOnlyDictionary<string, object?> connection, string kind, string name, string filePath,
+        ConnectorConfig config, string kind, string name, string filePath,
         List<PzError> errors, HashSet<string> requiredFlaggedKeys, CancellationToken ct)
     {
-        var result = await connector.ValidateAsync(new ConnectorConfig(connection), ct).ConfigureAwait(false);
+        var result = await connector.ValidateAsync(config, ct).ConfigureAwait(false);
         if (result.IsValid)
         {
             return;

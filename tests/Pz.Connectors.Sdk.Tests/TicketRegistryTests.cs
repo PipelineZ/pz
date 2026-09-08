@@ -9,7 +9,7 @@ public sealed class TicketRegistryTests
     public void A_ticket_burns_exactly_once()
     {
         var registry = new TicketRegistry();
-        var entry = new WriteTicket(new WriteSessionState("s1", "op1", new NullSession()));
+        var entry = new WriteTicket(new WriteSessionState("s1", "op1", new NullSession()), default);
         var ticket = registry.Mint(entry);
 
         Assert.Equal(16, ticket.Length);
@@ -22,7 +22,7 @@ public sealed class TicketRegistryTests
     public void A_ticket_of_the_wrong_length_never_resolves()
     {
         var registry = new TicketRegistry();
-        registry.Mint(new WriteTicket(new WriteSessionState("s1", "op1", new NullSession())));
+        registry.Mint(new WriteTicket(new WriteSessionState("s1", "op1", new NullSession()), default));
         Assert.False(registry.TryBurn(new byte[15], out _));
     }
 

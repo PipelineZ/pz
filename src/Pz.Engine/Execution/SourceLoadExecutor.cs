@@ -44,7 +44,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
 
         await using var source = await connector.OpenAsync(
-            new ConnectorConfig(def.Source.Connection), ct).ConfigureAwait(false);
+            ctx.Connectors.ConfigFor(def.Source), ct).ConfigureAwait(false);
 
         // Hand a gate-aware source its operation gate before any plan/read call. The gate exists even
         // with no pacing registry (op-level retry alone).
