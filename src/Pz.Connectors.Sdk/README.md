@@ -64,9 +64,9 @@ one of its own spans is current. The SDK then:
   `pz.connector.name`, `pz.run.id`;
 - opens a `pcp.<Rpc>` server span per RPC — every RPC but `HostChannel`, which lives as long as the
   process — under the engine's node span, tagged `pz.instance` (the host's id for this connector
-  instance: today `<connector name>#<n>`, the n-th open of that connector in the run), plus a
-  `pcp.read_stream`/`pcp.write_stream` span around each data-plane transfer. An RPC that arrives with
-  no `traceparent` starts a new trace rather than attaching to anything;
+  instance: the connection name for an open the engine drives, or `<connector name>#<n>` for one it
+  cannot name), plus a `pcp.read_stream`/`pcp.write_stream` span around each data-plane transfer. An
+  RPC that arrives with no `traceparent` starts a new trace rather than attaching to anything;
 - flushes on shutdown, bounded to three seconds.
 
 Anything you start from `ctx.ActivitySource` or record on `ctx.Meter` lands there too:
