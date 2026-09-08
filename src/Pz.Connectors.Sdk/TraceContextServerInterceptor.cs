@@ -8,7 +8,8 @@ namespace Pz.Connectors.Sdk;
 /// <c>traceparent</c> the host put in the request metadata -- which is the engine's node span. Whatever
 /// the connector starts inside the handler nests under it. Parsed explicitly rather than trusting
 /// ASP.NET Core's hosting activity so the rule holds whatever the web host's own diagnostics settings
-/// are. <c>HostChannel</c> is skipped: it lives as long as the process and would be one endless
+/// are -- and an RPC that carries no header becomes a root rather than a child of that same never-
+/// exported hosting activity. <c>HostChannel</c> is skipped: it lives as long as the process and would be one endless
 /// span.</summary>
 internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry) : Interceptor
 {
@@ -61,8 +62,27 @@ internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry
             ActivityContext.TryParse(traceparent, context.RequestHeaders.GetValue("tracestate"), isRemote: true, out parent);
         }
 
+        // No usable traceparent means the RPC has no upstream, so its span must be a trace ROOT. A
+        // default parent context means "parent on Activity.Current", which inside this process is
+        // ASP.NET Core's hosting activity -- never exported, so the span would go out carrying a parent
+        // id no collector can resolve, while the Rust SDK makes the same RPCs roots. Clearing
+        // Activity.Current across the call is how a root is asked for; it is put back only when no
+        // activity was created, since otherwise the new activity IS the current one and every handler
+        // below depends on that.
+        var ambient = Activity.Current;
+        if (parent == default)
+        {
+            Activity.Current = null;
+        }
+
         var activity = telemetry.ActivitySource.StartActivity("pcp." + rpc, ActivityKind.Server, parent);
-        if (activity is not null && telemetry.InstanceId is { } instance)
+        if (activity is null)
+        {
+            Activity.Current = ambient;
+            return null;
+        }
+
+        if (telemetry.InstanceId is { } instance)
         {
             activity.SetTag("pz.instance", instance);
         }

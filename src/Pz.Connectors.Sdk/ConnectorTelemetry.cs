@@ -44,12 +44,16 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
 
     /// <summary>Builds and registers the providers once. A second call, or an endpoint that is not an
     /// absolute http(s) URL, changes nothing: the host validated the endpoint, and a connector must not
-    /// fail its handshake over telemetry.</summary>
+    /// fail its handshake over telemetry. An endpoint that could not be used is reported on stderr --
+    /// silence would leave an operator staring at a collector that never receives anything -- matching
+    /// what the Rust SDK prints. The endpoint is the host's own address, not a secret.</summary>
     public void Start(string endpoint, ConnectorInfo info, string runId)
     {
         if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
             (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
+            Console.Error.WriteLine(
+                $"pz connector: telemetry: otel endpoint is not an absolute http(s) URL: {endpoint}");
             return;
         }
 
