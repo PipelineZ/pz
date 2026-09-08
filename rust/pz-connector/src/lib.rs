@@ -15,10 +15,12 @@
 //! instrumenting a connector needs nothing from this crate beyond `tracing` itself. For metrics,
 //! [`meter`] returns the meter to record instruments on.
 //!
-//! One constraint: exporting spans requires installing a global `tracing` subscriber, so a binary that
-//! installs its own before calling [`serve_sink`] keeps it and NO spans are exported (the handshake
-//! reports that on stderr); meters are unaffected and still work. Never put a configuration value in
-//! a span name, a span field, or a metric label -- what is emitted is what the operator sees.
+//! One constraint: exporting spans requires a `tracing` subscriber carrying this crate's layer. With
+//! none installed, [`serve_sink`] installs one as the global default at the handshake. A binary that
+//! installs its own subscriber first composes [`layer`] into it (inert until the handshake); one that
+//! installs its own WITHOUT that layer keeps it and NO spans are exported (the handshake reports that
+//! on stderr); meters are unaffected either way. Never put a configuration value in a span name, a
+//! span field, or a metric label -- what is emitted is what the operator sees.
 
 pub(crate) mod pb {
     #![allow(
@@ -42,4 +44,4 @@ pub use server::{
     serve_sink, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink, SinkConnector,
     WriteAttempt, WriteResult, WriteSession,
 };
-pub use telemetry::meter;
+pub use telemetry::{layer, meter};

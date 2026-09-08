@@ -3,6 +3,10 @@
 //! against. Every write's batches accumulate under its output name in memory (nothing is ever actually
 //! persisted -- there is no destination); `commit` reports the row/batch counts the conformance suite
 //! checks, and `abort` simply drops whatever was buffered.
+//!
+//! `--own-subscriber` makes it install its own `tracing` subscriber (a `fmt` layer to stderr) with
+//! `pz_connector::layer()` composed in before serving, the shape a connector with its own logging
+//! takes; the host-side telemetry facts run it both ways.
 
 use std::sync::LazyLock;
 
@@ -14,6 +18,7 @@ use pz_connector::{
     Config, ConnectorDecl, NativeCopy, OutputSpec, PzError, Sink, SinkConnector, WriteResult,
     WriteSession,
 };
+use tracing_subscriber::layer::{Layer, SubscriberExt};
 
 /// The one instrument this example records on, so the host-side telemetry test can prove a connector's
 /// own metrics reach the collector the host named. Built lazily rather than at startup: `meter()`
@@ -124,6 +129,19 @@ impl WriteSession for MemoryWriteSession {
 
 #[tokio::main]
 async fn main() {
+    if std::env::args().any(|a| a == "--own-subscriber") {
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry()
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_writer(std::io::stderr)
+                        .with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+                )
+                .with(pz_connector::layer()),
+        )
+        .expect("memory_sink: the first subscriber in the process");
+    }
+
     let decl = ConnectorDecl {
         name: "memory-sink",
         version: env!("CARGO_PKG_VERSION"),

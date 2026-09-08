@@ -49,8 +49,13 @@ public sealed class RustSinkTelemetryTests : IDisposable
     private static IEnumerable<Metric> Instruments(ResourceMetrics resource) =>
         resource.ScopeMetrics.SelectMany(s => s.Metrics);
 
-    [SkippableFact]
-    public async Task Write_spans_and_meters_from_the_rust_sdk_reach_the_collector()
+    /// <summary>Both shapes a Rust connector takes: no subscriber of its own (the SDK installs one at
+    /// the handshake) and its own <c>fmt</c> subscriber with <c>pz_connector::layer()</c> composed in
+    /// (<c>--own-subscriber</c>), which must export exactly the same spans.</summary>
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Write_spans_and_meters_from_the_rust_sdk_reach_the_collector(bool ownSubscriber)
     {
         Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
         var binary = MemorySinkPath();
@@ -72,7 +77,8 @@ public sealed class RustSinkTelemetryTests : IDisposable
         var marks = new List<string>();
         void Mark(string phase) => marks.Add($"{phase}@{clock.ElapsedMilliseconds}ms");
 
-        await using var process = ConnectorProcess.Spawn(binary!, NewSocketDir(), "memory-sink");
+        await using var process = ConnectorProcess.Spawn(
+            binary!, NewSocketDir(), "memory-sink", ownSubscriber ? ["--own-subscriber"] : null);
         var config = new ConnectorConfig(new Dictionary<string, object?>());
         string Diagnostics() => string.Join(" ", marks) + Environment.NewLine + process.StderrTail;
 

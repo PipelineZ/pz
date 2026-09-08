@@ -3,6 +3,13 @@
 //! `tracing` span is disabled. Trace context comes in as W3C `traceparent` metadata on every RPC;
 //! the data plane carries none, so a write stream inherits the `BeginWrite` RPC's context through
 //! its `SessionState`.
+//!
+//! A connector that installs its own `tracing` subscriber composes [`layer`] into it instead: the
+//! layer is inert until the handshake, then holds the real `OpenTelemetryLayer` in a `OnceLock` it
+//! forwards every callback -- and, crucially, `downcast_raw` -- to. Forwarding the downcast is what
+//! makes remote-parent propagation (`Span::set_parent`, which finds the OpenTelemetry layer by
+//! downcast) work through the wrapper; `tracing_subscriber::reload` forwards only its own marker, so a
+//! span built behind one would silently become a trace root instead of nesting under the engine's.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -14,20 +21,25 @@ use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_sdk::trace::{Tracer, TracerProvider};
 use opentelemetry_sdk::Resource;
+use std::any::TypeId;
 use tower_http::classify::{GrpcErrorsAsFailures, SharedClassifier};
 use tower_http::trace::TraceLayer;
-use tracing::Span;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use tracing::span::{Attributes, Id, Record};
+use tracing::{Event, Span, Subscriber};
+use tracing_opentelemetry::{OpenTelemetryLayer, OpenTelemetrySpanExt};
 use tracing_subscriber::filter::{LevelFilter, Targets};
-use tracing_subscriber::layer::{Layer, SubscriberExt};
+use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing_subscriber::registry::LookupSpan;
 
 /// Upper bound on flushing at shutdown: inside the host's ten-second shutdown grace.
 pub(crate) const FLUSH_BOUND: Duration = Duration::from_secs(3);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(2);
-/// The instrumentation scope every span and instrument this SDK emits is attributed to.
-const SCOPE_NAME: &str = "pz.connector";
+/// The instrumentation scope every span and instrument this SDK emits is attributed to -- the same
+/// name the C# SDK uses, so one backend query finds both SDKs' spans.
+const SCOPE_NAME: &str = "Pz.Connector";
 /// The one gRPC service this process serves; a request path outside it was never routed to a handler.
 const SERVICE_PATH_PREFIX: &str = "/pz.connector.v1.PzConnector/";
 /// The RPC that gets no span: a `HostChannel` call is a bidirectional stream the host may hold open
@@ -43,6 +55,159 @@ struct Providers {
 
 static PROVIDERS: OnceLock<Providers> = OnceLock::new();
 
+/// Loads the exporting layer into the subscriber a connector author composed [`layer`] into. Type-erased
+/// over the author's subscriber type, which is what lets one static hold it.
+type Installer = Box<dyn Fn(Tracer) -> Result<(), String> + Send + Sync>;
+
+/// The installer the first [`layer`] call left behind, taken by [`start`]. `None` when the author
+/// composed nothing (this crate then installs its own subscriber) or after `start` consumed it.
+static AUTHOR_LAYER: Mutex<Option<Installer>> = Mutex::new(None);
+
+type ExportLayer<S> = OpenTelemetryLayer<S, Tracer>;
+
+/// Holds the real [`OpenTelemetryLayer`] once [`start`] builds it and forwards every `Layer` callback
+/// to it, doing nothing until then. It exists because the layer must be composed into an author's
+/// subscriber BEFORE the handshake, but the tracer it wraps is built only AT the handshake (the
+/// endpoint and run id arrive there).
+///
+/// The [`OnceLock`] is set exactly once and never cleared, and the [`Arc`] keeps the layer alive for
+/// the process, so the pointer [`Layer::downcast_raw`] hands out stays valid for the process's life --
+/// the same reasoning `tracing_subscriber::reload` uses for its `NoneLayerMarker` static, and what lets
+/// this forward the downcast safely where reload will not.
+struct DeferredOtelLayer<S> {
+    inner: Arc<OnceLock<ExportLayer<S>>>,
+}
+
+impl<S> Layer<S> for DeferredOtelLayer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if let Some(layer) = self.inner.get() {
+            layer.on_new_span(attrs, id, ctx);
+        }
+    }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, ctx: Context<'_, S>) {
+        if let Some(layer) = self.inner.get() {
+            layer.on_record(id, values, ctx);
+        }
+    }
+
+    fn on_follows_from(&self, id: &Id, follows: &Id, ctx: Context<'_, S>) {
+        if let Some(layer) = self.inner.get() {
+            layer.on_follows_from(id, follows, ctx);
+        }
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        if let Some(layer) = self.inner.get() {
+            layer.on_event(event, ctx);
+        }
+    }
+
+    fn on_enter(&self, id: &Id, ctx: Context<'_, S>) {
+        if let Some(layer) = self.inner.get() {
+            layer.on_enter(id, ctx);
+        }
+    }
+
+    fn on_exit(&self, id: &Id, ctx: Context<'_, S>) {
+        if let Some(layer) = self.inner.get() {
+            layer.on_exit(id, ctx);
+        }
+    }
+
+    fn on_close(&self, id: Id, ctx: Context<'_, S>) {
+        if let Some(layer) = self.inner.get() {
+            layer.on_close(id, ctx);
+        }
+    }
+
+    // Forwarding this is the whole point: `Span::set_parent` finds the OpenTelemetry layer by
+    // downcasting to its `WithContext`, so without this the remote parent from a `traceparent` header
+    // is dropped and the span becomes a trace root.
+    unsafe fn downcast_raw(&self, id: TypeId) -> Option<*const ()> {
+        // Safety: the returned pointer aims into the layer stored in `inner`, which the `OnceLock`
+        // never clears and the `Arc` keeps alive for the process, so it stays valid after this returns.
+        self.inner
+            .get()
+            .and_then(|layer| unsafe { layer.downcast_raw(id) })
+    }
+}
+
+/// A `tracing` layer for a connector that installs its own subscriber. Compose it into that subscriber
+/// before calling [`crate::serve_sink`]; it records nothing until the host's handshake names an endpoint,
+/// and from then on exports every span exactly as the subscriber this crate would otherwise install --
+/// remote-parent nesting included. Without it, an author-installed subscriber wins and no span is
+/// exported (the handshake says so on stderr). One per process: only the first layer built is ever
+/// wired, a later one stays inert.
+///
+/// ```no_run
+/// use tracing_subscriber::layer::SubscriberExt;
+///
+/// tracing::subscriber::set_global_default(
+///     tracing_subscriber::registry()
+///         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
+///         .with(pz_connector::layer()),
+/// )
+/// .expect("first subscriber in the process");
+/// ```
+pub fn layer<S>() -> impl Layer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a> + Send + Sync + 'static,
+{
+    let inner: Arc<OnceLock<ExportLayer<S>>> = Arc::new(OnceLock::new());
+    let installer: Installer = {
+        let inner = inner.clone();
+        Box::new(move |tracer| {
+            inner
+                .set(export_layer(tracer))
+                .map_err(|_| "the deferred OpenTelemetry layer was already installed".to_string())
+        })
+    };
+    let mut slot = AUTHOR_LAYER.lock().unwrap();
+    if slot.is_none() {
+        *slot = Some(installer);
+    }
+    DeferredOtelLayer { inner }.with_filter(export_filter())
+}
+
+/// The transport crates are silenced because the OTLP exporter itself runs on them: exporting a span
+/// opens h2/hyper/tonic spans, which the layer would turn into spans to export, which open more -- a
+/// feedback loop that buries the handful of `pcp.*` spans under hundreds of `queue_frame`/
+/// `FramedWrite::buffer` ones. Everything else stays at DEBUG so a connector author's own
+/// instrumentation is exported. The OpenTelemetry crates' own internal events are kept out of the
+/// export for the same reason and go to stderr instead (see [`start`]).
+fn export_filter() -> Targets {
+    Targets::new()
+        .with_default(LevelFilter::DEBUG)
+        .with_target("h2", LevelFilter::OFF)
+        .with_target("hyper", LevelFilter::OFF)
+        .with_target("hyper_util", LevelFilter::OFF)
+        .with_target("tonic", LevelFilter::OFF)
+        .with_target("tower", LevelFilter::OFF)
+        .with_target("opentelemetry", LevelFilter::OFF)
+        .with_target("opentelemetry_sdk", LevelFilter::OFF)
+        .with_target("opentelemetry-otlp", LevelFilter::OFF)
+        .with_target("opentelemetry_otlp", LevelFilter::OFF)
+}
+
+/// Source location, thread identity and the busy/idle timing fields are off: they would put
+/// `code.filepath` (this crate's absolute path on whoever built the binary), `code.lineno`, `thread.*`,
+/// `busy_ns` and `idle_ns` on every exported span, which the C# SDK's spans do not carry -- an operator
+/// reading one trace must not find the two SDKs disagreeing about what a `pcp.*` span means.
+fn export_layer<S>(tracer: Tracer) -> ExportLayer<S>
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_location(false)
+        .with_threads(false)
+        .with_tracked_inactivity(false)
+}
+
 /// Whether a span opened now can actually reach the collector. False before [`start`] runs and after
 /// a `start` that could not install its layer -- in both cases spans are left unrecorded rather than
 /// built and dropped.
@@ -56,12 +221,14 @@ pub fn meter() -> opentelemetry::metrics::Meter {
     global::meter(SCOPE_NAME)
 }
 
-/// Builds and installs providers once; a second call changes nothing. The two failures it reports --
-/// an endpoint that is not an absolute http(s) URL, and a `tracing` subscriber the connector author
-/// installed before `serve_sink` ran -- are told to the caller rather than swallowed, but neither is
-/// fatal: the caller prints them and completes the handshake. Metrics survive the second failure
-/// (they need no subscriber); traces do not, and [`traces_enabled`] reports that for the rest of the
-/// process's life so no span is ever built only to be dropped.
+/// Builds and installs providers once; a second call changes nothing. The exporting layer goes into
+/// the subscriber the author composed [`layer`] into when there is one still alive, else into a
+/// subscriber this crate installs as the global default. The two failures it reports -- an endpoint
+/// that is not an absolute http(s) URL, and a `tracing` subscriber the connector author installed
+/// before `serve_sink` ran without composing [`layer`] into it -- are told to the caller rather than
+/// swallowed, but neither is fatal: the caller prints them and completes the handshake. Metrics
+/// survive the second failure (they need no subscriber); traces do not, and [`traces_enabled`]
+/// reports that for the rest of the process's life so no span is ever built only to be dropped.
 pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> Result<(), String> {
     if PROVIDERS.get().is_some() {
         return Ok(());
@@ -109,23 +276,20 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
     global::set_text_map_propagator(TraceContextPropagator::new());
     global::set_meter_provider(meter.clone());
 
-    // The transport crates are silenced because the OTLP exporter itself runs on them: exporting a
-    // span opens h2/hyper/tonic spans, which the layer would turn into spans to export, which open
-    // more -- a feedback loop that buries the handful of `pcp.*` spans under hundreds of
-    // `queue_frame`/`FramedWrite::buffer` ones. Everything else stays at DEBUG so a connector
-    // author's own instrumentation is exported. The OpenTelemetry crates' own internal events are
-    // kept out of the export for the same reason and go to stderr instead (below).
-    let filter = Targets::new()
-        .with_default(LevelFilter::DEBUG)
-        .with_target("h2", LevelFilter::OFF)
-        .with_target("hyper", LevelFilter::OFF)
-        .with_target("hyper_util", LevelFilter::OFF)
-        .with_target("tonic", LevelFilter::OFF)
-        .with_target("tower", LevelFilter::OFF)
-        .with_target("opentelemetry", LevelFilter::OFF)
-        .with_target("opentelemetry_sdk", LevelFilter::OFF)
-        .with_target("opentelemetry-otlp", LevelFilter::OFF)
-        .with_target("opentelemetry_otlp", LevelFilter::OFF);
+    // The author's own subscriber, when they composed `layer()` into it and it is still alive. Taken,
+    // not borrowed: one install per process, and a reload that fails because the subscriber was
+    // dropped falls through to installing this crate's own.
+    let author_layer = AUTHOR_LAYER.lock().unwrap().take();
+    if let Some(install) = author_layer {
+        if install(tracer.tracer(SCOPE_NAME)).is_ok() {
+            let _ = PROVIDERS.set(Providers {
+                tracer: Some(tracer),
+                meter,
+            });
+            return Ok(());
+        }
+    }
+
     // A failed export is otherwise invisible: the SDK reports it as a `tracing` warning under its own
     // crate targets, and nothing would be listening. Those warnings go to stderr, which the host
     // keeps as the process's failure tail, so a connector that exports nothing can say why.
@@ -141,28 +305,19 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
                 .with_target("opentelemetry-otlp", LevelFilter::WARN)
                 .with_target("opentelemetry_otlp", LevelFilter::WARN),
         );
-    // Source location, thread identity and the busy/idle timing fields are off: they would put
-    // `code.filepath` (this crate's absolute path on whoever built the binary), `code.lineno`,
-    // `thread.*`, `busy_ns` and `idle_ns` on every exported span, which the C# SDK's spans do not
-    // carry -- an operator reading one trace must not find the two SDKs disagreeing about what a
-    // `pcp.*` span means.
-    let layer = tracing_opentelemetry::layer()
-        .with_tracer(tracer.tracer(SCOPE_NAME))
-        .with_location(false)
-        .with_threads(false)
-        .with_tracked_inactivity(false)
-        .with_filter(filter);
+    let layer = export_layer(tracer.tracer(SCOPE_NAME)).with_filter(export_filter());
 
     if tracing::subscriber::set_global_default(
         tracing_subscriber::registry().with(layer).with(internal),
     )
     .is_err()
     {
-        // The author installed their own subscriber before `serve_sink` ran; theirs wins and the
-        // OpenTelemetry layer is simply absent. The provider it would have fed is shut down rather
-        // than left holding a batch worker that exports nothing for the life of the process -- on
-        // the blocking pool, because a batch processor's shutdown blocks on its own runtime task and
-        // doing that inline would deadlock an author's single-threaded runtime.
+        // The author installed their own subscriber before `serve_sink` ran without composing
+        // `layer()` into it; theirs wins and the OpenTelemetry layer is simply absent. The provider it
+        // would have fed is shut down rather than left holding a batch worker that exports nothing
+        // for the life of the process -- on the blocking pool, because a batch processor's shutdown
+        // blocks on its own runtime task and doing that inline would deadlock an author's
+        // single-threaded runtime.
         tokio::task::spawn_blocking(move || {
             let _ = tracer.shutdown();
         });
@@ -171,7 +326,9 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
             meter,
         });
         return Err(
-            "a tracing subscriber was already installed; spans will not be exported".to_string(),
+            "a tracing subscriber was already installed without pz_connector::layer(); \
+                    spans will not be exported"
+                .to_string(),
         );
     }
 
@@ -377,7 +534,12 @@ mod tests {
         assert!(PROVIDERS.get().is_none());
         assert!(!traces_enabled());
 
-        // A subscriber the "connector author" installed before serve_sink ever ran.
+        // A subscriber the "connector author" installed before serve_sink ran, WITHOUT composing
+        // `layer()` into it (AUTHOR_LAYER stays empty). `start` cannot install its own atop it, so it
+        // reports the conflict rather than swallowing it. The composed-in success path -- where
+        // `layer()` is part of the live global subscriber and the export layer loads into it -- is
+        // proven end to end by the host's RustPcp facts against `memory_sink --own-subscriber`.
+        assert!(AUTHOR_LAYER.lock().unwrap().is_none());
         tracing::subscriber::set_global_default(tracing_subscriber::registry())
             .expect("no other test installs a global subscriber");
 
