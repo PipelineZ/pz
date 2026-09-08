@@ -52,3 +52,36 @@ running the binary, so a machine that packs without having published its own RID
 The nupkg carries `runtimes/<rid>/native/<binary>` per RID and the generated manifest at its root;
 `pz restore` installs the host's RID and `pz run` spawns it. See
 https://pipelinez.dev/how-to/author-a-connector/ for the full guide and a release workflow.
+
+## Telemetry
+
+When `pz run` is given `--otel-endpoint` (or `PZ_OTEL_ENDPOINT`), the host passes that endpoint and
+the run id to your process in the handshake and puts a W3C `traceparent` on every RPC. The SDK then:
+
+- builds an OpenTelemetry tracer and meter provider exporting OTLP/grpc to that endpoint, with
+  resource `service.name=pz-connector`, `service.version=<your ConnectorInfo.Version>`,
+  `pz.connector.name`, `pz.run.id`;
+- opens a `pcp.<Rpc>` server span per RPC under the engine's node span, tagged `pz.instance`
+  (the connection name), and a `pcp.read_stream`/`pcp.write_stream` span around each data-plane
+  transfer;
+- flushes on shutdown, bounded to three seconds.
+
+Anything you start from `ctx.ActivitySource` or record on `ctx.Meter` lands there too:
+
+```csharp
+return await PzConnectorHost.RunAsync(args, ctx => new MyConnector(ctx.LoggerFactory, ctx.ActivitySource, ctx.Meter));
+
+// inside the connector:
+using var span = _source.StartActivity("list objects");
+_pagesFetched.Add(1);
+```
+
+To also export a client library's own `ActivitySource`/`Meter` (Npgsql, the AWS SDK, ...), name them:
+
+```csharp
+return await PzConnectorHost.RunAsync(args, ctx => new MyConnector(ctx),
+    new PzConnectorHostOptions { ActivitySources = ["Npgsql"], Meters = ["Npgsql"] });
+```
+
+With no endpoint nothing is built and every span or meter call is a no-op. Never put a configuration
+value in a span name, tag, or metric label: what you emit is what the operator sees.

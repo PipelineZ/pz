@@ -114,7 +114,7 @@ DuckDB is the buffer manager — the .NET side only ever holds in-flight Arrow b
 | `src/Pz.PackageManagement` | in-proc NuGet resolution, `pz.lock.json`, the out-of-process connector host (PCP) |
 | `src/Pz.Connectors.Abstractions` | **the connector ABI — the contract of the ecosystem**; may reference Apache.Arrow only |
 | `src/Pz.Connectors.TestKit` | acceptance/contract test suite every connector runs against |
-| `src/Pz.Connectors.Sdk` | the C# out-of-process connector SDK: serves any Abstractions connector over PCP (`PzConnectorHost.RunAsync`), prints its own manifest, ships the MSBuild packaging targets (Native AOT per RID by default) — published; the fixture `tests/fixtures/PcpFakeConnector` is built on it |
+| `src/Pz.Connectors.Sdk` | the C# out-of-process connector SDK: serves any Abstractions connector over PCP (`PzConnectorHost.RunAsync`), prints its own manifest, ships the MSBuild packaging targets (Native AOT per RID by default) — published; the fixture `tests/fixtures/PcpFakeConnector` is built on it; exports the connector process's own OpenTelemetry (spans nested under the engine's node span via traceparent metadata, endpoint received in HostInfo) |
 | `src/Pz.Diagnostics` | typed events, ActivitySource, meters; console/NDJSON renderers over one event stream |
 | `src/Pz.State.Http` | pluggable state backend: `IKeyedStateStore` over a server's run-scoped HTTP state endpoints (ETag/`If-Match` CAS), keyed state only — referenced directly by `Pz.Cli` |
 | `src/Pz.State.SqlServer` | pluggable state backend: `IKeyedStateStore`/`IRunArtifactStore` over SQL Server, schema creation/migration, batched event persistence — referenced directly by `Pz.Cli`, not loaded as a connector |
