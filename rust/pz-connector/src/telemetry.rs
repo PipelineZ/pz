@@ -45,7 +45,7 @@ static PROVIDERS: OnceLock<Providers> = OnceLock::new();
 /// Whether a span opened now can actually reach the collector. False before [`start`] runs and after
 /// a `start` that could not install its layer -- in both cases spans are left unrecorded rather than
 /// built and dropped.
-fn traces_enabled() -> bool {
+pub(crate) fn traces_enabled() -> bool {
     PROVIDERS.get().is_some_and(|p| p.tracer.is_some())
 }
 
@@ -110,9 +110,9 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
 
     // The transport crates are silenced because the OTLP exporter itself runs on them: exporting a
     // span opens h2/hyper/tonic spans, which the layer would turn into spans to export, which open
-    // more -- a feedback loop that buried the handful of `pcp.*` spans under hundreds of
-    // `queue_frame`/`FramedWrite::buffer` ones the first time this ran against a real collector.
-    // Everything else stays at DEBUG so a connector author's own instrumentation is exported.
+    // more -- a feedback loop that buries the handful of `pcp.*` spans under hundreds of
+    // `queue_frame`/`FramedWrite::buffer` ones. Everything else stays at DEBUG so a connector
+    // author's own instrumentation is exported.
     let filter = Targets::new()
         .with_default(LevelFilter::DEBUG)
         .with_target("h2", LevelFilter::OFF)
@@ -120,8 +120,14 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
         .with_target("hyper_util", LevelFilter::OFF)
         .with_target("tonic", LevelFilter::OFF)
         .with_target("tower", LevelFilter::OFF);
+    // Source location and thread identity are off: they would put `code.filepath` (this crate's
+    // absolute path on whoever built the binary), `code.lineno` and `thread.*` on every exported span,
+    // which the C# SDK's spans do not carry -- an operator reading one trace must not find the two
+    // SDKs disagreeing about what a `pcp.*` span means.
     let layer = tracing_opentelemetry::layer()
         .with_tracer(tracer.tracer(SCOPE_NAME))
+        .with_location(false)
+        .with_threads(false)
         .with_filter(filter);
 
     if tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer)).is_err()

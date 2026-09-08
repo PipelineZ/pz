@@ -56,14 +56,16 @@ https://pipelinez.dev/how-to/author-a-connector/ for the full guide and a releas
 ## Telemetry
 
 When `pz run` is given `--otel-endpoint` (or `PZ_OTEL_ENDPOINT`), the host passes that endpoint and
-the run id to your process in the handshake and puts a W3C `traceparent` on every RPC. The SDK then:
+the run id to your process in the handshake, and puts a W3C `traceparent` on every RPC it issues while
+one of its own spans is current. The SDK then:
 
 - builds an OpenTelemetry tracer and meter provider exporting OTLP/grpc to that endpoint, with
   resource `service.name=pz-connector`, `service.version=<your ConnectorInfo.Version>`,
   `pz.connector.name`, `pz.run.id`;
-- opens a `pcp.<Rpc>` server span per RPC under the engine's node span, tagged `pz.instance`
-  (the connection name), and a `pcp.read_stream`/`pcp.write_stream` span around each data-plane
-  transfer;
+- opens a `pcp.<Rpc>` server span per RPC — every RPC but `HostChannel`, which lives as long as the
+  process — under the engine's node span, tagged `pz.instance` (the connection name), plus a
+  `pcp.read_stream`/`pcp.write_stream` span around each data-plane transfer. An RPC that arrives with
+  no `traceparent` starts a new trace rather than attaching to anything;
 - flushes on shutdown, bounded to three seconds.
 
 Anything you start from `ctx.ActivitySource` or record on `ctx.Meter` lands there too:

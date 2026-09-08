@@ -3,6 +3,22 @@
 //! raw Arrow IPC data plane on `<socket>.data`, and dispatches every RPC to a [`SinkConnector`]/[`Sink`]/
 //! [`WriteSession`] the connector author implements. Source support is deferred (additive) -- the wire
 //! protocol already covers it, only this crate's trait surface does not yet.
+//!
+//! # Telemetry
+//!
+//! Providers are built only when the host passes an OTLP endpoint in the handshake (`pz run
+//! --otel-endpoint`, or `PZ_OTEL_ENDPOINT`); with none, nothing is installed and nothing is exported.
+//! When there is one, this crate opens a `pcp.<Rpc>` server span per control-plane RPC and a
+//! `pcp.write_stream` span per data-plane transfer, each parented on the engine's node span through
+//! the W3C `traceparent` the host sends -- so a connector's work shows up inside the run's own trace.
+//! Ordinary [`tracing`] spans and events a connector opens inside those handlers are exported too, so
+//! instrumenting a connector needs nothing from this crate beyond `tracing` itself. For metrics,
+//! [`meter`] returns the meter to record instruments on.
+//!
+//! One constraint: exporting spans requires installing a global `tracing` subscriber, so a binary that
+//! installs its own before calling [`serve_sink`] keeps it and NO spans are exported (the handshake
+//! reports that on stderr); meters are unaffected and still work. Never put a configuration value in
+//! a span name, a span field, or a metric label -- what is emitted is what the operator sees.
 
 pub(crate) mod pb {
     #![allow(
