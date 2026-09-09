@@ -32,8 +32,9 @@
        (Pz.PackageManagement) is itself unpublished. A NEW project is therefore packable the moment it
        exists, so anything genuinely meant to publish needs no ceremony, and anything not meant to
        publish must say so. CONTRIBUTING.md "Release process" holds the authoritative id list.
-       No package icon in v0.1 (documented decision, not an oversight; revisit post-v0.1 if the
-       project wants a recognizable NuGet gallery presence). -->
+       Icon is the favicon mark (assets/brand/pz-favicon.svg, rasterized to pz-icon.png): square,
+       opaque dark background, so it reads correctly in both the gallery's light and dark themes
+       without relying on a `prefers-color-scheme` swap that a static PNG can't carry. -->
   <PropertyGroup Condition="'$(IsPackable)' != 'false'">
     <Authors>PipelineZ contributors</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
@@ -50,9 +51,11 @@
          penalized by relevance ranking and reads as spam on the gallery page. -->
     <PackageTags>pipelinez;pz;etl;elt;duckdb;data-pipeline;data-engineering;sql;arrow</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
   </PropertyGroup>
 
   <ItemGroup Condition="'$(IsPackable)' != 'false'">
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
+    <None Include="$(MSBuildThisFileDirectory)assets/brand/pz-icon.png" Pack="true" PackagePath="icon.png" Visible="false" />
   </ItemGroup>
 </Project>
