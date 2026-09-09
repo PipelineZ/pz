@@ -129,7 +129,6 @@ Start at [pipelinez.dev](https://pipelinez.dev/docs/). Worth a look:
 
 - [Quickstart](https://pipelinez.dev/quickstart/): the five-minute version, with real output
 - [Architecture overview](https://pipelinez.dev/concepts/architecture-overview/): the full design and why
-- [Performance](https://pipelinez.dev/performance/): every benchmark, and how to re-run it
 - [Event contract](https://pipelinez.dev/events/): the `--log-format json` NDJSON stream, field by field
 - [Author a connector](https://pipelinez.dev/how-to/author-a-connector/): build your own
 
