@@ -87,6 +87,73 @@ public sealed class ShimTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Non_prefix_column_pruning_hint_yields_only_the_hinted_columns_through_the_shim()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        const int rowCount = 150;
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), rowCount);
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--prune-columns"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(new LocalFilesConnector().Capabilities | ConnectorCapabilities.ColumnPruning),
+            "test-instance", config, CancellationToken.None);
+
+        var connector = new ProcessSourceConnector(client, process);
+        Assert.Equal(ConnectorCapabilities.ColumnPruning, connector.Capabilities & ConnectorCapabilities.ColumnPruning);
+
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+        var spec = new DatasetSpec("files", "orders", new Dictionary<string, object?>
+        {
+            ["path"] = "small.csv",
+            ["format"] = "csv",
+            ["columns"] = CsvColumns,
+        });
+
+        // GetSchema stays hint-agnostic: the full shape, exactly as an in-process connector reports it.
+        var declared = await source.GetSchemaAsync(spec, CancellationToken.None);
+        Assert.Equal(CsvColumns.Keys, declared.Schema.FieldsList.Select(f => f.Name));
+
+        // A subset that is neither a prefix of the declared schema nor in its order: the stream must
+        // carry these two columns, in this order, and nothing else.
+        var partition = Assert.Single(await source.PlanReadAsync(
+            spec, new ReadHints(Columns: ["created", "name"]), CancellationToken.None));
+
+        var batches = new List<RecordBatch>();
+        try
+        {
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(TargetBatchBytes: 2_000), CancellationToken.None))
+            {
+                batches.Add(batch);
+            }
+
+            Assert.True(batches.Count > 1, $"expected a multi-batch stream, got {batches.Count} batch(es)");
+            Assert.Equal(rowCount, batches.Sum(b => b.Length));
+            foreach (var batch in batches)
+            {
+                Assert.Equal(["created", "name"], batch.Schema.FieldsList.Select(f => f.Name));
+                Assert.Equal(ArrowTypeId.Timestamp, batch.Schema.FieldsList[0].DataType.TypeId);
+                Assert.Equal(ArrowTypeId.String, batch.Schema.FieldsList[1].DataType.TypeId);
+                Assert.Equal(2, batch.ColumnCount);
+            }
+
+            var names = batches.SelectMany(b => Enumerable.Range(0, b.Length).Select(i => ((StringArray)b.Column(1)).GetString(i))).ToList();
+            Assert.Equal("row-0", names[0]);
+            Assert.Equal($"row-{rowCount - 1}", names[^1]);
+        }
+        finally
+        {
+            foreach (var batch in batches)
+            {
+                batch.Dispose();
+            }
+        }
+    }
+
+    [SkippableFact]
     public async Task Native_scan_probe_round_trips_through_the_shim()
     {
         Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");

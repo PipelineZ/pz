@@ -4,6 +4,50 @@ using Pz.Connectors.Abstractions;
 
 namespace PcpFakeConnector;
 
+/// <summary>Projects every batch of <paramref name="inner"/> to <paramref name="columns"/>, in that
+/// order, the way a source that honors <see cref="ReadHints.Columns"/> shapes its batches. The
+/// LocalFiles connector underneath ignores the hint and yields its full shape, so this is what turns
+/// the fixture into a pruning connector. Column names match case-insensitively, as the engine matches
+/// them; a hinted name the batch does not carry is a fixture misuse and throws.</summary>
+internal sealed class PruningReadPartition(IDatasetPartition inner, IReadOnlyList<string> columns) : IDatasetPartition
+{
+    public async IAsyncEnumerable<RecordBatch> ReadAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var batch in inner.ReadAsync(options, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            var fields = new List<Field>(columns.Count);
+            var arrays = new List<IArrowArray>(columns.Count);
+            foreach (var name in columns)
+            {
+                var index = -1;
+                for (var i = 0; i < batch.Schema.FieldsList.Count; i++)
+                {
+                    if (string.Equals(batch.Schema.FieldsList[i].Name, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+
+                if (index < 0)
+                {
+                    batch.Dispose();
+                    throw new InvalidOperationException($"--prune-columns: hinted column '{name}' is not in the batch");
+                }
+
+                fields.Add(batch.Schema.FieldsList[index]);
+                arrays.Add(batch.Column(index));
+            }
+
+            // The projected batch shares the inner batch's buffers; disposing the inner batch would
+            // release them under the projection, so the inner batch is left to the projection's
+            // consumer, which owns the projected batch and, through it, those buffers.
+            yield return new RecordBatch(new Schema(fields, batch.Schema.Metadata), arrays, batch.Length);
+        }
+    }
+}
+
 /// <summary>Replays <paramref name="inner"/> forever, so a read has no natural end and the only thing
 /// that can stop it is cancellation -- the shape a host-side cancellation test needs, since every
 /// honest dataset this fixture serves finishes in milliseconds. The pause between passes keeps the

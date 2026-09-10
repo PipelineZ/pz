@@ -68,6 +68,11 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
                 capabilities |= ConnectorCapabilities.StablePartitionIds;
             }
 
+            if (options.PruneColumns)
+            {
+                capabilities |= ConnectorCapabilities.ColumnPruning;
+            }
+
             // --declare-checkpointable-reads stages a connector that claims a capability the
             // out-of-process shims do not implement, so a host test can prove the flag is masked out
             // rather than handed to the planner. --misreport-capabilities stages a manifest/handshake
@@ -172,7 +177,10 @@ internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IO
         var staged = new List<IDatasetPartition>(planned.Count);
         for (var i = 0; i < planned.Count; i++)
         {
-            staged.Add(Stage(planned[i], spec, $"{spec.Dataset}:{i}"));
+            var partition = options.PruneColumns && hints.Columns is { Count: > 0 } columns
+                ? new PruningReadPartition(planned[i], columns)
+                : planned[i];
+            staged.Add(Stage(partition, spec, $"{spec.Dataset}:{i}"));
         }
 
         return staged;
