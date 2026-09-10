@@ -35,8 +35,12 @@ public interface IDuckSession : IAsyncDisposable
     /// batch granularity instead of serializing whole streams. Disposes <paramref name="batch"/>
     /// before returning, success or failure — same ownership rule as <see cref="IngestArrowAsync"/>.
     /// Returns rows appended. Note: appender errors may surface at close, i.e. still inside this
-    /// call — never later.</summary>
-    Task<long> AppendArrowBatchAsync(string targetTable, Apache.Arrow.RecordBatch batch, CancellationToken ct = default);
+    /// call — never later.
+    /// <paramref name="schema"/>, when given, is the target table's schema: a batch shaped
+    /// differently (field count or per-position Arrow type id) is refused before DuckDB sees it.
+    /// When null, the batch's own schema is used, and the writer then cannot detect a mismatch.</summary>
+    Task<long> AppendArrowBatchAsync(string targetTable, Apache.Arrow.RecordBatch batch,
+        Apache.Arrow.Schema? schema = null, CancellationToken ct = default);
 
     /// <summary>Runs <paramref name="statements"/> (each a single statement) as one BEGIN…COMMIT
     /// transaction under a single connection-gate hold (the run's one shared DuckDB connection is

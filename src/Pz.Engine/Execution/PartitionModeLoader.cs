@@ -665,7 +665,7 @@ internal static class PartitionModeLoader
                 // Engine-side fault (append failure) escapes to the outer catch below, which
                 // self-cancels loadCts before propagating — an append/ledger failure is the engine's
                 // own fault, not isolable to this one partition.
-                rows += await duck.AppendArrowBatchAsync(partTable, batch, loadCts.Token).ConfigureAwait(false);
+                rows += await duck.AppendArrowBatchAsync(partTable, batch, schema, loadCts.Token).ConfigureAwait(false);
             }
 
             await duck.ExecuteTransactionAsync(
@@ -778,7 +778,7 @@ internal static class PartitionModeLoader
             // Engine-side faults from here on (append, or either transaction below) escape raw to
             // RunPartitionAsync's outer catch, which self-cancels loadCts — this method adds no catch
             // of its own for that regime.
-            segRows += await duck.AppendArrowBatchAsync(segTable, batch, token).ConfigureAwait(false);
+            segRows += await duck.AppendArrowBatchAsync(segTable, batch, schema, token).ConfigureAwait(false);
 
             if (partition.TryGetCheckpoint(out var checkpoint) && checkpoint is not null)
             {
