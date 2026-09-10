@@ -19,7 +19,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   the staging table before DuckDB sees it. Connectors built on
   `Pz.Connectors.Sdk` 0.6.0 or earlier must be rebuilt on the fixed SDK to
   pick up the stream fix; the engine-side guard turns the crash into a node
-  failure for connectors that have not been.
+  failure for connectors that have not been. Until a connector is rebuilt, a
+  pruning read that previously happened to produce correct rows (a hint that
+  is a leading prefix of the declared schema) now fails the node cleanly as
+  well: with this release and an un-rebuilt pruning connector, every pruned
+  read fails until that connector ships on the fixed SDK.
 
 ## [0.6.0] - 2026-09-08
 

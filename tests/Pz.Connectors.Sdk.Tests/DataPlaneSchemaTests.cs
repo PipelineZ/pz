@@ -58,6 +58,33 @@ public sealed class DataPlaneSchemaTests
     }
 
     [Fact]
+    public async Task A_batch_with_more_columns_than_the_stream_schema_is_refused_before_it_is_written()
+    {
+        using var source = new ActivitySource("test");
+        using var stream = new MemoryStream();
+        var extra = Batch(
+            new Schema.Builder()
+                .Field(new Field("id", Int64Type.Default, false))
+                .Field(new Field("name", StringType.Default, true))
+                .Field(new Field("extra", BooleanType.Default, true))
+                .Build(),
+            new Int64Array.Builder().Append(1).Build(),
+            new StringArray.Builder().Append("a").Build(),
+            new BooleanArray.Builder().Append(true).Build());
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DataPlaneListener.ServeReadAsync(stream, Ticket(TwoColumns, new FixedPartition([extra])), source, CancellationToken.None));
+
+        Assert.Contains("2 column(s)", ex.Message);
+        Assert.Contains("3 column(s)", ex.Message);
+
+        // Only the schema header reached the stream: no batch was written under the wrong header.
+        stream.Position = 0;
+        using var reader = new ArrowStreamReader(stream);
+        Assert.Null(await reader.ReadNextRecordBatchAsync());
+    }
+
+    [Fact]
     public async Task A_batch_whose_column_type_differs_is_refused()
     {
         using var source = new ActivitySource("test");

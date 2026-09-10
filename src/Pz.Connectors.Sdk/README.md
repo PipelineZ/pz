@@ -25,6 +25,9 @@ return await PzConnectorHost.RunAsync(args, new MyConnector());
 `MyConnector` implements `ISourceConnector` and/or `ISinkConnector` from `Pz.Connectors.Abstractions`.
 Declare only the capabilities you implement: the SDK answers every optional RPC from the interfaces
 your objects actually implement, and `pz connector test` fails a declaration nothing backs.
+Declaring `ColumnPruning` carries a shape contract: every batch you yield must carry exactly
+`ReadHints.Columns`, in that order. The SDK opens the read stream with that projected schema and
+refuses to write a batch shaped differently.
 
 ## Two argv modes
 

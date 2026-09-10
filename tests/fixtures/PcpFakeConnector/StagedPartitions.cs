@@ -8,7 +8,9 @@ namespace PcpFakeConnector;
 /// order, the way a source that honors <see cref="ReadHints.Columns"/> shapes its batches. The
 /// LocalFiles connector underneath ignores the hint and yields its full shape, so this is what turns
 /// the fixture into a pruning connector. Column names match case-insensitively, as the engine matches
-/// them; a hinted name the batch does not carry is a fixture misuse and throws.</summary>
+/// them; a hinted name the batch does not carry is a fixture misuse and throws. <paramref name="columns"/>
+/// is assumed distinct: a duplicate name would place the same array twice in the projected batch, which
+/// never happens here because the engine de-duplicates the hint before sending it.</summary>
 internal sealed class PruningReadPartition(IDatasetPartition inner, IReadOnlyList<string> columns) : IDatasetPartition
 {
     public async IAsyncEnumerable<RecordBatch> ReadAsync(
