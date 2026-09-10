@@ -305,4 +305,33 @@ public sealed class ArrowIngestTests : IDisposable
         await using var reopened = Open();
         Assert.Equal(50, await reopened.ScalarAsync<long>("select count(*) from main.persisted"));
     }
+
+    [Fact]
+    public async Task A_batch_shaped_differently_from_the_staging_schema_is_refused_and_leaves_no_table()
+    {
+        await using var duck = Open();
+
+        // Two of the matrix's eight columns, as the engine narrows a staging schema under column
+        // pruning -- against batches that still carry all eight. Binding those by position would hand
+        // DuckDB an int64 column's bytes as a string column's offsets.
+        var narrowed = new Schema(
+        [
+            new Field("c_str", StringType.Default, nullable: true),
+            new Field("c_bool", BooleanType.Default, nullable: true),
+        ], null);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => duck.IngestArrowAsync("main.mismatch", narrowed, MatrixBatches(5, 5)));
+
+        Assert.Contains("main.mismatch", ex.Message);
+        Assert.Contains("2 column(s)", ex.Message);
+        Assert.Contains("8 column(s)", ex.Message);
+        Assert.Contains("c_str:utf8, c_bool:bool", ex.Message);
+
+        Assert.Equal(0L, await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'mismatch'"));
+
+        var rows = await duck.IngestArrowAsync("main.after_mismatch", MatrixSchema(), MatrixBatches(5, 5));
+        Assert.Equal(5, rows);
+    }
 }

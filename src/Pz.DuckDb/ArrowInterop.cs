@@ -133,14 +133,18 @@ internal static class ArrowInterop
         private readonly nint _connectionHandle;
         private readonly nint _convertedSchema;
         private readonly nint _appender;
+        private readonly string _targetTable;
+        private readonly Schema _schema;
         private bool _closed;
         private bool _disposed;
 
-        private ArrowIngestWriter(nint connectionHandle, nint convertedSchema, nint appender)
+        private ArrowIngestWriter(nint connectionHandle, nint convertedSchema, nint appender, string targetTable, Schema schema)
         {
             _connectionHandle = connectionHandle;
             _convertedSchema = convertedSchema;
             _appender = appender;
+            _targetTable = targetTable;
+            _schema = schema;
         }
 
         internal static ArrowIngestWriter Create(nint connectionHandle, string targetTable, Schema schema)
@@ -174,7 +178,7 @@ internal static class ArrowInterop
                 }
 
                 convertedSchemaOwned = false; // ownership transfers to the returned ArrowIngestWriter
-                return new ArrowIngestWriter(connectionHandle, convertedSchema, appender);
+                return new ArrowIngestWriter(connectionHandle, convertedSchema, appender, targetTable, schema);
             }
             finally
             {
@@ -195,6 +199,11 @@ internal static class ArrowInterop
         /// Does not take ownership of <paramref name="batch"/>; the caller disposes it.</summary>
         internal void AppendBatch(RecordBatch batch)
         {
+            // duckdb_data_chunk_from_arrow binds the array's children to the converted schema by
+            // position and trusts the caller that they line up: a batch with a different column
+            // count or type would be read as the wrong columns' bytes, not rejected.
+            ThrowIfShapeDiffers(batch.Schema);
+
             var cArray = CArrowArray.Create();
             nint chunk = 0;
             try
@@ -225,6 +234,32 @@ internal static class ArrowInterop
                 // release callback has already run, so this is the (idempotent) shell-memory free.
                 CArrowArray.Free(cArray);
             }
+        }
+
+        /// <summary>Same field count and, per position, the same Arrow type id as the schema this
+        /// writer was created with. Names, nullability and metadata are reported but never make a
+        /// mismatch: the appender binds by position.</summary>
+        private void ThrowIfShapeDiffers(Schema actual)
+        {
+            var expected = _schema.FieldsList;
+            var same = expected.Count == actual.FieldsList.Count;
+            for (var i = 0; same && i < expected.Count; i++)
+            {
+                same = expected[i].DataType.TypeId == actual.FieldsList[i].DataType.TypeId;
+            }
+
+            if (same)
+            {
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"arrow ingest into {_targetTable}: a batch's shape differs from the staging schema: " +
+                $"expected {expected.Count} column(s) [{Describe(_schema)}], got {actual.FieldsList.Count} column(s) [{Describe(actual)}]; " +
+                "the connector yielded batches that do not match the schema it declared for this read");
+
+            static string Describe(Schema schema) =>
+                string.Join(", ", schema.FieldsList.Select(f => $"{f.Name}:{f.DataType.Name}"));
         }
 
         /// <summary>Flushes and closes the appender, surfacing any pending write error. Call once after

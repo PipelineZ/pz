@@ -7,6 +7,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Out-of-process connectors: a read with a column-pruning hint that is not a
+  leading prefix of the declared schema no longer crashes `pz run`. The
+  Connectors SDK opened the data-plane stream with the declared (unpruned)
+  schema, so pruned batches were decoded by position into the wrong columns
+  and handed to DuckDB as garbage. The SDK now opens the stream with the
+  declared schema narrowed to the hint, refuses a batch shaped differently
+  from the stream, and the engine refuses a batch shaped differently from
+  the staging table before DuckDB sees it. Connectors built on
+  `Pz.Connectors.Sdk` 0.6.0 or earlier must be rebuilt on the fixed SDK to
+  pick up the stream fix; the engine-side guard turns the crash into a node
+  failure for connectors that have not been.
+
 ## [0.6.0] - 2026-09-08
 
 ### Added
