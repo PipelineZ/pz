@@ -334,4 +334,34 @@ public sealed class ArrowIngestTests : IDisposable
         var rows = await duck.IngestArrowAsync("main.after_mismatch", MatrixSchema(), MatrixBatches(5, 5));
         Assert.Equal(5, rows);
     }
+
+    [Fact]
+    public async Task A_batch_whose_decimal_precision_differs_from_the_staging_schema_is_refused()
+    {
+        await using var duck = Open();
+
+        // Same TypeId (Decimal128) on both sides; only precision differs. The v0 type matrix has no
+        // DuckDB mapping for a nested container type (list/struct/map), so this is the structural
+        // mismatch reachable through an ingest whose staged schema must itself be creatable: the old
+        // TypeId-only comparison let mismatched decimals bind the wrong scale onto the appender.
+        var staged = new Schema([new Field("amount", new Decimal128Type(10, 2), nullable: true)], null);
+        var yielded = new Schema([new Field("amount", new Decimal128Type(38, 2), nullable: true)], null);
+        var amounts = new Decimal128Array.Builder(new Decimal128Type(38, 2)).Append(1.23m).Build();
+        var batch = new RecordBatch(yielded, [amounts], 1);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => duck.IngestArrowAsync("main.decimal_mismatch", staged, Batches(batch)));
+
+        Assert.Contains("main.decimal_mismatch", ex.Message);
+        Assert.Contains("[amount:decimal128(10, 2)]", ex.Message);
+        Assert.Contains("[amount:decimal128(38, 2)]", ex.Message);
+        Assert.Equal(0L, await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'decimal_mismatch'"));
+
+        static async IAsyncEnumerable<RecordBatch> Batches(RecordBatch one)
+        {
+            yield return one;
+            await Task.CompletedTask;
+        }
+    }
 }

@@ -174,6 +174,53 @@ public abstract class SourceConnectorAcceptanceTests
         }
     }
 
+    /// <summary>The executable contract behind <see cref="ConnectorCapabilities.ColumnPruning"/>: a
+    /// read planned with <see cref="ReadHints.Columns"/> yields batches carrying exactly the hinted
+    /// columns, in the hint's order, and every row the unhinted read yields. The hint is deliberately
+    /// neither a prefix of the declared schema nor in its order (the last declared column, then the
+    /// first): the host binds batch columns to the staged table by position, so a source that narrows
+    /// but keeps its own column order, or ignores the hint altogether, must fail here rather than in
+    /// the host. Sources that do not declare the capability never exercise this fact (the
+    /// capability-gated Skip below); <see cref="SmallDataset"/> must declare at least two
+    /// columns.</summary>
+    [SkippableFact]
+    public async Task ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order()
+    {
+        Gate();
+        var connector = CreateSource();
+        SkipIfNativeOnly(connector);
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.ColumnPruning),
+            "connector does not declare ColumnPruning");
+        await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+
+        var declared = (await source.GetSchemaAsync(SmallDataset, CancellationToken.None)).Schema;
+        Assert.True(declared.FieldsList.Count >= 2,
+            $"the ColumnPruning fact needs a SmallDataset with at least two columns; " +
+            $"'{SmallDataset.Dataset}' declares {declared.FieldsList.Count}");
+
+        var last = declared.FieldsList[^1];
+        var first = declared.FieldsList[0];
+        var hints = new ReadHints(Columns: [last.Name, first.Name]);
+        var expected = new Schema([last, first], null);
+
+        var (unprunedRows, _) = await ReadFirstColumn(source, SmallDataset);
+
+        var prunedRows = 0L;
+        var partitions = await source.PlanReadAsync(SmallDataset, hints, CancellationToken.None);
+        foreach (var partition in partitions)
+        {
+            await foreach (var batch in partition.ReadAsync(
+                new BatchOptions(TargetBatchBytes: SmallBatchTargetBytes), CancellationToken.None))
+            {
+                AssertSchemasMatch(expected, batch.Schema);
+                prunedRows += batch.Length;
+                batch.Dispose();
+            }
+        }
+
+        Assert.Equal(unprunedRows, prunedRows);
+    }
+
     [SkippableFact]
     public async Task Read_is_deterministic_across_two_reads()
     {

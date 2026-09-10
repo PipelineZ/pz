@@ -7,6 +7,30 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
+  the acceptance fact for the `ColumnPruning` capability. It plans a read with a
+  non-prefix, reordered column hint and requires every batch to carry exactly
+  those columns in that order, with the unhinted read's row count. Sources that
+  do not declare the capability skip it; existing subclasses need no changes.
+  A connector that declares `ColumnPruning` but yields the hinted columns in
+  its declared order rather than the hint's order now fails this fact; a
+  subclass that cannot satisfy it for a structural reason can exclude it
+  through `ShouldRun`.
+
+### Fixed
+
+- The shape guards on the Connectors SDK data plane and on the engine's Arrow
+  ingest now compare Arrow types structurally: nested child types, decimal
+  precision and scale, timestamp unit and timezone, fixed-size widths,
+  dictionary and union parameters, and an extension type's storage. A batch
+  whose `list<utf8>` arrives where `list<int32>` was declared is refused with
+  both shapes spelled out, instead of reaching DuckDB. The comparison is
+  strict about timestamp unit and timezone spelling: a connector whose
+  declared schema says `+00:00` and whose batches say `UTC` is refused with
+  both shapes named.
+
 ## [0.6.1] - 2026-09-10
 
 ### Changed

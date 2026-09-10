@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
 
@@ -197,28 +198,20 @@ internal sealed class DataPlaneListener : IAsyncDisposable
         await stream.FlushAsync(ct).ConfigureAwait(false);
     }
 
-    /// <summary>Same field count and, per position, the same Arrow type id. Names, nullability and
-    /// metadata are reported but never make a mismatch: the host binds columns by position.</summary>
+    /// <summary>Same field count and, per position, structurally the same Arrow type. Names,
+    /// nullability and metadata are reported but never make a mismatch: the host binds columns by
+    /// position.</summary>
     private static void ThrowIfShapeDiffers(Schema expected, Schema actual)
     {
-        var same = expected.FieldsList.Count == actual.FieldsList.Count;
-        for (var i = 0; same && i < expected.FieldsList.Count; i++)
-        {
-            same = expected.FieldsList[i].DataType.TypeId == actual.FieldsList[i].DataType.TypeId;
-        }
-
-        if (same)
+        if (ArrowSchemaShape.Same(expected, actual))
         {
             return;
         }
 
         throw new InvalidOperationException(
             "the partition yielded a batch whose shape differs from the planned read's schema: " +
-            $"expected {expected.FieldsList.Count} column(s) [{Describe(expected)}], got {actual.FieldsList.Count} column(s) [{Describe(actual)}]; " +
+            $"expected {expected.FieldsList.Count} column(s) [{ArrowSchemaShape.Describe(expected)}], got {actual.FieldsList.Count} column(s) [{ArrowSchemaShape.Describe(actual)}]; " +
             "a source that honors ReadHints.Columns must yield exactly the hinted columns in hint order, and otherwise its declared schema");
-
-        static string Describe(Schema schema) =>
-            string.Join(", ", schema.FieldsList.Select(f => $"{f.Name}:{f.DataType.Name}"));
     }
 
     private async Task ServeWriteAsync(Stream stream, WriteTicket write)

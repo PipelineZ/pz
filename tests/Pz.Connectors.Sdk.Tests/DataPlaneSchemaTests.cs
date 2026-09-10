@@ -125,4 +125,31 @@ public sealed class DataPlaneSchemaTests
         Assert.Equal(7L, ((Int64Array)read.Column(0)).GetValue(0));
         Assert.Null(await reader.ReadNextRecordBatchAsync());
     }
+
+    [Fact]
+    public async Task A_batch_whose_nested_item_type_differs_is_refused()
+    {
+        using var source = new ActivitySource("test");
+        using var stream = new MemoryStream();
+        var planned = new Schema.Builder()
+            .Field(new Field("tags", new ListType(Int32Type.Default), true))
+            .Build();
+        var yielded = new Schema.Builder()
+            .Field(new Field("tags", new ListType(StringType.Default), true))
+            .Build();
+        var values = new StringArray.Builder().Append("a").Append("b").Build();
+        var offsets = new ArrowBuffer.Builder<int>().Append(0).Append(2).Build();
+        var list = new ListArray(yielded.FieldsList[0].DataType, 1, offsets, values, ArrowBuffer.Empty);
+        var batch = Batch(yielded, list);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            DataPlaneListener.ServeReadAsync(stream, Ticket(planned, new FixedPartition([batch])), source, CancellationToken.None));
+
+        Assert.Contains("[tags:list<int32>]", ex.Message);
+        Assert.Contains("[tags:list<utf8>]", ex.Message);
+
+        stream.Position = 0;
+        using var reader = new ArrowStreamReader(stream);
+        Assert.Null(await reader.ReadNextRecordBatchAsync());
+    }
 }
