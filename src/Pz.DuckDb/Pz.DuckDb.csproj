@@ -12,6 +12,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- src/Shared/ArrowSchemaShape.cs compiles into this assembly as internal Pz.Arrow.ArrowSchemaShape
+         and also into Pz.Connectors.Sdk's assembly; no assembly listed below may also receive internals
+         from Pz.Connectors.Sdk, or the type becomes ambiguous between the two. -->
     <InternalsVisibleTo Include="Pz.DuckDb.Tests" />
     <InternalsVisibleTo Include="Pz.Engine.Tests" />
     <!-- SqlDryCompiler (tier 4) reuses ArrowInterop.QuoteQualified for identifier quoting rather than

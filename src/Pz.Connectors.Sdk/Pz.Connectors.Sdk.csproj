@@ -53,6 +53,9 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- src/Shared/ArrowSchemaShape.cs compiles into this assembly as internal Pz.Arrow.ArrowSchemaShape
+         and also into Pz.DuckDb's assembly; no assembly listed below may also receive internals from
+         Pz.DuckDb, or the type becomes ambiguous between the two. -->
     <InternalsVisibleTo Include="Pz.Connectors.Sdk.Tests" />
     <InternalsVisibleTo Include="PcpFakeConnector" />
   </ItemGroup>

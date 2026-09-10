@@ -38,7 +38,7 @@ internal static class ArrowSchemaShape
     public static bool SameType(IArrowType expected, IArrowType actual)
     {
         // An extension type reports its storage's TypeId, so the two must be told apart first.
-        if (expected is ExtensionType e || actual is ExtensionType)
+        if (expected is ExtensionType || actual is ExtensionType)
         {
             return expected is ExtensionType left && actual is ExtensionType right
                 && string.Equals(left.Name, right.Name, StringComparison.Ordinal)
@@ -142,6 +142,11 @@ internal static class ArrowSchemaShape
                 Append(text, d.IndexType);
                 text.Append(", ");
                 Append(text, d.ValueType);
+                if (d.Ordered)
+                {
+                    text.Append(", ordered");
+                }
+
                 text.Append('>');
                 return;
             case FixedSizeListType l:
@@ -156,18 +161,35 @@ internal static class ArrowSchemaShape
                 Append(text, m.ValueField.DataType);
                 text.Append('>');
                 return;
-            case StructType or UnionType:
-                text.Append(type.Name).Append('<');
-                var children = ((NestedType)type).Fields;
-                for (var i = 0; i < children.Count; i++)
+            case StructType s:
+                text.Append(s.Name).Append('<');
+                for (var i = 0; i < s.Fields.Count; i++)
                 {
                     if (i > 0)
                     {
                         text.Append(", ");
                     }
 
-                    text.Append(children[i].Name).Append(':');
-                    Append(text, children[i].DataType);
+                    text.Append(s.Fields[i].Name).Append(':');
+                    Append(text, s.Fields[i].DataType);
+                }
+
+                text.Append('>');
+                return;
+            case UnionType u:
+                // Apache.Arrow's UnionType.Name is "union" for both modes; the mode and each child's
+                // type id are the refusal-relevant bits the comparer checks, so name them explicitly.
+                text.Append(u.Mode == UnionMode.Dense ? "dense_union" : "sparse_union").Append('<');
+                for (var i = 0; i < u.Fields.Count; i++)
+                {
+                    if (i > 0)
+                    {
+                        text.Append(", ");
+                    }
+
+                    text.Append(u.Fields[i].Name).Append(':');
+                    Append(text, u.Fields[i].DataType);
+                    text.Append('=').Append(u.TypeIds[i]);
                 }
 
                 text.Append('>');

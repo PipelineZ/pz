@@ -119,7 +119,9 @@ public sealed class ArrowSchemaShapeTests
     [InlineData("duration", "duration[s]")]
     [InlineData("fixed_size_binary", "fixed_size_binary[16]")]
     [InlineData("dictionary", "dictionary<int32, utf8>")]
-    [InlineData("dense_union", "union<a:int32>")]
+    [InlineData("ordered_dictionary", "dictionary<int32, utf8, ordered>")]
+    [InlineData("dense_union", "dense_union<a:int32=0>")]
+    [InlineData("sparse_union", "sparse_union<a:int32=0>")]
     [InlineData("nested", "list<struct<a:list<int32>>>")]
     public void Describe_spells_out_the_structure(string key, string expected)
     {
@@ -139,7 +141,9 @@ public sealed class ArrowSchemaShapeTests
             "duration" => DurationType.FromTimeUnit(TimeUnit.Second),
             "fixed_size_binary" => new FixedSizeBinaryType(16),
             "dictionary" => new DictionaryType(Int32Type.Default, StringType.Default, ordered: false),
+            "ordered_dictionary" => new DictionaryType(Int32Type.Default, StringType.Default, ordered: true),
             "dense_union" => new UnionType([F("a", Int32Type.Default)], [0], UnionMode.Dense),
+            "sparse_union" => new UnionType([F("a", Int32Type.Default)], [0], UnionMode.Sparse),
             "nested" => new ListType(new StructType([F("a", new ListType(Int32Type.Default))])),
             _ => throw new ArgumentOutOfRangeException(nameof(key)),
         };
