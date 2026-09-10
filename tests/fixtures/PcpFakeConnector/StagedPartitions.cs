@@ -18,6 +18,7 @@ internal sealed class PruningReadPartition(IDatasetPartition inner, IReadOnlyLis
         {
             var fields = new List<Field>(columns.Count);
             var arrays = new List<IArrowArray>(columns.Count);
+            var selected = new HashSet<int>();
             foreach (var name in columns)
             {
                 var index = -1;
@@ -38,11 +39,20 @@ internal sealed class PruningReadPartition(IDatasetPartition inner, IReadOnlyLis
 
                 fields.Add(batch.Schema.FieldsList[index]);
                 arrays.Add(batch.Column(index));
+                selected.Add(index);
             }
 
-            // The projected batch shares the inner batch's buffers; disposing the inner batch would
-            // release them under the projection, so the inner batch is left to the projection's
-            // consumer, which owns the projected batch and, through it, those buffers.
+            // The projected batch takes ownership of only the hinted columns' arrays; every column the
+            // hint drops is this projection's own to release, or its pooled native buffer -- nothing
+            // else holds a reference to it once the inner batch's array list goes out of scope -- leaks.
+            for (var i = 0; i < batch.Schema.FieldsList.Count; i++)
+            {
+                if (!selected.Contains(i))
+                {
+                    batch.Column(i).Dispose();
+                }
+            }
+
             yield return new RecordBatch(new Schema(fields, batch.Schema.Metadata), arrays, batch.Length);
         }
     }
