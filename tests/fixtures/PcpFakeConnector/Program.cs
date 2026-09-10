@@ -64,7 +64,10 @@ internal static class Program
 /// dataset, no native scan, and a deterministic token per drained partition.
 /// <c>--declare-sync-state-only</c> declares the same capability set but implements none of it, the
 /// shape a conformance vector must FAIL. <c>--stable-ids</c> declares <c>StablePartitionIds</c> and
-/// gives every partition the id <c>&lt;dataset&gt;:&lt;ordinal&gt;</c>.</para></summary>
+/// gives every partition the id <c>&lt;dataset&gt;:&lt;ordinal&gt;</c>.
+/// <c>--prune-columns</c> declares <c>ColumnPruning</c> and projects every batch to the hinted
+/// columns, in the hint's order, so a host-side test can prove the hint reaches the connector and
+/// the pruned shape comes back over the data plane.</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -80,7 +83,8 @@ internal sealed record FixtureOptions(
     bool DeclareCheckpointableReads,
     bool SyncState,
     bool DeclareSyncStateOnly,
-    bool StableIds)
+    bool StableIds,
+    bool PruneColumns)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -95,6 +99,7 @@ internal sealed record FixtureOptions(
         bool useGate = false, endlessRead = false, ignoreCancel = false, ignoreShutdown = false;
         bool declareCheckpointableReads = false;
         bool syncState = false, declareSyncStateOnly = false, stableIds = false;
+        bool pruneColumns = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -167,6 +172,9 @@ internal sealed record FixtureOptions(
                 case "--stable-ids":
                     stableIds = true;
                     break;
+                case "--prune-columns":
+                    pruneColumns = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -180,6 +188,6 @@ internal sealed record FixtureOptions(
         return (new FixtureOptions(
             hangHandshake, dieImmediately, wrongProtocolMajor, misreportCapabilities, misreportName,
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
-            declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds), passthrough.ToArray());
+            declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns), passthrough.ToArray());
     }
 }

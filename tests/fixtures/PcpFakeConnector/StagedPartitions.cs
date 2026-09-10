@@ -4,6 +4,62 @@ using Pz.Connectors.Abstractions;
 
 namespace PcpFakeConnector;
 
+/// <summary>Projects every batch of <paramref name="inner"/> to <paramref name="columns"/>, in that
+/// order, the way a source that honors <see cref="ReadHints.Columns"/> shapes its batches. The
+/// LocalFiles connector underneath ignores the hint and yields its full shape, so this is what turns
+/// the fixture into a pruning connector. Column names match case-insensitively, as the engine matches
+/// them; a hinted name the batch does not carry is a fixture misuse and throws. <paramref name="columns"/>
+/// is assumed distinct: a duplicate name would place the same array twice in the projected batch, which
+/// never happens here because the engine de-duplicates the hint before sending it.</summary>
+internal sealed class PruningReadPartition(IDatasetPartition inner, IReadOnlyList<string> columns) : IDatasetPartition
+{
+    public async IAsyncEnumerable<RecordBatch> ReadAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var batch in inner.ReadAsync(options, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            var fields = new List<Field>(columns.Count);
+            var arrays = new List<IArrowArray>(columns.Count);
+            var selected = new HashSet<int>();
+            foreach (var name in columns)
+            {
+                var index = -1;
+                for (var i = 0; i < batch.Schema.FieldsList.Count; i++)
+                {
+                    if (string.Equals(batch.Schema.FieldsList[i].Name, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        index = i;
+                        break;
+                    }
+                }
+
+                if (index < 0)
+                {
+                    batch.Dispose();
+                    throw new InvalidOperationException($"--prune-columns: hinted column '{name}' is not in the batch");
+                }
+
+                fields.Add(batch.Schema.FieldsList[index]);
+                arrays.Add(batch.Column(index));
+                selected.Add(index);
+            }
+
+            // The projected batch takes ownership of only the hinted columns' arrays; every column the
+            // hint drops is this projection's own to release, or its pooled native buffer -- nothing
+            // else holds a reference to it once the inner batch's array list goes out of scope -- leaks.
+            for (var i = 0; i < batch.Schema.FieldsList.Count; i++)
+            {
+                if (!selected.Contains(i))
+                {
+                    batch.Column(i).Dispose();
+                }
+            }
+
+            yield return new RecordBatch(new Schema(fields, batch.Schema.Metadata), arrays, batch.Length);
+        }
+    }
+}
+
 /// <summary>Replays <paramref name="inner"/> forever, so a read has no natural end and the only thing
 /// that can stop it is cancellation -- the shape a host-side cancellation test needs, since every
 /// honest dataset this fixture serves finishes in milliseconds. The pause between passes keeps the

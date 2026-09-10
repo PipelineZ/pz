@@ -266,7 +266,8 @@ public sealed class DuckSession : IDuckSession
             ct);
     }
 
-    public Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, CancellationToken ct = default)
+    public Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, Schema? schema = null,
+        CancellationToken ct = default)
     {
         // Deliberately NOT passing `ct` as Task.Run's own cancellation token: if `ct` is already
         // cancelled when this is called, Task.Run(Action, CancellationToken) never invokes the
@@ -288,7 +289,7 @@ public sealed class DuckSession : IDuckSession
                         // A fresh appender per call: appender state is per-connection pending state
                         // (see _gate's doc comment) and must not span gate releases. Close errors
                         // (duckdb_appender_close) surface from Complete() inside this same call.
-                        using var writer = ArrowInterop.ArrowIngestWriter.Create(connectionHandle, targetTable, batch.Schema);
+                        using var writer = ArrowInterop.ArrowIngestWriter.Create(connectionHandle, targetTable, schema ?? batch.Schema);
                         writer.AppendBatch(batch);
                         writer.Complete();
                         return (long)batch.Length;

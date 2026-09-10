@@ -109,12 +109,39 @@ public sealed class PerBatchApiTests : IAsyncLifetime
         var preCancelled = new CancellationToken(canceled: true);
 
         await Assert.ThrowsAsync<OperationCanceledException>(
-            () => _duck.AppendArrowBatchAsync("staging.t5", batch, preCancelled));
+            () => _duck.AppendArrowBatchAsync("staging.t5", batch, ct: preCancelled));
 
         Assert.Equal(1L, await _duck.ScalarAsync<long>("select count(*) from staging.t5"));
 
         // Connection is still usable afterwards -- the cancelled call didn't corrupt the shared gate/connection.
         await _duck.AppendArrowBatchAsync("staging.t5", Batch(4));
         Assert.Equal(2L, await _duck.ScalarAsync<long>("select count(*) from staging.t5"));
+    }
+
+    // The disposal assertion below is deliberately omitted, following the precedent set by
+    // AppendArrowBatchAsync_disposes_batch_and_leaves_table_unchanged_on_pre_start_cancellation
+    // above: RecordBatch/IArrowArray expose no stable, public IsDisposed signal, so disposal is
+    // verified structurally (the delegate's finally runs unconditionally) rather than observed.
+    [Fact]
+    public async Task AppendArrowBatchAsync_with_target_schema_refuses_a_differently_shaped_batch_before_ingest()
+    {
+        await _duck.CreateEmptyTableAsync("staging.t6", IdSchema);
+
+        var wrongShaped = new RecordBatch(
+            new Schema([new Field("id", Int64Type.Default, nullable: false), new Field("extra", Int64Type.Default, nullable: false)], null),
+            [new Int64Array.Builder().Append(1).Build(), new Int64Array.Builder().Append(2).Build()],
+            1);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _duck.AppendArrowBatchAsync("staging.t6", wrongShaped, IdSchema));
+
+        Assert.Contains("staging.t6", ex.Message);
+        Assert.Contains("1 column(s)", ex.Message);
+        Assert.Contains("2 column(s)", ex.Message);
+
+        Assert.Equal(0L, await _duck.ScalarAsync<long>("select count(*) from staging.t6"));
+
+        await _duck.AppendArrowBatchAsync("staging.t6", Batch(1), IdSchema);
+        Assert.Equal(1L, await _duck.ScalarAsync<long>("select count(*) from staging.t6"));
     }
 }

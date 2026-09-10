@@ -255,8 +255,8 @@ public sealed class PartitionFaultTests : IAsyncLifetime
     public async Task Engine_fault_in_one_partition_cancels_gated_sibling_promptly()
     {
         // 'bad' yields a batch whose schema deliberately mismatches the part table DuckDB actually
-        // created (an extra column) -- this is a genuine ENGINE-side fault (duckdb_append_data_chunk
-        // rejecting the chunk), NOT a connector-authored `fault:` exception, so it exercises
+        // created (an extra column) -- this is a genuine ENGINE-side fault (the ingest writer's shape
+        // check refusing the batch), NOT a connector-authored `fault:` exception, so it exercises
         // RunPartitionAsync's self-cancelling outer catch rather than the isolated read-fault path.
         // 'slow' parks on a TaskCompletionSource that the test never releases -- the ONLY way its gate
         // unblocks is loadCts being cancelled from inside 'bad's task the moment the append fails. If
@@ -308,12 +308,12 @@ public sealed class PartitionFaultTests : IAsyncLifetime
         await gateObservedCancellation.Task.WaitAsync(TimeSpan.FromSeconds(180));
 
         // Promptness is now proven; this just drains the (by now essentially finished) node attempt and
-        // asserts WHAT it throws: the raw ENGINE fault (duckdb_append_data_chunk rejecting 'bad's
-        // mismatched chunk), never a TimeoutException (which would mean this bound -- not the self-cancel
+        // asserts WHAT it throws: the raw ENGINE fault (the ingest writer refusing 'bad's mismatched
+        // batch), never a TimeoutException (which would mean this bound -- not the self-cancel
         // above -- was what let the node attempt finish) and never the isolated-failure aggregate.
         var thrown = await Assert.ThrowsAnyAsync<Exception>(() => pending.WaitAsync(TimeSpan.FromSeconds(180)));
         var engineFault = Assert.IsType<InvalidOperationException>(thrown);
-        Assert.Contains("duckdb_append_data_chunk", engineFault.Message, StringComparison.Ordinal);
+        Assert.Contains("shape differs from the staging schema", engineFault.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -344,7 +344,7 @@ public sealed class PartitionFaultTests : IAsyncLifetime
 
         // The propagated exception is the raw ENGINE fault -- never the isolated-failure aggregate
         // (which would be a PzConnectorException reading "N of M partitions failed").
-        Assert.Contains("duckdb_append_data_chunk", thrown.Message, StringComparison.Ordinal);
+        Assert.Contains("shape differs from the staging schema", thrown.Message, StringComparison.Ordinal);
 
         // ...but the read-fault recorded before teardown was not silently discarded: it surfaced as
         // exactly one notice.
@@ -388,7 +388,7 @@ public sealed class PartitionFaultTests : IAsyncLifetime
 }
 
 /// <summary>Partition whose batch DELIBERATELY mismatches the part table's declared schema (an extra
-/// column) -- triggers a genuine DuckDB engine-side APPEND failure (duckdb_append_data_chunk), distinct
+/// column) -- triggers a genuine engine-side ingest failure (the writer's shape check), distinct
 /// from a connector-authored <c>fault:</c> exception, so a test built on this stub exercises
 /// <c>PartitionModeLoader.RunPartitionAsync</c>'s self-cancelling ENGINE-fault path rather than the
 /// isolated connector read-fault path.</summary>

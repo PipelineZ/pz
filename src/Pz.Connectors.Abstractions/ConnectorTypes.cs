@@ -118,8 +118,15 @@ public sealed record OutputSpec(string Sink, string Output, string Mode, string 
 /// this.</para></summary>
 public sealed record WriteAttempt(string Node, string Run, int Ordinal);
 
-/// <summary>Pushdown hints. Connectors ignore hints they did not declare capabilities for; the engine
-/// re-applies unpushed filters in DuckDB, so honoring hints is an optimization, never a correctness duty.</summary>
+/// <summary>Pushdown hints. Connectors ignore hints they did not declare capabilities for.
+/// <paramref name="PredicateSql"/> and <paramref name="Limit"/> are optimizations: the engine
+/// re-applies them locally, so honoring either is never a correctness duty. <paramref name="Columns"/>
+/// is different: a source that declares <see cref="ConnectorCapabilities.ColumnPruning"/> MUST yield
+/// batches carrying exactly the hinted columns, in the hint's order, on every batch — or its declared
+/// schema when no hint is given — because the engine narrows the staging table on the declared
+/// capability, not on what the source actually returns, and a batch shaped otherwise is refused. A
+/// source that does not declare the capability ignores <paramref name="Columns"/> and yields its
+/// declared schema.</summary>
 public sealed record ReadHints(IReadOnlyList<string>? Columns = null, string? PredicateSql = null, long? Limit = null)
 {
     public static readonly ReadHints None = new();

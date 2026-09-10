@@ -12,8 +12,8 @@ internal abstract record TicketEntry;
 
 /// <summary>Connector -> host: the data plane writes <paramref name="Schema"/> then every batch
 /// <paramref name="Partition"/> yields. The schema is captured at OpenReadStream time so an empty
-/// partition still produces a well-formed stream; the ABI requires it to equal the batches' schema
-/// exactly. <paramref name="Capture"/> is where the data plane parks the partition's sync-state
+/// partition still produces a well-formed stream; it is the planned read's schema -- the declared
+/// schema narrowed to the pruning hint -- and every batch must match it. <paramref name="Capture"/> is where the data plane parks the partition's sync-state
 /// candidate once the drain completed cleanly, before it writes end-of-stream -- GetReadState answers
 /// from it and never asks the partition again. <paramref name="Parent"/> is the OpenReadStream RPC's
 /// span context: the data plane carries no headers, so the stream inherits the context of the RPC

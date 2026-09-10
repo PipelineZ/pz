@@ -185,16 +185,18 @@ internal sealed class PcpConnectorService(
             using var linked = LinkOp(request.OpId, context);
             var ct = linked.Token;
             var spec = SpecMapping.ToDatasetSpec(request.Spec);
+            var hints = SpecMapping.ToReadHints(request.Hints);
             var source = await OpenSourceAsync(ct).ConfigureAwait(false);
-            var partitions = await source
-                .PlanReadAsync(spec, SpecMapping.ToReadHints(request.Hints), ct)
-                .ConfigureAwait(false);
-            var schema = await source.GetSchemaAsync(spec, ct).ConfigureAwait(false);
+            var partitions = await source.PlanReadAsync(spec, hints, ct).ConfigureAwait(false);
+            var declared = await source.GetSchemaAsync(spec, ct).ConfigureAwait(false);
             // The plan is what every later RPC resolves against: the SAME partition instances the
             // PartitionMsg flags below were computed from are what OpenReadStream mints tickets for and
-            // what GetReadState answers about.
+            // what GetReadState answers about. Its schema is the shape the batches will actually have --
+            // the declared schema narrowed to the pruning hint -- because that is what the data plane
+            // writes as the stream header.
             _plans[request.OpId] = new PlannedRead(
-                schema.Schema, partitions, new ConcurrentDictionary<string, SyncStateCapture>(StringComparer.Ordinal));
+                ReadSchemaProjection.Apply(declared.Schema, hints, connector.Capabilities),
+                partitions, new ConcurrentDictionary<string, SyncStateCapture>(StringComparer.Ordinal));
 
             for (var i = 0; i < partitions.Count; i++)
             {

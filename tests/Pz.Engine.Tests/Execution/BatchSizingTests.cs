@@ -214,8 +214,8 @@ public sealed class BatchSizingTests
         public Task CreateEmptyTableAsync(string targetTable, Schema schema, CancellationToken ct = default) =>
             inner.CreateEmptyTableAsync(targetTable, schema, ct);
 
-        public Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, CancellationToken ct = default) =>
-            inner.AppendArrowBatchAsync(targetTable, batch, ct);
+        public Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, Schema? schema = null, CancellationToken ct = default) =>
+            inner.AppendArrowBatchAsync(targetTable, batch, schema, ct);
 
         public Task ExecuteTransactionAsync(IReadOnlyList<string> statements, CancellationToken ct = default) =>
             inner.ExecuteTransactionAsync(statements, ct);

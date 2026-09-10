@@ -5,7 +5,8 @@ namespace Pz.Connectors.Abstractions;
 public enum ConnectorCapabilities
 {
     None = 0,
-    /// <summary>Source honors <see cref="ReadHints.Columns"/>.</summary>
+    /// <summary>Source honors <see cref="ReadHints.Columns"/>: every batch carries exactly the
+    /// hinted columns, in the hint's order.</summary>
     ColumnPruning = 1,
     /// <summary>Source honors <see cref="ReadHints.PredicateSql"/>.</summary>
     PredicatePushdown = 2,
