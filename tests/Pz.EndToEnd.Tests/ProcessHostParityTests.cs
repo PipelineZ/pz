@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using DuckDB.NET.Data;
 using Pz.Cli;
 using Pz.PackageManagement.Restore;
 
@@ -96,6 +97,44 @@ public sealed class ProcessHostParityTests : IDisposable
         AssertParity(builtin, process, universalTier: true);
     }
 
+    /// <summary>A pruning connector reached over PCP, driven by a pipeline that selects a subset of
+    /// the source's columns that is not a leading prefix of its declared schema. The engine narrows
+    /// the staged table to the hint, the connector's batches carry only the hinted columns, and the
+    /// data plane must carry that pruned shape — the three have to agree by position or ingest
+    /// refuses the batch (or, before that refusal existed, read the wrong buffers). The builtin
+    /// localfiles connector does not prune, so its staged table keeps every column; the two runs
+    /// must still land the same rows and write the same parquet bytes.</summary>
+    [SkippableFact]
+    public void Process_hosted_pruning_connector_lands_a_non_prefix_projection()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var builtin = RunProject(BuiltinConnector, forceUniversal: true, pruning: true);
+        var process = RunProject(ProcessConnector, forceUniversal: true, pruning: true);
+
+        Assert.Equal("arrow_stream", StrategyOf(builtin.Plan, "SourceLoad"));
+        Assert.Equal("arrow_stream", StrategyOf(process.Plan, "SourceLoad"));
+
+        // The proof that the hint reached the connector and came back pruned: the process run's staged
+        // table holds exactly the two hinted columns, in declared order; the builtin's holds all three.
+        Assert.Equal(["id", "customer", "amount"], StagedColumns(builtin));
+        Assert.Equal(["id", "amount"], StagedColumns(process));
+
+        // Pinned rather than only erased: the process side declares ColumnPruning, so the planner
+        // records what it pushed down; the builtin does not, so its node carries no pushdown at all.
+        // The two plans are otherwise identical, node ids included -- the hint is hashed into the id
+        // regardless of which connector serves it.
+        Assert.DoesNotContain("\"columns_pushed\"", builtin.Plan, StringComparison.Ordinal);
+        var processPlan = PushdownPattern.Replace(process.Plan, "", 1);
+        Assert.NotEqual(process.Plan, processPlan);
+        Assert.DoesNotContain("\"columns_pushed\"", processPlan, StringComparison.Ordinal);
+        Assert.Equal(
+            NormalizePlan(builtin.Plan, BuiltinConnector),
+            NormalizePlan(processPlan, ProcessConnector));
+
+        AssertResultsAndOutputParity(builtin, process, universalTier: true);
+    }
+
     /// <summary>A verb with no run directory still opens connectors — <c>pz validate</c> spawns one
     /// per process-hosted connection to run its cross-field <c>ValidateAsync</c>. Those sockets have no
     /// run to be scoped to, so <c>ProcessSocketRoot</c> hands the host a temp root it OWNS, and
@@ -134,6 +173,11 @@ public sealed class ProcessHostParityTests : IDisposable
             NormalizePlan(builtin.Plan, BuiltinConnector),
             NormalizePlan(process.Plan, ProcessConnector));
 
+        AssertResultsAndOutputParity(builtin, process, universalTier);
+    }
+
+    private static void AssertResultsAndOutputParity(RunArtifacts builtin, RunArtifacts process, bool universalTier)
+    {
         var builtinResults = NormalizeResults(builtin.Results, builtin.RunId);
         var processResults = NormalizeResults(process.Results, process.RunId);
         if (universalTier)
@@ -206,6 +250,12 @@ public sealed class ProcessHostParityTests : IDisposable
     private static readonly Regex OpsPattern =
         new(",\"ops\":\\{[^}]*\\}", RegexOptions.Compiled);
 
+    /// <summary>The one pushdown object the pruning fact expects on its process side and nowhere
+    /// else: exactly two columns pushed, no predicate. Matched with its leading comma and whatever
+    /// whitespace the plan writer puts around it, so removing it leaves the node's JSON well formed.</summary>
+    private static readonly Regex PushdownPattern =
+        new(",\\s*\"columns_pushed\":\\s*2,\\s*\"predicate_pushed\":\\s*false", RegexOptions.Compiled);
+
     // --- project construction ------------------------------------------------------------------
 
     private static string StrategyOf(string planJson, string kind)
@@ -216,30 +266,60 @@ public sealed class ProcessHostParityTests : IDisposable
             .GetProperty("strategy").GetString()!;
     }
 
-    private sealed record RunArtifacts(string RunId, string Plan, string Results, byte[] Output);
+    /// <summary>The column names of the run's staged source table, in table order. Read by attaching
+    /// the run's staging file read-only from a memory connection, the way the engine itself opens
+    /// DuckDB files.</summary>
+    private static IReadOnlyList<string> StagedColumns(RunArtifacts run)
+    {
+        using var connection = new DuckDBConnection("Data Source=:memory:");
+        connection.Open();
+        using (var attach = connection.CreateCommand())
+        {
+            attach.CommandText = $"attach '{Path.Combine(run.RunDir, "staging.duckdb").Replace("'", "''")}' as staged (read_only)";
+            attach.ExecuteNonQuery();
+        }
+
+        using var query = connection.CreateCommand();
+        query.CommandText =
+            "select column_name from information_schema.columns " +
+            "where table_catalog = 'staged' and table_name = 'src_files__orders' order by ordinal_position";
+        using var reader = query.ExecuteReader();
+        var columns = new List<string>();
+        while (reader.Read())
+        {
+            columns.Add(reader.GetString(0));
+        }
+
+        return columns;
+    }
+
+    private sealed record RunArtifacts(string RunId, string RunDir, string Plan, string Results, byte[] Output);
 
     /// <summary>Writes one project, runs it through the real CLI entry point, and reads back its
     /// artifacts. The two connector names produce byte-identical projects apart from
     /// <c>connections.yml</c>'s <c>connector:</c> lines and — for the process one — the package
-    /// layout/lock the CLI needs to find it at all.</summary>
-    private RunArtifacts RunProject(string connectorName, bool forceUniversal)
+    /// layout/lock the CLI needs to find it at all. <paramref name="pruning"/> swaps in the
+    /// projection pipeline and, for the process side, a fixture that declares ColumnPruning.</summary>
+    private RunArtifacts RunProject(string connectorName, bool forceUniversal, bool pruning = false)
     {
         var dir = NewProjectDir();
-        WriteProject(dir, connectorName, forceUniversal);
+        WriteProject(dir, connectorName, forceUniversal, pruning);
 
         // Asserted here rather than after the artifacts are read: a run that never got as far as
         // producing a plan should fail this test with its own exit code, not with a missing file.
         Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["run", "--project", dir]).Invoke());
 
         var runDir = Directory.EnumerateDirectories(Path.Combine(dir, ".pz", "runs")).Single();
+        var output = pruning ? "orders_projection.parquet" : "customer_totals.parquet";
         return new RunArtifacts(
             Path.GetFileName(runDir),
+            runDir,
             File.ReadAllText(Path.Combine(dir, ".pz", "target", "plan.json")),
             File.ReadAllText(Path.Combine(runDir, "run_results.json")),
-            File.ReadAllBytes(Path.Combine(dir, "out", "customer_totals.parquet")));
+            File.ReadAllBytes(Path.Combine(dir, "out", output)));
     }
 
-    private static void WriteProject(string dir, string connectorName, bool forceUniversal)
+    private static void WriteProject(string dir, string connectorName, bool forceUniversal, bool pruning = false)
     {
         var isProcess = connectorName == ProcessConnector;
 
@@ -272,12 +352,25 @@ public sealed class ProcessHostParityTests : IDisposable
             """);
 
         Directory.CreateDirectory(Path.Combine(dir, "pipelines"));
-        File.WriteAllText(Path.Combine(dir, "pipelines", "customer_totals.sql"),
-            "INSERT INTO {{ sink('lake', 'customer_totals', strategy: 'replace', format: 'parquet', path: 'out/') }}\n"
-            + "select customer, count(*) as orders, sum(amount) as total\n"
-            + "from {{ source('files', 'orders') }}\n"
-            + "group by customer\n"
-            + "order by customer\n");
+        if (pruning)
+        {
+            // id and amount skip customer: a subset that is not a leading prefix of the csv's declared
+            // columns, so a pruned batch bound by position against an un-narrowed table would misalign.
+            File.WriteAllText(Path.Combine(dir, "pipelines", "orders_projection.sql"),
+                "INSERT INTO {{ sink('lake', 'orders_projection', strategy: 'replace', format: 'parquet', path: 'out/') }}\n"
+                + "select id, amount\n"
+                + "from {{ source('files', 'orders') }}\n"
+                + "order by id\n");
+        }
+        else
+        {
+            File.WriteAllText(Path.Combine(dir, "pipelines", "customer_totals.sql"),
+                "INSERT INTO {{ sink('lake', 'customer_totals', strategy: 'replace', format: 'parquet', path: 'out/') }}\n"
+                + "select customer, count(*) as orders, sum(amount) as total\n"
+                + "from {{ source('files', 'orders') }}\n"
+                + "group by customer\n"
+                + "order by customer\n");
+        }
 
         Directory.CreateDirectory(Path.Combine(dir, "data"));
         File.WriteAllText(Path.Combine(dir, "data", "orders.csv"),
@@ -285,7 +378,7 @@ public sealed class ProcessHostParityTests : IDisposable
 
         if (isProcess)
         {
-            WriteProcessPackage(dir);
+            WriteProcessPackage(dir, pruning);
         }
     }
 
@@ -296,14 +389,15 @@ public sealed class ProcessHostParityTests : IDisposable
     ///
     /// <para>The entrypoint is a wrapper script rather than a published copy of the fixture: the
     /// manifest→RID→spawn path is what is under test, and a script keeps the package to two files.</para></summary>
-    private static void WriteProcessPackage(string projectDir)
+    private static void WriteProcessPackage(string projectDir, bool pruning)
     {
         var packageDir = Path.Combine(projectDir, ".pz", "packages", PackageId, PackageVersion);
         var binDir = Path.Combine(packageDir, "bin");
         Directory.CreateDirectory(binDir);
 
         var entrypoint = Path.Combine(binDir, "connector");
-        File.WriteAllText(entrypoint, $"#!/bin/sh\nexec \"{FixtureExecutablePath()}\" \"$@\"\n");
+        var flag = pruning ? " --prune-columns" : "";
+        File.WriteAllText(entrypoint, $"#!/bin/sh\nexec \"{FixtureExecutablePath()}\"{flag} \"$@\"\n");
         File.SetUnixFileMode(
             entrypoint,
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
@@ -316,12 +410,12 @@ public sealed class ProcessHostParityTests : IDisposable
             ["name"] = ProcessConnector,
             ["protocolMajorMin"] = 1,
             ["protocolMajorMax"] = 1,
-            // Exactly what LocalFilesConnector declares -- PcpClient refuses any Hello whose capability
-            // set differs from the manifest's, and the fixture reports the real connector's.
-            ["capabilities"] = new[]
-            {
-                "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead",
-            },
+            // Exactly what the fixture's Hello reports -- PcpClient refuses any Hello whose capability
+            // set differs from the manifest's: LocalFilesConnector's own set, plus ColumnPruning when
+            // the wrapper passes --prune-columns.
+            ["capabilities"] = pruning
+                ? new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "ColumnPruning" }
+                : new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead" },
             // The same opt-in the builtin gets from ProjectDirectoryAnchor.BuiltinAnchoredConnectors:
             // without it a relative root:/path: would resolve against the CWD on one side and the
             // project directory on the other, and the two runs would not be comparable.
