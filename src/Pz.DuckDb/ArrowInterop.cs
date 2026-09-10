@@ -3,6 +3,7 @@ using Apache.Arrow;
 using Apache.Arrow.C;
 using Apache.Arrow.Types;
 using DuckDB.NET.Data;
+using Pz.Arrow;
 
 namespace Pz.DuckDb;
 
@@ -236,30 +237,20 @@ internal static class ArrowInterop
             }
         }
 
-        /// <summary>Same field count and, per position, the same Arrow type id as the schema this
-        /// writer was created with. Names, nullability and metadata are reported but never make a
+        /// <summary>Same field count and, per position, structurally the same Arrow type as the schema
+        /// this writer was created with. Names, nullability and metadata are reported but never make a
         /// mismatch: the appender binds by position.</summary>
         private void ThrowIfShapeDiffers(Schema actual)
         {
-            var expected = _schema.FieldsList;
-            var same = expected.Count == actual.FieldsList.Count;
-            for (var i = 0; same && i < expected.Count; i++)
-            {
-                same = expected[i].DataType.TypeId == actual.FieldsList[i].DataType.TypeId;
-            }
-
-            if (same)
+            if (ArrowSchemaShape.Same(_schema, actual))
             {
                 return;
             }
 
             throw new InvalidOperationException(
                 $"arrow ingest into {_targetTable}: a batch's shape differs from the staging schema: " +
-                $"expected {expected.Count} column(s) [{Describe(_schema)}], got {actual.FieldsList.Count} column(s) [{Describe(actual)}]; " +
+                $"expected {_schema.FieldsList.Count} column(s) [{ArrowSchemaShape.Describe(_schema)}], got {actual.FieldsList.Count} column(s) [{ArrowSchemaShape.Describe(actual)}]; " +
                 "the connector yielded batches that do not match the schema it declared for this read");
-
-            static string Describe(Schema schema) =>
-                string.Join(", ", schema.FieldsList.Select(f => $"{f.Name}:{f.DataType.Name}"));
         }
 
         /// <summary>Flushes and closes the appender, surfacing any pending write error. Call once after

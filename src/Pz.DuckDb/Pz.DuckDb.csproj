@@ -24,4 +24,10 @@
     <ProjectReference Include="..\Pz.Core\Pz.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The positional shape guard the SDK's data plane and the engine's Arrow ingest share; the two
+         assemblies may not reference each other, so the source is compiled into each. -->
+    <Compile Include="..\Shared\ArrowSchemaShape.cs" Link="Shared\ArrowSchemaShape.cs" />
+  </ItemGroup>
+
 </Project>

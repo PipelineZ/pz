@@ -31,6 +31,9 @@
          assembly. Access=Internal: no generated gRPC type is part of the SDK's public surface. -->
     <Protobuf Include="..\Pz.Connectors.Protocol\pz_connector.proto" GrpcServices="Server" Access="Internal" ProtoRoot="..\Pz.Connectors.Protocol\" />
     <Compile Include="..\Pz.Connectors.Protocol\ProtocolConstants.cs" Link="Protocol\ProtocolConstants.cs" />
+    <!-- The positional shape guard the SDK's data plane and the engine's Arrow ingest share; the two
+         assemblies may not reference each other, so the source is compiled into each. -->
+    <Compile Include="..\Shared\ArrowSchemaShape.cs" Link="Shared\ArrowSchemaShape.cs" />
   </ItemGroup>
 
   <ItemGroup>

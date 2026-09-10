@@ -15,6 +15,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   those columns in that order, with the unhinted read's row count. Sources that
   do not declare the capability skip it; existing subclasses need no changes.
 
+### Fixed
+
+- The shape guards on the Connectors SDK data plane and on the engine's Arrow
+  ingest now compare Arrow types structurally: nested child types, decimal
+  precision and scale, timestamp unit and timezone, fixed-size widths,
+  dictionary and union parameters, and an extension type's storage. A batch
+  whose `list<utf8>` arrives where `list<int32>` was declared is refused with
+  both shapes spelled out, instead of reaching DuckDB.
+
 ## [0.6.1] - 2026-09-10
 
 ### Changed
