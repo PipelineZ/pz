@@ -7,6 +7,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
+  the acceptance fact for the `ColumnPruning` capability. It plans a read with a
+  non-prefix, reordered column hint and requires every batch to carry exactly
+  those columns in that order, with the unhinted read's row count. Sources that
+  do not declare the capability skip it; existing subclasses need no changes.
+
 ## [0.6.1] - 2026-09-10
 
 ### Changed
