@@ -7,6 +7,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-10
+
+### Changed
+
+- Every published NuGet package now carries the pz icon.
+
 ### Fixed
 
 - Out-of-process connectors: a read with a column-pruning hint that is not a
