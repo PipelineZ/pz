@@ -19,7 +19,7 @@ internal sealed class MySqlSink(ConnectorConfig config) : ISink
         {
             "append" =>
                 ($"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n" +
-                 $"insert into {table} select * from {{{{source}}}};", "mysql insert"),
+                 $"insert into {table} by name select * from {{{{source}}}};", "mysql insert"),
             "replace" =>
                 ($"create or replace table {table} as select * from {{{{source}}}}", "mysql create-or-replace"),
             _ => null, // merge (and anything future) has no native shape; the planner's PZ0324 owns the error

@@ -374,7 +374,7 @@ internal static class DuckLakeSql
         switch (mode)
         {
             case "append":
-                sql = create + $"insert into {table} select * from {{{{source}}}};";
+                sql = create + $"insert into {table} by name select * from {{{{source}}}};";
                 mechanism = "ducklake insert";
                 return true;
             case "replace":

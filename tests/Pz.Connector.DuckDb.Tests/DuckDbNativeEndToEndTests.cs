@@ -128,6 +128,41 @@ public sealed class DuckDbNativeEndToEndTests : IDisposable
         Assert.Equal(2, await duck.ScalarAsync<long>($"select count(*) from {landed}"));
     }
 
+    /// <summary>The target table need not have been created by pz, nor keep its columns in the order
+    /// the pipeline selects them. Both columns here are integers, so a positional insert succeeds —
+    /// with every value in the wrong column.</summary>
+    [Fact]
+    public async Task Append_matches_columns_by_name_not_by_position()
+    {
+        await using var session = OpenDuck();
+        var duck = session.Duck;
+        await WriteAsync(duck, "app.duckdb", "totals", "(select 0 as customer_id, 0 as amount)", mode: "replace");
+
+        await WriteAsync(duck, "app.duckdb", "totals", "(select 500 as amount, 7 as customer_id)", mode: "append");
+
+        var landed = await ReadAsync(duck, "app.duckdb", Spec("totals"));
+        Assert.Equal(500, await duck.ScalarAsync<long>($"select amount from {landed} where customer_id = 7"));
+    }
+
+    /// <summary>A target column the pipeline does not produce keeps its default; a produced column the
+    /// target lacks is an error naming it, never a silent shift into a neighbour.</summary>
+    [Fact]
+    public async Task Append_leaves_unsupplied_target_columns_null_and_refuses_unknown_ones()
+    {
+        await using var session = OpenDuck();
+        var duck = session.Duck;
+        await WriteAsync(duck, "app.duckdb", "wide", "(select 1 as id, 'x' as note, 2 as qty)", mode: "replace");
+
+        await WriteAsync(duck, "app.duckdb", "wide", "(select 9 as qty, 2 as id)", mode: "append");
+
+        var landed = await ReadAsync(duck, "app.duckdb", Spec("wide"));
+        Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {landed} where id = 2 and qty = 9 and note is null"));
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            WriteAsync(duck, "app.duckdb", "wide", "(select 3 as id, 1 as surprise)", mode: "append"));
+        Assert.Contains("surprise", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task Replace_overwrites_previous_contents()
     {

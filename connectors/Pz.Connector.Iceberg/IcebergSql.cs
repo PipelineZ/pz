@@ -514,7 +514,7 @@ internal static class IcebergSql
         var prelude =
             $"create schema if not exists {alias}.{QuoteIdent(ns!)};\n" +
             $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n";
-        var insert = $"insert into {table} select * from {{{{source}}}};";
+        var insert = $"insert into {table} by name select * from {{{{source}}}};";
         switch (mode)
         {
             case "append":

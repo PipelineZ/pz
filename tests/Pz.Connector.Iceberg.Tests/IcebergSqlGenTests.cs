@@ -479,7 +479,7 @@ public sealed class IcebergSqlGenTests
         Assert.Equal(
             $"create schema if not exists {WhAlias}.\"raw\";\n" +
             $"create table if not exists {WhAlias}.\"raw\".\"events\" as select * from {{{{source}}}} limit 0;\n" +
-            $"insert into {WhAlias}.\"raw\".\"events\" select * from {{{{source}}}};",
+            $"insert into {WhAlias}.\"raw\".\"events\" by name select * from {{{{source}}}};",
             sql);
         Assert.Equal("iceberg insert", mechanism);
     }
@@ -493,7 +493,7 @@ public sealed class IcebergSqlGenTests
             $"create table if not exists {WhAlias}.\"raw\".\"events\" as select * from {{{{source}}}} limit 0;\n" +
             "begin transaction;\n" +
             $"delete from {WhAlias}.\"raw\".\"events\";\n" +
-            $"insert into {WhAlias}.\"raw\".\"events\" select * from {{{{source}}}};\n" +
+            $"insert into {WhAlias}.\"raw\".\"events\" by name select * from {{{{source}}}};\n" +
             "commit;",
             sql);
         Assert.Equal("iceberg overwrite", mechanism);
