@@ -42,6 +42,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `not_null: [a, b]` — get distinct names: the first keeps
   `check_<pipeline>_<type>_<columns>`, later ones take `_2`, `_3`, … so
   `--select` addresses exactly one. Node ids are unchanged.
+- `pz run`/`retry`/`test` now wind down on SIGTERM and SIGHUP the way they do on
+  Ctrl-C, for as long as that takes: nodes are cancelled cooperatively, the
+  renderer drains, `run_results.json` gets its terminal status, connectors are
+  shut down, and the exit code is 3. Until now a stop signal (the default from
+  systemd, Docker, Kubernetes and Airflow) — and Ctrl-C too — cancelled the run
+  and then **force-exited the process two seconds later** with 143/130,
+  whatever it was doing: a run slower than that to unwind was cut off between a
+  sink's commit and its watermark, left `run_results.json` at `running`, and
+  orphaned connector processes. The handlers now cover the whole run, setup and
+  finalization included. A second signal terminates immediately, so a run that
+  will not wind down is never a trap.
 
 ## [0.6.1] - 2026-09-10
 

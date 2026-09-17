@@ -198,6 +198,34 @@ internal static class RunCommand
         bool fullRefresh = false, ReuseManifest? reuse = null, IReadOnlyList<NodeResult>? carriedForward = null,
         ICollection<string>? runtimeNotices = null)
     {
+        // Stop signals are owned here, for the whole of the run and not only while nodes execute. Setup
+        // already spawns connector processes, and an unhandled SIGTERM there would kill pz and orphan
+        // them; finalization sits between a sink's commit and the watermark that records it. The first
+        // signal cancels this token — which after execution nothing listens to, so finalization runs to
+        // its end — and a second one terminates, so a wedged run is never a trap.
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var stopSignals = StopSignals.Register(stop);
+        try
+        {
+            return await ExecuteRunCore(
+                project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, stop.Token, drainTimeout,
+                rendererFactory, otelEndpoint, fullRefresh, reuse, carriedForward, runtimeNotices);
+        }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested)
+        {
+            // Cancelled during setup, before the dispatcher existed to turn it into skipped nodes.
+            Console.Error.WriteLine("run cancelled before any node started");
+            return ExitCodes.Fatal;
+        }
+    }
+
+    private static async Task<int> ExecuteRunCore(
+        PzProject project, CompiledDag fullDag, string projectDir, IReadOnlySet<NodeId>? selection, bool failFast,
+        bool noLockCheck, string logFormat, CancellationToken ct,
+        TimeSpan? drainTimeout, Func<IEventRenderer>? rendererFactory, Uri? otelEndpoint,
+        bool fullRefresh, ReuseManifest? reuse, IReadOnlyList<NodeResult>? carriedForward,
+        ICollection<string>? runtimeNotices)
+    {
         // Sortable, unique-enough-for-a-local-tool run identity. Runtime identity, not
         // compile output — golden/determinism rules do not apply here.
         var runId = $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfff}Z-{Random.Shared.Next(0, 0x10000):x4}";
@@ -376,26 +404,10 @@ internal static class RunCommand
             Notice, Breakers: breakers, Reuse: reuse, SyncState: syncStateStore,
             RateLimiters: rateLimiters, SchemaBaselines: backends.Schemas, OnSourceDrift: project.OnSourceDrift);
 
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        ConsoleCancelEventHandler cancelHandler = (_, args) =>
-        {
-            args.Cancel = true;
-            linkedCts.Cancel();
-        };
-        Console.CancelKeyPress += cancelHandler;
-
-        RunResult result;
-        try
-        {
-            var options = new RunOptions(project.Engine.Threads, failFast, selection, project.Name, carriedForward,
-                runActivity);
-            result = await new RunOrchestrator(new KindDispatchingExecutor(), runCtx)
-                .ExecuteAsync(fullDag, options, linkedCts.Token);
-        }
-        finally
-        {
-            Console.CancelKeyPress -= cancelHandler;
-        }
+        var options = new RunOptions(project.Engine.Threads, failFast, selection, project.Name, carriedForward,
+            runActivity);
+        var result = await new RunOrchestrator(new KindDispatchingExecutor(), runCtx)
+            .ExecuteAsync(fullDag, options, ct);
 
         var terminalStatus = StatusName(result.Status);
 
