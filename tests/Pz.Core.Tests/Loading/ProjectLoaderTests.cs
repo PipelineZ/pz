@@ -290,6 +290,56 @@ public class ProjectLoaderTests
     }
 
     [Fact]
+    public void Node_timeout_parses_as_a_duration()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-loader-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                "name: timeout_test\nversion: 0.1.0\nengine:\n  node_timeout: 45m\n");
+
+            Assert.Equal(TimeSpan.FromMinutes(45), ProjectLoader.Load(dir, Env).Engine.NodeTimeout);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>Absent means unbounded: a long backfill must never start failing because pz grew a
+    /// default.</summary>
+    [Fact]
+    public void Node_timeout_absent_is_null()
+    {
+        Assert.Null(ProjectLoader.Load(FixturePath("hello-pz"), Env).Engine.NodeTimeout);
+    }
+
+    [Theory]
+    [InlineData("soon")]
+    [InlineData("0s")]
+    [InlineData("30")]
+    [InlineData("[1m]")]
+    public void Node_timeout_that_is_not_a_positive_duration_is_error_PZ0120(string value)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-loader-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                $"name: bad_timeout\nversion: 0.1.0\nengine:\n  node_timeout: {value}\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == "PZ0120");
+            Assert.Contains("engine.node_timeout", error.Message);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Breaker_config_absent_is_null()
     {
         var project = ProjectLoader.Load(FixturePath("hello-pz"), Env);

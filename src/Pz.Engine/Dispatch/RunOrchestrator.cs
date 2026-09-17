@@ -270,6 +270,16 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
                                 RecordSkip(node);
                                 return;
                             }
+                            catch (NodeUnresponsiveException ex)
+                            {
+                                // The node was cancelled and would not stop. What it still holds — the
+                                // run's one DuckDB connection, a connector handle — is what every other
+                                // node needs, so they would queue behind it forever. Cancel them now,
+                                // FailFast or not; the wind-down sweep gives each one its Skipped result.
+                                result = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0,
+                                    TimeSpan.Zero, ex.Error);
+                                linkedCts.Cancel();
+                            }
                             catch (Exception ex)
                             {
                                 // Defensive: INodeExecutor implementations are expected to wrap their

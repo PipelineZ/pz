@@ -76,11 +76,20 @@ public sealed class KindDispatchingExecutor(
     private readonly Random _jitter = jitter ?? Random.Shared;
     private readonly Func<TimeSpan, CancellationToken, Task> _delay = delay ?? Task.Delay;
 
+    /// <summary>How long a node cancelled for exceeding <c>engine.node_timeout</c> has to unwind before
+    /// it is declared unresponsive. Cooperative code stops in milliseconds; this only has to outlast a
+    /// connector closing a socket or DuckDB interrupting a statement.</summary>
+    private static readonly TimeSpan StopGrace = TimeSpan.FromSeconds(30);
+
+    /// <summary>Test seam: replaces the per-kind executors, so the attempt loop can be driven by a node
+    /// that hangs or ignores cancellation on demand.</summary>
+    internal Func<NodeKind, INodeExecutor>? ExecutorOverride { get; init; }
+
     public async Task<NodeResult> ExecuteAsync(DagNode node, RunContext ctx, CancellationToken ct)
     {
         ctx.Events.SafeNodeStarted(node);
         var stopwatch = Stopwatch.StartNew();
-        var executor = Resolve(node.Kind);
+        var executor = ExecutorOverride?.Invoke(node.Kind) ?? Resolve(node.Kind);
 
         // A non-null ctor policy is an explicit override (tests, callers that
         // want one policy for everything); otherwise the node's owning source/sink instance decides.
@@ -113,7 +122,7 @@ public sealed class KindDispatchingExecutor(
                 // Published before the call, not after: the executor reads it while running, to tell a
                 // connector which attempt at this write it is looking at.
                 ctx.Attempts[node.Id] = attempt;
-                var inner = await executor.ExecuteAsync(node, ctx, ct).ConfigureAwait(false);
+                var inner = await ExecuteAttemptAsync(executor, node, ctx, attempt, ct).ConfigureAwait(false);
                 breaker?.RecordSuccess(ticket);
                 return inner with { Duration = stopwatch.Elapsed };
             }
@@ -123,6 +132,23 @@ public sealed class KindDispatchingExecutor(
                 // genuine node failure, so this is never turned into a Failed NodeResult, retried, or
                 // otherwise swallowed.
                 throw;
+            }
+            catch (NodeUnresponsiveException)
+            {
+                // A statement about the run, not only this node: the dispatcher must see it as thrown.
+                breaker?.RecordTransientFailure(ticket, null);
+                throw;
+            }
+            catch (NodeTimedOutException ex)
+            {
+                // The instance is evidently unhealthy, which is the breaker's business; but the attempt
+                // is not retried here. SourceLoad drops its half-built staging table only on a failure it
+                // observes as one, never on cancellation, so a second attempt in this run could collide
+                // with what the cancelled one left. `pz retry` starts from a fresh staging database.
+                breaker?.RecordTransientFailure(ticket, null);
+                ctx.DeliveryFailures.TryRemove(node.Id, out var delivery);
+                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed,
+                    ex.Error, Delivery: delivery);
             }
             catch (PzConnectorException ex) when (ex.IsTransient && attempt < policy.MaxAttempts)
             {
@@ -160,6 +186,80 @@ public sealed class KindDispatchingExecutor(
             }
         }
     }
+
+    /// <summary>One attempt, bounded by <c>engine.node_timeout</c> when one is set. The attempt runs on
+    /// its own token so the timeout can cancel it without cancelling the run. Awaiting the executor
+    /// alone would not be a bound at all — the hang this exists for is a call that never looks at its
+    /// token — so the executor is raced against the timer, and again against <see cref="StopGrace"/>
+    /// after being cancelled. With no timeout configured the executor gets the run token itself.</summary>
+    private async Task<NodeResult> ExecuteAttemptAsync(
+        INodeExecutor executor, DagNode node, RunContext ctx, int attempt, CancellationToken ct)
+    {
+        if (ctx.NodeTimeout is not { } timeout)
+        {
+            return await executor.ExecuteAsync(node, ctx, ct).ConfigureAwait(false);
+        }
+
+        // Not `using`: if the work is abandoned below it still holds this token, and disposing a source
+        // whose token is in use can throw into code that is already misbehaving.
+        var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var timerCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var work = executor.ExecuteAsync(node, ctx, attemptCts.Token);
+
+        if (await Task.WhenAny(work, _delay(timeout, timerCts.Token)).ConfigureAwait(false) == work)
+        {
+            timerCts.Cancel();
+            attemptCts.Dispose();
+            return await work.ConfigureAwait(false);
+        }
+
+        // The timer also ends when the run itself is cancelled; that is a cancellation, not a timeout.
+        ct.ThrowIfCancellationRequested();
+        attemptCts.Cancel();
+
+        if (await Task.WhenAny(work, _delay(StopGrace, timerCts.Token)).ConfigureAwait(false) != work)
+        {
+            ct.ThrowIfCancellationRequested();
+            _ = work.ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            throw new NodeUnresponsiveException(new PzError(PzErrorCode.NodeUnresponsive,
+                $"node '{node.Name}' exceeded engine.node_timeout ({FormatDuration(timeout)}) on attempt {attempt}, " +
+                $"was cancelled, and did not stop within {FormatDuration(StopGrace)}; the rest of the run is " +
+                "cancelled because the abandoned work may still hold the run's DuckDB connection or a connector handle.",
+                null, null,
+                "something under this node ignores cancellation — report it against the connector; " +
+                "`pz retry` reruns the node and everything skipped behind it"));
+        }
+
+        timerCts.Cancel();
+        attemptCts.Dispose();
+        if (work.IsCompletedSuccessfully)
+        {
+            return await work.ConfigureAwait(false); // finished in the instant between the timer and the cancel
+        }
+
+        _ = work.Exception; // observed: how a cancelled attempt unwound is not the failure being reported
+        ct.ThrowIfCancellationRequested();
+        throw new NodeTimedOutException(new PzError(PzErrorCode.NodeTimedOut,
+            $"node '{node.Name}' exceeded engine.node_timeout ({FormatDuration(timeout)}) on attempt {attempt} and was cancelled.",
+            null, null,
+            "raise engine.node_timeout in project.yml if this node is legitimately that slow, otherwise check " +
+            "what it was waiting on; `pz retry` reruns it"));
+    }
+
+    private sealed class NodeTimedOutException(PzError error) : Exception(error.Message)
+    {
+        public PzError Error { get; } = error;
+    }
+
+    /// <summary>Config-style (`45m`, `90s`), so the message shows the value the way project.yml spells it.</summary>
+    private static string FormatDuration(TimeSpan value) => value switch
+    {
+        _ when value.Ticks % TimeSpan.TicksPerDay == 0 => $"{value.Ticks / TimeSpan.TicksPerDay}d",
+        _ when value.Ticks % TimeSpan.TicksPerHour == 0 => $"{value.Ticks / TimeSpan.TicksPerHour}h",
+        _ when value.Ticks % TimeSpan.TicksPerMinute == 0 => $"{value.Ticks / TimeSpan.TicksPerMinute}m",
+        _ when value.Ticks % TimeSpan.TicksPerSecond == 0 => $"{value.Ticks / TimeSpan.TicksPerSecond}s",
+        _ => $"{value.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture)}ms",
+    };
 
     /// <summary>A raw/foreign exception's ex.Message may echo a raw engine error verbatim (a connector wrapping a DuckDB
     /// parser/binder failure), and this terminal wrap is the message run_results.json/NDJSON ultimately

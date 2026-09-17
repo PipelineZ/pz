@@ -18,8 +18,11 @@ public sealed record PzProject(string Name, string Version, EngineConfig Engine,
 /// <c>CheckDef.SampleValues</c>
 /// override, when present, wins over this default in both directions -- resolved once at compile into
 /// <c>CheckNodeDef.SampleValues</c>.</summary>
+/// <summary><see cref="NodeTimeout"/> is <c>engine.node_timeout</c>: the longest one attempt of one node
+/// may run before the engine cancels it. Null — the default — is unbounded, so a long backfill never
+/// starts failing because of a limit nobody set.</summary>
 public sealed record EngineConfig(int Threads = 4, DuckOptionsConfig? DuckDb = null, bool ForceUniversal = false,
-    int? BatchBytes = null, bool CheckSamples = true, BreakerConfig? Breaker = null);
+    int? BatchBytes = null, bool CheckSamples = true, BreakerConfig? Breaker = null, TimeSpan? NodeTimeout = null);
 public sealed record DuckOptionsConfig(string? MemoryLimit = null, int? Threads = null, string? TempDirectory = null);
 /// <summary><c>engine.breaker</c> — config for the engine-owned
 /// <c>Pz.Engine.Resilience.CircuitBreaker</c>. Absent -> the breaker is off entirely (no instance

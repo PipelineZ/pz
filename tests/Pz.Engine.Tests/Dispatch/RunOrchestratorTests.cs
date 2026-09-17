@@ -361,6 +361,42 @@ public sealed class RunOrchestratorTests
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10), "FailFast did not cancel long-running siblings");
     }
 
+    /// <summary>A node that would not stop may still hold the run's DuckDB connection, so everything
+    /// pending is cancelled even without --fail-fast: "a" is in flight and waits on its token forever
+    /// unless the dispatcher cancels it, and its descendants must still each get a result.</summary>
+    [Fact]
+    public async Task An_unresponsive_node_fails_with_its_own_error_and_cancels_the_rest_of_the_run()
+    {
+        var aStarted = new TaskCompletionSource();
+        var executor = new LambdaExecutor(async (node, ct) =>
+        {
+            if (node.Name == "e")
+            {
+                await aStarted.Task;
+                throw new NodeUnresponsiveException(new Core.Validation.PzError(
+                    Core.Validation.PzErrorCode.NodeUnresponsive, "node 'e' would not stop", null, null, "hint"));
+            }
+
+            aStarted.TrySetResult();
+            await Task.Delay(Timeout.Infinite, ct);
+            throw new InvalidOperationException("unreachable");
+        });
+
+        var result = await new RunOrchestrator(executor, Ctx()).ExecuteAsync(Dag(), new RunOptions(), default);
+
+        Assert.Equal(RunStatus.CompletedWithFailures, result.Status);
+        var e = result.Nodes.Single(r => r.Name == "e");
+        Assert.Equal(NodeStatus.Failed, e.Status);
+        Assert.Equal(Core.Validation.PzErrorCode.NodeUnresponsive, e.Error!.Code);
+        Assert.Equal(["a", "b", "c", "d"],
+            result.Nodes.Where(r => r.Status == NodeStatus.Skipped).Select(r => r.Name).Order(StringComparer.Ordinal));
+    }
+
+    private sealed class LambdaExecutor(Func<DagNode, CancellationToken, Task<NodeResult>> run) : INodeExecutor
+    {
+        public Task<NodeResult> ExecuteAsync(DagNode node, RunContext ctx, CancellationToken ct) => run(node, ct);
+    }
+
     [Fact]
     public async Task Selection_limits_execution_to_selected_and_required_ancestors()
     {

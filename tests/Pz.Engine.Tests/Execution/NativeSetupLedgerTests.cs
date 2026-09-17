@@ -109,6 +109,53 @@ public sealed class NativeSetupLedgerTests : IAsyncLifetime
             "select count(*) from duckdb_tables() where table_name = 'concurrent_t'"));
     }
 
+    /// <summary>Each node attempt carries its own token once engine.node_timeout is set, so a follower
+    /// must answer to its own cancellation rather than sit behind the winner's — and giving up must not
+    /// evict the winner's still-running execution, or the next caller would issue the statement twice.</summary>
+    [Fact]
+    public async Task A_follower_stops_waiting_on_its_own_cancellation_without_evicting_the_winner()
+    {
+        var gate = new TaskCompletionSource();
+        var blocking = new GatedFirstCallDuckSession(_duck, gate.Task);
+        var ledger = new NativeSetupLedger(blocking);
+        const string statement = "create table follower_cancel_t(x int)";
+        using var followerCts = new CancellationTokenSource();
+
+        var winner = ledger.ExecuteOnceAsync(statement, CancellationToken.None);
+        var follower = ledger.ExecuteOnceAsync(statement, followerCts.Token);
+        followerCts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => follower);
+
+        gate.SetResult();
+        await winner;
+        await ledger.ExecuteOnceAsync(statement, CancellationToken.None);
+        Assert.Equal(1, blocking.ExecuteCallCount);
+    }
+
+    /// <summary>The winner being cancelled (its node timed out) says nothing about the follower, whose
+    /// own token is live: it re-issues the statement instead of inheriting the cancellation.</summary>
+    [Fact]
+    public async Task A_follower_outlives_a_cancelled_winner_by_reissuing_the_statement()
+    {
+        var gate = new TaskCompletionSource();
+        var blocking = new GatedFirstCallDuckSession(_duck, gate.Task);
+        var ledger = new NativeSetupLedger(blocking);
+        const string statement = "create table winner_cancel_t(x int)";
+        using var winnerCts = new CancellationTokenSource();
+
+        var winner = ledger.ExecuteOnceAsync(statement, winnerCts.Token);
+        var follower = ledger.ExecuteOnceAsync(statement, CancellationToken.None);
+        winnerCts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => winner);
+        await follower;
+
+        Assert.Equal(2, blocking.ExecuteCallCount);
+        Assert.Equal(1, await _duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'winner_cancel_t'"));
+    }
+
     /// <summary>Wraps a real session, blocking the FIRST <see cref="ExecuteAsync"/> call on
     /// <paramref name="gate"/> until the test releases it -- proves two concurrent
     /// <see cref="NativeSetupLedger.ExecuteOnceAsync"/> callers for the same statement text share the
@@ -123,7 +170,7 @@ public sealed class NativeSetupLedgerTests : IAsyncLifetime
         {
             if (Interlocked.Increment(ref callCount) == 1)
             {
-                await gate.ConfigureAwait(false);
+                await gate.WaitAsync(ct).ConfigureAwait(false);
             }
 
             await inner.ExecuteAsync(sql, ct).ConfigureAwait(false);

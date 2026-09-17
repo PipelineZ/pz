@@ -70,6 +70,10 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// loop).</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, int> Attempts { get; } = new();
 
+    /// <summary><c>engine.node_timeout</c>: the longest one attempt of one node may run before
+    /// <see cref="KindDispatchingExecutor"/> cancels it. Null is unbounded.</summary>
+    public TimeSpan? NodeTimeout { get; init; }
+
     /// <summary>Per-run memo of native setup statements (extension installs, secrets, session
     /// settings, attaches) already issued on <see cref="Duck"/> — see <see cref="NativeSetupLedger"/>.
     /// Same shape and lifetime as <see cref="DeliveryFailures"/>/<see cref="Attempts"/>: a get-only

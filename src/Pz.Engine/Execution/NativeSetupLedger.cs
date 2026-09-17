@@ -29,19 +29,38 @@ internal sealed class NativeSetupLedger(IDuckSession duck)
 
     internal async Task ExecuteOnceAsync(string statement, CancellationToken ct)
     {
-        // A caller whose Lazy lost the GetOrAdd race awaits the winner's execution, which observes only
-        // the winner's token: every node of a run shares one cancellation token, so a follower's own
-        // token is never consulted while it waits.
-        var lazy = completed.GetOrAdd(statement,
-            s => new Lazy<Task>(() => NativeSetup.ExecuteSetupAsync(duck, s, ct), LazyThreadSafetyMode.ExecutionAndPublication));
-        try
+        while (true)
         {
-            await lazy.Value.ConfigureAwait(false);
-        }
-        catch
-        {
-            completed.TryRemove(new KeyValuePair<string, Lazy<Task>>(statement, lazy));
-            throw;
+            // The execution observes only the WINNER's token — the caller whose Lazy GetOrAdd published.
+            // Node attempts carry their own tokens (engine.node_timeout cancels one attempt, not the
+            // run), so a follower waits on the shared execution under ITS token, and a winner that was
+            // cancelled says nothing about a follower whose token is still live.
+            var lazy = completed.GetOrAdd(statement,
+                s => new Lazy<Task>(() => NativeSetup.ExecuteSetupAsync(duck, s, ct), LazyThreadSafetyMode.ExecutionAndPublication));
+            var execution = lazy.Value;
+            try
+            {
+                await execution.WaitAsync(ct).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (execution.IsCanceled && !ct.IsCancellationRequested)
+            {
+                // The winner was cancelled, this caller was not: forget that execution and issue the
+                // statement again, as the winner this time or behind whoever gets there first.
+                completed.TryRemove(new KeyValuePair<string, Lazy<Task>>(statement, lazy));
+            }
+            catch
+            {
+                // Forget the execution only if IT ended badly. A follower giving up on its own token
+                // while the execution is still running must leave it published, or the next caller
+                // would issue the statement a second time alongside it.
+                if (execution.IsFaulted || execution.IsCanceled)
+                {
+                    completed.TryRemove(new KeyValuePair<string, Lazy<Task>>(statement, lazy));
+                }
+
+                throw;
+            }
         }
     }
 }
