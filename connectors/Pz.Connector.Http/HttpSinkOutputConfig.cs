@@ -12,7 +12,7 @@ internal sealed record HttpSinkOutputConfig(string Path, HttpMethod Method, stri
         var errors = new List<string>();
         var options = spec.Options;
 
-        string? Get(string key) => options.TryGetValue(key, out var v) ? v?.ToString() : null;
+        string? Get(string key) => options.TryGetValue(key, out var v) ? YamlScalarText.Of(v) : null;
 
         var path = Get("path");
         if (string.IsNullOrEmpty(path) || path[0] != '/')

@@ -37,7 +37,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             var knownBindings = BindingExpander.FromSpec(spec).Keys.ToArray();
             foreach (var (name, value) in qmap)
             {
-                var template = value?.ToString() ?? "";
+                var template = YamlScalarText.Of(value) ?? "";
                 query[name] = template;
                 ValidateBindingTemplate(template, name, knownBindings, errors);
             }
@@ -143,7 +143,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     }
 
     private static string? Get(IReadOnlyDictionary<string, object?> options, string key)
-        => options.TryGetValue(key, out var value) ? value?.ToString() : null;
+        => options.TryGetValue(key, out var value) ? YamlScalarText.Of(value) : null;
 
     /// <summary>Offline validation (no live request needed) of a `query:` value template
     /// against the engine-binding vocabulary — first line of defense; <see cref="HttpPartition"/>'s
@@ -201,7 +201,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             return null;
         }
 
-        string? Get(string key) => block.TryGetValue(key, out var v) ? v?.ToString() : null;
+        string? Get(string key) => block.TryGetValue(key, out var v) ? YamlScalarText.Of(v) : null;
         switch (Get("strategy"))
         {
             case "link_header":

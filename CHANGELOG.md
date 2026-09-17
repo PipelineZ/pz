@@ -7,6 +7,21 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Quoted YAML scalars are strings.** The loader typed every scalar by its
+  text and ignored the quotes, so `password: "0123456"` reached the connector as
+  `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
+  became a boolean — undoing the quoting `pz mcp`'s authoring tools add around
+  number-like strings. Only plain (unquoted) scalars are typed now; quoted and
+  block (`|`, `>`) scalars stay text.
+  *Migration:* a value that must be a number or a boolean must not be quoted in
+  pz's own keys — `threads: "4"` is now refused with PZ0120 where it used to be
+  read as `4`. Connector options are unaffected where the connector reads them
+  through `ConnectorConfig.GetInt`/`GetBool`, which still accept `port: "5432"`.
+- An unquoted decimal connector version (`version: 1.10`) is refused: YAML reads
+  it as the number 1.1, a different package. Quote it.
+
 ### Added
 
 - Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
@@ -113,6 +128,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   carries **PZ0527** and names every dataset that did not advance and why,
   instead of reporting only the first exception. The exit code is unchanged:
   the sinks committed, so the run still reports its node outcome.
+- Typed YAML values are rendered as text the way they were written, on every
+  host: `ConnectorConfig.GetString`, the loader, and the HTTP connector's
+  `query:`/`headers:` values used the machine's culture and .NET's spelling, so
+  an unquoted `archived: true` was sent as `True` and `1.5` as `1,5` on a
+  comma-decimal locale.
 
 ## [0.6.1] - 2026-09-10
 

@@ -8,7 +8,19 @@ public sealed record ConnectorInfo(string Name, string Version, int ProtocolMajo
 public sealed record ConnectorConfig(IReadOnlyDictionary<string, object?> Values)
 {
     public static readonly ConnectorConfig Empty = new(new Dictionary<string, object?>());
-    public string? GetString(string key) => Values.TryGetValue(key, out var v) ? v?.ToString() : null;
+    /// <summary>The value as the author would have written it in YAML, on any machine: numbers with an
+    /// invariant `.` decimal whatever the host's culture, booleans as YAML's lowercase `true`/`false`
+    /// rather than .NET's <c>True</c>.</summary>
+    public string? GetString(string key) => Values.TryGetValue(key, out var v)
+        ? v switch
+        {
+            null => null,
+            string s => s,
+            bool b => b ? "true" : "false",
+            IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+            _ => v.ToString(),
+        }
+        : null;
     public long? GetInt(string key) => Values.TryGetValue(key, out var v) && v is not null
         ? Convert.ToInt64(v, System.Globalization.CultureInfo.InvariantCulture) : null;
     public bool GetBool(string key, bool defaultValue = false) => Values.TryGetValue(key, out var v) && v is not null

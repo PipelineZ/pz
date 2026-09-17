@@ -169,6 +169,19 @@ public static class ProjectLoader
                 continue;
             }
 
+            // A bare `1.10` is the YAML number 1.1, and what was typed cannot be recovered from it.
+            // Restoring 1.1 where 1.10 was meant is a different package, so the number is refused.
+            if (connectorDict.TryGetValue("version", out var rawVersion) && rawVersion is double)
+            {
+                errors.Add(new PzError(PzErrorCode.YamlShape,
+                    $"project.yml: connectors entry '{TryGetString(connectorDict, "package")}' has an unquoted " +
+                    $"decimal version, which YAML reads as the number {TryGetString(connectorDict, "version")} " +
+                    "(a bare 1.10 is 1.1).",
+                    relativePath, null,
+                    "quote it — version: \"1.10\""));
+                continue;
+            }
+
             connectors.Add(new ConnectorRequirement(
                 TryGetString(connectorDict, "package") ?? string.Empty,
                 TryGetString(connectorDict, "version") ?? string.Empty));
@@ -1404,8 +1417,19 @@ public static class ProjectLoader
     internal static string RelativePath(string projectDir, string fullPath) =>
         Path.GetRelativePath(projectDir, fullPath).Replace(Path.DirectorySeparatorChar, '/');
 
+    // Typed scalars are rendered the way YAML spells them, on any host: an invariant `.` decimal
+    // whatever the machine's culture, and lowercase booleans rather than .NET's `True`.
     internal static string? TryGetString(Dictionary<string, object?> dict, string key) =>
-        dict.TryGetValue(key, out var value) ? value?.ToString() : null;
+        dict.TryGetValue(key, out var value)
+            ? value switch
+            {
+                null => null,
+                string s => s,
+                bool b => b ? "true" : "false",
+                IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+                _ => value.ToString(),
+            }
+            : null;
 
     // Both integer shapes: YAML scalars arrive as long, Scriban call-site kwargs as int. source()
     // reuses these same parsers for its `retry:`/`sync:` sub-blocks, so a long-only match would

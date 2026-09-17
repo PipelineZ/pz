@@ -48,6 +48,41 @@ public class ProjectFileStrictnessTests
         Assert.Contains(engineLine.Split(':')[0], error.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>A bare `1.10` is the YAML number 1.1 — a different package version. The loader cannot
+    /// recover what was typed, so it refuses the number rather than restore the wrong package.</summary>
+    [Fact]
+    public void An_unquoted_decimal_connector_version_is_refused_with_the_fix()
+    {
+        var error = Assert.Single(Errors("""
+            name: t
+            version: "1"
+            connectors:
+              - package: Acme.Pz.Connector
+                version: 1.10
+            """), e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("Acme.Pz.Connector", error.Message, StringComparison.Ordinal);
+        Assert.Contains("version: \"", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("\"1.10\"", "1.10")]
+    [InlineData("1.10.0", "1.10.0")]
+    [InlineData("'[1.0,2.0)'", "[1.0,2.0)")]
+    [InlineData("2", "2")]
+    public void A_connector_version_is_kept_exactly_as_written(string written, string expected)
+    {
+        var project = Load($"""
+            name: t
+            version: "1"
+            connectors:
+              - package: Acme.Pz.Connector
+                version: {written}
+            """);
+
+        Assert.Equal(expected, Assert.Single(project.Connectors).Version);
+    }
+
     [Fact]
     public void A_non_mapping_engine_block_is_PZ0120() =>
         Assert.Single(Errors("""
