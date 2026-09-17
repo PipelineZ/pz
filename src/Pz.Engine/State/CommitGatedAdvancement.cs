@@ -1,4 +1,5 @@
 using Pz.Core.Dag;
+using Pz.Core.Validation;
 using Pz.Engine.Execution;
 
 namespace Pz.Engine.State;
@@ -33,15 +34,31 @@ namespace Pz.Engine.State;
 /// descendants recorded a carried-forward result, advancement is skipped for that dataset — the carried
 /// sink never received this run's (re-extracted) slice, so advancing would let it permanently miss the
 /// delta. The check is per-source over the same descendant walk: a run with reused-A and fallen-back-B
-/// blocks only B's dataset.</summary>
+/// blocks only B's dataset.
+///
+/// Each dataset's write is its own event. By the time this runs every sink has committed, so a store
+/// failure on one dataset must cost that dataset its state and nothing else: the walk goes on, and every
+/// dataset that did not advance comes back as an <see cref="AdvancementFailure"/> for the caller to
+/// report. An unreachable store (PZ0518) is tried <see cref="MaxAttempts"/> times first — giving up on
+/// it means re-extracting next run for the sake of one dropped connection. Nothing else is retried: a
+/// lost race (PZ0520) means another run already advanced the dataset, and trying again cannot win it.
+/// Cancellation is never a dataset failure; it propagates.</summary>
 internal static class CommitGatedAdvancement
 {
-    public static void Advance<T>(
+    private const int MaxAttempts = 3;
+
+    private static readonly TimeSpan[] RetryWaits = [TimeSpan.FromMilliseconds(250), TimeSpan.FromSeconds(1)];
+
+    public static IReadOnlyList<AdvancementFailure> Advance<T>(
         CompiledDag dag,
         IReadOnlyList<NodeResult> nodeResults,
         Func<NodeResult, T?> candidateOf,
-        Action<SourceDatasetDef, T> apply) where T : class
+        Func<SourceDatasetDef, string> keyOf,
+        Action<string, T> apply,
+        Action<TimeSpan>? wait = null) where T : class
     {
+        wait ??= Thread.Sleep;
+        var failures = new List<AdvancementFailure>();
         var dagById = dag.Nodes.ToDictionary(n => n.Id);
         var resultById = nodeResults.ToDictionary(r => r.Id);
 
@@ -81,7 +98,31 @@ internal static class CommitGatedAdvancement
                 continue;
             }
 
-            apply(def, candidate);
+            var key = keyOf(def);
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    apply(key, candidate);
+                    break;
+                }
+                catch (PzConfigException ex) when (
+                    ex.Error.Code == PzErrorCode.StateStoreUnavailable && attempt < MaxAttempts)
+                {
+                    wait(RetryWaits[attempt - 1]);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    failures.Add(new AdvancementFailure(key, MessageRedaction.Redact(ex)));
+                    break;
+                }
+            }
         }
+
+        return failures;
     }
 }
+
+/// <summary>One dataset whose state did not advance although its sinks committed: the next run
+/// re-extracts it from the previous value. <see cref="Reason"/> is already redacted.</summary>
+public sealed record AdvancementFailure(string Key, string Reason);

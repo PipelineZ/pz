@@ -597,9 +597,13 @@ internal static class RunCommand
         // unwritable state path) must never flip an otherwise-successful run's outcome to Fatal. Surface
         // it as the same advisory "note: " line the corrupt-file notice above uses, and fall through to
         // the normal status-derived exit code. Cancellation is not swallowed: it must still propagate.
+        //
+        // Advancement isolates each dataset, so what comes back is every dataset that did not advance;
+        // the catch is only for a failure outside any one dataset's write.
         try
         {
-            WatermarkAdvancement.Advance(fullDag, result.Nodes, watermarkStore);
+            ReportNotAdvanced("watermarks", "watermark",
+                WatermarkAdvancement.Advance(fullDag, result.Nodes, watermarkStore));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -608,13 +612,28 @@ internal static class RunCommand
                 $"could not persist watermarks ({sanitized}); the next run will re-extract from the previous watermark");
         }
 
+        void ReportNotAdvanced(string what, string previous, IReadOnlyList<AdvancementFailure> failures)
+        {
+            if (failures.Count == 0)
+            {
+                return;
+            }
+
+            var datasets = string.Join("; ", failures.Select(f => $"{f.Key} ({f.Reason})"));
+            Notice(
+                $"could not persist {what} for {failures.Count} dataset(s) after their sinks committed " +
+                $"[{PzErrorCode.StateNotAdvanced}]: {datasets}; the next run will re-extract from the previous " +
+                $"{previous}, which duplicates rows into append outputs — check the state store, then `pz state show`");
+        }
+
         // Sync-state persistence is a sibling of the watermark advancement immediately above --
         // same "last action, never blocks/is blocked by run_results.json" placement, same non-fatal
         // try/catch discipline (a persistence failure here must never flip an otherwise-successful run's
         // exit code).
         try
         {
-            SyncStateAdvancement.Advance(fullDag, result.Nodes, syncStateStore);
+            ReportNotAdvanced("sync state", "token",
+                SyncStateAdvancement.Advance(fullDag, result.Nodes, syncStateStore));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

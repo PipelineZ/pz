@@ -528,6 +528,12 @@ public static class PzErrorCode
     /// left to queue behind it.</summary>
     public const string NodeUnresponsive = "PZ0526";
 
+    /// <summary>The run's sinks committed, but the watermark or sync state of one or more datasets could
+    /// not be persisted afterwards. A notice, not a run failure: the data was delivered. The next run
+    /// re-extracts those datasets from the previous value — harmless into merge/replace outputs,
+    /// duplicate rows into append ones — so the notice names every dataset and why.</summary>
+    public const string StateNotAdvanced = "PZ0527";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

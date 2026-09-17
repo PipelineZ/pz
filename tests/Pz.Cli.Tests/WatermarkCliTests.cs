@@ -101,6 +101,9 @@ public sealed class WatermarkCliTests : IDisposable
         var output = stdout.ToString();
         Assert.Contains("note: could not persist watermarks", output);
         Assert.Contains("the next run will re-extract from the previous watermark", output);
+        // The note carries a code a log search can find, and names the dataset that did not advance.
+        Assert.Contains("PZ0527", output);
+        Assert.Contains("files.orders", output);
     }
 
     /// <summary>`--log-format json`'s documented contract is that every stdout line parses as JSON,

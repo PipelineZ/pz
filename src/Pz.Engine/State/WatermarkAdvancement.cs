@@ -19,8 +19,11 @@ namespace Pz.Engine.State;
 /// never a status change).</summary>
 public static class WatermarkAdvancement
 {
-    public static void Advance(CompiledDag dag, IReadOnlyList<NodeResult> nodeResults, WatermarkStore store) =>
+    /// <returns>Every dataset whose watermark did not persist; empty when all did.</returns>
+    public static IReadOnlyList<AdvancementFailure> Advance(
+        CompiledDag dag, IReadOnlyList<NodeResult> nodeResults, WatermarkStore store, Action<TimeSpan>? wait = null) =>
         CommitGatedAdvancement.Advance(dag, nodeResults,
             static r => r.WatermarkCandidate,
-            (def, candidate) => store.Set(WatermarkStore.Key(def.Source.Name, def.Dataset.Name), candidate));
+            static def => WatermarkStore.Key(def.Source.Name, def.Dataset.Name),
+            store.Set, wait);
 }
