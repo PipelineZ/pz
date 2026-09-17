@@ -205,7 +205,17 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
         return partitions;
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    private Func<ValueTask>? _onDispose;
+
+    Func<ValueTask>? IGatedShim.OnDispose
+    {
+        set => Volatile.Write(ref _onDispose, value);
+    }
+
+    /// <summary>Ends the process this source was opened on, when a host owns one for it. Exchanged to
+    /// null first, so a second dispose — or one racing the host's own teardown — does nothing.</summary>
+    public ValueTask DisposeAsync() =>
+        Interlocked.Exchange(ref _onDispose, null)?.Invoke() ?? ValueTask.CompletedTask;
 
     internal static string NewOpId() => Guid.NewGuid().ToString("n");
 }
@@ -459,6 +469,11 @@ internal static class ProcessCapabilities
 internal interface IGatedShim
 {
     IOperationGate? Gate { get; }
+
+    /// <summary>What disposing the shim must do beyond itself. <see cref="ProcessConnectorHost"/> sets
+    /// it to reap the process it spawned for this open; a shim built over a process somebody else owns
+    /// (the conformance suite's) leaves it unset and disposes to nothing.</summary>
+    Func<ValueTask>? OnDispose { set; }
 }
 
 /// <summary>Where every shim method (source and sink alike) turns a failed RPC or data-plane read into

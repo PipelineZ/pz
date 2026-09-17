@@ -16,14 +16,16 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// one. That is what keeps <c>pz compile</c> — which reads identity and capabilities and nothing else
 /// — from paying for a process per declared connection.</para>
 ///
-/// <para><b>One process per <c>OpenAsync</c> call.</b> The spec's rule is one process per named
-/// connection instance; the engine opens each connection instance exactly once per run, so
-/// process-per-open and process-per-instance are the same thing under the only caller there is. This
-/// is the simpler rule to implement and the one implemented here — a host that ever opens the same
-/// instance twice would get two processes, and would need this revisited.</para>
+/// <para><b>One process per <c>OpenAsync</c> call, alive for as long as what that call returned.</b>
+/// The engine opens a connection once per NODE — every SourceLoad and SinkWrite, plus the planner and
+/// the connectivity probe — and disposes what it opened when the node is done. Disposing the source or
+/// sink therefore takes its process through the shutdown ladder, so the number of live children tracks
+/// the number of nodes in flight (bounded by <c>engine.threads</c>), not the number of entities in the
+/// project. Two concurrent opens of one connection are two independent processes.</para>
 ///
-/// <para>Every process this host spawns is owned by this host: the shims it hands out never kill one,
-/// and <see cref="DisposeAsync"/> is where all of them go through the shutdown ladder.</para></summary>
+/// <para>Every process this host spawns is owned by this host. <see cref="DisposeAsync"/> reaps
+/// whatever is still open — an open the caller never disposed, or one cut short by a failure — so
+/// nothing outlives the run either way.</para></summary>
 public sealed class ProcessConnectorHost : IAsyncDisposable
 {
     /// <summary>Reserved config key carrying the named connection an open belongs to, which names the
@@ -215,7 +217,8 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     private readonly TimeSpan _cancelGrace;
     private readonly TimeSpan _shutdownGrace;
     private readonly HostTelemetry _telemetry;
-    private readonly ConcurrentBag<ProcessInstance> _instances = [];
+    // Keyed by instance so one open can be reaped on its own; the value is unused.
+    private readonly ConcurrentDictionary<ProcessInstance, byte> _instances = new();
 
     private string _connectionConfigSchema = string.Empty;
     private string _datasetConfigSchema = string.Empty;
@@ -285,7 +288,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         var instance = await SpawnAsync(config, track: true, ct).ConfigureAwait(false);
         var source = await new ProcessSourceConnector(instance.Client, instance.Process)
             .OpenAsync(instance.Config, ct).ConfigureAwait(false);
-        instance.Shim = (IGatedShim)source;
+        Attach(instance, (IGatedShim)source);
         return source;
     }
 
@@ -294,7 +297,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         var instance = await SpawnAsync(config, track: true, ct).ConfigureAwait(false);
         var sink = await new ProcessSinkConnector(instance.Client, instance.Process)
             .OpenAsync(instance.Config, ct).ConfigureAwait(false);
-        instance.Shim = (IGatedShim)sink;
+        Attach(instance, (IGatedShim)sink);
         return sink;
     }
 
@@ -355,11 +358,22 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
         if (track)
         {
-            _instances.Add(instance);
+            _instances.TryAdd(instance, 0);
         }
 
         return instance;
     }
+
+    private void Attach(ProcessInstance instance, IGatedShim shim)
+    {
+        instance.Shim = shim;
+        shim.OnDispose = () => ReapAsync(instance);
+    }
+
+    /// <summary>Whoever removes the instance is the one who disposes it, so a shim's dispose and this
+    /// host's own teardown can race without the ladder ever running twice on one process.</summary>
+    private ValueTask ReapAsync(ProcessInstance instance) =>
+        _instances.TryRemove(instance, out _) ? instance.DisposeAsync() : ValueTask.CompletedTask;
 
     /// <summary>Instance id for Configure: the connection name when the caller threaded one in under
     /// <see cref="ProcessConnectorHost.InstanceIdKey"/>, else a stable per-open id. The key is stripped from what crosses to
@@ -404,11 +418,11 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
     public async ValueTask DisposeAsync()
     {
-        while (_instances.TryTake(out var instance))
+        foreach (var instance in _instances.Keys)
         {
             try
             {
-                await instance.DisposeAsync().ConfigureAwait(false);
+                await ReapAsync(instance).ConfigureAwait(false);
             }
             catch
             {

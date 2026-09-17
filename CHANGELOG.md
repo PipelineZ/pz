@@ -141,6 +141,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   value in the wrong column. A target column the pipeline does not produce
   keeps its default; a produced column the target lacks is now an error naming
   it, where a same-width positional insert used to accept it.
+- Out-of-process connectors: a connector process now ends when the source or
+  sink opened on it is disposed, instead of living until the run ends. The
+  engine opens a connection once per node, so a project with a hundred entities
+  on one external connection accumulated a couple of hundred live child
+  processes — each with its gRPC channel and pump, each possibly holding a
+  remote connection — over the course of one run. Live children now track the
+  nodes in flight (bounded by `engine.threads`).
 
 ## [0.6.1] - 2026-09-10
 
