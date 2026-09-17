@@ -53,6 +53,23 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   orphaned connector processes. The handlers now cover the whole run, setup and
   finalization included. A second signal terminates immediately, so a run that
   will not wind down is never a trap.
+- **Wrong rows.** Predicate pushdown no longer filters a source ahead of a join
+  that could have null-extended it. `select b.id from b left join
+  {{ source(…) }} a on … where a.id is null` pushed `id IS NULL` to the source,
+  landed nothing, and the anti-join returned every `b` row. A predicate is now
+  pushed only when every join above the source preserves its rows (inner/cross,
+  the preserved side of left/right, the left of semi/anti); full, asof and
+  positional joins push nothing. A self-join pushes no predicate, a source also
+  read from a CTE or subquery pushes nothing at all, and a predicate over a
+  select-list alias or beside a derived table stays in DuckDB. Affects
+  connectors with `PredicatePushdown`.
+- Column pruning no longer drops a column a join still needs. With more than
+  one relation in scope, an unqualified column, a `USING`/`NATURAL` join, or a
+  qualifier that is not a FROM alias now means "read every column" instead of
+  being skipped; `select order_id from {{ source(…) }} o join c using
+  (customer_id)` failed to bind `order_id`. A struct path `o.payload.kind`
+  keeps `payload`, and CTE bodies no longer widen or defeat the hint. Affects
+  connectors with `ColumnPruning`.
 
 ## [0.6.1] - 2026-09-10
 
