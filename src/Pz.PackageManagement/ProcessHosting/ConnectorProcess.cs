@@ -198,6 +198,14 @@ public sealed class ConnectorProcess : IAsyncDisposable
         };
         _process.BeginErrorReadLine();
 
+        // Stdout is redirected only to keep a connector's chatter off pz's own stdout, which may be
+        // the NDJSON event stream. A redirected pipe nobody reads fills at the OS buffer size and
+        // blocks the child's next write forever, so it is read to nowhere — as raw bytes, because a
+        // line reader would buffer without bound on output that never sends a newline. The copy ends
+        // at EOF when the child exits; a read fault only ever means the pipe is already gone.
+        _ = _process.StandardOutput.BaseStream.CopyToAsync(Stream.Null)
+            .ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+
         // Stdin is redirected (never inherited from this process's own console) but deliberately
         // left open: nothing in the protocol talks over stdin, so a child that happens to block on
         // it (e.g. this suite's noop.sh fixture) stays alive under host control until the kill

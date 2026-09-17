@@ -70,6 +70,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   (customer_id)` failed to bind `order_id`. A struct path `o.payload.kind`
   keeps `payload`, and CTE bodies no longer widen or defeat the hint. Affects
   connectors with `ColumnPruning`.
+- Out-of-process connectors: a connector that writes to stdout no longer hangs
+  the run. The host redirected the child's stdout and never read it, so after
+  about 64 KB (a `Console.WriteLine` per batch, a Rust `println!`, a chatty
+  library) the child blocked in `write` forever with no diagnostic. Stdout is
+  now drained and discarded; stderr remains the connector's diagnostic channel.
 
 ## [0.6.1] - 2026-09-10
 
