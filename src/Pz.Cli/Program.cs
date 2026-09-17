@@ -1,3 +1,3 @@
 using Pz.Cli;
 
-return CliApp.Build().Parse(args).Invoke();
+return CliApp.Run(args);

@@ -1052,6 +1052,42 @@ public class ProjectLoaderTests
         }
     }
 
+    /// <summary>Two identical checks hash to one node id, which the compiler cannot hold twice;
+    /// the loader refuses the second as a coded error instead.</summary>
+    [Fact]
+    public void Duplicate_identical_check_is_PZ0113()
+    {
+        var dir = WriteCheckProject("  - not_null: [id]\n  - unique: [id]\n  - not_null: [id]\n");
+        try
+        {
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == "PZ0113");
+            Assert.Contains("duplicate not_null check", error.Message);
+            Assert.Contains("pipeline 'p'", error.Message);
+            Assert.Equal("pipelines/configs/p.yml", error.File);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>Same type and column but different options are two distinct checks, not a duplicate.</summary>
+    [Fact]
+    public void Same_type_checks_with_different_options_load()
+    {
+        var dir = WriteCheckProject("  - row_count: { min: 1 }\n  - row_count: { max: 10 }\n");
+        try
+        {
+            var project = ProjectLoader.Load(dir, Env);
+            Assert.Equal(2, project.Pipelines.Single(p => p.Name == "p").Checks.Count);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     /// <summary>All invalid checks in a sidecar are reported together — aggregate, never
     /// fail-one-at-a-time (the house validation rule).</summary>
     [Fact]

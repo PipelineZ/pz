@@ -994,6 +994,7 @@ public static class DagCompiler
         }
 
         // 9. Check nodes — one per check on a non-ephemeral pipeline, depending on that pipeline.
+        var checkNames = new HashSet<string>(StringComparer.Ordinal);
         foreach (var pipeline in project.Pipelines.Where(p => p.Materialization != "ephemeral"))
         {
             foreach (var check in pipeline.Checks)
@@ -1006,8 +1007,16 @@ public static class DagCompiler
                     : check.Columns.Count > 0
                         ? $"check_{pipeline.Name}_{check.Type}_{string.Join('_', check.Columns)}"
                         : $"check_{pipeline.Name}_{check.Type}";
-                var canonical = string.Join('\n', "check", pipeline.Name, check.Type,
-                    string.Join(',', check.Columns), CanonicalJson.Serialize(check.Options));
+                // Distinct checks can share the conventional name (two row_counts; `[a_b]` against
+                // `[a, b]`). Later ones take a numeric suffix so --select stays unambiguous; the first
+                // keeps the conventional name, so a project without collisions is unchanged.
+                var conventionalName = name;
+                for (var n = 2; !checkNames.Add(name); n++)
+                {
+                    name = $"{conventionalName}_{n}";
+                }
+
+                var canonical = string.Join('\n', "check", pipeline.Name, CheckIdentity.Canonical(check));
                 var id = NodeId.Compute(canonical);
                 // Per-check override wins over the project default in BOTH directions; absent from both
                 // -> true. Deliberately not part of `canonical` above -- a runtime execution flag, not

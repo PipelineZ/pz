@@ -30,6 +30,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   strict about timestamp unit and timezone spelling: a connector whose
   declared schema says `+00:00` and whose batches say `UTC` is refused with
   both shapes named.
+- An exception no verb anticipated now ends as `error PZ0500: internal error …`
+  with exit code 3 and a request to report it, instead of a raw stack trace
+  with exit code 1 (which the exit-code contract reserves for node failures).
+  `PZ_DEBUG=1` adds the stack trace.
+- Two identical checks on one pipeline (`- not_null: [id]` twice) are refused
+  as PZ0113 "duplicate check" at load. They compile to one node id, and used to
+  crash `pz compile`/`pz run` with an `ArgumentException`.
+- Distinct checks that share the conventional node name — two `row_count`
+  checks, two `accepted_values` on one column, `not_null: [a_b]` beside
+  `not_null: [a, b]` — get distinct names: the first keeps
+  `check_<pipeline>_<type>_<columns>`, later ones take `_2`, `_3`, … so
+  `--select` addresses exactly one. Node ids are unchanged.
 
 ## [0.6.1] - 2026-09-10
 
