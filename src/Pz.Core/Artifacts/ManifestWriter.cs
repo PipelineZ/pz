@@ -42,7 +42,7 @@ public static class ManifestWriter
             var bindingHeader = ResolveInlineBindingHeader(node, fullDag);
             sql = string.Concat(incrementalHeader ?? string.Empty, bindingHeader ?? string.Empty, sql);
 
-            File.WriteAllText(Path.Combine(compiledDir, $"{node.Name}.sql"), sql);
+            AtomicFile.WriteAllText(Path.Combine(compiledDir, $"{node.Name}.sql"), sql);
         }
 
         WriteManifest(fullDag, nodesToWrite, project, Path.Combine(targetDir, "manifest.json"));
@@ -69,9 +69,11 @@ public static class ManifestWriter
             writer.WriteEndObject();
         }
 
-        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
-        stream.Write(buffer.WrittenSpan);
-        stream.WriteByte((byte)'\n');
+        AtomicFile.Write(path, stream =>
+        {
+            stream.Write(buffer.WrittenSpan);
+            stream.WriteByte((byte)'\n');
+        });
     }
 
     private static void WriteNode(Utf8JsonWriter writer, DagNode node, IReadOnlyDictionary<NodeId, DagNode> byId)

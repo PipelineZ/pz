@@ -28,6 +28,26 @@ public sealed class PlanWriterTests : IDisposable
         ],
         SampleBudget);
 
+    /// <summary>Overlapping runs in one project all publish to the same .pz/target. A writer that
+    /// opens the final path directly collides with the next one (a sharing violation that surfaced as
+    /// a fatal PZ0500); writing aside and renaming means every writer succeeds and a reader only ever
+    /// sees one writer's complete file.</summary>
+    [Fact]
+    public void Overlapping_writers_all_succeed_and_leave_one_complete_file()
+    {
+        Parallel.For(0, 8, _ =>
+        {
+            for (var i = 0; i < 50; i++)
+            {
+                PlanWriter.Write(OneNodePlan(), _dir);
+            }
+        });
+
+        using var document = JsonDocument.Parse(File.ReadAllText(Path.Combine(_dir, "plan.json")));
+        Assert.Equal(1, document.RootElement.GetProperty("nodes").GetArrayLength());
+        Assert.Equal(["plan.json"], Directory.EnumerateFiles(_dir).Select(Path.GetFileName));
+    }
+
     [Fact]
     public void Plan_reports_pushdown_counts_but_never_predicate_text()
     {

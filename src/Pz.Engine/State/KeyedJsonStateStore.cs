@@ -1,4 +1,8 @@
+using System.Buffers;
+using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
+using Pz.Core.Validation;
 
 namespace Pz.Engine.State;
 
@@ -10,7 +14,18 @@ namespace Pz.Engine.State;
 /// returns null silently. Present-but-unparseable (garbage bytes, wrong shape, a null field): null
 /// plus the notice callback -- never throws. <paramref name="readEntry"/> returns null to mark an
 /// entry (and therefore the file) malformed; <paramref name="writeEntry"/> writes exactly the
-/// entry's fields in their fixed order.</summary>
+/// entry's fields in their fixed order.
+///
+/// **Overlapping runs share this file**, and a write is a read-modify-write of all of it. Every write
+/// therefore happens under an OS-held lock on a sibling <c>.lock</c> file, so two runs advancing
+/// different keys never drop each other's entry. For the SAME key the store keeps the contract the
+/// remote backends keep with a version column: this instance remembers what each <see cref="Get"/>
+/// saw, and a <see cref="Set"/> that finds something else there now lost a race with another run —
+/// PZ0520, never a silent overwrite, because the later finisher may carry the older MAX(cursor) and
+/// would regress the watermark. The token stays off <see cref="IKeyedStateStore{T}"/> for the same
+/// reason it does there: it matches the run's access pattern (Get at plan time, Set once at
+/// advancement, one instance per run). A key this instance never read was never observed, so it
+/// cannot have gone stale: the state-editing verbs write that way and simply overwrite.</summary>
 public sealed class KeyedJsonStateStore<T>(
     string stateDir,
     string fileName,
@@ -19,21 +34,36 @@ public sealed class KeyedJsonStateStore<T>(
     Func<JsonElement, T?> readEntry,
     Action<Utf8JsonWriter, T> writeEntry) : IKeyedStateStore<T> where T : class
 {
+    /// <summary>How long a write waits for another process's write to finish. Holders keep the lock
+    /// for one small file rewrite, so reaching this means a wedged process, not contention.</summary>
+    private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(30);
+
+    /// <summary>What "no entry" looks like in <see cref="_seen"/>; a serialized entry is never empty.</summary>
+    private const string Absent = "";
+
+    /// <summary>Each key's entry as THIS instance last read or wrote it, serialized. Concurrent because
+    /// <see cref="Get"/> is called per node from executors the dispatcher runs in parallel.</summary>
+    private readonly ConcurrentDictionary<string, string> _seen = new(StringComparer.Ordinal);
+
     public T? Get(string key, Action<string>? notice = null)
     {
         var path = Path.Combine(stateDir, fileName);
-        if (!File.Exists(path))
+        T? value = null;
+        if (File.Exists(path))
         {
-            return null;
+            if (TryReadAll(path, out var entries))
+            {
+                entries.TryGetValue(key, out value);
+            }
+            else
+            {
+                // Set treats a corrupt file as empty, so that is what this read observed.
+                notice?.Invoke($"{corruptNoticeSubject} '{path}' is corrupt or has an unexpected shape -- a full extract will occur.");
+            }
         }
 
-        if (!TryReadAll(path, out var entries))
-        {
-            notice?.Invoke($"{corruptNoticeSubject} '{path}' is corrupt or has an unexpected shape -- a full extract will occur.");
-            return null;
-        }
-
-        return entries.TryGetValue(key, out var value) ? value : null;
+        _seen[key] = value is null ? Absent : Serialize(value);
+        return value;
     }
 
     /// <summary>Every entry, ordinal-ascending by key — the enumeration `pz state show` needs.
@@ -65,6 +95,7 @@ public sealed class KeyedJsonStateStore<T>(
     public void Set(string key, T value)
     {
         var path = Path.Combine(stateDir, fileName);
+        using var fileLock = AcquireLock(path);
         // If the file is corrupt (exists but fails to parse), treat it as empty. This is safe:
         // corrupt state means no entries (never an error); the engine always reads Get()
         // before writing Set(), and the read-side surfaces a notice so the operator knows a full
@@ -74,8 +105,21 @@ public sealed class KeyedJsonStateStore<T>(
             ? new Dictionary<string, T>(existing, StringComparer.Ordinal)
             : new Dictionary<string, T>(StringComparer.Ordinal);
 
+        if (_seen.TryGetValue(key, out var seen))
+        {
+            var current = entries.TryGetValue(key, out var stored) ? Serialize(stored) : Absent;
+            if (!string.Equals(current, seen, StringComparison.Ordinal))
+            {
+                throw new PzConfigException(new PzError(PzErrorCode.StateConcurrencyConflict,
+                    $"state key '{key}' in '{path}' was advanced by another run while this run was executing.",
+                    "project.yml", null,
+                    "re-run; if concurrent runs over the same datasets are intended, split them by dataset"));
+            }
+        }
+
         entries[key] = value;
         WriteAll(entries, path);
+        _seen[key] = Serialize(value);
     }
 
     /// <summary>Removes one entry (`pz cdc drop`) so the next run treats the dataset as never-synced.
@@ -87,12 +131,63 @@ public sealed class KeyedJsonStateStore<T>(
     public void Remove(string key)
     {
         var path = Path.Combine(stateDir, fileName);
-        if (!File.Exists(path) || !TryReadAll(path, out var entries) || !entries.Remove(key))
+        if (!File.Exists(path))
+        {
+            return;
+        }
+
+        using var fileLock = AcquireLock(path);
+        _seen.TryRemove(key, out _); // an explicit removal is not a stale read of what it removed
+        if (!TryReadAll(path, out var entries) || !entries.Remove(key))
         {
             return;
         }
 
         WriteAll(entries, path);
+    }
+
+    private string Serialize(T value)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writeEntry(writer, value);
+            writer.WriteEndObject();
+        }
+
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    /// <summary>Exclusive across processes AND across store instances in this one: .NET holds
+    /// <see cref="FileShare.None"/> as an advisory flock on Unix and a native share mode on Windows, and
+    /// the OS drops either when the holder dies, so a killed run never wedges the next. The lock is a
+    /// sibling file, not the state file itself, because the state file is replaced by rename on every
+    /// write — a lock on it would be a lock on an inode about to be unlinked. It is never deleted:
+    /// removing it would let a waiter lock the old inode while a newcomer creates and locks a new one.</summary>
+    private static FileStream AcquireLock(string path)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var lockPath = path + ".lock";
+        var deadline = Environment.TickCount64 + (long)LockTimeout.TotalMilliseconds;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockPath, FileMode.OpenOrCreate, FileAccess.Write, FileShare.None);
+            }
+            catch (IOException) when (Environment.TickCount64 < deadline)
+            {
+                Thread.Sleep(15);
+            }
+            catch (IOException ex)
+            {
+                throw new PzConfigException(new PzError(PzErrorCode.StateStoreUnavailable,
+                    $"state file '{path}' stayed locked by another pz process for {LockTimeout.TotalSeconds:0}s: {ex.Message}",
+                    "project.yml", null,
+                    "check for a hung pz process in this project; the lock frees itself when that process exits"));
+            }
+        }
     }
 
     private bool TryReadAll(string path, out Dictionary<string, T> entries)

@@ -75,6 +75,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   about 64 KB (a `Console.WriteLine` per batch, a Rust `println!`, a chatty
   library) the child blocked in `write` forever with no diagnostic. Stdout is
   now drained and discarded; stderr remains the connector's diagnostic channel.
+- Overlapping `pz run`s in one project no longer lose watermark updates. The
+  local state files are rewritten whole on every write with nothing guarding
+  the read-modify-write, so two runs finishing together kept only one run's
+  entries, and the next incremental run re-extracted the other's datasets.
+  Writes now happen under an OS-held lock on a sibling `.lock` file (freed by
+  the OS if the holder dies). Two runs advancing the *same* dataset now get
+  PZ0520 for the later writer — the contract the SQL Server and HTTP state
+  backends already keep — instead of the later finisher silently regressing
+  the watermark to its older `MAX(cursor)`. Overlapping runs over different
+  datasets remain supported.
+- Overlapping runs no longer die with `PZ0500 … plan.json … being used by
+  another process`: `manifest.json`, `compiled/*.sql`, `plan.json` and
+  `schemas.json` are written aside and renamed into place, so every writer
+  succeeds and a reader never sees a partial file.
 
 ## [0.6.1] - 2026-09-10
 

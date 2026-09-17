@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pz.Core.Artifacts;
 using Pz.Engine.Planning;
 
 namespace Pz.Engine.Artifacts;
@@ -11,7 +12,11 @@ public static class PlanWriter
     {
         Directory.CreateDirectory(targetDir);
         var path = Path.Combine(targetDir, "plan.json");
-        using var stream = File.Create(path);
+        AtomicFile.Write(path, stream => WriteTo(stream, plan));
+    }
+
+    private static void WriteTo(Stream stream, ExecutionPlan plan)
+    {
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
         {
             writer.WriteStartObject();
