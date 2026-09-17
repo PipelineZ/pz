@@ -82,6 +82,12 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// ABI-facing surface (see <c>InternalsVisibleTo</c> in the csproj).</summary>
     internal int ProcessIdForTests => _process.Id;
 
+    /// <summary>Test-only: completes when the child has exited and its stderr has finished draining —
+    /// the same moment <see cref="Exited"/> fires, but observable however late the caller looks. An
+    /// event subscribed after a child that exits at once is never raised, and
+    /// <see cref="HasExited"/> alone can read true before <see cref="StderrTail"/> is complete.</summary>
+    internal Task ExitedForTests => _exitSignal.Task;
+
     /// <summary>Creates the run-scoped socket directory (owner-only permissions), then spawns
     /// <paramref name="entrypointPath"/> with <c>--pz-socket &lt;SocketPath&gt;</c> and a minimal env
     /// allowlist. Throws <see cref="ConnectorHostException"/> PZ0355 if the entrypoint is missing, is

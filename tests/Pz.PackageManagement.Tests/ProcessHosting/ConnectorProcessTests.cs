@@ -73,9 +73,9 @@ public sealed class ConnectorProcessTests : IDisposable
 
         await using var process = ConnectorProcess.Spawn(FixturePath("die.sh"), NewSocketDir(), "test-package");
 
-        var exited = new TaskCompletionSource();
-        process.Exited += () => exited.TrySetResult();
-        await exited.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        // Not the Exited event: die.sh can be gone before a handler is attached, and an event
+        // subscribed after it fired is never raised.
+        await process.ExitedForTests.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.True(process.HasExited);
         Assert.Contains("die.sh: known failure line", process.StderrTail);
@@ -93,14 +93,7 @@ public sealed class ConnectorProcessTests : IDisposable
 
         await using var process = ConnectorProcess.Spawn(FixturePath("chatty.sh"), NewSocketDir(), "test-package");
 
-        var exited = new TaskCompletionSource();
-        process.Exited += () => exited.TrySetResult();
-        if (process.HasExited)
-        {
-            exited.TrySetResult();
-        }
-
-        await exited.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        await process.ExitedForTests.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.Contains("chatty.sh: finished writing", process.StderrTail);
         // Stdout is drained, not kept: the tail stays the connector's own diagnostics.
