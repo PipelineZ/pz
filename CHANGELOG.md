@@ -662,6 +662,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   unaffected and deliberately unchanged: DuckDB's own native format does
   the opposite -- `attach if not exists` refuses a zero-byte EXISTING
   file outright -- so both already agreed there.
+- Two motherduck connections declaring different tokens in one project
+  now fail `pz validate` (PZ0311, the same code the run-time failure
+  already used) instead of only at run time: DuckDB accepts
+  `set motherduck_token` only before the first attach in a session, so
+  the second connection's token never actually takes effect once a run
+  is under way. The check compares the two connections' resolved tokens
+  (after `${VAR}` interpolation) and names both connections without ever
+  printing either token.
 
 ## [0.6.1] - 2026-09-10
 

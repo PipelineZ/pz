@@ -52,6 +52,7 @@ public static class ConnectorConfigValidator
         var errors = new List<PzError>();
         RefuseReservedProperties(project, registry, errors);
         RefuseUnknownConnectors(project, registry, errors);
+        RefuseMotherDuckTokenMismatch(project, errors);
 
         foreach (var source in project.Connections)
         {
@@ -131,6 +132,55 @@ public static class ConnectorConfigValidator
                 connection.FilePath, null,
                 $"available connectors: {string.Join(", ", known)} -- fix the name, or add the " +
                 "providing package under project.yml connectors:"));
+        }
+    }
+
+    /// <summary>DuckDB's motherduck extension accepts <c>set motherduck_token</c> only before its
+    /// FIRST attach in a session (see <c>NativeSetupLedger</c>'s doc comment) -- the engine runs one
+    /// DuckDB session per run, so a project declaring two motherduck connections with different tokens
+    /// cannot share a run: the second connection's SET is a no-op against the already-authenticated
+    /// session, and its attach then fails or silently uses the first connection's identity. Today that
+    /// surfaces only at run time as PZ0311 ("native setup statement failed"); this reports the SAME
+    /// condition here, before anything runs, comparing the tokens themselves (never printing either)
+    /// so a project author sees it in `pz validate` alone. `motherduck` is a well-known first-party
+    /// connector name (the same style <c>ProjectDirectoryAnchor</c> already hardcodes), not something
+    /// read from the registry -- this is a property of DuckDB's own extension, not of whichever package
+    /// happens to be installed under that name.</summary>
+    private static void RefuseMotherDuckTokenMismatch(PzProject project, List<PzError> errors)
+    {
+        string? firstName = null;
+        string? firstToken = null;
+        foreach (var connection in project.Connections)
+        {
+            if (!string.Equals(connection.Connector, "motherduck", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // A missing token is the connector's own ValidateAsync's problem to report ("motherduck
+            // connection requires 'token'") -- this check only ever compares tokens that are present.
+            var token = new ConnectorConfig(connection.Connection).GetString("token");
+            if (token is null)
+            {
+                continue;
+            }
+
+            if (firstToken is null)
+            {
+                firstName = connection.Name;
+                firstToken = token;
+                continue;
+            }
+
+            if (!string.Equals(firstToken, token, StringComparison.Ordinal))
+            {
+                errors.Add(new PzError(PzErrorCode.NativeSetupFailed,
+                    $"motherduck connections '{firstName}' and '{connection.Name}' declare different " +
+                    "tokens -- DuckDB accepts 'set motherduck_token' only before the first attach in a " +
+                    "run, so two motherduck connections with different tokens cannot share one.",
+                    connection.FilePath, null,
+                    "use the same token for every motherduck connection in this project"));
+            }
         }
     }
 

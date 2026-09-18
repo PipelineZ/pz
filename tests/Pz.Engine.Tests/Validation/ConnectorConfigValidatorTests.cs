@@ -459,4 +459,69 @@ public sealed class ConnectorConfigValidatorTests
 
         Assert.DoesNotContain(errors, e => e.Code == PzErrorCode.ReservedConnectionKey);
     }
+
+    // DuckDB accepts `set motherduck_token` only before the first attach in a session -- two motherduck
+    // connections with different tokens fail only at run time (PZ0311) today, when the second one's SET
+    // is a no-op. This reports the SAME PZ0311 condition at validate time, before anything runs, naming
+    // both connections and never the tokens themselves.
+    private const string MotherDuckConnectionSchema =
+        """{ "type": "object", "properties": { "database": { "type": "string" }, "token": { "type": "string" } } }""";
+
+    [Fact]
+    public async Task Two_motherduck_connections_with_different_tokens_are_PZ0311_at_validate_time()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("motherduck", new StubConnector { ConnectionConfigSchema = MotherDuckConnectionSchema });
+        registry.AddSink("motherduck", new StubConnector { ConnectionConfigSchema = MotherDuckConnectionSchema });
+
+        var first = new ConnectionDef("md1", "motherduck",
+            new Dictionary<string, object?> { ["database"] = "d1", ["token"] = "secret-token-a" }, [], "connections.yml");
+        var second = new ConnectionDef("md2", "motherduck",
+            new Dictionary<string, object?> { ["database"] = "d2", ["token"] = "secret-token-b" }, [], "connections.yml");
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([first], [second]), registry, default);
+
+        var error = Assert.Single(errors);
+        Assert.Equal(PzErrorCode.NativeSetupFailed, error.Code);
+        Assert.Contains("md1", error.Message, StringComparison.Ordinal);
+        Assert.Contains("md2", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-token-a", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-token-b", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Two_motherduck_connections_with_the_same_token_are_valid()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("motherduck", new StubConnector { ConnectionConfigSchema = MotherDuckConnectionSchema });
+        registry.AddSink("motherduck", new StubConnector { ConnectionConfigSchema = MotherDuckConnectionSchema });
+
+        var first = new ConnectionDef("md1", "motherduck",
+            new Dictionary<string, object?> { ["database"] = "d1", ["token"] = "same-token" }, [], "connections.yml");
+        var second = new ConnectionDef("md2", "motherduck",
+            new Dictionary<string, object?> { ["database"] = "d2", ["token"] = "same-token" }, [], "connections.yml");
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([first], [second]), registry, default);
+
+        Assert.DoesNotContain(errors, e => e.Code == PzErrorCode.NativeSetupFailed);
+    }
+
+    // A connection missing 'token' entirely is the connector's own ValidateAsync's problem ("requires
+    // 'token'") -- the cross-connection comparison must not also throw or double-report on it.
+    [Fact]
+    public async Task A_motherduck_connection_missing_a_token_does_not_break_the_mismatch_check()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("motherduck", new StubConnector { ConnectionConfigSchema = MotherDuckConnectionSchema });
+        registry.AddSink("motherduck", new StubConnector { ConnectionConfigSchema = MotherDuckConnectionSchema });
+
+        var noToken = new ConnectionDef("md1", "motherduck",
+            new Dictionary<string, object?> { ["database"] = "d1" }, [], "connections.yml");
+        var withToken = new ConnectionDef("md2", "motherduck",
+            new Dictionary<string, object?> { ["database"] = "d2", ["token"] = "tok" }, [], "connections.yml");
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([noToken], [withToken]), registry, default);
+
+        Assert.DoesNotContain(errors, e => e.Code == PzErrorCode.NativeSetupFailed);
+    }
 }
