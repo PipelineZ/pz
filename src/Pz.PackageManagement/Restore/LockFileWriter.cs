@@ -10,7 +10,9 @@ public static class LockFileWriter
     /// <summary>Schema version this build writes and is the only one it reads. Bumped to 2 when assets
     /// grew from bare file names to <c>{ file, archivePath }</c> pairs (see <see cref="LockedAsset"/>);
     /// a version-1 lock names no archive paths at all, so it cannot be upgraded in place and is
-    /// rejected in favour of a regenerating <c>pz restore</c>.</summary>
+    /// rejected in favour of a regenerating <c>pz restore --update</c>. The per-asset <c>sha512</c> is
+    /// optional within version 2: a lock without it still pins versions and package hashes, and a
+    /// pinned restore fills the asset hashes in.</summary>
     public const int CurrentVersion = 2;
 
     public static void Write(LockFile lockFile, string path)
@@ -51,6 +53,11 @@ public static class LockFileWriter
             writer.WriteStartObject();
             writer.WriteString("file", asset.File);
             writer.WriteString("archivePath", asset.ArchivePath);
+            if (asset.Sha512 is not null)
+            {
+                writer.WriteString("sha512", asset.Sha512);
+            }
+
             writer.WriteEndObject();
         }
 
@@ -87,7 +94,7 @@ public static class LockFileWriter
             throw new RestoreException(
                 "PZ0321",
                 "pz.lock.json is malformed: empty or 'null' JSON document",
-                "run 'pz restore' to regenerate it");
+                "run 'pz restore --update' to regenerate it");
         }
 
         if (probe.Version != CurrentVersion)
@@ -97,7 +104,7 @@ public static class LockFileWriter
                 $"pz.lock.json declares schema version {probe.Version}, but this pz writes version " +
                 $"{CurrentVersion}; the lock cannot be upgraded in place because an older lock records " +
                 "no per-asset archive paths",
-                "run 'pz restore' to regenerate it");
+                "run 'pz restore --update' to regenerate it");
         }
 
         try
@@ -113,7 +120,7 @@ public static class LockFileWriter
     private static RestoreException Malformed(string detail) => new(
         "PZ0321",
         $"pz.lock.json is malformed: {detail}",
-        "run 'pz restore' to regenerate it");
+        "run 'pz restore --update' to regenerate it");
 
     /// <summary>Reads nothing but <c>version</c>, so a lock written by a different schema version is
     /// diagnosed as such rather than as malformed JSON.</summary>

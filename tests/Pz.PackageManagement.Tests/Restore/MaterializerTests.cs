@@ -71,6 +71,42 @@ public sealed class MaterializerTests(FeedFixture feed)
     }
 
     [Fact]
+    public async Task A_materialized_file_whose_content_changed_is_reinstalled()
+    {
+        var resolved = await ResolveFakeSourceConnector();
+        var cacheRoot = NewCacheRoot();
+        var packagesDir = NewPackagesDir();
+        PackageMaterializer.Materialize(resolved, cacheRoot, packagesDir);
+
+        // The root has transitive deps, so this is a real copy under packagesDir (never a symlink).
+        var dll = Path.Combine(packagesDir, "FakeSourceConnector", "1.2.3", "lib", "FakeSourceConnector.dll");
+        var original = await File.ReadAllBytesAsync(dll);
+        await File.WriteAllBytesAsync(dll, [.. original, 0x00]);
+
+        PackageMaterializer.Materialize(resolved, cacheRoot, packagesDir);
+
+        Assert.Equal(original, await File.ReadAllBytesAsync(dll));
+    }
+
+    [Fact]
+    public async Task A_cache_entry_whose_content_changed_is_re_extracted()
+    {
+        var resolved = await ResolveFakeTransitiveDepAlone();
+        var cacheRoot = NewCacheRoot();
+        PackageMaterializer.Materialize(resolved, cacheRoot, NewPackagesDir());
+
+        var sha = resolved.Lock.Packages.Single().Sha512;
+        var entryDll = Path.Combine(cacheRoot, sha, "lib", "FakeTransitiveDep.dll");
+        var original = await File.ReadAllBytesAsync(entryDll);
+        await File.WriteAllBytesAsync(entryDll, [.. original, 0x00]); // files.txt still satisfied
+
+        var hits = PackageMaterializer.Materialize(resolved, cacheRoot, NewPackagesDir());
+
+        Assert.False(hits["FakeTransitiveDep"]);
+        Assert.Equal(original, await File.ReadAllBytesAsync(entryDll));
+    }
+
+    [Fact]
     public async Task Link_or_copy_produces_loadable_layout()
     {
         // FakeTransitiveDep alone has zero transitive deps of its own — the one case eligible for the

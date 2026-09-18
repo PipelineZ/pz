@@ -21,6 +21,27 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   through `ConnectorConfig.GetInt`/`GetBool`, which still accept `port: "5432"`.
 - An unquoted decimal connector version (`version: 1.10`) is refused: YAML reads
   it as the number 1.1, a different package. Quote it.
+- `pz restore` now honours an existing `pz.lock.json` instead of re-resolving and
+  overwriting it: every locked package is restored at exactly its locked version
+  and must hash to its locked `sha512`, so a version range in `project.yml` no
+  longer floats between restores and a package republished under the same
+  version is refused (PZ0327) rather than silently accepted. A requirement the
+  lock no longer satisfies — a bumped version, a connector added or removed — is
+  PZ0321, and a malformed or older-schema lock is no longer regenerated
+  silently. The new `pz restore --update` is the one way to re-resolve against
+  the feeds and write a new lock. **Migration:** where a script relied on
+  `pz restore` picking up a changed `project.yml` or a newer version within a
+  range, run `pz restore --update` there instead.
+- The lock records a `sha512` for every installed file (the connector's
+  entrypoint binary above all), and `pz run`/`plan`/`validate`/`connectors`
+  verify the installed files against it before anything is spawned: a modified,
+  truncated or replaced file is PZ0326 with `pz restore` as the next step, which
+  reinstalls it from the locked package (the package cache entry is re-verified
+  and re-extracted too). A lock written before hashes were kept still pins
+  versions and package hashes; its next `pz restore` fills the file hashes in.
+- The lock's `rid` is compared with the host's: a `.pz/packages` restored on
+  one platform and run on another is PZ0321 naming both, instead of the
+  "Exec format error" spawn failure it used to reach.
 
 ### Added
 

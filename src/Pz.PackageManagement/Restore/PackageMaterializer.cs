@@ -11,10 +11,14 @@ namespace Pz.PackageManagement.Restore;
 /// then <see cref="Directory.Move(string, string)"/>d into place — a reader never observes a
 /// partially-written entry. The last two files written into the temp dir are <c>files.txt</c> (sorted,
 /// every path the entry contains, relative to the entry root) and an empty <c>.ok</c> marker; an entry
-/// is only trusted if BOTH exist and every path <c>files.txt</c> lists is actually present, so deleting
-/// or truncating anything inside a cache entry (out-of-band tampering, disk corruption, ...) is
-/// detected on the next <see cref="Materialize"/> call and the entry is wiped and re-extracted from the
-/// resolved .nupkg (which <see cref="ResolveResult.NupkgPaths"/> still points at).</para>
+/// is only trusted if BOTH exist, every path <c>files.txt</c> lists is actually present AND every asset
+/// the lock carries a hash for still has that content, so deleting, truncating or modifying anything inside a cache entry
+/// (out-of-band tampering, disk corruption, ...) is detected on the next <see cref="Materialize"/> call
+/// and the entry is wiped and re-extracted from the resolved .nupkg (which
+/// <see cref="ResolveResult.NupkgPaths"/> still points at). The same content check governs an already
+/// materialized <c>&lt;packagesDir&gt;/&lt;id&gt;/&lt;version&gt;</c>: one whose files no longer match
+/// the lock is removed and materialized again, so a restore is the repair for a modified install
+/// rather than a no-op that leaves it in place.</para>
 ///
 /// <para><b>Concurrent populates of the same entry converge</b>: two overlapping <c>pz restore</c>
 /// processes (or, within one process, two threads) racing to populate the SAME content-addressed entry
@@ -53,7 +57,8 @@ public static class PackageMaterializer
     /// pz.connector.json when present). Returns per-package "cache hit" flags (true = the cache entry
     /// already existed and was valid; false = it was downloaded/extracted or re-extracted this call).
     /// Idempotent against a pre-existing <paramref name="packagesDir"/> entry: if
-    /// <c>&lt;packagesDir&gt;/&lt;id&gt;/&lt;version&gt;</c> already exists, it is left untouched.</summary>
+    /// <c>&lt;packagesDir&gt;/&lt;id&gt;/&lt;version&gt;</c> already exists with the locked content, it
+    /// is left untouched.</summary>
     public static IReadOnlyDictionary<string, bool> Materialize(
         ResolveResult resolved, string cacheRoot, string packagesDir)
     {
@@ -75,7 +80,7 @@ public static class PackageMaterializer
 
         foreach (var package in libraryPackages)
         {
-            MaterializeVersionDir(entryDirs[package.Id], Path.Combine(packagesDir, package.Id, package.Version), null);
+            MaterializeVersionDir(package, entryDirs[package.Id], Path.Combine(packagesDir, package.Id, package.Version), null);
         }
 
         foreach (var package in rootPackages)
@@ -83,14 +88,14 @@ public static class PackageMaterializer
             var versionDir = Path.Combine(packagesDir, package.Id, package.Version);
             if (libraryPackages.Length == 0)
             {
-                MaterializeVersionDir(entryDirs[package.Id], versionDir, null);
+                MaterializeVersionDir(package, entryDirs[package.Id], versionDir, null);
                 continue;
             }
 
             var flattened = new FlattenedAssets(
                 CollectTransitive(package, libraryPackages, entryDirs, "lib", a => a.Assets.Lib),
                 CollectTransitive(package, libraryPackages, entryDirs, "native", a => a.Assets.Native));
-            MaterializeVersionDir(entryDirs[package.Id], versionDir, flattened);
+            MaterializeVersionDir(package, entryDirs[package.Id], versionDir, flattened);
         }
 
         return hits;
@@ -139,7 +144,7 @@ public static class PackageMaterializer
     internal static (string EntryDir, bool Hit) EnsureCacheEntry(LockedPackage package, string nupkgPath, string cacheRoot)
     {
         var entryDir = Path.Combine(cacheRoot, package.Sha512);
-        if (IsValidEntry(entryDir))
+        if (IsValidEntry(entryDir, package))
         {
             return (entryDir, true);
         }
@@ -149,7 +154,7 @@ public static class PackageMaterializer
         try
         {
             ExtractInto(nupkgPath, package, tmpDir);
-            return (entryDir, Publish(tmpDir, entryDir));
+            return (entryDir, Publish(tmpDir, entryDir, package));
         }
         catch
         {
@@ -170,14 +175,14 @@ public static class PackageMaterializer
     /// the very directory another restore is materializing files out of. A torn entry left behind by a
     /// crashed run is instead swapped aside under a unique name — that rename is itself atomic, so
     /// exactly one caller takes ownership of the replacement and the rest re-converge on the result.</summary>
-    private static bool Publish(string tmpDir, string entryDir)
+    private static bool Publish(string tmpDir, string entryDir, LockedPackage package)
     {
         if (TryMove(tmpDir, entryDir, out var failure))
         {
             return false;
         }
 
-        if (IsValidEntry(entryDir))
+        if (IsValidEntry(entryDir, package))
         {
             TryDelete(tmpDir);
             return true;
@@ -196,7 +201,7 @@ public static class PackageMaterializer
             return false;
         }
 
-        if (IsValidEntry(entryDir))
+        if (IsValidEntry(entryDir, package))
         {
             // Another caller replaced the torn entry while we were quarantining it.
             TryDelete(tmpDir);
@@ -230,9 +235,10 @@ public static class PackageMaterializer
     }
 
     /// <summary>An entry is trusted only if BOTH bookkeeping files exist AND every path <c>files.txt</c>
-    /// lists is actually present — a tampered/corrupted entry (missing dll, truncated files.txt, ...)
-    /// fails at least one of these and is treated as a cache miss.</summary>
-    private static bool IsValidEntry(string entryDir)
+    /// lists is actually present AND every asset the lock hashes still has that content — a
+    /// tampered/corrupted entry (missing dll, truncated files.txt, a modified binary reached through a
+    /// symlinked install, ...) fails at least one of these and is treated as a cache miss.</summary>
+    private static bool IsValidEntry(string entryDir, LockedPackage package)
     {
         var okMarker = Path.Combine(entryDir, ".ok");
         var manifestPath = Path.Combine(entryDir, "files.txt");
@@ -241,9 +247,10 @@ public static class PackageMaterializer
             return false;
         }
 
-        return File.ReadAllLines(manifestPath)
+        var listed = File.ReadAllLines(manifestPath)
             .Where(line => line.Length > 0)
             .All(relative => File.Exists(Path.Combine(entryDir, relative)));
+        return listed && DriftChecker.ContentMatches(package, entryDir);
     }
 
     private static void ExtractInto(string nupkgPath, LockedPackage package, string entryDir)
@@ -316,11 +323,19 @@ public static class PackageMaterializer
 
     /// <summary><paramref name="flattened"/> non-null means "always copy, then flatten these transitive
     /// files in too" (root-with-transitive-deps rule); null means "prefer a symlink."</summary>
-    private static void MaterializeVersionDir(string entryDir, string versionDir, FlattenedAssets? flattened)
+    private static void MaterializeVersionDir(LockedPackage package, string entryDir, string versionDir, FlattenedAssets? flattened)
     {
         if (Directory.Exists(versionDir))
         {
-            return; // idempotent: a prior restore into this exact packagesDir already materialized it
+            if (DriftChecker.ContentMatches(package, versionDir))
+            {
+                return; // idempotent: a prior restore into this exact packagesDir already materialized it
+            }
+
+            // Its content drifted from the lock: reinstall. A symlinked install points at the cache
+            // entry, which EnsureCacheEntry has already re-verified and re-extracted, so only the link
+            // itself is removed here; a copied install is removed outright.
+            RemoveInstall(versionDir);
         }
 
         Directory.CreateDirectory(Path.GetDirectoryName(versionDir)!);
@@ -339,6 +354,17 @@ public static class PackageMaterializer
 
         CopyInto(flattened.Lib, Path.Combine(versionDir, "lib"));
         CopyInto(flattened.Native, Path.Combine(versionDir, "native"));
+    }
+
+    private static void RemoveInstall(string versionDir)
+    {
+        if (new DirectoryInfo(versionDir).LinkTarget is not null)
+        {
+            Directory.Delete(versionDir);
+            return;
+        }
+
+        Directory.Delete(versionDir, recursive: true);
     }
 
     private static void CopyInto(IReadOnlyList<string> sources, string destinationDir)
