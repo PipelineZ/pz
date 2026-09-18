@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 
 namespace Pz.Connector.Sftp;
 
@@ -15,7 +16,9 @@ internal sealed record SftpConnectionSettings(
         (int)(config.GetInt("port") ?? 22),
         Require(config, "username"),
         config.GetString("password"),
-        config.GetString("private_key_path"),
+        // A relative private_key_path resolves against the CLI-injected base_dir (the localfiles/
+        // sqlite precedent) rather than the process working directory; absolute/~ values pass through.
+        ProjectRelativePath.Resolve(config.GetString("private_key_path"), config.GetString("base_dir")),
         config.GetString("private_key_passphrase"),
         NormalizeFingerprint(config.GetString("host_key_fingerprint")),
         config.GetString("root"));

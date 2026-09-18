@@ -33,7 +33,14 @@ public static class ProjectDirectoryAnchor
     /// belongs here only if it reads <see cref="OptionName"/> when resolving a relative path, and none of
     /// them declares that key in its <c>ConnectionConfigSchema</c> (see the class remarks).</summary>
     public static readonly IReadOnlySet<string> BuiltinAnchoredConnectors =
-        new HashSet<string>(StringComparer.Ordinal) { "localfiles", "sqlite", "duckdb", "ducklake", "iceberg" };
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "localfiles", "sqlite", "duckdb", "ducklake", "iceberg",
+            // Credential-file options, not a connection's whole data location: sftp's
+            // private_key_path and gcs's key_file. Resolved via Pz.Connectors.Toolkit's
+            // ProjectRelativePath, which leaves an absolute/~/URL-shaped value untouched.
+            "sftp", "gcs",
+        };
 
     /// <summary><paramref name="declaredAnchoredConnectors"/> are the names read out of materialized
     /// package manifests (see <c>Pz.PackageManagement.Hosting.PackageManifests</c>); pass none for a

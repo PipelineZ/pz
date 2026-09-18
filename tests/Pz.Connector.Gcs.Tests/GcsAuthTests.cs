@@ -110,6 +110,50 @@ public sealed class GcsAuthTests
         Assert.NotNull(client);
     }
 
+    /// <summary>#103: a relative `key_file` must resolve against the project directory (`base_dir`,
+    /// injected by the CLI -- see `ProjectDirectoryAnchor`), not wherever `pz` was invoked from. No
+    /// process-CWD manipulation: the key file lives under an explicit `base_dir` that is never this
+    /// test process's actual working directory, so a wrong resolution (falling back to CWD) would
+    /// fail to find the file instead of silently succeeding.</summary>
+    [Fact]
+    public void Relative_key_file_resolves_against_base_dir_not_the_process_cwd()
+    {
+        var projectDir = Path.Combine(Path.GetTempPath(), "pz-gcs-anchor-test", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(projectDir);
+        try
+        {
+            File.WriteAllText(Path.Combine(projectDir, "key.json"), FakeServiceAccountJson);
+            Assert.NotEqual(projectDir, Directory.GetCurrentDirectory());
+
+            var client = GcsAuth.CreateStorageClient(Config(
+                ("auth", "service_account"), ("key_file", "key.json"), ("base_dir", projectDir)));
+
+            Assert.NotNull(client);
+        }
+        finally
+        {
+            Directory.Delete(projectDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Absolute_key_file_is_untouched_by_base_dir()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"pz-gcs-key-{Guid.NewGuid():N}.json");
+        File.WriteAllText(tempFile, FakeServiceAccountJson);
+        try
+        {
+            var client = GcsAuth.CreateStorageClient(Config(
+                ("auth", "service_account"), ("key_file", tempFile), ("base_dir", "/nonexistent/other/project")));
+
+            Assert.NotNull(client);
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
     /// <summary>A structurally valid service-account key with a freshly generated throwaway RSA key —
     /// never a real credential.</summary>
     private static string FakeServiceAccountJson

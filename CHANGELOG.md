@@ -578,6 +578,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   cancelled run returns today (unchanged): fatal (3) unless a node had
   already failed before the cancellation was observed, in which case it
   stays node-failures (1).
+- sftp's `private_key_path` and gcs's `key_file` now anchor against the
+  project directory the same way `localfiles`' `root` and `sqlite`'s `path`
+  already do: a relative value joins `base_dir` (the CLI-injected project
+  directory) instead of wherever `pz` happened to be invoked from, so
+  `pz run --project ../x` no longer breaks a relative credential-file path.
+  An absolute path, a `~`-prefixed home-directory shorthand, or a
+  URL-shaped value passes through untouched. The shared resolver
+  (`Pz.Connectors.Toolkit.ProjectRelativePath`) is available to any other
+  first-party connector with the same shape of option.
 
 ## [0.6.1] - 2026-09-10
 

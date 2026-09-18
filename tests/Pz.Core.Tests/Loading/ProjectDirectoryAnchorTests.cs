@@ -29,13 +29,17 @@ public sealed class ProjectDirectoryAnchorTests
     public void Builtin_anchored_connectors_receive_the_project_dir()
     {
         var anchored = ProjectDirectoryAnchor.Inject(
-            ProjectWith("localfiles", "sqlite", "duckdb", "ducklake", "iceberg"), ProjectDir);
+            ProjectWith("localfiles", "sqlite", "duckdb", "ducklake", "iceberg", "sftp", "gcs"), ProjectDir);
 
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "localfiles"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "sqlite"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "duckdb"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "ducklake"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "iceberg"));
+        // #103: sftp's private_key_path and gcs's key_file are credential-file options, not a
+        // connection's whole data location, but they miss the anchor the same way localfiles' root does.
+        Assert.Equal(ProjectDir, BaseDirOf(anchored, "sftp"));
+        Assert.Equal(ProjectDir, BaseDirOf(anchored, "gcs"));
     }
 
     /// <summary>Opt-in in both directions: a connector that never asked receives nothing. This is what
