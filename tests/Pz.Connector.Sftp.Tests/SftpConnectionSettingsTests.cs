@@ -5,7 +5,7 @@ namespace Pz.Connector.Sftp.Tests;
 
 public class SftpConnectionSettingsTests
 {
-    /// <summary>#103: a relative `private_key_path` must resolve against the project directory
+    /// <summary>A relative `private_key_path` must resolve against the project directory
     /// (`base_dir`, injected by the CLI -- see `ProjectDirectoryAnchor`), not wherever `pz` was
     /// invoked from. No process-CWD manipulation: `base_dir` is passed explicitly, and differs from
     /// this test process's actual working directory, so a wrong resolution (falling back to CWD)

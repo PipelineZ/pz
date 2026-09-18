@@ -2,7 +2,7 @@ using Pz.Connectors.Toolkit;
 
 namespace Pz.Connectors.Toolkit.Tests;
 
-/// <summary>The shared resolver behind #103: a connector's own local-file-path connection option
+/// <summary>The shared resolver for a connector's own local-file-path connection option
 /// (SFTP's <c>private_key_path</c>, GCS's <c>key_file</c>) must anchor against the project directory
 /// the same way <c>localfiles</c>' <c>root</c> and <c>sqlite</c>'s <c>path</c> already do, while an
 /// absolute path, a <c>~</c>-prefixed home-directory shorthand, or a URL-shaped value passes through

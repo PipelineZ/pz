@@ -110,7 +110,7 @@ public sealed class GcsAuthTests
         Assert.NotNull(client);
     }
 
-    /// <summary>#103: a relative `key_file` must resolve against the project directory (`base_dir`,
+    /// <summary>A relative `key_file` must resolve against the project directory (`base_dir`,
     /// injected by the CLI -- see `ProjectDirectoryAnchor`), not wherever `pz` was invoked from. No
     /// process-CWD manipulation: the key file lives under an explicit `base_dir` that is never this
     /// test process's actual working directory, so a wrong resolution (falling back to CWD) would

@@ -81,7 +81,7 @@ public sealed class EngineFailureMapperTests
     }
 }
 
-/// <summary>Real repro for #99: a read-only project directory makes `pz run` fail creating
+/// <summary>Real repro: a read-only project directory makes `pz run` fail creating
 /// <c>.pz/runs/&lt;id&gt;</c>, which used to forward the raw <see cref="UnauthorizedAccessException"/>
 /// text under the generic PZ0500 -- now fingerprinted to PZ0531 with a next step.
 ///
