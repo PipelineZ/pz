@@ -28,9 +28,11 @@ public sealed class SqlServerTimeoutTests(MsSqlContainerFixture fixture)
         });
         var cs = SqlServerConnector.BuildConnectionString(config);
 
+        // Blocked on a lock rather than a timed wait: the statement cannot finish before the timeout.
+        await using var held = await HeldTableLock.AcquireAsync(cs);
         await using var connection = new SqlConnection(cs);
         await connection.OpenAsync();
-        await using var command = new SqlCommand("waitfor delay '00:00:03'", connection);
+        await using var command = new SqlCommand(held.BlockedStatement, connection);
 
         var ex = await Assert.ThrowsAsync<SqlException>(() => command.ExecuteNonQueryAsync());
 

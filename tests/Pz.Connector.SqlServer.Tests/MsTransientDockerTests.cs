@@ -82,13 +82,15 @@ public sealed class MsTransientDockerTests(MsSqlContainerFixture fixture)
     {
         DockerFacts.SkipUnlessDocker();
 
+        // Blocked on a lock rather than a timed wait: the statement cannot finish before the timeout.
+        await using var held = await HeldTableLock.AcquireAsync(fixture.ConnectionString);
         await using var conn = new SqlConnection(fixture.ConnectionString);
         await conn.OpenAsync();
 
         SqlException? caught = null;
         try
         {
-            await using var cmd = new SqlCommand("waitfor delay '00:00:05'", conn) { CommandTimeout = 1 };
+            await using var cmd = new SqlCommand(held.BlockedStatement, conn) { CommandTimeout = 1 };
             await cmd.ExecuteNonQueryAsync();
         }
         catch (SqlException ex)
