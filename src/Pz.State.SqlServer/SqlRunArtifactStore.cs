@@ -262,7 +262,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     {
         var provenance = node.Provenance is { } p ? ProvenanceName(p) : "";
         var payload = SerializePayload(node) ?? "";
-        return string.Join('',
+        return string.Join('\u001f',
             node.Name, node.Kind.ToString(), NodeStatusName(node.Status),
             node.RowsMoved.ToString(CultureInfo.InvariantCulture),
             ((long)node.Duration.TotalMilliseconds).ToString(CultureInfo.InvariantCulture),

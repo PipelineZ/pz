@@ -219,5 +219,10 @@ public sealed class SqlEventSinkResilienceTests
         Assert.Equal(count, sink.Dropped);
         Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5),
             $"DisposeAsync took {stopwatch.Elapsed} against a 200ms deadline");
+
+        // The abandoned drain task still runs once it is let go; the events dispose already counted
+        // must not be counted a second time when it reaches them.
+        await sink.ReleaseWriterAndDisposeForTests();
+        Assert.Equal(count, sink.Dropped);
     }
 }

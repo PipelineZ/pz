@@ -406,16 +406,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `state.artifacts: true`, instead of misnaming it as the local JSON file.
 - `SqlStateSchema.EnsureCurrent` (the SQL Server state store's first-use/
   migration path) is now safe against two processes racing the same schema:
-  an exclusive, transaction-owned `sp_getapplock` is taken first, inside the
-  transaction, and the version is re-read only under it, instead of a version
-  read before the transaction even began. A caller that loses the race and
+  a store that is behind is migrated under an exclusive, transaction-owned
+  `sp_getapplock`, with the version read again under the lock, instead of on
+  a version read before the transaction even began. A store that is already
+  current takes no lock and opens no transaction. A caller that loses the race and
   wakes to find the schema already migrated now does nothing, instead of
   racing a second migration attempt (previously an occasional raw `2714`
   surfaced as PZ0519 with the wrong "check DDL rights" advice, or a duplicate
   `schema_version` row, since that table had no key). A lock that cannot be
   acquired within 30s is the new PZ0528 with a "retry" next step. Schema
-  version 3 adds a PRIMARY KEY to `schema_version`, de-duplicating any
-  existing rows first; migrates automatically, same as version 2.
+  version 3 adds a PRIMARY KEY to `schema_version`, first reducing it to one
+  row (the race left two rows at the same version); migrates automatically,
+  same as version 2.
 
 ## [0.6.1] - 2026-09-10
 

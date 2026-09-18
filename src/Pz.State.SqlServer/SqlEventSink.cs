@@ -85,6 +85,10 @@ public sealed class SqlEventSink : IAsyncDisposable
     private long _dropped;
     private int _consecutiveFailures;
     private volatile bool _circuitOpen;
+    // Set when DisposeAsync gives up on the drain task: dispose has then counted everything still
+    // pending as dropped, and the drain task -- still running, nothing can stop it -- must not
+    // count the same events again when it gets to them.
+    private volatile bool _abandoned;
     private long _connectAttempts;
 
     /// <summary>Real <see cref="SqlBulkCopy"/> flush attempts this sink instance has made -- i.e.
@@ -198,7 +202,11 @@ public sealed class SqlEventSink : IAsyncDisposable
             if (winner == deadline)
             {
                 _circuitOpen = true; // WriteDroppedCountAsync below must not pay its own connect timeout
-                Interlocked.Add(ref _dropped, Interlocked.Exchange(ref _pending, 0));
+                if (!_abandoned)
+                {
+                    _abandoned = true;
+                    Interlocked.Add(ref _dropped, Interlocked.Exchange(ref _pending, 0));
+                }
             }
             else
             {
@@ -296,8 +304,12 @@ public sealed class SqlEventSink : IAsyncDisposable
             // MaxConsecutiveFailures batches have already failed in a row -- every remaining batch
             // would pay the same connect timeout again for no benefit (class doc). Count it dropped
             // without even trying to open a connection.
-            Interlocked.Add(ref _dropped, batch.Count);
-            Interlocked.Add(ref _pending, -batch.Count);
+            if (!_abandoned)
+            {
+                Interlocked.Add(ref _dropped, batch.Count);
+                Interlocked.Add(ref _pending, -batch.Count);
+            }
+
             return;
         }
 
@@ -326,7 +338,11 @@ public sealed class SqlEventSink : IAsyncDisposable
             // promise this class exists to make if it happens to stay complete, and betting on that is
             // exactly the kind of thing that quietly stops holding. The whole batch counts as
             // dropped -- there is no partial-success signal from SqlBulkCopy worth chasing here.
-            Interlocked.Add(ref _dropped, batch.Count);
+            if (!_abandoned)
+            {
+                Interlocked.Add(ref _dropped, batch.Count);
+            }
+
             if (++_consecutiveFailures >= MaxConsecutiveFailures)
             {
                 _circuitOpen = true;

@@ -18,7 +18,8 @@ namespace Pz.State.SqlServer;
 /// `sp_getapplock` FIRST, inside its transaction, before reading the version at all -- the loser waits
 /// (up to <see cref="LockTimeoutMs"/>, else PZ0528) and then re-reads the version under the lock, so it
 /// sees whatever the winner committed and does nothing further if that is already
-/// <see cref="CurrentVersion"/>. The version is never trusted from a read taken before the lock.
+/// <see cref="CurrentVersion"/>. A read taken before the lock is trusted for exactly one answer --
+/// "already current", which no concurrent migrator can undo -- and never as a reason to migrate.
 ///
 /// The schema name (`state.schema`) is operator-supplied, so every statement that names it goes through
 /// SQL Server's own `QUOTENAME` (as a bound parameter fed to dynamic SQL) rather than C#-side string
@@ -61,12 +62,20 @@ public static class SqlStateSchema
 
         try
         {
+            // A store already at CurrentVersion stays there -- versions only grow -- so this unlocked
+            // read may be trusted for that one answer and an ordinary run takes no lock and opens no
+            // transaction. Any other answer is only a reason to take the lock and read again.
+            if (ReadVersionCore(sqlConnection, null, connection.Schema) == CurrentVersion)
+            {
+                return;
+            }
+
             using var transaction = sqlConnection.BeginTransaction();
             try
             {
-                // Taken FIRST, before the version is read at all: the whole point is that neither
-                // racing caller may act on a version read outside this lock, because it could already
-                // be stale by the time it is acted on.
+                // Taken before the version that decides a migration is read: neither racing caller
+                // may migrate on a version read outside this lock, because it could already be stale
+                // by the time it is acted on.
                 AcquireMigrationLock(sqlConnection, transaction, connection, lockTimeoutMs);
 
                 var version = ReadVersionCore(sqlConnection, transaction, connection.Schema);
@@ -287,14 +296,15 @@ public static class SqlStateSchema
     /// EVER happening again, but an existing database may already carry it from before this fix). A
     /// single-row table needs a constant key -- `id` (always 1), not `version`, since `version` itself
     /// is exactly the column a duplicate-insert race could have made non-unique. De-duplicates first,
-    /// keeping the highest `version` (the most-migrated row is the one to keep): adding a PRIMARY KEY
-    /// over duplicate rows would otherwise fail this migration outright.</summary>
+    /// keeping one row at the highest `version`: the race leaves two rows at the SAME version, so the
+    /// survivor is picked by rank, never by comparing versions, and a PRIMARY KEY over what remained
+    /// would otherwise fail this migration outright.</summary>
     private static void MigrateToSchemaVersionPrimaryKey(SqlConnection sqlConnection, SqlTransaction transaction, string schema)
     {
         using (var dedupe = new SqlCommand(
             "DECLARE @sql NVARCHAR(MAX) = " +
-            "'DELETE t FROM ' + QUOTENAME(@schema) + '.schema_version t WHERE t.version < ' + " +
-            "'(SELECT MAX(version) FROM ' + QUOTENAME(@schema) + '.schema_version);'; " +
+            "'WITH ranked AS (SELECT ROW_NUMBER() OVER (ORDER BY version DESC) AS rn FROM ' + " +
+            "QUOTENAME(@schema) + '.schema_version) DELETE FROM ranked WHERE rn > 1;'; " +
             "EXEC(@sql);",
             sqlConnection, transaction))
         {
