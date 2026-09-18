@@ -432,7 +432,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   folding: two pipeline files (PZ0110) or two datasets of one connection
   (PZ0110) differing only by case now collide at compile time instead of
   silently sharing one staging relation on Linux (where both files coexist on
-  disk). A pipeline named exactly like a referenced SourceLoad's staging
+  disk). The dataset check also spans connections now: `ERP.orders` and
+  `erp.orders`, or `a._b` and `a_.b`, stage to one relation and are PZ0110
+  naming both. A pipeline named exactly like a referenced SourceLoad's staging
   relation (`src_<connection>__<entity>`) is the new PZ0230: both would
   target the same `staging.<name>` table. The MCP `pz_write_pipeline`/
   `pz_remove_pipeline` tools enforce the identical rule before ever writing a

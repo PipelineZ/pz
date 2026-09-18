@@ -143,7 +143,8 @@ public static class TemplateRenderer
                 var precededByIdentifierChar = start > 0 &&
                     (char.IsAsciiLetterOrDigit(sql[start - 1]) || sql[start - 1] == '_');
                 var open = start + name.Length;
-                if (!precededByIdentifierChar && TryFindMatchingParen(sql, open, out var close) &&
+                if (!precededByIdentifierChar && InsideTemplateBlock(sql, start) &&
+                    TryFindMatchingParen(sql, open, out var close) &&
                     sql.AsSpan(open, close - open).Contains('\n'))
                 {
                     return name;
@@ -154,6 +155,14 @@ public static class TemplateRenderer
         }
 
         return null;
+    }
+
+    /// <summary>Whether <paramref name="index"/> sits inside an open <c>{{</c> block. Everything outside
+    /// one is SQL the template engine never parses, so a line break there cannot be what failed.</summary>
+    private static bool InsideTemplateBlock(string sql, int index)
+    {
+        var opened = sql.LastIndexOf("{{", index, StringComparison.Ordinal);
+        return opened >= 0 && sql.IndexOf("}}", opened, index - opened, StringComparison.Ordinal) < 0;
     }
 
     private static bool TryFindMatchingParen(string sql, int openIndex, out int closeIndex)

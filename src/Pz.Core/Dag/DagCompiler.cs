@@ -953,9 +953,12 @@ public static class DagCompiler
         var pipelineStagingNames = project.Pipelines
             .Where(p => p.Materialization != "ephemeral")
             .ToDictionary(p => p.Name, p => p, StringComparer.OrdinalIgnoreCase);
+        // One map for the whole project, not one per connection: the relation name is
+        // `src_<connection>__<folded entity>`, so two connections reach one name by case alone, or by an
+        // underscore that sits on either side of the separator (`a` + `_b`, `a_` + `b`).
+        var stagedRelations = new Dictionary<string, (string Connection, string Dataset)>(StringComparer.OrdinalIgnoreCase);
         foreach (var source in project.Connections)
         {
-            var staged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var dataset in source.Datasets)
             {
                 if (!referencedSources.Contains((source.Name, dataset.Name)))
@@ -964,14 +967,17 @@ public static class DagCompiler
                 }
 
                 var stagingName = StagingName.ForSourceLoad(source.Name, dataset.Name);
-                if (!staged.TryAdd(stagingName, dataset.Name))
+                if (!stagedRelations.TryAdd(stagingName, (source.Name, dataset.Name)))
                 {
+                    var first = stagedRelations[stagingName];
                     stagingCollisions.Add(new PzError(PzErrorCode.DuplicateName,
-                        $"source '{source.Name}': datasets '{staged[stagingName]}' and '{dataset.Name}' " +
+                        (first.Connection == source.Name
+                            ? $"source '{source.Name}': datasets '{first.Dataset}' and '{dataset.Name}' "
+                            : $"sources '{first.Connection}.{first.Dataset}' and '{source.Name}.{dataset.Name}' ") +
                         "cannot be told apart in staging.",
                         source.FilePath, null,
-                        "rename one of them -- pz folds every character outside [A-Za-z0-9_] to '_' when " +
-                        "it stages a read, and DuckDB itself folds identifier case, so these two names collide"));
+                        $"rename one of them -- both stage as '{stagingName}': pz folds every character " +
+                        "outside [A-Za-z0-9_] to '_' when it stages a read, and DuckDB itself folds identifier case"));
                 }
 
                 if (pipelineStagingNames.TryGetValue(stagingName, out var collidingPipeline))

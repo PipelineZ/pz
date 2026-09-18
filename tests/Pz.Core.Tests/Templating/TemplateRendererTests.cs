@@ -178,6 +178,17 @@ public class TemplateRendererTests
     }
 
     [Fact]
+    public void Text_outside_a_template_block_is_not_mistaken_for_a_multiline_call()
+    {
+        // The SQL around {{ }} is never Scriban's to parse, so a line break there cannot be what failed:
+        // the template's real error must still be the one reported.
+        var p = Pipe("x", "-- once read through source(\n--   'crm', 'orders')\nselect {{ 1 + }}");
+        var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors);
+        Assert.DoesNotContain("split across more than one line", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void An_unrecognized_expression_carries_the_sandbox_hint()
     {
         var p = Pipe("x", "select {{ date.now }}");
