@@ -55,6 +55,28 @@ public class SftpConnectorValidationTests
         Assert.False(Validate(Config(("host", "h"), ("username", "u"), ("password", "p"),
             ("host_key_fingerprint", "md5:aa:bb"))).IsValid);
 
+    // No pin at all (distinct from an invalid one, already covered above): a non-blocking warning
+    // naming host_key_fingerprint, never an error -- a first connect to an unknown host is legitimate.
+    [Fact]
+    public void No_fingerprint_pinned_is_valid_but_warns_naming_the_option()
+    {
+        var result = Validate(Config(("host", "h"), ("username", "u"), ("password", "p")));
+
+        Assert.True(result.IsValid);
+        var warning = Assert.Single(result.Warnings ?? []);
+        Assert.Contains("host_key_fingerprint", warning, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_pinned_fingerprint_carries_no_warning()
+    {
+        var result = Validate(Config(("host", "h"), ("username", "u"), ("password", "p"),
+            ("host_key_fingerprint", "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU")));
+
+        Assert.True(result.IsValid);
+        Assert.True(result.Warnings is null or { Count: 0 });
+    }
+
     // CheckConnectionAsync: a key file that fails to load is a config-shape error discovered before
     // any network attempt (SftpClientFactory.BuildAuth), not a connectivity outcome -- it must throw
     // rather than fold into a false ConnectionCheck(false, ...). No live server is involved.
@@ -111,6 +133,40 @@ public class SftpConnectorValidationTests
         var result = SftpConnector.ProbeRoot(fake, settings);
 
         Assert.True(result.Ok);
+    }
+
+    // With no host_key_fingerprint pinned, a successful probe surfaces the presented fingerprint in the
+    // exact 'SHA256:<base64>' form the option accepts, so `pz validate --connect`'s output is
+    // copy-paste-able straight into connections.yml.
+    [Fact]
+    public void ProbeRoot_with_no_pin_surfaces_the_presented_fingerprint_for_copy_paste()
+    {
+        var fake = new FakeSftpFileSystem();
+        fake.SeedDirectory("/data");
+        var settings = new SftpConnectionSettings("sftp.example", 22, "u", "p", null, null, null, Root: "/data");
+
+        var result = SftpConnector.ProbeRoot(fake, settings, presentedFingerprint: "abc123fingerprint");
+
+        Assert.True(result.Ok);
+        Assert.NotNull(result.Message);
+        Assert.Contains("SHA256:abc123fingerprint", result.Message, StringComparison.Ordinal);
+        Assert.Contains("host_key_fingerprint", result.Message, StringComparison.Ordinal);
+    }
+
+    // A declared pin already answers "which key do you trust" -- the probe must not add an unpin
+    // nudge to an already-pinned, already-matched connection.
+    [Fact]
+    public void ProbeRoot_with_a_pin_already_declared_carries_no_fingerprint_message()
+    {
+        var fake = new FakeSftpFileSystem();
+        fake.SeedDirectory("/data");
+        var settings = new SftpConnectionSettings(
+            "sftp.example", 22, "u", "p", null, null, "already-pinned-fingerprint", Root: "/data");
+
+        var result = SftpConnector.ProbeRoot(fake, settings, presentedFingerprint: "already-pinned-fingerprint");
+
+        Assert.True(result.Ok);
+        Assert.Null(result.Message);
     }
 
     // No `root:` at all probes the login-relative current directory, "." -- which the fake (like a

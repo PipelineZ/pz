@@ -220,8 +220,11 @@ public sealed record NativeCopy(string CopySql, IReadOnlyList<string> SetupState
 /// Finalizations empty (per-object PUT is already atomic).</summary>
 public sealed record FileMove(string TempPath, string FinalPath);
 
-/// <summary>Offline config validation outcome. Empty <see cref="Errors"/> means valid.</summary>
-public sealed record ValidationResult(IReadOnlyList<string> Errors)
+/// <summary>Offline config validation outcome. Empty <see cref="Errors"/> means valid --
+/// <see cref="Warnings"/> never affects <see cref="IsValid"/>: a warning is a non-blocking, PZ-coded
+/// diagnostic the caller may surface (e.g. an unpinned sftp host key), additive so every existing
+/// single-arg construction (<see cref="Success"/>, <see cref="Failed"/>) is unaffected.</summary>
+public sealed record ValidationResult(IReadOnlyList<string> Errors, IReadOnlyList<string>? Warnings = null)
 {
     public static readonly ValidationResult Success = new([]);
     public static ValidationResult Failed(params string[] errors) => new(errors);

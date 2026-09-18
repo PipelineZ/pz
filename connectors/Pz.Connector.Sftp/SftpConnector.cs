@@ -65,15 +65,29 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
             errors.Add($"sftp connection 'port' must be 1-65535 (got {port})");
         }
 
-        if (config.GetString("host_key_fingerprint") is { Length: > 0 } fp &&
-            !SftpConnectionSettings.IsValidFingerprint(fp))
+        var declaredFingerprint = config.GetString("host_key_fingerprint");
+        if (declaredFingerprint is { Length: > 0 } fp && !SftpConnectionSettings.IsValidFingerprint(fp))
         {
             errors.Add("sftp connection 'host_key_fingerprint' must be a SHA-256 fingerprint " +
                 "('SHA256:<base64>' or the bare base64 body)");
         }
 
-        return new ValueTask<ValidationResult>(
-            errors.Count == 0 ? ValidationResult.Success : ValidationResult.Failed([.. errors]));
+        if (errors.Count > 0)
+        {
+            return new ValueTask<ValidationResult>(ValidationResult.Failed([.. errors]));
+        }
+
+        // No pin at all (not merely an invalid one, already caught above): every host key is accepted
+        // silently, with no MITM protection and no signal -- unless something says so. This never fails
+        // validation (a first connect to an unknown host is a legitimate, common case); it only makes
+        // the choice visible.
+        List<string>? warnings = string.IsNullOrEmpty(declaredFingerprint)
+            ? ["sftp connection accepts any SSH host key because 'host_key_fingerprint' is not set -- " +
+                "no protection against a man-in-the-middle; run 'pz validate --connect' to see the " +
+                "fingerprint the server presents, then pin it"]
+            : null;
+
+        return new ValueTask<ValidationResult>(new ValidationResult([], warnings));
     }
 
     /// <summary>Real probe: connects, authenticates, then stats the root (or login directory) --
@@ -91,10 +105,12 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
     {
         var settings = SftpConnectionSettings.Parse(config);
         var auth = SftpClientFactory.BuildAuth(settings);
+        string? presentedFingerprint = null;
         try
         {
-            using var fs = await SftpClientFactory.ConnectAsync(settings, auth, ct).ConfigureAwait(false);
-            return ProbeRoot(fs, settings);
+            using var fs = await SftpClientFactory.ConnectAsync(settings, auth, ct, fp => presentedFingerprint = fp)
+                .ConfigureAwait(false);
+            return ProbeRoot(fs, settings, presentedFingerprint);
         }
         catch (PzConnectorException ex)
         {
@@ -104,8 +120,14 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
 
     /// <summary>The stat half of <see cref="CheckConnectionAsync"/>'s probe, split out so it can be
     /// exercised directly against a fake <see cref="ISftpFileSystem"/> -- the surrounding connect/auth
-    /// round trip needs a live server, but the root-exists decision does not.</summary>
-    internal static ConnectionCheck ProbeRoot(ISftpFileSystem fs, SftpConnectionSettings settings)
+    /// round trip needs a live server, but the root-exists decision does not. <paramref
+    /// name="presentedFingerprint"/> is the SHA-256 fingerprint the server presented during THIS
+    /// connect (learned by <see cref="SftpClientFactory.ConnectAsync"/>'s host-key callback,
+    /// regardless of whether a pin is declared); with no pin declared, a successful check surfaces it
+    /// in the same <c>SHA256:&lt;base64&gt;</c> form <c>host_key_fingerprint</c> accepts, so pinning
+    /// is copy-paste straight from `pz validate --connect` output.</summary>
+    internal static ConnectionCheck ProbeRoot(
+        ISftpFileSystem fs, SftpConnectionSettings settings, string? presentedFingerprint = null)
     {
         var root = settings.Root ?? ".";
         bool exists;
@@ -121,10 +143,17 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
             return new ConnectionCheck(false, $"{(mapped.IsTransient ? "transient" : "permanent")}: {mapped.Message}");
         }
 
-        return exists
-            ? new ConnectionCheck(true)
-            : new ConnectionCheck(false,
+        if (!exists)
+        {
+            return new ConnectionCheck(false,
                 $"permanent: sftp host '{settings.Host}': root '{root}' does not exist or is not a directory");
+        }
+
+        return settings.HostKeyFingerprint is null && presentedFingerprint is not null
+            ? new ConnectionCheck(true,
+                $"host_key_fingerprint is not pinned; the server presented SHA256:{presentedFingerprint} -- " +
+                "pin it by setting host_key_fingerprint to this exact value")
+            : new ConnectionCheck(true);
     }
 
     ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>

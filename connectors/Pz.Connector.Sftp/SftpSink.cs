@@ -22,11 +22,21 @@ namespace Pz.Connector.Sftp;
 /// lazily -- so every discrete write-session op (sftp.open_write/sftp.commit_rename/sftp.delete_temp)
 /// routes through it.</summary>
 internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnectionSettings, ISftpFileSystem> connect)
-    : ISink, IOperationGateAware
+    : ISink, IOperationGateAware, INoticeAware
 {
     private IOperationGate? _gate;
 
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
+
+    /// <summary>The engine calls this at most once per open (see the interface doc), so no dedup is
+    /// needed here even though a partitioned fan-out write may open several physical connections.</summary>
+    public void UseNotice(Action<string> notice)
+    {
+        if (settings.HostKeyFingerprint is null)
+        {
+            notice(SftpHostKeyNotice.Unpinned(settings.Host));
+        }
+    }
 
     public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
     {

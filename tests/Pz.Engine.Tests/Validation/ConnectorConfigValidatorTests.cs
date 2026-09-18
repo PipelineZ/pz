@@ -44,6 +44,48 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Empty(errors);
     }
 
+    // A connector's own ValidateAsync may report a non-blocking warning (ValidationResult.Warnings)
+    // alongside zero errors -- the optional `warnings` out-parameter collects it as a PZ0364 without
+    // failing validation; a caller that does not pass the parameter (every pre-existing call site)
+    // still sees nothing but errors, unchanged.
+    [Fact]
+    public async Task A_connector_warning_is_collected_without_failing_validation()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", new StubConnector
+        {
+            ValidateFunc = _ => new ValidationResult([], ["no host key is pinned"]),
+        });
+
+        var source = new ConnectionDef("db", "stub", new Dictionary<string, object?>(), [], "sources/db.yml");
+        var warnings = new List<PzWarning>();
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default, warnings);
+
+        Assert.Empty(errors);
+        var warning = Assert.Single(warnings);
+        Assert.Equal(PzErrorCode.ConnectorConfigWarning, warning.Code);
+        Assert.Contains("db", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("no host key is pinned", warning.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Omitting_the_warnings_parameter_still_reports_errors_normally()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", new StubConnector
+        {
+            ValidateFunc = _ => new ValidationResult(["bad config"], ["also a warning"]),
+        });
+
+        var source = new ConnectionDef("db", "stub", new Dictionary<string, object?>(), [], "sources/db.yml");
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default);
+
+        var error = Assert.Single(errors);
+        Assert.Contains("bad config", error.Message, StringComparison.Ordinal);
+    }
+
     // An option written as a source() keyword argument reaches this tier as an int (Scriban), not the
     // long a YAML scalar produces; the schema converter's type set must accept both or the whole
     // command dies with an unhandled exception.

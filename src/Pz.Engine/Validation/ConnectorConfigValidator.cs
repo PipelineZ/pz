@@ -41,9 +41,13 @@ public static class ConnectorConfigValidator
     /// <summary>Tier 3: every source/sink connection block against the connector's
     /// ConnectionConfigSchema, every source dataset's options against DatasetConfigSchema, then the
     /// connector's own ValidateAsync for cross-field rules. All errors aggregated; never throws for
-    /// validation failures. Config is validated as the user wrote it (pre-base_dir-injection).</summary>
+    /// validation failures. Config is validated as the user wrote it (pre-base_dir-injection).
+    /// <paramref name="warnings"/> is optional (additive parameter, default null) and, when given,
+    /// collects every connector's own non-blocking <see cref="ValidationResult.Warnings"/> -- a caller
+    /// that does not pass it simply does not see them, unchanged from before this parameter
+    /// existed.</summary>
     public static async Task<IReadOnlyList<PzError>> ValidateAsync(
-        PzProject project, ConnectorRegistry registry, CancellationToken ct)
+        PzProject project, ConnectorRegistry registry, CancellationToken ct, List<PzWarning>? warnings = null)
     {
         var errors = new List<PzError>();
         RefuseReservedProperties(project, registry, errors);
@@ -79,7 +83,7 @@ public static class ConnectorConfigValidator
             }
 
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(source), "connection", source.Name, source.FilePath,
-                errors, requiredFlaggedKeys, ct).ConfigureAwait(false);
+                errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
         }
 
         // A connection whose connector also reads was config-validated in the loop above, so this one
@@ -100,7 +104,7 @@ public static class ConnectorConfigValidator
             // Sink OUTPUT options are NOT schema-validated in v0: they are already validated at
             // plan/probe time by the connectors themselves.
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(sink), "connection", sink.Name, sink.FilePath,
-                errors, requiredFlaggedKeys, ct).ConfigureAwait(false);
+                errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
         }
 
         return errors;
@@ -527,9 +531,18 @@ public static class ConnectorConfigValidator
 
     private static async Task ValidateCrossFieldAsync(IConnector connector,
         ConnectorConfig config, string kind, string name, string filePath,
-        List<PzError> errors, HashSet<string> requiredFlaggedKeys, CancellationToken ct)
+        List<PzError> errors, HashSet<string> requiredFlaggedKeys, List<PzWarning>? warnings, CancellationToken ct)
     {
         var result = await connector.ValidateAsync(config, ct).ConfigureAwait(false);
+        if (warnings is not null)
+        {
+            foreach (var message in result.Warnings ?? [])
+            {
+                warnings.Add(new PzWarning(PzErrorCode.ConnectorConfigWarning,
+                    $"{kind} '{name}' connection: {message}", filePath, null, null));
+            }
+        }
+
         if (result.IsValid)
         {
             return;

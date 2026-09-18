@@ -630,6 +630,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   could not be cancelled and had no way to bound the wait. A cancelled
   connect now surfaces as a plain `OperationCanceledException`, never
   wrapped into a connector error.
+- The sftp connector no longer accepts an unpinned host key silently. With no
+  `host_key_fingerprint` declared, `pz validate` now warns naming the
+  option (a connector's own `ValidationResult.Warnings` is now collected
+  and rendered as a non-blocking PZ0364, a new generic code any connector
+  can use the same way), `pz run` emits the same warning as a run notice
+  the first time the connection opens (a new additive `INoticeAware`
+  connector capability, wired the same way `IOperationGateAware` already
+  is), and `pz validate --connect` prints the fingerprint the server
+  presented in the exact `SHA256:<base64>` form the option accepts, so
+  pinning is copy-paste. The default (accept any host key when unpinned)
+  is unchanged.
 
 ## [0.6.1] - 2026-09-10
 

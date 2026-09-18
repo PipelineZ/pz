@@ -18,11 +18,21 @@ namespace Pz.Connector.Sftp;
 /// and disposes it there — one <see cref="ISftpFileSystem"/> is never shared across concurrently-read
 /// partitions (see that interface's doc comment for why).</summary>
 internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConnectionSettings, ISftpFileSystem> connect)
-    : ISource, IOperationGateAware
+    : ISource, IOperationGateAware, INoticeAware
 {
     private IOperationGate? _gate;
 
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
+
+    /// <summary>The engine calls this at most once per open (see the interface doc), so no dedup is
+    /// needed here even though every partition below opens its own physical connection.</summary>
+    public void UseNotice(Action<string> notice)
+    {
+        if (settings.HostKeyFingerprint is null)
+        {
+            notice(SftpHostKeyNotice.Unpinned(settings.Host));
+        }
+    }
 
     /// <summary>csv/tsv: peeks the first matched file's header (Sylvan, no data rows read); a declared
     /// contract prunes to contract∩header IN CONTRACT ORDER (the LocalFiles CsvSource rule), a

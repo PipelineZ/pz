@@ -56,6 +56,13 @@ public sealed class SourceLoadExecutor : INodeExecutor
             gateAware.UseOperationGate(gate);
         }
 
+        // Same once-per-open guarantee as UseOperationGate above -- a notice-aware source calls this at
+        // most once regardless of how many physical connections it opens underneath.
+        if (source is INoticeAware noticeAware && ctx.Notice is not null)
+        {
+            noticeAware.UseNotice(ctx.Notice);
+        }
+
         // Resolve the dataset's read shape once, up front -- every sync-state site below (prior-token
         // replay, the PZ0316 runtime guard, candidate capture, the partial-copy/done-skip exclusion)
         // keys on it.
