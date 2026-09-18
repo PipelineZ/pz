@@ -568,6 +568,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   a next step; anything else still stays PZ0500 with the underlying
   exception's own message. Classified by exception type/HResult only, never
   by message text.
+- A usage error -- an unrecognized command or option (`pz bogus`), or a
+  missing required argument -- now exits 2 (the config-error code), not 1
+  (which the exit-code contract reserves for "one or more nodes failed"):
+  System.CommandLine's own parse-error handling hardcodes exit 1, so a CI
+  caller could not tell a mistyped invocation from a run that actually
+  executed nodes and failed some of them. `--help`/`--version` are
+  unaffected. `ExitCodes` now documents every code, including what a
+  cancelled run returns today (unchanged): fatal (3) unless a node had
+  already failed before the cancellation was observed, in which case it
+  stays node-failures (1).
 
 ## [0.6.1] - 2026-09-10
 
