@@ -14,8 +14,11 @@ namespace Pz.Engine.State;
 /// that ordering is load-bearing.</summary>
 public static class SyncStateAdvancement
 {
-    public static void Advance(CompiledDag dag, IReadOnlyList<NodeResult> nodeResults, SyncStateStore store) =>
+    /// <returns>Every dataset whose sync state did not persist; empty when all did.</returns>
+    public static IReadOnlyList<AdvancementFailure> Advance(
+        CompiledDag dag, IReadOnlyList<NodeResult> nodeResults, SyncStateStore store, Action<TimeSpan>? wait = null) =>
         CommitGatedAdvancement.Advance(dag, nodeResults,
             static r => r.SyncStateCandidate,
-            (def, candidate) => store.Set(SyncStateStore.Key(def.Source.Name, def.Dataset.Name), candidate));
+            static def => SyncStateStore.Key(def.Source.Name, def.Dataset.Name),
+            store.Set, wait);
 }

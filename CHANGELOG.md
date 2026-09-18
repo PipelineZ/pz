@@ -105,6 +105,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   another process`: `manifest.json`, `compiled/*.sql`, `plan.json` and
   `schemas.json` are written aside and renamed into place, so every writer
   succeeds and a reader never sees a partial file.
+- Watermark and sync-state advancement no longer stops at the first dataset
+  whose write fails. With a remote state store, one deadlock or conflict on
+  dataset 1 meant datasets 2..N never advanced either, and the next run
+  re-extracted all of them. Each dataset is now written on its own; an
+  unreachable store (PZ0518) is retried up to three times; and the run's note
+  carries **PZ0527** and names every dataset that did not advance and why,
+  instead of reporting only the first exception. The exit code is unchanged:
+  the sinks committed, so the run still reports its node outcome.
 
 ## [0.6.1] - 2026-09-10
 
