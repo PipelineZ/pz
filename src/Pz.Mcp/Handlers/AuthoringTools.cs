@@ -368,20 +368,18 @@ internal static class AuthoringTools
         }).ConfigureAwait(false);
     }
 
-    /// <summary>No path separators, no <c>..</c>, not blank -- <paramref name="name"/> becomes exactly
-    /// <c>pipelines/&lt;name&gt;.sql</c> with no further sanitization, so this is the only thing standing
-    /// between a caller-supplied name and a write outside <c>pipelines/</c>.</summary>
-    private static bool IsSafeFileStem(string name) =>
-        !string.IsNullOrWhiteSpace(name)
-        && name is not ("." or "..")
-        && name.IndexOfAny(['/', '\\']) < 0
-        && !name.Contains("..", StringComparison.Ordinal);
+    /// <summary><paramref name="name"/> becomes exactly <c>pipelines/&lt;name&gt;.sql</c> with no further
+    /// sanitization, so it must be a legal unquoted DuckDB identifier -- the same
+    /// <see cref="PzIdentifier"/> rule <c>ProjectLoader</c> enforces at the next load (PZ0136) -- one
+    /// shared predicate rather than a laxer path-traversal-only check here that would let an agent write
+    /// a name the very next load refuses.</summary>
+    private static bool IsSafeFileStem(string name) => PzIdentifier.IsValid(name);
 
     private static PzError InvalidPipelineNameError(string name, string projectDir) => new(
         PzErrorCode.McpMutationTarget,
-        $"pipeline name '{name}' is not a valid file name -- it must contain no path separators or '..'",
+        $"pipeline name '{name}' {PzIdentifier.Problem(name)}",
         Path.Combine(projectDir, PipelinesDirName), null,
-        "use a plain identifier; pz writes it to pipelines/<name>.sql directly");
+        $"use a valid identifier, e.g. '{PzIdentifier.Suggest(name)}'; pz writes it to pipelines/<name>.sql directly");
 
     private static PzError MissingPipelineError(string name, string filePath) => new(
         PzErrorCode.McpMutationTarget,

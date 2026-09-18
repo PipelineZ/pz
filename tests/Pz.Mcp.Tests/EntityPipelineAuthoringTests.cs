@@ -229,6 +229,10 @@ public class EntityPipelineAuthoringTests
     [InlineData("../escape")]
     [InlineData("a/b")]
     [InlineData("..")]
+    // Not path-unsafe, but also not a legal unquoted DuckDB identifier -- the same PZ0136 rule
+    // ProjectLoader enforces at the next load, via the shared PzIdentifier predicate.
+    [InlineData("01_load")]
+    [InlineData("daily-orders")]
     public async Task Write_pipeline_refuses_an_unsafe_name(string name)
     {
         using var p = new TempProject();

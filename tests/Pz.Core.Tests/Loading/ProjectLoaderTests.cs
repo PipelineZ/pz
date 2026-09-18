@@ -1591,4 +1591,122 @@ public class ProjectLoaderTests
             Directory.Delete(dir, recursive: true);
         }
     }
+
+    // -- pipeline file stems as DuckDB identifiers (PZ0136) -------------------------------------------
+
+    [Theory]
+    [InlineData("01_load")]
+    [InlineData("daily-orders")]
+    public void An_invalid_pipeline_file_stem_is_PZ0136(string stem)
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", $"{stem}.sql"), "select 1 as id\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.InvalidIdentifierName);
+            Assert.Contains(stem, error.Message, StringComparison.Ordinal);
+            Assert.Equal($"pipelines/{stem}.sql", error.File);
+            Assert.NotNull(error.Hint);
+            Assert.True(PzIdentifier.IsValid(
+                Path.GetFileNameWithoutExtension(error.Hint!.Split(' ')[^1])), error.Hint);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Suggested_renames_match_the_documented_examples()
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "01_load.sql"), "select 1 as id\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "daily-orders.sql"), "select 1 as id\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var errors = ex.Errors.Where(e => e.Code == PzErrorCode.InvalidIdentifierName).ToList();
+            Assert.Contains(errors, e => e.Hint!.Contains("load_01.sql", StringComparison.Ordinal));
+            Assert.Contains(errors, e => e.Hint!.Contains("daily_orders.sql", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Pipeline_names_differing_only_by_case_are_PZ0110()
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "Orders.sql"), "select 1 as id\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "orders.sql"), "select 1 as id\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.DuplicateName);
+            Assert.Contains("Orders", error.Message, StringComparison.Ordinal);
+            Assert.Contains("orders", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // -- connection names as DuckDB identifiers (PZ0136) -----------------------------------------------
+
+    [Theory]
+    [InlineData("my-warehouse")]
+    [InlineData("2fast")]
+    public void An_invalid_connection_name_is_PZ0136(string name)
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "connections.yml"),
+                $"{name}:\n  connector: localfiles\n  root: /data\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.InvalidIdentifierName);
+            Assert.Contains(name, error.Message, StringComparison.Ordinal);
+            Assert.Equal("connections.yml", error.File);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void A_connection_name_containing_the_staging_separator_is_PZ0136()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "connections.yml"),
+                "erp__mart:\n  connector: localfiles\n  root: /data\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.InvalidIdentifierName);
+            Assert.Contains("erp__mart", error.Message, StringComparison.Ordinal);
+            Assert.Contains("__", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

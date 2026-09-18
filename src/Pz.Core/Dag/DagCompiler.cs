@@ -918,10 +918,19 @@ public static class DagCompiler
         // Entity names may carry characters no SQL identifier can,
         // so StagingName folds them -- many-to-one. Two datasets of one source that fold together would
         // share a staging table and the second load would overwrite the first, so the pair is refused.
+        // Case-insensitive: DuckDB folds an unquoted identifier's case, so two datasets differing only
+        // by case land in the same relation exactly as a folded-together pair does.
         var stagingCollisions = new List<PzError>();
+        // A non-ephemeral pipeline's CREATE OR REPLACE TABLE/VIEW targets `staging.<pipeline name>`
+        // verbatim (PipelineExecutor) -- the identical relation a SourceLoad named
+        // `src_<connection>__<entity>` stages to. Checked case-insensitively for the same reason as
+        // the dataset-vs-dataset fold above.
+        var pipelineStagingNames = project.Pipelines
+            .Where(p => p.Materialization != "ephemeral")
+            .ToDictionary(p => p.Name, p => p, StringComparer.OrdinalIgnoreCase);
         foreach (var source in project.Connections)
         {
-            var staged = new Dictionary<string, string>(StringComparer.Ordinal);
+            var staged = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (var dataset in source.Datasets)
             {
                 if (!referencedSources.Contains((source.Name, dataset.Name)))
@@ -937,7 +946,18 @@ public static class DagCompiler
                         "cannot be told apart in staging.",
                         source.FilePath, null,
                         "rename one of them -- pz folds every character outside [A-Za-z0-9_] to '_' when " +
-                        "it stages a read, so these two names collide"));
+                        "it stages a read, and DuckDB itself folds identifier case, so these two names collide"));
+                }
+
+                if (pipelineStagingNames.TryGetValue(stagingName, out var collidingPipeline))
+                {
+                    stagingCollisions.Add(new PzError(PzErrorCode.PipelineNameCollidesWithStaging,
+                        $"pipeline '{collidingPipeline.Name}' and source '{source.Name}.{dataset.Name}' " +
+                        $"both stage to 'staging.{stagingName}' -- the pipeline's CREATE OR REPLACE and " +
+                        "the source's landing would target the same DuckDB relation.",
+                        collidingPipeline.FilePath, null,
+                        $"rename the pipeline -- '{source.Name}.{dataset.Name}' always stages as " +
+                        $"'{stagingName}'"));
                 }
 
                 var effectiveDataset = watermarkSynthesized.TryGetValue((source.Name, dataset.Name), out var synthesized)

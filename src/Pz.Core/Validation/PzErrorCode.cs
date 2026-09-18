@@ -75,6 +75,15 @@ public static class PzErrorCode
     // unrelated to pz entirely (a CI config, a k8s manifest) and pz cannot tell intent from a bare
     // extension, only flag the ambiguity.
     public const string YamlExtensionIgnored = "PZ0135";
+    // A pipeline's file stem or a connection's name is not a legal unquoted DuckDB identifier
+    // ([A-Za-z_][A-Za-z0-9_]*), or a connection name contains "__" -- the literal separator
+    // StagingName.ForSourceLoad splices between a connection and an entity name
+    // (src_<connection>__<entity>), interpolated raw (never folded) on the connection side. Either
+    // shape reaches `staging.<name>`/`src_<connection>__...` unescaped, so a bad one is a load-time
+    // DuckDB parse error today instead of a diagnosable PZ code. See Pz.Core.Model.PzIdentifier, shared
+    // by the MCP pz_write_pipeline tool so an agent-authored name cannot pass this check at authoring
+    // time only to fail it at the next load.
+    public const string InvalidIdentifierName = "PZ0136";
     public const string UnresolvedRef = "PZ0201";
     public const string Cycle = "PZ0202";
     // PZ0203 (was SinkInputMissing: a YAML `input:` that matched no pipeline/source dataset) is
@@ -194,6 +203,12 @@ public static class PzErrorCode
     // not advancing re-fetches the same head forever). Refused at compile when declared; HttpPartition's
     // runtime guard covers the undeclared case.
     public const string DescendingCursorTruncatable = "PZ0229";
+    // A non-ephemeral pipeline's name is, case-insensitively, the same staging relation name a
+    // referenced SourceLoad stages to (src_<connection>__<entity>) -- the pipeline's `CREATE OR REPLACE
+    // TABLE/VIEW staging.<name>` and the SourceLoad's landing would target the identical DuckDB relation,
+    // each silently clobbering the other's result. Raised in DagCompiler stage 7, aggregated with the
+    // dataset-vs-dataset staging collision (PZ0110) it sits beside.
+    public const string PipelineNameCollidesWithStaging = "PZ0230";
     public const string ConnectorConfigInvalid = "PZ0301";
     public const string ConnectorPackageMissing = "PZ0304";
     public const string ConnectorNotInstalled = "PZ0305";

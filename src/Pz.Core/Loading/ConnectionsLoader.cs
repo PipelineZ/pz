@@ -66,6 +66,31 @@ internal static class ConnectionsLoader
                 continue;
             }
 
+            // The connection name is interpolated raw (never folded, unlike an entity name) into
+            // `src_<connection>__<entity>` -- a legal unquoted DuckDB identifier is the one thing that
+            // check can't relax. "__" is refused on its own terms even for an otherwise-legal name: it
+            // is the literal separator StagingName.ForSourceLoad splices in, so a connection named
+            // e.g. `erp__mart` and one named `erp` reading a `mart__<entity>` dataset would stage to
+            // the same relation.
+            if (PzIdentifier.Problem(name) is { } nameProblem)
+            {
+                errors.Add(new PzError(PzErrorCode.InvalidIdentifierName,
+                    $"{FileName}: connection name '{name}' {nameProblem}.", FileName, null,
+                    $"rename the connection to '{PzIdentifier.Suggest(name)}'"));
+                continue;
+            }
+
+            if (name.Contains("__", StringComparison.Ordinal))
+            {
+                errors.Add(new PzError(PzErrorCode.InvalidIdentifierName,
+                    $"{FileName}: connection name '{name}' contains '__', the separator pz stages a " +
+                    "read under (src_<connection>__<entity>) -- a connection name carrying it could " +
+                    "collide with a different connection's staging relation.",
+                    FileName, null,
+                    $"rename the connection to '{name.Replace("__", "_", StringComparison.Ordinal)}'"));
+                continue;
+            }
+
             if (value is not Dictionary<string, object?> block)
             {
                 errors.Add(new PzError(PzErrorCode.YamlShape,
