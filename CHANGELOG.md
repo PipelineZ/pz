@@ -117,7 +117,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   - A sink 4xx now carries a short, bounded (160-char) snippet of the
     response body and a hint that fits the status (auth for 401/403, the
     output path for 404, the request body otherwise) instead of no body and
-    one hint naming both path and auth unconditionally.
+    one hint naming both path and auth unconditionally. The snippet masks the
+    connection's secret query params, as read errors already do.
   - The `page` pagination strategy has an opt-in `stop_on_short_page` option:
     when the requested `size` is set and a page's row count falls short of
     it, the crawl ends there. Some APIs clamp an out-of-range page number to
@@ -131,8 +132,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   contract mode) now throws a permanent "record is not an object (check 'items')"
   error naming the dataset when a record isn't a JSON object, instead of silently
   projecting a row of all NULLs. An `items` pointer that resolves one level off
-  used to land N all-NULL rows on a green node whose watermark still advanced
-  past data that was never actually read.
+  used to land N all-NULL rows on a green node whose watermark never advanced.
 - The HTTP connector's `max_response_mb` is capped at 2047 (2048 MiB, once
   converted to bytes, overflows `HttpClient.MaxResponseContentBufferSize`'s own
   int.MaxValue ceiling): the cap is now enforced in both `base_url` connection

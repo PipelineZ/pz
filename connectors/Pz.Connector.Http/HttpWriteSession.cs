@@ -141,8 +141,8 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
         };
         connection.Authenticator?.Apply(request);
         // Never echo the REQUEST body, headers, or query string (auth may live there): error
-        // messages carry the path-only URI. The response body is different -- it's the endpoint's
-        // own diagnostic, not pz's outgoing payload -- and is surfaced as a bounded snippet below.
+        // messages carry the path-only URI. The response body is the endpoint's own diagnostic, so a
+        // bounded snippet of it is surfaced below -- masked first, because it can echo the request URL.
         var safeUri = (request.RequestUri ?? uri).GetLeftPart(UriPartial.Path);
 
         HttpResponseMessage response;
@@ -180,7 +180,7 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
 
             var responseBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             throw new PzConnectorException(
-                $"{Label}: HTTP {status} from {safeUri}: {Snippet(responseBody)} ({Hint(status)})",
+                $"{Label}: HTTP {status} from {safeUri}: {connection.RedactSecretParams(Snippet(responseBody))} ({Hint(status)})",
                 isTransient: false);
         }
     }

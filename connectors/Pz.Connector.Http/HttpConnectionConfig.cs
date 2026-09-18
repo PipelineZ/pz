@@ -24,6 +24,21 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// that ceiling, so 2047 is the largest whole-MiB value that stays under it.</summary>
     public const long MaxResponseMbCap = 2047;
 
+    /// <summary>Masks the value of every authenticator secret query param found in
+    /// <paramref name="text"/>. Anything the endpoint sends back can echo the request URL, so
+    /// response-derived text goes through this before it reaches an exception message.</summary>
+    public string RedactSecretParams(string text)
+    {
+        foreach (var param in Authenticator?.SecretQueryParams ?? [])
+        {
+            text = System.Text.RegularExpressions.Regex.Replace(
+                text, $"(?<=[?&]){System.Text.RegularExpressions.Regex.Escape(param)}=[^&]*",
+                $"{param}=***");
+        }
+
+        return text;
+    }
+
     /// <summary>True when <paramref name="candidate"/> may be requested with this connection's
     /// credentials attached: the base URL's own origin (scheme + host + port), or a host the author
     /// explicitly listed in 'allow_hosts'. Pagination links, redirect targets and stored resume

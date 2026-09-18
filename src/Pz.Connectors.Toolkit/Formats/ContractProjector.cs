@@ -39,8 +39,8 @@ public static class ContractProjector
         {
             // A record that isn't a JSON object means 'items' resolved one level off (e.g. an
             // array of scalars/arrays rather than an array of row objects): projecting it would
-            // silently land a row of all NULLs -- a green node whose watermark still advances past
-            // data that was never actually read.
+            // silently land a row of all NULLs -- a green node that read nothing real, and whose
+            // all-NULL cursor column means its watermark never advances.
             throw new PzConnectorException($"{context}: record is not an object (check 'items')",
                 isTransient: false);
         }

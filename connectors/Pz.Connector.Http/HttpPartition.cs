@@ -776,15 +776,5 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     /// <summary>Masks any authenticator secret-query-param value found in arbitrary text — the
     /// same rule applied to request URIs, reused here for 4xx response body snippets (a server
     /// echoing the request URL, e.g. in a 403 body, must not leak an api_key-in-query secret).</summary>
-    private string Redact(string text)
-    {
-        foreach (var param in connection.Authenticator?.SecretQueryParams ?? [])
-        {
-            text = System.Text.RegularExpressions.Regex.Replace(
-                text, $"(?<=[?&]){System.Text.RegularExpressions.Regex.Escape(param)}=[^&]*",
-                $"{param}=***");
-        }
-
-        return text;
-    }
+    private string Redact(string text) => connection.RedactSecretParams(text);
 }

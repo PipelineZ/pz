@@ -134,6 +134,28 @@ public sealed class HttpSinkTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Permanent_status_body_snippet_masks_an_echoed_query_secret()
+    {
+        _server.Map("/ingest", _ => new StubResponse(403,
+            """{"error":"forbidden: https://x/ingest?api_key=TOPSECRET"}"""));
+        ISinkConnector connector = new HttpConnector();
+        var sink = await connector.OpenAsync(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = _server.BaseUrl.ToString(),
+            ["auth"] = new Dictionary<string, object?>
+                { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" },
+        }), CancellationToken.None);
+        await using var session = await sink.BeginWriteAsync(AppendOutput(), TestSchema, CancellationToken.None);
+
+        using var batch = Rows(0, 1);
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await session.WriteBatchAsync(batch, CancellationToken.None));
+
+        Assert.DoesNotContain("TOPSECRET", ex.Message);
+        Assert.Contains("api_key=***", ex.Message);
+    }
+
+    [Fact]
     public async Task Permanent_status_body_snippet_is_truncated_and_flattened()
     {
         var longBody = new string('a', 500);
