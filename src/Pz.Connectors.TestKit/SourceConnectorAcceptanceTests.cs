@@ -144,6 +144,16 @@ public abstract class SourceConnectorAcceptanceTests
 
     private const int SmallBatchTargetBytes = 4096;
 
+    /// <summary>A copy of <see cref="ValidConfig"/> with one existing connection option the connector
+    /// reads as an integer (a port, a batch size, anything <c>ConnectorConfig.GetInt</c>-style parsing
+    /// handles) still carrying that same value, but as a bare <see cref="double"/> instead of a
+    /// <see cref="long"/>/<see cref="int"/> -- the shape every integer option actually arrives in over
+    /// PCP (protobuf's <c>Struct</c> has only <c>number</c>, a double). Null (default) skips the fact
+    /// below; a connector that reads at least one connection option as an integer opts in to prove a
+    /// double is accepted exactly like the long/int an in-process caller (a YAML value) would
+    /// otherwise pass.</summary>
+    protected virtual ConnectorConfig? ValidConfigWithIntegerOptionAsDouble => null;
+
     [SkippableFact]
     public async Task Validate_accepts_valid_config()
     {
@@ -152,6 +162,19 @@ public abstract class SourceConnectorAcceptanceTests
         var result = await connector.ValidateAsync(ValidConfig, CancellationToken.None);
 
         Assert.True(result.IsValid);
+    }
+
+    [SkippableFact]
+    public async Task Connection_integer_option_delivered_as_a_double_is_accepted()
+    {
+        Gate();
+        Skip.If(ValidConfigWithIntegerOptionAsDouble is null,
+            "connector does not declare ValidConfigWithIntegerOptionAsDouble");
+        var connector = CreateSource();
+
+        var result = await connector.ValidateAsync(ValidConfigWithIntegerOptionAsDouble!, CancellationToken.None);
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
     }
 
     [SkippableFact]

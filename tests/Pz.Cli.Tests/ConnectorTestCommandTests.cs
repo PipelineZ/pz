@@ -119,6 +119,26 @@ public sealed class ConnectorTestCommandTests : IDisposable
         Assert.StartsWith("FAIL sync-state-roundtrip: declares SyncState but does not implement GetNaturalReadShape/GetReadState", failed, StringComparison.Ordinal);
     }
 
+    /// <summary>The fixture cooperates with the numeric-option-fidelity probe (a sentinel key
+    /// <c>ValidateAsync</c> recognizes) by construction, with no fixture switch needed: it proves the
+    /// probe value -- a double on the wire, protobuf's <c>Struct</c> has only <c>number</c> -- reads back
+    /// as a whole number rather than the raw double.</summary>
+    [SkippableFact]
+    public void Connector_test_passes_the_numeric_option_fidelity_vector()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project);
+        var configPath = WriteProbeConfig(project);
+
+        var stdout = RunAndCaptureStdout(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Contains(lines, l => l.StartsWith("PASS numeric-option-fidelity", StringComparison.Ordinal));
+    }
+
     /// <summary>A source declaring <c>NativeOnlyRead</c> has no universal read path: PlanRead always
     /// refuses. Every vector that needs PlanRead to succeed (schema/batch equality, cancellation,
     /// ticket handling) must report Skip against it, not run straight into that refusal as a Fail --

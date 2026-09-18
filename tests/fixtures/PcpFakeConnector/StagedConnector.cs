@@ -127,9 +127,28 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
         }
     }
 
+    /// <summary>Never a key a real connection ever needs; mirrors <c>ConformanceSuite</c>'s private
+    /// <c>NumericOptionProbeKey</c> exactly (deliberately not "__pz"-prefixed -- see that constant's own
+    /// doc comment). The two projects do not reference each other, so this is a literal, not a shared
+    /// constant -- the same convention <c>StructMapping</c>'s doc comment already notes for mirroring
+    /// the host's own mapping.</summary>
+    private const string NumericOptionProbeKey = "pz_conformance_numeric_probe";
+
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         RefuseHostKeys(config);
+
+        // Cooperates with ConformanceSuite's numeric-option-fidelity vector: the probe value crosses
+        // as a double (protobuf's Struct has only "number") and must come back as a long, never the
+        // raw double, for this to report zero errors.
+        if (config.Values.TryGetValue(NumericOptionProbeKey, out var probe))
+        {
+            return new ValueTask<ValidationResult>(probe is 424242L
+                ? ValidationResult.Success
+                : ValidationResult.Failed(
+                    $"{NumericOptionProbeKey} crossed as {probe?.GetType().Name ?? "null"} ({probe})"));
+        }
+
         return _inner.ValidateAsync(config, ct);
     }
 

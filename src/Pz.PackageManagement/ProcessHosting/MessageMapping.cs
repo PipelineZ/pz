@@ -58,19 +58,41 @@ public static class MessageMapping
             ToStruct(strings.ToDictionary(pair => pair.Key, object? (pair) => pair.Value, StringComparer.Ordinal))),
         sbyte or byte or short or ushort or int or uint or long or ulong or float or double or decimal =>
             Value.ForNumber(Convert.ToDouble(value, CultureInfo.InvariantCulture)),
-        IEnumerable<object?> list => Value.ForList([.. list.Select(ToValue)]),
+        // Non-generic IEnumerable, not IEnumerable<object?>: generic variance covers reference types
+        // only, so an int[]/List<int> option (an int is a value type) does not match
+        // IEnumerable<object?> and fell through to the string catch-all below -- value.ToString() on a
+        // List<int> is .NET's default collection rendering ("System.Collections.Generic.List`1[...]"),
+        // never the list of numbers a connector reading it would expect. A dictionary is matched above
+        // this arm, so nothing here double-handles the two map cases.
+        System.Collections.IEnumerable list => Value.ForList([.. list.Cast<object?>().Select(ToValue)]),
         _ => Value.ForString(value.ToString() ?? string.Empty),
     };
 
     private static object? ToObject(Value value) => value.KindCase switch
     {
-        Value.KindOneofCase.NumberValue => value.NumberValue,
+        Value.KindOneofCase.NumberValue => NormalizeNumber(value.NumberValue),
         Value.KindOneofCase.StringValue => value.StringValue,
         Value.KindOneofCase.BoolValue => value.BoolValue,
         Value.KindOneofCase.StructValue => ToNestedMap(value.StructValue),
         Value.KindOneofCase.ListValue => value.ListValue.Values.Select(ToObject).ToList(),
         _ => null,
     };
+
+    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so an integer value this
+    /// shim reads back (a round trip through <see cref="ToStruct"/>, or a future Struct-shaped response
+    /// from the connector) arrives as a double. Mirrors <c>Pz.Connectors.Sdk.StructMapping.NormalizeNumber</c>
+    /// exactly: normalize an integral value within the range a double still represents exactly
+    /// (|x| &lt;= 2^53) to <see cref="long"/>; a fractional value, or one wider than that range, stays a
+    /// double, since rounding it would silently change its value or its precision.</summary>
+    private static object NormalizeNumber(double d) =>
+        double.IsFinite(d) && d == Math.Truncate(d) && d >= -MaxSafeInteger && d <= MaxSafeInteger
+            // The (object) cast on the untaken branch is load-bearing: without it the ?: operator
+            // unifies on double (long -> double is an implicit numeric conversion), silently widening
+            // the long branch back to a double before it is ever boxed.
+            ? (long)d
+            : (object)d;
+
+    private const double MaxSafeInteger = 9_007_199_254_740_992d; // 2^53
 
     /// <summary>A nested option map (e.g. a <c>columns:</c> contract) arrives with no .NET type
     /// attached, and the ABI reads one of them two different ways: <c>columns:</c> is an

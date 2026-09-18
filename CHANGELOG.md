@@ -181,6 +181,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   timestamp unit/timezone by hand; it now shares the general comparison
   instead of falling back to `_ => true` for nested, fixed-size and other
   decimal-width types.
+- An integer connector option now survives the wire intact. protobuf's
+  `Struct` has only `number` (a double), so `max_connections: 5` used to
+  arrive at a process-hosted connector — and, symmetrically, come back to the
+  host — as `5.0`; both SDKs (C# and Rust) now normalize an integral value
+  within the range a double still represents exactly (`|x| <= 2^53`) to a
+  proper integer (`long`/`i64`) before the connector or host ever sees it.
+  `ConnectorConfig.GetInt` refuses a genuinely fractional value (`2.5`) with a
+  clear error instead of silently rounding it via `Convert.ToInt64`, and the
+  Rust SDK's `as_i64()` now succeeds for an integral value instead of always
+  returning `None` for a float-backed `serde_json::Number`. An `int[]`/
+  `List<int>` option — not `IEnumerable<object?>`, since generic variance
+  covers reference types only — used to fall through to `ToValue`'s string
+  catch-all and cross as .NET's default collection rendering
+  (`System.Collections.Generic.List\`1[System.Int32]`) instead of a list of
+  numbers; it now crosses correctly. `pz connector test` gained a
+  `numeric-option-fidelity` vector (Skip unless the connector cooperates with
+  the probe, never Fail) and the TestKit an opt-in
+  `Connection_integer_option_delivered_as_a_double_is_accepted` fact.
 - An exception no verb anticipated now ends as `error PZ0500: internal error …`
   with exit code 3 and a request to report it, instead of a raw stack trace
   with exit code 1 (which the exit-code contract reserves for node failures).
