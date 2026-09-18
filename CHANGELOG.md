@@ -167,6 +167,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     reattach that (the host opens `HostChannel` exactly once per process) is never coming, and the
     SDK also closes the peer once the process starts stopping, bounding the "never attaches at
     all" case the same way.
+  - `PcpConnectorService`'s per-op `CancellationTokenSource`s and planned reads were never disposed
+    or cleared, and the `WebApplication` serving PCP was never disposed either, so neither ran even
+    at process exit. The service now releases them from `Dispose`, called once the DI container
+    disposes it as part of disposing the now-disposed `WebApplication`.
+  - `Configure`'s "already configured" check and its write to `_config` were two separate,
+    unsynchronized field accesses: two concurrent `Configure` calls could both observe "not
+    configured yet" and both proceed. The check and the write are now one critical section.
+  - Reopening a partition (a retry, or a host reading it again) reused the previous attempt's
+    `SyncStateCapture`, so `GetReadState` could answer with an already-completed token before the
+    new attempt had even started draining. A fresh capture is minted per open, same as the sibling
+    failure capture already did.
+  - `Handshake` never checked the host's declared protocol major against the connector's own (the
+    Rust SDK already does); a mismatch is now refused there too, with both majors named.
 - `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
   tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
   disk instead of handing it to `HttpClient`, which threw `NotSupportedException`

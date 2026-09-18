@@ -24,6 +24,76 @@ public sealed class HonestMappingTests
     }
 
     [Fact]
+    public async Task Handshake_refuses_a_host_speaking_a_different_protocol_major()
+    {
+        var service = NewService(new FakeSourceConnector(ConnectorCapabilities.None, feed: false));
+        var ex = await Assert.ThrowsAsync<RpcException>(() =>
+            service.Handshake(new HandshakeRequest { ProtocolMajor = ProtocolVersion.Major + 1 }, Context()));
+        Assert.Equal(StatusCode.FailedPrecondition, ex.StatusCode);
+        Assert.Contains((ProtocolVersion.Major + 1).ToString(), ex.Status.Detail, StringComparison.Ordinal);
+        Assert.Contains(ProtocolVersion.Major.ToString(), ex.Status.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>Pins the fix: the check-then-set on <c>_config</c> used to be two separate field
+    /// reads with no synchronization, so two Configure calls racing each other could both observe
+    /// "not configured yet" and both proceed. A hook pauses the first call INSIDE the critical
+    /// section (after it has already set <c>_config</c>) so the second call's outcome is observed
+    /// deterministically rather than by timing.</summary>
+    [Fact]
+    public async Task Configure_serializes_concurrent_calls_so_only_the_first_ones_config_survives()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var hooks = new PcpServerHooks
+        {
+            PauseInsideConfigure = async ct =>
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(ct).ConfigureAwait(false);
+            },
+        };
+        var service = NewService(new FakeSourceConnector(ConnectorCapabilities.None, feed: false), hooks: hooks);
+        await service.Handshake(new HandshakeRequest { ProtocolMajor = ProtocolVersion.Major }, Context());
+
+        var first = service.Configure(new ConfigureRequest { InstanceId = "a", Config = new Struct() }, Context());
+        await entered.Task;
+
+        // Issued while the first call is still parked inside the critical section: it must block on
+        // the same gate rather than racing the first to see _config as null.
+        var second = service.Configure(new ConfigureRequest { InstanceId = "b", Config = new Struct() }, Context());
+
+        release.TrySetResult();
+        await first;
+
+        var secondFailure = await Assert.ThrowsAsync<RpcException>(() => second);
+        Assert.Equal(StatusCode.FailedPrecondition, secondFailure.StatusCode);
+    }
+
+    /// <summary>Pins the fix: per-op CancellationTokenSources and plans used to live in <c>_ops</c>/
+    /// <c>_plans</c> for the whole process with nothing ever disposing or clearing them.
+    /// <c>PcpConnectorService</c> is a DI singleton (<c>PcpServer.ServeAsync</c>), so the container
+    /// calls this exactly once, at process shutdown -- proven here directly rather than by spinning up
+    /// a real socket-bound server.</summary>
+    [Fact]
+    public async Task Dispose_releases_every_tracked_operation_and_plan()
+    {
+        var connector = new FakeSourceConnector(ConnectorCapabilities.SyncState, feed: true);
+        var service = await ConfiguredAsync(connector);
+        var partitions = await PlanAsync(service, "op");
+        Assert.NotEmpty(partitions);
+
+        Assert.True(service.TryGetOpCancellationSource("op", out var cts));
+        Assert.Equal(1, service.TrackedOperationCount);
+        Assert.Equal(1, service.TrackedPlanCount);
+
+        service.Dispose();
+
+        Assert.Equal(0, service.TrackedOperationCount);
+        Assert.Equal(0, service.TrackedPlanCount);
+        Assert.Throws<ObjectDisposedException>(() => cts.Token);
+    }
+
+    [Fact]
     public async Task A_source_without_INaturalReadShapeSource_answers_unimplemented()
     {
         var service = await ConfiguredAsync(new FakeSourceConnector(ConnectorCapabilities.SyncState, feed: false));
@@ -71,7 +141,8 @@ public sealed class HonestMappingTests
     public async Task GetReadState_answers_from_the_capture_and_never_polls_the_partition_itself()
     {
         var connector = new FakeSourceConnector(ConnectorCapabilities.SyncState, feed: true);
-        var service = await ConfiguredAsync(connector);
+        var tickets = new TicketRegistry();
+        var service = await ConfiguredAsync(connector, tickets);
         var planned = await PlanAsync(service, "op");
         Assert.True(Assert.Single(planned).SyncState);
 
@@ -81,7 +152,8 @@ public sealed class HonestMappingTests
 
         var ticket = await service.OpenReadStream(new OpenReadRequest { OpId = "op", PartitionId = "0" }, Context());
         Assert.Equal(16, ticket.Ticket.Length);
-        var entry = Assert.IsType<ReadTicket>(BurnTicket(service, ticket.Ticket.ToByteArray()));
+        Assert.True(tickets.TryBurn(ticket.Ticket.ToByteArray(), out var entryObj));
+        var entry = Assert.IsType<ReadTicket>(entryObj);
         var partition = Assert.IsType<SyncPartition>(entry.Partition);
         Assert.Equal(0, partition.Polls);
 
@@ -92,6 +164,46 @@ public sealed class HonestMappingTests
         var after = await service.GetReadState(new ReadStateRequest { OpId = "op", PartitionId = "0" }, Context());
         Assert.Equal("0+3", after.Token);
         Assert.Equal(1, partition.Polls);
+    }
+
+    /// <summary>Pins the fix: OpenReadStream used to hand out the SAME SyncStateCapture for every open
+    /// of one (op, partition), so a partition reopened after a completed attempt (a retry, or a host
+    /// that reads it again) answered GetReadState with the PREVIOUS attempt's already-completed token
+    /// before its own drain had even started -- the exact "fresh capture per stream" rule the sibling
+    /// StreamFailureCapture line already followed.</summary>
+    [Fact]
+    public async Task Reopening_a_partition_replaces_its_sync_state_capture_instead_of_answering_with_the_stale_one()
+    {
+        var connector = new FakeSourceConnector(ConnectorCapabilities.SyncState, feed: true);
+        var tickets = new TicketRegistry();
+        var service = await ConfiguredAsync(connector, tickets);
+        await PlanAsync(service, "op");
+
+        var firstTicket = await service.OpenReadStream(new OpenReadRequest { OpId = "op", PartitionId = "0" }, Context());
+        Assert.True(tickets.TryBurn(firstTicket.Ticket.ToByteArray(), out var firstEntryObj));
+        using (var stream = new MemoryStream())
+        {
+            await DataPlaneListener.ServeReadAsync(stream, Assert.IsType<ReadTicket>(firstEntryObj), Source, CancellationToken.None);
+        }
+
+        var afterFirst = await service.GetReadState(new ReadStateRequest { OpId = "op", PartitionId = "0" }, Context());
+        Assert.True(afterFirst.HasToken);
+
+        // Reopen the same partition before draining it again.
+        var secondTicket = await service.OpenReadStream(new OpenReadRequest { OpId = "op", PartitionId = "0" }, Context());
+        var beforeSecondDrain = await service.GetReadState(new ReadStateRequest { OpId = "op", PartitionId = "0" }, Context());
+        Assert.False(
+            beforeSecondDrain.HasToken,
+            "a fresh open must not answer with the PREVIOUS attempt's already-completed token");
+
+        Assert.True(tickets.TryBurn(secondTicket.Ticket.ToByteArray(), out var secondEntryObj));
+        using (var stream = new MemoryStream())
+        {
+            await DataPlaneListener.ServeReadAsync(stream, Assert.IsType<ReadTicket>(secondEntryObj), Source, CancellationToken.None);
+        }
+
+        var afterSecond = await service.GetReadState(new ReadStateRequest { OpId = "op", PartitionId = "0" }, Context());
+        Assert.True(afterSecond.HasToken);
     }
 
     [Fact]
@@ -225,13 +337,15 @@ public sealed class HonestMappingTests
             throw new NotSupportedException();
     }
 
-    private static PcpConnectorService NewService(IConnector connector) =>
-        new(connector, new TicketRegistry(), new HostChannelPeer(), new ConnectorTelemetry(new PzConnectorHostOptions()),
-            PcpServerHooks.None, new NullLifetime());
+    private static PcpConnectorService NewService(
+        IConnector connector, TicketRegistry? tickets = null, PcpServerHooks? hooks = null) =>
+        new(connector, tickets ?? new TicketRegistry(), new HostChannelPeer(), new ConnectorTelemetry(new PzConnectorHostOptions()),
+            hooks ?? PcpServerHooks.None, new NullLifetime());
 
-    private static async Task<PcpConnectorService> ConfiguredAsync(IConnector connector)
+    private static async Task<PcpConnectorService> ConfiguredAsync(
+        IConnector connector, TicketRegistry? tickets = null, PcpServerHooks? hooks = null)
     {
-        var service = NewService(connector);
+        var service = NewService(connector, tickets, hooks);
         await service.Handshake(new HandshakeRequest { ProtocolMajor = ProtocolVersion.Major }, Context());
         await service.Configure(new ConfigureRequest { InstanceId = "test", Config = new Struct() }, Context());
         return service;
@@ -242,12 +356,6 @@ public sealed class HonestMappingTests
         var writer = new ListStreamWriter<PartitionMsg>();
         await service.PlanRead(new PlanReadRequest { OpId = opId, Spec = Spec() }, writer, Context());
         return writer.Written;
-    }
-
-    private static TicketEntry BurnTicket(PcpConnectorService service, byte[] ticket)
-    {
-        Assert.True(service.Tickets.TryBurn(ticket, out var entry));
-        return entry;
     }
 
     private static DatasetSpecMsg Spec() => new() { Source = "files", Dataset = "orders", Options = new Struct() };

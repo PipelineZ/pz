@@ -107,6 +107,12 @@ internal static class PcpServer
             .ConfigureAwait(false);
         var exitCode = await exit.Task.ConfigureAwait(false);
         await app.StopAsync().ConfigureAwait(false);
+        // Disposes the DI container, which is what releases every singleton it constructed --
+        // PcpConnectorService among them, whose own Dispose frees the per-op CancellationTokenSources
+        // and planned reads that accumulate for the life of the process. Never disposed before this
+        // fix, which simply leaked them until the process exited anyway; now it is this line that ends
+        // the process's ownership of them, not the OS reclaiming everything on exit.
+        await app.DisposeAsync().ConfigureAwait(false);
         // After the server has stopped, so nothing can start a span this flush would miss; bounded by
         // ConnectorTelemetry.FlushBound so a dead collector cannot push this exit past the host's grace.
         telemetry.FlushAndDispose();

@@ -17,4 +17,10 @@ internal sealed class PcpServerHooks
     /// SDK's own RPC handler, not a connector method), which is why this needs a hook rather than a
     /// staged connector wrapper like every other switch in this class.</summary>
     public Action? OnConfigure { get; init; }
+
+    /// <summary>Awaited inside Configure's critical section, after the "already configured" check has
+    /// passed but before <c>_config</c> is set. Lets a test hold one Configure call there while a
+    /// second, concurrent one proves it is blocked on the same gate (not racing the first to see
+    /// <c>_config</c> as null too) until this releases.</summary>
+    public Func<CancellationToken, Task>? PauseInsideConfigure { get; init; }
 }
