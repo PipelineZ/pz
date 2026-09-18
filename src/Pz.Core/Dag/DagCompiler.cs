@@ -45,11 +45,31 @@ public static class DagCompiler
         var connectionsByName = project.Connections.ToDictionary(s => s.Name);
 
         // 1. Render every pipeline (ephemeral included — its SQL is needed for inlining and
-        //    its Dependencies are needed for both ref/source validation and inheritance).
+        //    its Dependencies are needed for both ref/source validation and inheritance). One
+        //    pipeline's template is independent of every other's, so a broken template in pipeline A
+        //    must not hide a broken template in pipeline B -- every pipeline gets a chance to render,
+        //    and every failure is collected before throwing once. Stopping here (rather than seeding
+        //    `rendered` with a placeholder for a failed pipeline and continuing into stage 1b) is the one
+        //    genuine dependency below: every later stage indexes `rendered[pipeline.Name]` unconditionally
+        //    for EVERY pipeline, so a project that fails to render cannot proceed to stages that assume
+        //    it did.
         var rendered = new Dictionary<string, RenderResult>();
+        var renderErrors = new List<PzError>();
         foreach (var pipeline in project.Pipelines)
         {
-            rendered[pipeline.Name] = TemplateRenderer.Render(pipeline, ctx);
+            try
+            {
+                rendered[pipeline.Name] = TemplateRenderer.Render(pipeline, ctx);
+            }
+            catch (PzValidationException ex)
+            {
+                renderErrors.AddRange(ex.Errors);
+            }
+        }
+
+        if (renderErrors.Count > 0)
+        {
+            throw new PzValidationException(OrderErrors(renderErrors));
         }
 
         // 1b. Extract the fixed `INSERT INTO {{ sink(...) }}` prefix from any pipeline carrying an
@@ -601,14 +621,11 @@ public static class DagCompiler
             }
         }
 
-        if (incrementalErrors.Count > 0)
-        {
-            throw new PzValidationException(incrementalErrors);
-        }
-
-        project = project with { Connections = rewrittenConnections };
-
-        // 2. Validate every ref()/source() resolves -> PZ0201 (all collected, then throw).
+        // 2. Validate every ref()/source() resolves -> PZ0201. Independent of stage 0 above: it reads
+        //    only `rendered`, `pipelinesByName` (fixed at the top of Compile) and `connectionsByName`
+        //    (fixed once, after stage 1c/1d's synthesis -- stage 0's rewrite below only canonicalizes
+        //    Incremental fields on datasets already in that map, never adds/removes a connection or
+        //    dataset name), so it neither needs nor is needed by stage 0's result.
         var refErrors = new List<PzError>();
         foreach (var pipeline in project.Pipelines)
         {
@@ -635,12 +652,8 @@ public static class DagCompiler
             }
         }
 
-        if (refErrors.Count > 0)
-        {
-            throw new PzValidationException(refErrors);
-        }
-
-        // 3. Ephemeral pipelines may not declare checks -> PZ0205 (all collected, then throw).
+        // 3. Ephemeral pipelines may not declare checks -> PZ0205. Independent of stages 0/2 above:
+        //    reads only pipeline Materialization/Checks, untouched by either.
         //    A check node depends on its pipeline's node, but ephemeral pipelines produce no
         //    node — so checks on an ephemeral pipeline would otherwise be silently dropped.
         var checksOnEphemeralErrors = new List<PzError>();
@@ -652,12 +665,8 @@ public static class DagCompiler
                 "materialize the pipeline as table/view, or remove its checks"));
         }
 
-        if (checksOnEphemeralErrors.Count > 0)
-        {
-            throw new PzValidationException(checksOnEphemeralErrors);
-        }
-
-        // 4. Ephemeral pipelines may not chain -> PZ0204 (all collected, then throw).
+        // 4. Ephemeral pipelines may not chain -> PZ0204. Independent of stages 0/2/3: reads only
+        //    `rendered` and `pipelinesByName`, neither touched by them.
         var chainErrors = new List<PzError>();
         foreach (var pipeline in project.Pipelines.Where(p => p.Materialization == "ephemeral"))
         {
@@ -672,10 +681,17 @@ public static class DagCompiler
             }
         }
 
-        if (chainErrors.Count > 0)
+        // Stages 0, 2, 3 and 4 above each stand alone -- none reads another's error list or a value
+        // another one computes -- so they report together in ONE throw instead of stopping at whichever
+        // happens to run first.
+        var independentStageErrors = incrementalErrors
+            .Concat(refErrors).Concat(checksOnEphemeralErrors).Concat(chainErrors).ToList();
+        if (independentStageErrors.Count > 0)
         {
-            throw new PzValidationException(chainErrors);
+            throw new PzValidationException(OrderErrors(independentStageErrors));
         }
+
+        project = project with { Connections = rewrittenConnections };
 
         // 5. Resolve every sink output's binding (inline `INSERT INTO {{ sink(...) }}` is the SOLE load
         //    path — there is no YAML `input:` binding). First collect every pipeline's
@@ -1275,6 +1291,21 @@ public static class DagCompiler
 
         return compiled;
     }
+
+    /// <summary>Deterministic order for an aggregated batch of errors from more than one independent
+    /// stage: by file (nulls first -- a project-level error with no single file), then by line/position
+    /// (unpositioned first), then by each error's original position in <paramref name="errors"/> as the
+    /// final tie-break -- which is itself deterministic, since every stage below builds its own list by
+    /// walking pipelines/connections in declaration or ordinal order before appending it here. This is
+    /// what lets two stages' errors merge into one throw without their relative order depending on
+    /// dictionary enumeration or anything else non-deterministic.</summary>
+    private static IReadOnlyList<PzError> OrderErrors(IEnumerable<PzError> errors) =>
+        [.. errors
+            .Select((error, index) => (Error: error, Index: index))
+            .OrderBy(e => e.Error.File, StringComparer.Ordinal)
+            .ThenBy(e => e.Error.Line)
+            .ThenBy(e => e.Index)
+            .Select(e => e.Error)];
 
     /// <summary>What this dataset's SINGLE reading pipeline lets pz push down. The one-reader rule
     /// (PZ0349, enforced in stage 6) is what makes this well-defined — with two readers there would be

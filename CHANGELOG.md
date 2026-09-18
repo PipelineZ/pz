@@ -192,6 +192,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   (DuckDB's own parser, via the existing `ISqlAstReader` seam) over sniffing
   consumer text for a `with` keyword; a textual splice remains the fallback
   when no AST reader is wired or either side fails to parse.
+- `pz compile`/`run`/`validate` now report every pipeline's broken template in
+  one compile instead of stopping at the first: rendering used to throw on
+  pipeline A and never attempt pipeline B, C, … at all. Four independent
+  validation stages (incremental/merge-keys, ref()/source() resolution,
+  checks-on-ephemeral, ephemeral-chain) that used to stop at whichever ran
+  first now also report together in one throw. Aggregated errors are ordered
+  by file, then position, for a deterministic report. Stages with a genuine
+  dependency on an earlier one's success (sink-output binding, the one-reader
+  rule, SQL-declared incremental inference, and later) are unchanged.
 
 ## [0.6.1] - 2026-09-10
 
