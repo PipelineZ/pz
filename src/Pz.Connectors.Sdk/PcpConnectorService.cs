@@ -126,6 +126,7 @@ internal sealed class PcpConnectorService(
                 .ConfigureAwait(false);
             var message = new ValidationResultMsg();
             message.Errors.AddRange(result.Errors);
+            message.Warnings.AddRange(result.Warnings);
             return message;
         });
 

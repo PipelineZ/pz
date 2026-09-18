@@ -636,7 +636,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   and rendered as a non-blocking PZ0364, a new generic code any connector
   can use the same way -- `ValidationResult.Warnings` is an init-only
   member, so the record's one-argument constructor that compiled connectors
-  bind to is untouched), `pz run` says the same as a run notice, once per
+  bind to is untouched, and it crosses PCP as the additive
+  `ValidationResultMsg.warnings` field, which the C# SDK fills from the
+  connector's result), `pz run` says the same as a run notice, once per
   run however many entities are read through the connection (a new additive
   `INoticeAware` connector interface, wired the same way
   `IOperationGateAware` already is; not yet forwarded over PCP, so it

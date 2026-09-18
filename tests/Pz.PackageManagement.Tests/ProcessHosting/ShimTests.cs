@@ -829,6 +829,19 @@ public sealed class ShimTests : IDisposable
         Assert.Equal(failed.Errors, roundTrippedFailed.Errors);
     }
 
+    // A warning is what a valid config still has to hear, so it crosses with a result that has no
+    // errors -- and must not turn that result invalid on the far side.
+    [Fact]
+    public void ValidationResult_round_trips_its_warnings()
+    {
+        var warned = ValidationResult.Success with { Warnings = ["host key is not pinned"] };
+
+        var roundTripped = MessageMapping.ToValidationResult(MessageMapping.ToValidationResultMsg(warned));
+
+        Assert.Equal(["host key is not pinned"], roundTripped.Warnings);
+        Assert.True(roundTripped.IsValid);
+    }
+
     [Fact]
     public void ConnectionCheck_round_trips_null_and_populated_message()
     {
