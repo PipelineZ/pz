@@ -84,9 +84,11 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
     }
 
     /// <summary>Both halves fail toward "push nothing", so an unrecognized shape costs speed and
-    /// never correctness. The two unsafe directions are pruning a column the SQL still references
-    /// (the staged table would lack it) and splitting a disjunction (rows silently dropped) — the
-    /// STAR/subquery rules guard the first, the CONJUNCTION_AND check the second.</summary>
+    /// never correctness. The unsafe directions are pruning a column the SQL still references (the
+    /// staged table would lack it), splitting a disjunction (rows silently dropped), and filtering the
+    /// source ahead of a join that would have null-extended it (rows silently gained) — the
+    /// STAR/subquery/attribution rules guard the first, the CONJUNCTION_AND check the second,
+    /// <see cref="TargetRowsPreserved"/> the third.</summary>
     public ReadHintPlan ExtractReadHints(string sql, string baseTable, string? cursorColumn)
     {
         using var duck = DuckDbSync.OpenInMemory();
@@ -112,21 +114,123 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
             return ReadHintPlan.None;
         }
 
-        var soleTable = aliases.Count == 1;
-        return new ReadHintPlan(
-            ExtractColumns(statement, targetAliases, soleTable),
-            ExtractPredicate(duck, statement["where_clause"], targetAliases, soleTable, cursorColumn));
+        // One staged table serves every reference to the target. A reference outside the outer FROM —
+        // a CTE body, a subquery — needs columns and rows this walk never looks at, so it pushes nothing.
+        var references = Descendants(statement).OfType<JsonObject>().Count(o =>
+            TypeOf(o) == "BASE_TABLE"
+            && string.Equals(o["table_name"]?.GetValue<string>(), baseTable, StringComparison.Ordinal));
+        if (references > targetAliases.Count)
+        {
+            return ReadHintPlan.None;
+        }
+
+        var from = statement["from_table"];
+        var selectAliases = (statement["select_list"] as JsonArray ?? [])
+            .Select(item => item?["alias"]?.GetValue<string>() ?? string.Empty)
+            .Where(alias => alias.Length > 0);
+        var scope = new HintScope(
+            new HashSet<string>(aliases.Keys, StringComparer.OrdinalIgnoreCase),
+            targetAliases,
+            // A derived table or table function beside the target is a relation too, though it is no
+            // BASE_TABLE: only a FROM that IS the target makes an unqualified name the target's.
+            SoleRelation: TypeOf(from) == "BASE_TABLE",
+            new HashSet<string>(selectAliases, StringComparer.OrdinalIgnoreCase));
+
+        // A self-join reads one staged table under two aliases; a filter written for one alias would
+        // starve the other.
+        var predicate = targetAliases.Count == 1 && TargetRowsPreserved(from, targetAliases.Single()) == true
+            ? ExtractPredicate(duck, statement["where_clause"], scope, cursorColumn)
+            : null;
+        return new ReadHintPlan(ExtractColumns(statement, from, scope), predicate);
     }
+
+    /// <summary>The name scope read hints resolve column references against: every outer-FROM base
+    /// table alias, which of them are the target, whether the target is the FROM's only relation, and
+    /// the select list's output aliases.</summary>
+    private sealed record HintScope(
+        HashSet<string> Aliases, HashSet<string> TargetAliases, bool SoleRelation, HashSet<string> SelectAliases);
+
+    private enum ColumnOwner
+    {
+        Target,
+        Other,
+
+        /// <summary>Cannot be attributed; every caller treats it as doubt and pushes nothing.</summary>
+        Unknown,
+    }
+
+    /// <summary>Whether filtering the target's rows BEFORE the joins above it yields what filtering
+    /// after them would. Null when the target is not under <paramref name="from"/>. A join that can
+    /// null-extend the target (it sits on the nullable side of LEFT/RIGHT, either side of FULL) breaks
+    /// the equivalence — `where t.id is null` pushed to the source lands nothing, and an anti-join then
+    /// returns every row. ASOF and POSITIONAL pair rows by what is present, so removing rows re-pairs
+    /// the rest. Join kinds not listed here are refused rather than reasoned about.</summary>
+    private static bool? TargetRowsPreserved(JsonNode? from, string targetAlias)
+    {
+        if (from is not JsonObject obj)
+        {
+            return null;
+        }
+
+        switch (TypeOf(obj))
+        {
+            case "BASE_TABLE":
+                var alias = obj["alias"]?.GetValue<string>() ?? string.Empty;
+                var name = alias.Length > 0 ? alias : obj["table_name"]?.GetValue<string>() ?? string.Empty;
+                return string.Equals(name, targetAlias, StringComparison.OrdinalIgnoreCase) ? true : null;
+            case "JOIN":
+                var left = TargetRowsPreserved(obj["left"], targetAlias);
+                var right = TargetRowsPreserved(obj["right"], targetAlias);
+                if ((left ?? right) is not { } below)
+                {
+                    return null;
+                }
+
+                if (!below || obj["ref_type"]?.GetValue<string>() is not ("REGULAR" or "NATURAL" or "CROSS"))
+                {
+                    return false;
+                }
+
+                var inLeft = left is not null;
+                return obj["join_type"]?.GetValue<string>() switch
+                {
+                    "INNER" => true,
+                    "LEFT" or "SEMI" or "ANTI" => inLeft,
+                    "RIGHT" => !inLeft,
+                    _ => false,
+                };
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>True when any join in <paramref name="from"/> matches columns by name. USING and
+    /// NATURAL read their columns from both sides without a COLUMN_REF ever naming them.</summary>
+    private static bool HasNameMatchedJoin(JsonNode? from) =>
+        Descendants(from).OfType<JsonObject>().Any(o => TypeOf(o) == "JOIN"
+            && (o["ref_type"]?.GetValue<string>() == "NATURAL" || o["using_columns"] is JsonArray { Count: > 0 }));
 
     /// <summary>The columns the target table must supply, or null to read every column. Null wins on
     /// any doubt: a star over the target, or any subquery at all (whose own scope makes an unqualified
     /// reference belong to some other table, so collecting it would have pz ask the source for a column
-    /// it has not got).</summary>
-    private static IReadOnlyList<string>? ExtractColumns(
-        JsonNode statement, HashSet<string> targetAliases, bool soleTable)
+    /// it has not got), a reference that cannot be attributed to one table, or a join that matches
+    /// columns by name. A hint that is too narrow leaves the staged table without a column the SQL
+    /// still binds; one that is too wide only moves more data.</summary>
+    private static IReadOnlyList<string>? ExtractColumns(JsonNode statement, JsonNode? from, HintScope scope)
     {
+        if (HasNameMatchedJoin(from))
+        {
+            return null;
+        }
+
+        // CTE bodies are their own name scope and never read the target (a second reference already
+        // pushed nothing), so nothing inside them says anything about the target's columns.
+        var outerScope = ((JsonObject)statement)
+            .Where(kv => kv.Key != "cte_map")
+            .SelectMany(kv => OuterScopeDescendants(kv.Value));
+
         var columns = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var node in OuterScopeDescendants(statement).OfType<JsonObject>())
+        foreach (var node in outerScope.OfType<JsonObject>())
         {
             switch (ClassOf(node))
             {
@@ -134,16 +238,20 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
                     return null;
                 case "STAR":
                     var relation = node["relation_name"]?.GetValue<string>() ?? string.Empty;
-                    if (relation.Length == 0 || targetAliases.Contains(relation))
+                    if (relation.Length == 0 || scope.TargetAliases.Contains(relation))
                     {
                         return null;
                     }
 
                     break;
                 case "COLUMN_REF":
-                    if (ResolveTargetColumn(node, targetAliases, soleTable) is { } column)
+                    switch (ResolveColumn(node, scope, out var column))
                     {
-                        columns.Add(column);
+                        case ColumnOwner.Target:
+                            columns.Add(column);
+                            break;
+                        case ColumnOwner.Unknown:
+                            return null;
                     }
 
                     break;
@@ -153,23 +261,33 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         return columns.Count > 0 ? [.. columns] : null;
     }
 
-    /// <summary>The bare column name when this COLUMN_REF resolves to the target table, else null.
-    /// Unqualified references resolve only when the target is the query's sole base table; with a join
-    /// in scope an unqualified name could belong to either side.</summary>
-    private static string? ResolveTargetColumn(JsonObject columnRef, HashSet<string> targetAliases, bool soleTable)
+    /// <summary>Which table a COLUMN_REF belongs to, and the column it names there. An unqualified
+    /// name is the target's only when the target is the FROM's sole relation; with anything else in
+    /// scope it could belong to either side. A qualified name is attributed by its FIRST part, and the
+    /// column is the part after it, so a struct path `o.payload.kind` names `payload`. A first part
+    /// that is no FROM alias — a schema qualifier, or the root of a struct path — is unknown.</summary>
+    private static ColumnOwner ResolveColumn(JsonObject columnRef, HintScope scope, out string column)
     {
+        column = string.Empty;
         if (columnRef["column_names"] is not JsonArray names || names.Count == 0)
         {
-            return null;
+            return ColumnOwner.Unknown;
         }
 
-        var column = names[^1]!.GetValue<string>();
         if (names.Count == 1)
         {
-            return soleTable ? column : null;
+            column = names[0]!.GetValue<string>();
+            return scope.SoleRelation ? ColumnOwner.Target : ColumnOwner.Unknown;
         }
 
-        return targetAliases.Contains(names[^2]!.GetValue<string>()) ? column : null;
+        var qualifier = names[0]!.GetValue<string>();
+        if (!scope.Aliases.Contains(qualifier))
+        {
+            return ColumnOwner.Unknown;
+        }
+
+        column = names[1]!.GetValue<string>();
+        return scope.TargetAliases.Contains(qualifier) ? ColumnOwner.Target : ColumnOwner.Other;
     }
 
     /// <summary>Every descendant of <paramref name="statement"/> except the insides of subqueries,
@@ -206,7 +324,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
     /// with " AND " and stripped of table qualifiers (the connector's own SELECT declares no alias).
     /// Null when nothing survives.</summary>
     private static string? ExtractPredicate(DuckDbSync duck, JsonNode? whereClause,
-        HashSet<string> targetAliases, bool soleTable, string? cursorColumn)
+        HintScope scope, string? cursorColumn)
     {
         if (whereClause is null)
         {
@@ -216,7 +334,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         var kept = new List<string>();
         foreach (var conjunct in Conjuncts(whereClause))
         {
-            if (IsPushable(duck, conjunct, targetAliases, soleTable, cursorColumn))
+            if (IsPushable(duck, conjunct, scope, cursorColumn))
             {
                 kept.Add(RegenerateExprSql(duck, StripQualifiers(conjunct.DeepClone())));
             }
@@ -247,8 +365,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         yield return node;
     }
 
-    private static bool IsPushable(DuckDbSync duck, JsonNode conjunct,
-        HashSet<string> targetAliases, bool soleTable, string? cursorColumn)
+    private static bool IsPushable(DuckDbSync duck, JsonNode conjunct, HintScope scope, string? cursorColumn)
     {
         // The sentinel is substituted per-run by PipelineExecutor, long after compile — pushing a
         // conjunct carrying it would send the placeholder text itself to the source. Watermark bounds
@@ -270,9 +387,15 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
                 continue;
             }
 
-            var column = ResolveTargetColumn(node, targetAliases, soleTable);
-            if (column is null
+            if (ResolveColumn(node, scope, out var column) != ColumnOwner.Target
                 || (cursorColumn is not null && string.Equals(column, cursorColumn, StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+
+            // WHERE may name a select-list alias, which the source has no column for. Where the name
+            // is also a real column the predicate simply stays in DuckDB.
+            if (node["column_names"] is JsonArray { Count: 1 } && scope.SelectAliases.Contains(column))
             {
                 return false;
             }

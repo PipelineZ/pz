@@ -197,4 +197,163 @@ public sealed class DuckDbReadHintsTests
 
         Assert.Null(plan.PredicateSql);
     }
+
+    // -- predicates across joins ---------------------------------------------------------------
+    // A pushed predicate filters the source BEFORE the join. That equals filtering after it only
+    // while the join cannot null-extend the target's rows; otherwise rows the WHERE was meant to see
+    // as NULL never land, and the result is silently wrong.
+
+    [Fact]
+    public void An_anti_join_predicate_on_the_null_supplied_side_is_not_pushed()
+    {
+        // Pushing `id IS NULL` lands zero src_a rows, and the anti-join then returns every src_b row.
+        var plan = Extract("select b.id from src_b b left join src_a a on a.id = b.id where a.id is null");
+
+        Assert.Null(plan.PredicateSql);
+    }
+
+    [Theory]
+    [InlineData("select a.id from src_b b left join src_a a on a.id = b.id where coalesce(a.x, 0) = 0")]
+    [InlineData("select a.id from src_a a right join src_b b on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_a a full join src_b b on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_b b full join src_a a on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_b b left join (src_a a join src_c c on a.id = c.id) on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_b b asof join src_a a on b.t >= a.t where a.x = 1")]
+    [InlineData("select a.id from src_a a positional join src_b b where a.x = 1")]
+    public void A_predicate_is_not_pushed_through_a_join_that_does_not_preserve_it(string sql)
+    {
+        Assert.Null(Extract(sql).PredicateSql);
+    }
+
+    [Theory]
+    [InlineData("select a.id from src_a a left join src_b b on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_b b right join src_a a on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_a a cross join src_b b where a.x = 1")]
+    [InlineData("select a.id from src_a a semi join src_b b on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_a a anti join src_b b on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_b b join src_c c on b.id = c.id join src_a a on a.id = b.id where a.x = 1")]
+    public void A_predicate_on_the_preserved_side_of_a_join_is_still_pushed(string sql)
+    {
+        var predicate = Extract(sql).PredicateSql;
+
+        Assert.NotNull(predicate);
+        Assert.Contains("x", predicate!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>The contract behind every rule above, checked against results rather than AST shape:
+    /// landing only the rows the pushed predicate keeps must not change what the pipeline returns.
+    /// The data has unmatched rows on both sides and NULLs in the filtered column, which is what an
+    /// unsafe push needs in order to show.</summary>
+    [Theory]
+    [InlineData("select b.id from src_b b left join src_a a on a.id = b.id where a.id is null")]
+    [InlineData("select b.id, a.x from src_b b left join src_a a on a.id = b.id where coalesce(a.x, 0) = 0")]
+    [InlineData("select a.id, b.id from src_a a right join src_b b on a.id = b.id where a.x is distinct from 1")]
+    [InlineData("select a.id, b.id from src_a a full join src_b b on a.id = b.id where a.x is null")]
+    [InlineData("select a.id, b.id from src_a a left join src_b b on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id, b.id from src_b b right join src_a a on a.id = b.id where a.x is null")]
+    [InlineData("select a.id from src_a a semi join src_b b on a.id = b.id where a.x = 1")]
+    [InlineData("select a.id from src_a a anti join src_b b on a.id = b.id where a.x is null")]
+    [InlineData("select a.id, b.id from src_a a join src_b b on a.id = b.id where a.x = 1 and b.id > 1")]
+    [InlineData("select a.id, b.id from src_a a join src_a b on a.parent_id = b.id where a.x = 1")]
+    [InlineData("select id from src_a where x = 1 and id not in (select parent_id from src_a where parent_id is not null)")]
+    public async Task Landing_only_the_pushed_rows_never_changes_the_result(string sql)
+    {
+        const string rows = "(values (1, 1, null), (2, null, 1), (3, 0, 1), (4, 1, 2), (5, 2, null)) t(id, x, parent_id)";
+        var predicate = Extract(sql).PredicateSql;
+
+        async Task<string> RunAsync(string? landedWhere)
+        {
+            await using var duck = DuckSession.Open(":memory:");
+            await duck.ExecuteAsync(
+                $"create table src_a as select * from {rows}{(landedWhere is null ? "" : $" where {landedWhere}")}");
+            await duck.ExecuteAsync("create table src_b as select * from (values (2), (3), (4), (9)) t(id)");
+            return await duck.ScalarAsync<string>(
+                $"select coalesce(string_agg(r::varchar, '|' order by r::varchar), '') from ({sql}) r");
+        }
+
+        Assert.Equal(await RunAsync(null), await RunAsync(predicate));
+    }
+
+    [Fact]
+    public void A_self_join_pushes_no_predicate()
+    {
+        // One SourceLoad feeds both aliases: a filter meant for `a` would starve `b` too.
+        var plan = Extract("select a.id from src_a a join src_a b on a.parent_id = b.id where a.x = 1");
+
+        Assert.Null(plan.PredicateSql);
+        Assert.Equal(new[] { "id", "parent_id", "x" }, plan.Columns!);
+    }
+
+    [Theory]
+    [InlineData("select id from src_a where x = 1 and id not in (select parent_id from src_a)")]
+    [InlineData("with c as (select z.extra, z.id from src_a z) select o.id from src_a o join c on c.id = o.id where o.x = 1")]
+    public void A_second_reference_outside_the_outer_from_pushes_nothing(string sql)
+    {
+        // The other reference reads the same staged table with needs this walk never sees.
+        var plan = Extract(sql);
+
+        Assert.Null(plan.Columns);
+        Assert.Null(plan.PredicateSql);
+    }
+
+    [Fact]
+    public void An_unqualified_predicate_beside_a_from_subquery_is_not_pushed()
+    {
+        // `x` may belong to the derived table; src_a is the only BASE table but not the only relation.
+        var plan = Extract("select id from src_a, (select 1 as x) t where x = 1");
+
+        Assert.Null(plan.PredicateSql);
+        Assert.Null(plan.Columns);
+    }
+
+    [Fact]
+    public void A_predicate_over_a_select_list_alias_is_not_pushed()
+    {
+        // DuckDB lets WHERE name a select-list alias; the source has no such column.
+        var plan = Extract("select amount * 2 as doubled from src_a where doubled > 10 and status = 'open'");
+
+        Assert.NotNull(plan.PredicateSql);
+        Assert.DoesNotContain("doubled", plan.PredicateSql!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("status", plan.PredicateSql!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // -- projection across joins ---------------------------------------------------------------
+    // A hint that is too narrow is the unsafe direction: the staged table lacks a column the SQL
+    // still binds. Any reference this walk cannot attribute means "read every column".
+
+    [Theory]
+    [InlineData("select order_id, amount from src_a o join src_c c using (customer_id) where o.x = 1")]
+    [InlineData("select o.order_id from src_a o natural join src_c c")]
+    [InlineData("select id, b.name from src_a a join src_b b on a.k = b.k")]
+    [InlineData("select a.id from src_a a join src_b b on a.k = b.k order by created_at")]
+    public void A_join_with_a_column_that_cannot_be_attributed_reads_every_column(string sql)
+    {
+        Assert.Null(Extract(sql).Columns);
+    }
+
+    [Fact]
+    public void A_fully_qualified_join_keeps_its_column_list()
+    {
+        var plan = Extract("select a.id, b.name from src_a a join src_b b on a.k = b.k where a.x = 1");
+
+        Assert.Equal(new[] { "id", "k", "x" }, plan.Columns!);
+    }
+
+    [Fact]
+    public void A_struct_field_path_names_its_root_column()
+    {
+        var plan = Extract("select o.payload.kind, o.id from src_a o");
+
+        Assert.Equal(new[] { "id", "payload" }, plan.Columns!);
+    }
+
+    [Fact]
+    public void An_unattributable_qualifier_reads_every_column()
+    {
+        // `payload.kind` is a struct path here, not alias.column — its root cannot be told apart from
+        // a qualifier, so nothing is pruned.
+        var plan = Extract("select payload.kind, id from src_a");
+
+        Assert.Null(plan.Columns);
+    }
 }
