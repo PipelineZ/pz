@@ -30,22 +30,29 @@ public sealed record StateResponse(HttpStatusCode Status, string Body, int? Vers
 /// <see cref="Pz.Engine.State.IKeyedStateStore{T}"/> stays synchronous exactly as the SQL
 /// backend's blocking <c>ExecuteReader</c> does.
 ///
-/// **Retry.** A <c>429</c>/<c>502</c>/<c>503</c>/<c>504</c> response is retried up to
+/// **Retry.** A <c>429</c>/<c>503</c> response -- and, for anything but a versioned PUT, a
+/// <c>502</c>/<c>504</c> -- is retried up to
 /// <see cref="_maxAttempts"/> times, honouring a server <c>Retry-After</c> up to
 /// <see cref="MaxRetryDelay"/> (never longer -- a server asking for minutes is a reason to give up and
 /// let the caller decide, not to block a run's node indefinitely), through the constructor's
-/// <see cref="TimeProvider"/> so a test can prove the retry count and delay deterministically. Every
-/// call this endpoint serves is either read-only or a versioned compare-and-swap (<c>If-Match</c>) or
-/// a tombstoning delete, so replaying it after a retryable response -- one the server itself said to
-/// retry, or explicitly rejected before applying -- can never double-apply a write.
+/// <see cref="TimeProvider"/> so a test can prove the retry count and delay deterministically. The
+/// wait ends early when the run is cancelled.
 ///
 /// Secret hygiene: the token travels in an <c>Authorization</c> header and never reaches an error
 /// message; failures name the host and the path only.</summary>
 public sealed class HttpStateEndpoint : IDisposable
 {
-    private static readonly HashSet<HttpStatusCode> RetryableStatuses =
+    /// <summary>The server itself refused to start the request, so nothing was applied.</summary>
+    private static readonly HashSet<HttpStatusCode> NotAppliedStatuses =
     [
-        (HttpStatusCode)429, HttpStatusCode.BadGateway, HttpStatusCode.ServiceUnavailable, HttpStatusCode.GatewayTimeout,
+        (HttpStatusCode)429, HttpStatusCode.ServiceUnavailable,
+    ];
+
+    /// <summary>A gateway in between gave up; whether the server behind it applied the request is
+    /// unknown.</summary>
+    private static readonly HashSet<HttpStatusCode> OutcomeUnknownStatuses =
+    [
+        HttpStatusCode.BadGateway, HttpStatusCode.GatewayTimeout,
     ];
 
     private static readonly TimeSpan RetryBaseDelay = TimeSpan.FromMilliseconds(200);
@@ -116,7 +123,7 @@ public sealed class HttpStateEndpoint : IDisposable
 
                 using var response = _client.Send(request, HttpCompletionOption.ResponseContentRead, _ct);
 
-                if (RetryableStatuses.Contains(response.StatusCode) && attempt < _maxAttempts)
+                if (IsRetryable(method, response.StatusCode) && attempt < _maxAttempts)
                 {
                     Delay(attempt, response);
                     continue;
@@ -133,8 +140,12 @@ public sealed class HttpStateEndpoint : IDisposable
                 // to tell "cancelled" apart from "genuinely failed".
                 throw;
             }
-            catch (Exception ex) when (ex is HttpRequestException or IOException
-                or TaskCanceledException or InvalidOperationException)
+            catch (TaskCanceledException)
+            {
+                // Not the run's token (handled above), so this is the client's own timeout expiring.
+                throw TimedOut();
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException)
             {
                 throw Unavailable(ex.GetType().Name);
             }
@@ -163,13 +174,28 @@ public sealed class HttpStateEndpoint : IDisposable
             "project.yml", null,
             "check PZ_STATE_URL / state.url, and that the server is reachable from this host"));
 
+    /// <summary>A versioned PUT is the one request that is not safe to replay blind: had the first one
+    /// been applied, the replay would meet its own write and read it as another run's (PZ0520). A read
+    /// and a tombstoning delete give the same answer however often they are sent.</summary>
+    private static bool IsRetryable(HttpMethod method, HttpStatusCode status) =>
+        NotAppliedStatuses.Contains(status) ||
+        (OutcomeUnknownStatuses.Contains(status) && method != HttpMethod.Put);
+
+    private PzConfigException TimedOut() =>
+        new(new PzError(PzErrorCode.StateStoreUnavailable,
+            string.Create(CultureInfo.InvariantCulture,
+                $"the state store at '{Host}' timed out after {_client.Timeout.TotalSeconds:0.###}s."),
+            "project.yml", null,
+            "check that the server is healthy and reachable from this host, or raise state.timeout_seconds / " +
+            "PZ_STATE_TIMEOUT_SECONDS if it is only slow"));
+
     private void Delay(int attempt, HttpResponseMessage response)
     {
         var retryAfter = ParseRetryAfter(response) is { } serverDelay
             ? serverDelay
             : RetryBaseDelay * attempt;
         var bounded = retryAfter > MaxRetryDelay ? MaxRetryDelay : retryAfter;
-        Task.Delay(bounded, _time).GetAwaiter().GetResult();
+        Task.Delay(bounded, _time, _ct).GetAwaiter().GetResult();
     }
 
     /// <summary>Delta-seconds only (<c>Retry-After: 3</c>) -- the HTTP-date form exists for browser

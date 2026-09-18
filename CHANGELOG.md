@@ -520,10 +520,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   or an HTTP 429/502/503/504 that `MsTransient`/a small closed status set
   classifies transient is retried a bounded number of times first (delay
   through `TimeProvider`, honouring a server's `Retry-After` up to a 30s cap)
-  before either succeeding or reporting PZ0529 -- every retried operation is
-  read-only, naturally idempotent, or (the keyed store's compare-and-swap
-  `Set`) fails closed on replay into a spurious PZ0520 conflict, never a
-  double write.
+  before either succeeding or reporting PZ0529 (which then says how many
+  attempts were made and that the failure is usually temporary). A retry can
+  never write twice, and it does not mistake its own write for another
+  run's: when a SQL write applied and only its acknowledgement was lost, the
+  retry finds its own payload at the version it was writing and succeeds
+  instead of reporting PZ0520; over HTTP a versioned `PUT` is not replayed
+  after a 502/504, where the outcome is unknown, only after a 429/503. The
+  wait between attempts ends early when the run is cancelled.
 - `Pz.State.Http` (`backend: http`) is no longer stuck on a fixed 100s
   `HttpClient` timeout with no way to cancel it mid-request: a new
   `state.timeout_seconds` (or `PZ_STATE_TIMEOUT_SECONDS`) bounds every
@@ -539,7 +543,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   write to insert-if-absent -- which used to report a spurious PZ0520 on
   every single run behind such a proxy. A `state.url` of `http://` with a
   bearer token configured now warns (new PZ0530, never blocks a run): the
-  token would otherwise travel in cleartext with no signal at all.
+  token would otherwise travel in cleartext with no signal at all. A
+  loopback URL is exempt. A request that outlasts the timeout says so
+  ("timed out after 30s") and names `state.timeout_seconds` as the knob.
 - The sqlserver and postgres connectors accept `connect_timeout_seconds`
   and `command_timeout_seconds` on their connection config, applied to
   every connection/command that does not already set its own (absent ->

@@ -3,7 +3,7 @@ using Pz.Core.Validation;
 
 namespace Pz.State.Http.Tests;
 
-/// <summary>#95: protocol tolerance a real deployment (a reverse proxy in front of the state server, a
+/// <summary>Protocol tolerance a real deployment (a reverse proxy in front of the state server, a
 /// server that answers 200/412 instead of 204/201/409) needs. Drives a scripted <see cref="StubHttpServer"/>
 /// directly rather than <see cref="FakeStateServer"/>, whose fake server always answers the exact status
 /// codes pz's own store already expected -- the point here is proving the CLIENT tolerates the ones it
@@ -83,38 +83,58 @@ public sealed class HttpStateEndpointProtocolTests
         store.Remove("orders"); // must not throw
     }
 
+    // The handler holds the response behind a gate the test opens only after the assertion, so the
+    // outcome never depends on how long anything takes.
     [Fact]
-    public async Task A_configured_timeout_aborts_a_slow_response_as_PZ0518()
+    public async Task A_configured_timeout_aborts_a_response_that_never_comes_as_PZ0518()
     {
         await using var server = new StubHttpServer();
+        using var release = new ManualResetEventSlim();
         server.Map("/state/watermarks/orders", _ =>
         {
-            Thread.Sleep(500);
+            release.Wait();
             return new StubResponse(200, """{"value":"1"}""");
         });
         using var endpoint = new HttpStateEndpoint(
             $"{server.BaseUrl}state", null, timeout: TimeSpan.FromMilliseconds(100));
 
-        var ex = Assert.Throws<PzConfigException>(() => endpoint.Send(HttpMethod.Get, "watermarks", "orders"));
+        try
+        {
+            var ex = Assert.Throws<PzConfigException>(() => endpoint.Send(HttpMethod.Get, "watermarks", "orders"));
 
-        Assert.Equal(PzErrorCode.StateStoreUnavailable, ex.Error.Code);
+            Assert.Equal(PzErrorCode.StateStoreUnavailable, ex.Error.Code);
+            Assert.Contains("timed out", ex.Error.Message, StringComparison.Ordinal);
+            Assert.Contains("timeout_seconds", ex.Error.Hint, StringComparison.Ordinal);
+        }
+        finally
+        {
+            release.Set();
+        }
     }
 
     [Fact]
     public async Task A_cancelled_run_token_propagates_as_cancellation_not_PZ0518()
     {
         await using var server = new StubHttpServer();
+        using var release = new ManualResetEventSlim();
+        using var cts = new CancellationTokenSource();
         server.Map("/state/watermarks/orders", _ =>
         {
-            Thread.Sleep(1000);
+            cts.Cancel(); // the request is in flight: this is the run being cancelled under it
+            release.Wait();
             return new StubResponse(200, """{"value":"1"}""");
         });
-        using var cts = new CancellationTokenSource();
         using var endpoint = new HttpStateEndpoint($"{server.BaseUrl}state", null, ct: cts.Token);
-        cts.CancelAfter(TimeSpan.FromMilliseconds(50));
 
-        // TaskCanceledException (an OperationCanceledException) -- propagated uncaught, never wrapped
-        // into a PzConfigException, so the dispatcher can tell cancellation apart from a genuine failure.
-        Assert.ThrowsAny<OperationCanceledException>(() => endpoint.Send(HttpMethod.Get, "watermarks", "orders"));
+        try
+        {
+            // Propagated uncaught, never wrapped into a PzConfigException, so the dispatcher can tell
+            // cancellation apart from a genuine failure.
+            Assert.ThrowsAny<OperationCanceledException>(() => endpoint.Send(HttpMethod.Get, "watermarks", "orders"));
+        }
+        finally
+        {
+            release.Set();
+        }
     }
 }

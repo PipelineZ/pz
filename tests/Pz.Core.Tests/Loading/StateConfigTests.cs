@@ -359,6 +359,25 @@ public sealed class StateConfigTests
         Assert.DoesNotContain(project.Warnings, w => w.Message.Contains("s3cret", StringComparison.Ordinal));
     }
 
+    // Loopback traffic never leaves the host, so there is no network path to read the token off.
+    [Theory]
+    [InlineData("http://localhost:5080/api/agents/runs/abc/state")]
+    [InlineData("http://127.0.0.1:5080/api/agents/runs/abc/state")]
+    [InlineData("http://[::1]:5080/api/agents/runs/abc/state")]
+    public void Loopback_http_url_with_a_bearer_token_does_not_warn(string url)
+    {
+        var env = new Dictionary<string, string>
+        {
+            ["PZ_STATE_BACKEND"] = "http",
+            ["PZ_STATE_URL"] = url,
+            ["PZ_STATE_TOKEN"] = "s3cret",
+        };
+
+        var project = ProjectLoader.Load(WriteProject(Minimal), env);
+
+        Assert.DoesNotContain(project.Warnings, w => w.Code == PzErrorCode.HttpStateTokenOverInsecureUrl);
+    }
+
     [Fact]
     public void Https_url_with_a_bearer_token_does_not_warn()
     {

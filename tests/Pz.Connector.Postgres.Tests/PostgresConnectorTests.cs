@@ -4,7 +4,7 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Postgres.Tests;
 
-/// <summary>#114: <c>connect_timeout_seconds</c>/<c>command_timeout_seconds</c> -- schema shape and
+/// <summary><c>connect_timeout_seconds</c>/<c>command_timeout_seconds</c> -- schema shape and
 /// that <see cref="PostgresConnector.BuildConnectionString"/> actually applies them. The docker-backed
 /// proof that a configured command timeout really fires lives in
 /// <see cref="PostgresConnectivityTests"/>'s sibling fixture-based suites (see

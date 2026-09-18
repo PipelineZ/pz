@@ -128,47 +128,70 @@ public sealed class SqlKeyedStateStore<T>(
             return results.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToList();
         });
 
-    /// <summary>Retried by <see cref="SqlStateConnection.Execute{T}"/> on a transient failure --
-    /// safe because the CAS WHERE clause fails closed on replay: if the prior attempt's UPDATE/INSERT
-    /// actually applied before its acknowledgment was lost, the retry's WHERE clause matches nothing and
-    /// this reports a spurious <see cref="Conflict"/> (PZ0520), never a double write.</summary>
+    /// <summary>Test seams: run just before, and just after, the write statement of one attempt, so a
+    /// test can fail an attempt on either side of the commit deterministically.</summary>
+    internal Action? BeforeWriteForTests { get; set; }
+
+    internal Action? AfterWriteForTests { get; set; }
+
+    /// <summary>Retried by <see cref="SqlStateConnection.Execute{T}"/> on a transient failure. The CAS
+    /// WHERE clause makes a replay unable to write twice, but it cannot tell on its own WHO moved the
+    /// version: when the earlier attempt applied and only its acknowledgement was lost, the retry matches
+    /// nothing because of this very write. So a retry that matches nothing first looks for its own
+    /// payload at the version it was writing, and only reports a conflict (PZ0520) when that is not what
+    /// is stored.</summary>
     public void Set(string key, T value)
     {
         var payload = SerializePayload(value);
         var now = DateTime.UtcNow;
+        var attempts = 0;
 
         connection.Execute<object?>(sqlConnection =>
         {
+            attempts++;
+            var written = _versions.TryGetValue(key, out var expectedVersion) ? expectedVersion + 1 : 1;
+            bool applied;
             try
             {
-                if (_versions.TryGetValue(key, out var expectedVersion))
-                {
-                    var rows = ExecuteUpdate(sqlConnection, key, payload, expectedVersion, now);
-                    if (rows == 0)
-                    {
-                        throw Conflict(key);
-                    }
-
-                    _versions[key] = expectedVersion + 1;
-                    return null;
-                }
-
-                var inserted = ExecuteInsertIfAbsent(sqlConnection, key, payload, now);
-                if (!inserted)
-                {
-                    throw Conflict(key);
-                }
-
-                _versions[key] = 1;
-                return null;
+                BeforeWriteForTests?.Invoke();
+                applied = written > 1
+                    ? ExecuteUpdate(sqlConnection, key, payload, expectedVersion, now) > 0
+                    : ExecuteInsertIfAbsent(sqlConnection, key, payload, now);
             }
             catch (SqlException ex) when (ex.Number is 2627 or 2601)
             {
                 // A genuine concurrent insert can race past the WHERE NOT EXISTS guard below and hit the
-                // primary key (scope, state_key) instead -- same conflict, reported the same way.
+                // primary key (scope, state_key) instead -- same outcome as matching nothing.
+                applied = false;
+            }
+
+            if (applied)
+            {
+                AfterWriteForTests?.Invoke();
+            }
+            else if (attempts == 1 || !IsStored(sqlConnection, key, payload, written))
+            {
                 throw Conflict(key);
             }
+
+            _versions[key] = written;
+            return null;
         });
+    }
+
+    private bool IsStored(SqlConnection sqlConnection, string key, string payload, int version)
+    {
+        using var command = new SqlCommand(
+            "DECLARE @sql NVARCHAR(MAX) = N'SELECT payload FROM ' + QUOTENAME(@schema) + " +
+            "N'.state WHERE scope = @scope AND state_key = @key AND version = @version'; " +
+            "EXEC sp_executesql @sql, N'@scope NVARCHAR(32), @key NVARCHAR(512), @version INT', " +
+            "@scope = @scope, @key = @key, @version = @version;",
+            sqlConnection);
+        command.Parameters.AddWithValue("@schema", connection.Schema);
+        command.Parameters.AddWithValue("@scope", scope);
+        command.Parameters.AddWithValue("@key", key);
+        command.Parameters.AddWithValue("@version", version);
+        return command.ExecuteScalar() is string stored && string.Equals(stored, payload, StringComparison.Ordinal);
     }
 
     public void Remove(string key)

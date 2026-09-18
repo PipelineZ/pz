@@ -777,8 +777,9 @@ public static class ProjectLoader
 
         // A bearer token over a plaintext connection is readable by anything on the network path --
         // worth a loud warning, not silence, but not a hard refusal either: an operator may have a
-        // deliberate reason (a loopback/VPN-only endpoint) this check cannot see.
-        if (parsed.Scheme == Uri.UriSchemeHttp && !string.IsNullOrWhiteSpace(state.Token))
+        // deliberate reason (a VPN-only endpoint) this check cannot see. Loopback is exempt: that
+        // traffic never leaves the host.
+        if (parsed.Scheme == Uri.UriSchemeHttp && !parsed.IsLoopback && !string.IsNullOrWhiteSpace(state.Token))
         {
             warnings.Add(new PzWarning(PzErrorCode.HttpStateTokenOverInsecureUrl,
                 "state.url uses http:// with a bearer token configured (PZ_STATE_TOKEN) -- the token " +

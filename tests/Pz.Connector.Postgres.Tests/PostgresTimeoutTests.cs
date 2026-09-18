@@ -4,7 +4,7 @@ using Pz.TestSupport;
 
 namespace Pz.Connector.Postgres.Tests;
 
-/// <summary>#114: docker-backed proof that <c>command_timeout_seconds</c> actually bounds a real query
+/// <summary>Docker-backed proof that <c>command_timeout_seconds</c> actually bounds a real query
 /// against a live Postgres -- not just that the connection string carries the value (see
 /// <see cref="PostgresConnectorTests"/> for the offline proof of that).</summary>
 [Collection("postgres")]
@@ -32,9 +32,8 @@ public sealed class PostgresTimeoutTests(PostgresContainerFixture fixture)
 
         var ex = await Assert.ThrowsAsync<NpgsqlException>(() => command.ExecuteNonQueryAsync());
 
-        // Confirms #114's classification decision: Npgsql already marks a command timeout transient by
-        // its own driver signal (unlike SqlClient's SqlException.IsTransient, which needed #111's
-        // MsTransient classifier because it reports false for a client-side timeout).
+        // Npgsql marks a command timeout transient by its own driver signal, so postgres needs no
+        // classifier of its own -- unlike SqlClient, whose IsTransient reports false for one.
         Assert.True(ex.IsTransient);
     }
 }

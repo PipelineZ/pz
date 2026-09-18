@@ -4,7 +4,7 @@ using Pz.TestSupport;
 
 namespace Pz.Connector.SqlServer.Tests;
 
-/// <summary>Docker-backed proof for #111: a real deadlock victim and a real command timeout against a
+/// <summary>Docker-backed proof: a real deadlock victim and a real command timeout against a
 /// live SQL Server both come back from Microsoft.Data.SqlClient with <c>SqlException.IsTransient ==
 /// false</c> (every raise site in this connector used to forward that flag unchanged, so a
 /// deadlock-victim write failed the run instead of being retried) -- <see cref="MsTransient"/>

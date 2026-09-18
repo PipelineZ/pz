@@ -6,7 +6,7 @@ using Pz.TestSupport;
 
 namespace Pz.State.SqlServer.Tests;
 
-/// <summary>#92: <see cref="SqlStateConnection.Execute{T}"/>'s retry-vs-give-up behaviour, proven
+/// <summary><see cref="SqlStateConnection.Execute{T}"/>'s retry-vs-give-up behaviour, proven
 /// against a real docker connection but with a synthetic operation so the retry COUNT is deterministic
 /// -- a genuine transient failure (deadlock/timeout) is exercised for real in
 /// Pz.Connector.SqlServer.Tests' <c>MsTransientDockerTests</c>; this only needs to prove
@@ -54,6 +54,9 @@ public sealed class SqlStateConnectionTests(SqlServerFixture fixture)
         Assert.Equal(2, calls); // exhausted the budget, not retried forever
         Assert.Equal(PzErrorCode.StateQueryFailed, ex.Error.Code);
         Assert.Contains("SqlException 1205", ex.Error.Message, StringComparison.Ordinal);
+        // A deadlock that outlasted the budget is not a permissions problem, and the next step says so.
+        Assert.Contains("after 2 attempts", ex.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("permission", ex.Error.Hint, StringComparison.Ordinal);
     }
 
     [SkippableFact]

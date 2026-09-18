@@ -23,7 +23,7 @@ public sealed class MySqlConnectorTests
         }
     }
 
-    // #114: unlike sqlserver/postgres, there is no driver here (and no timeout parameter in DuckDB's
+    // Unlike sqlserver/postgres, there is no driver here (and no timeout parameter in DuckDB's
     // mysql extension) to apply connect_timeout_seconds/command_timeout_seconds to, so the schema keeps
     // refusing them -- silently accepting and ignoring the option would be exactly the deployment-knob-
     // ignored failure this project's error philosophy forbids (see MySqlConnector's class doc).

@@ -56,6 +56,70 @@ public sealed class SqlKeyedStateStoreConcurrencyTests(SqlServerFixture fixture)
         Assert.Equal("1", first.Get("a")!.Value); // nothing was clobbered
     }
 
+    // The write applied, then the connection dropped before the answer arrived. The retry finds the
+    // version already moved -- by this very write. That is not another run, so it must not read as one.
+    [SkippableTheory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_write_whose_acknowledgement_was_lost_is_not_a_conflict_on_the_retry(bool update)
+    {
+        DockerFacts.SkipUnlessDocker();
+        var connection = fixture.NewConnection();
+        SqlStateSchema.EnsureCurrent(connection);
+        var key = $"lost-ack-{update}";
+        var store = NewStoreOn(connection);
+        if (update)
+        {
+            store.Set(key, new TestEntry("seed", "run-0"));
+        }
+
+        var dropped = false;
+        store.AfterWriteForTests = () =>
+        {
+            if (!dropped)
+            {
+                dropped = true;
+                throw SqlExceptionFactory.Create(10054); // connection forcibly closed -- after the commit
+            }
+        };
+
+        store.Set(key, new TestEntry("1", "run-1"));
+
+        Assert.True(dropped);
+        Assert.Equal("1", NewStoreOn(connection).Get(key)!.Value);
+        store.Set(key, new TestEntry("2", "run-1")); // the remembered version is the stored one
+        Assert.Equal("2", NewStoreOn(connection).Get(key)!.Value);
+    }
+
+    // The first attempt never applied, and another run wrote in between: a real conflict stays one.
+    [SkippableFact]
+    public void A_retry_that_finds_another_runs_write_is_still_PZ0520()
+    {
+        DockerFacts.SkipUnlessDocker();
+        var connection = fixture.NewConnection();
+        SqlStateSchema.EnsureCurrent(connection);
+        var store = NewStoreOn(connection);
+        var other = NewStoreOn(connection);
+        store.Set("replay-conflict", new TestEntry("seed", "run-0"));
+        Assert.NotNull(other.Get("replay-conflict"));
+
+        var dropped = false;
+        store.BeforeWriteForTests = () =>
+        {
+            if (!dropped)
+            {
+                dropped = true;
+                other.Set("replay-conflict", new TestEntry("theirs", "run-2"));
+                throw SqlExceptionFactory.Create(1205);
+            }
+        };
+
+        var ex = Assert.Throws<PzConfigException>(() => store.Set("replay-conflict", new TestEntry("ours", "run-1")));
+
+        Assert.Equal(PzErrorCode.StateConcurrencyConflict, ex.Error.Code);
+        Assert.Equal("theirs", NewStoreOn(connection).Get("replay-conflict")!.Value);
+    }
+
     [SkippableFact]
     public void An_insert_of_a_key_another_writer_already_inserted_is_PZ0520()
     {

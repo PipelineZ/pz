@@ -5,7 +5,7 @@ using Pz.TestSupport;
 
 namespace Pz.Connector.SqlServer.Tests;
 
-/// <summary>#114: docker-backed proof that <c>command_timeout_seconds</c> actually bounds a real query
+/// <summary>Docker-backed proof that <c>command_timeout_seconds</c> actually bounds a real query
 /// against a live SQL Server -- not just that the connection string carries the value (see
 /// <see cref="SqlServerConnectorTests"/> for the offline proof of that).</summary>
 [Collection("sqlserver")]
@@ -35,7 +35,7 @@ public sealed class SqlServerTimeoutTests(MsSqlContainerFixture fixture)
         var ex = await Assert.ThrowsAsync<SqlException>(() => command.ExecuteNonQueryAsync());
 
         Assert.Equal(-2, ex.Number);
-        Assert.False(ex.IsTransient); // the driver's own signal misses it -- #111's classifier covers it
+        Assert.False(ex.IsTransient); // the driver's own signal misses it -- MsTransient covers it
         Assert.True(MsTransient.IsTransient(ex));
     }
 }

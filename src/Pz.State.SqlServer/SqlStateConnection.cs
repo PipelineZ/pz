@@ -22,9 +22,8 @@ namespace Pz.State.SqlServer;
 /// count deterministically), both at connect time (<see cref="Open"/>) and around a caller's operation
 /// (<see cref="Execute{T}"/>). Every retried operation here is either read-only, naturally idempotent
 /// (DELETE, or an upsert that writes the same end state twice), or -- <see cref="SqlKeyedStateStore{T}.Set"/>'s
-/// compare-and-swap -- fails closed on replay: a retry after a lost acknowledgment either no-ops (the
-/// prior attempt's WHERE clause finds nothing to update) or reports a spurious PZ0520 conflict, never a
-/// double write.</summary>
+/// compare-and-swap -- cannot write twice on replay, and recognizes its own earlier write when only the
+/// acknowledgement was lost.</summary>
 public sealed class SqlStateConnection(
     string connectionString, string schema, TimeProvider? timeProvider = null, int maxAttempts = 3)
 {
@@ -80,7 +79,7 @@ public sealed class SqlStateConnection(
                     continue;
                 }
 
-                throw QueryFailed(ex);
+                throw QueryFailed(ex, ex is SqlException exhausted && MsTransient.IsTransient(exhausted) ? attempt : null);
             }
         }
     }
@@ -100,15 +99,19 @@ public sealed class SqlStateConnection(
 
     /// <summary>The connection opened fine; this specific operation's SQL command failed (a permanent
     /// error, or a transient one past the retry budget). PZ0529, not PZ0518 -- see the class doc.</summary>
-    public PzConfigException QueryFailed(Exception cause)
+    public PzConfigException QueryFailed(Exception cause, int? transientAttempts = null)
     {
         var builder = new SqlConnectionStringBuilder(connectionString);
         return new PzConfigException(new PzError(PzErrorCode.StateQueryFailed,
             $"the state store on server '{builder.DataSource}', database '{builder.InitialCatalog}' " +
-            $"reached but the operation failed: {Describe(cause)}.",
+            $"was reached, but the operation failed: {Describe(cause)}" +
+            (transientAttempts is { } attempts ? $" after {attempts} attempts." : "."),
             "project.yml", null,
-            "check the account in state.connection / PZ_STATE_CONNECTION_STRING has the required " +
-            "permissions on the state schema, and retry"));
+            transientAttempts is null
+                ? "check the account in state.connection / PZ_STATE_CONNECTION_STRING has the required " +
+                  "permissions on the state schema"
+                : "this failure is usually temporary (a deadlock, a timeout, a dropped connection) -- run " +
+                  "again, and check the load on the state database if it keeps happening"));
     }
 
     /// <summary>Never the driver's own message text (it can echo back operator-supplied identifiers) --
