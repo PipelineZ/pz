@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pz.Core.Artifacts;
 
 namespace Pz.Engine.Artifacts;
 
@@ -12,7 +13,11 @@ public static class SchemaCacheWriter
     {
         Directory.CreateDirectory(targetDir);
         var path = Path.Combine(targetDir, "schemas.json");
-        using var stream = File.Create(path);
+        AtomicFile.Write(path, stream => WriteTo(stream, fetchedSchemas));
+    }
+
+    private static void WriteTo(Stream stream, IReadOnlyDictionary<string, string> fetchedSchemas)
+    {
         using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
         {
             writer.WriteStartObject();
