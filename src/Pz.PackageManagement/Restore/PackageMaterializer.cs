@@ -91,8 +91,50 @@ public static class PackageMaterializer
             hits[package.Id] = hit;
         }
 
-        var libraryPackages = resolved.Lock.Packages.Where(p => !p.Requested).ToArray();
-        var rootPackages = resolved.Lock.Packages.Where(p => p.Requested).ToArray();
+        MaterializeFromEntries(resolved.Lock, entryDirs, packagesDir);
+        return hits;
+    }
+
+    /// <summary>True, with every package reported a cache hit, when every package
+    /// <paramref name="lockFile"/> pins already has a fully content-hashed, currently valid cache entry
+    /// under <paramref name="cacheRoot"/> -- so restoring it needs no feed access at all: <c>pz restore</c>
+    /// with an honoured lock (<c>NoCache</c> notwithstanding) succeeds offline once a prior restore has
+    /// populated the cache. False (nothing materialized, nothing partially written) for a cache miss, a
+    /// content mismatch, OR a lock written before per-file hashes were kept -- such a package cannot be
+    /// verified from the cache alone, so the caller falls back to the network resolve, which fills the
+    /// hashes in. Does not weaken PZ0327: a cache entry is trusted only when its content still hashes to
+    /// what <paramref name="lockFile"/> recorded, the same check <see cref="EnsureCacheEntry"/> applies to
+    /// a freshly downloaded package.</summary>
+    public static bool TryMaterializeFromCache(
+        LockFile lockFile, string cacheRoot, string packagesDir, out IReadOnlyDictionary<string, bool> hits)
+    {
+        var entryDirs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var package in lockFile.Packages)
+        {
+            var entryDir = Path.Combine(cacheRoot, package.Sha512);
+            if (!IsFullyHashed(package) || !IsValidEntry(entryDir, package))
+            {
+                hits = new Dictionary<string, bool>();
+                return false;
+            }
+
+            entryDirs[package.Id] = entryDir;
+        }
+
+        Directory.CreateDirectory(packagesDir);
+        MaterializeFromEntries(lockFile, entryDirs, packagesDir);
+        hits = lockFile.Packages.ToDictionary(p => p.Id, _ => true, StringComparer.OrdinalIgnoreCase);
+        return true;
+    }
+
+    private static bool IsFullyHashed(LockedPackage package) =>
+        package.Assets.Lib.Concat(package.Assets.Native).All(asset => asset.Sha512 is not null);
+
+    private static void MaterializeFromEntries(
+        LockFile lockFile, IReadOnlyDictionary<string, string> entryDirs, string packagesDir)
+    {
+        var libraryPackages = lockFile.Packages.Where(p => !p.Requested).ToArray();
+        var rootPackages = lockFile.Packages.Where(p => p.Requested).ToArray();
 
         foreach (var package in libraryPackages)
         {
@@ -113,8 +155,6 @@ public static class PackageMaterializer
                 CollectTransitive(package, libraryPackages, entryDirs, "native", a => a.Assets.Native));
             MaterializeVersionDir(package, entryDirs[package.Id], versionDir, flattened);
         }
-
-        return hits;
     }
 
     /// <summary>The absolute cache-entry paths of every library package's assets of one role, to be

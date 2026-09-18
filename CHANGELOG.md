@@ -481,6 +481,21 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   file itself was actually there — a partial install missing that file passed
   as "no drift". Existence is now always checked, hash or no hash; only the
   byte-for-byte comparison still needs a recorded hash to run.
+- `pz restore` no longer touches the network when it doesn't need to, and no
+  longer escapes as a raw stack trace when it fails for a reason outside its
+  own coded checks. A lock honoured for exactly this host, with every locked
+  package already content-verified in the local package cache, now succeeds
+  offline -- the common case once a project has restored once, and every
+  restore in CI or an air-gapped environment after that. An unreachable feed,
+  one that returns an HTTP 401/403, or a local disk failure while writing
+  under `.pz` is now PZ0328 (feed) or PZ0329 (disk) naming the feed
+  (credentials and query stripped) or the path and the cause, instead of an
+  uncoded exception rendered as an "internal error" bug report. The feed
+  resolver also no longer reads a downloaded `.nupkg` into memory whole to
+  hash it; the hash is streamed.
+  *Not addressed*: feed credentials (a bearer token or basic auth for a
+  private feed) remain out of scope -- `--feeds`/`PZ_FEEDS` still take only a
+  URL or a local path.
 
 ## [0.6.1] - 2026-09-10
 

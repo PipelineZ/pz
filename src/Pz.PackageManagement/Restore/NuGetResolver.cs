@@ -105,8 +105,13 @@ public static class NuGetResolver
                     "check the package id/version and your feeds (--feeds / PZ_FEEDS)");
             }
 
-            var nupkgBytes = await File.ReadAllBytesAsync(nupkgPath, ct);
-            var sha512 = Convert.ToHexStringLower(System.Security.Cryptography.SHA512.HashData(nupkgBytes));
+            string sha512;
+            await using (var hashStream = File.OpenRead(nupkgPath))
+            {
+                // Streamed, not read whole into memory: a 4-RID AOT connector nupkg can run tens of MB,
+                // and this runs once per resolved package on every restore.
+                sha512 = Convert.ToHexStringLower(await System.Security.Cryptography.SHA512.HashDataAsync(hashStream, ct));
+            }
             if (pinned.TryGetValue(id, out var expected) &&
                 !string.Equals(expected.Sha512, sha512, StringComparison.OrdinalIgnoreCase))
             {

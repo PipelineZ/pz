@@ -277,6 +277,15 @@ public static class PzErrorCode
     // recorded: the same version was republished or the feed's copy was tampered with. Raised by
     // NuGetResolver; the next step is 'pz restore --update' once the new content is trusted.
     public const string LockedPackageChanged = "PZ0327";
+    // An exception escaped every coded restore surface while contacting a feed: unreachable (DNS,
+    // connection refused, timeout) or one that refused the request (HTTP 401/403). Raised by
+    // RestoreFailureMapper around NuGetResolver's calls; never echoes the triggering exception's raw
+    // message, since a feed URL or NuGet's own wrapped text can carry a credential or SAS token.
+    public const string RestoreFeedUnreachable = "PZ0328";
+    // An exception escaped every coded restore surface while reading or writing under .pz: permission
+    // denied, disk full, a file locked by another process. Raised by RestoreFailureMapper around
+    // PackageMaterializer's local I/O.
+    public const string RestoreDiskFailure = "PZ0329";
     // NOTE: Pz.PackageManagement cannot reference Pz.Core (see RestoreException's doc comment), so every
     // PZ032x code above is ALSO duplicated as a bare string literal over there (NuGetResolver.cs,
     // RestoreException.cs, DriftChecker.cs comments). This registry is the source of truth for the

@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Pz.Cli;
 using Pz.PackageManagement.Restore;
 using Pz.TestSupport;
@@ -206,6 +207,71 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         // And a plain restore is the fix: it reinstalls the file as locked.
         Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
         Assert.DoesNotContain("PZ0326", RunAndCaptureStderr(["run", "--project", _work]));
+    }
+
+    // A lock already honoured, with every package already content-verified in the local cache from the
+    // first restore above, must succeed without ever contacting the feed -- proven by pointing --feeds
+    // at an address nothing listens on (connection refused, immediate, no real network needed).
+    [Fact]
+    public void Restore_with_a_satisfied_lock_and_cache_succeeds_without_contacting_the_feed()
+    {
+        WriteProject(FakeSourceConnectorProject());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+
+        const string deadFeed = "http://127.0.0.1:1/index.json";
+        var stdout = RunAndCapture(["restore", "--project", _work, "--feeds", deadFeed]);
+        var exit = CliApp.Build().Parse(["restore", "--project", _work, "--feeds", deadFeed]).Invoke();
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.Contains("restored FakeSourceConnector 1.2.3 (cache hit)", stdout);
+    }
+
+    [Fact]
+    public void Restore_against_an_unreachable_feed_is_PZ0328_without_leaking_credentials()
+    {
+        WriteProject(FakeSourceConnectorProject());
+        // Embedded userinfo and a query token: exactly the shape a private feed URL carries, and
+        // exactly what must never reach the error message.
+        const string deadFeed = "http://user:s3cr3t@127.0.0.1:1/index.json?token=abc123";
+
+        var stderr = RunAndCaptureStderr(["restore", "--project", _work, "--feeds", deadFeed]);
+        var exit = CliApp.Build().Parse(["restore", "--project", _work, "--feeds", deadFeed]).Invoke();
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0328", stderr);
+        Assert.Contains("127.0.0.1", stderr);
+        Assert.DoesNotContain("s3cr3t", stderr);
+        Assert.DoesNotContain("token=abc123", stderr);
+        Assert.DoesNotContain("PZ0500", stderr); // coded, not the generic "internal error" fallback
+    }
+
+    // Unix permission bits only: File.SetUnixFileMode is a no-op fiction on Windows (and the repo's
+    // CI/dev environment is Linux), same trick RunRetentionFailureTests already uses.
+    [SupportedOSPlatform("linux")]
+    [Fact]
+    public void Restore_disk_failure_reinstalling_a_drifted_package_is_PZ0329()
+    {
+        WriteProject(FakeSourceConnectorProject());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+
+        var idDir = Path.Combine(_work, ".pz", "packages", "FakeSourceConnector");
+        var dll = Path.Combine(idDir, "1.2.3", "lib", "FakeSourceConnector.dll");
+        File.WriteAllBytes(dll, [.. File.ReadAllBytes(dll), 0x00]); // drifted: forces a reinstall attempt
+
+        File.SetUnixFileMode(idDir, UnixFileMode.UserRead | UnixFileMode.UserExecute); // no write: reinstall fails
+        try
+        {
+            var stderr = RunAndCaptureStderr(["restore", "--project", _work, "--feeds", feed.FeedDir]);
+            var exit = CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke();
+
+            Assert.Equal(ExitCodes.ConfigError, exit);
+            Assert.Contains("PZ0329", stderr);
+            Assert.Contains(idDir, stderr);
+        }
+        finally
+        {
+            File.SetUnixFileMode(idDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
     }
 
     [Fact]
