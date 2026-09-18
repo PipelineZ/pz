@@ -383,6 +383,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   All errors aggregate (a run reports every mistake in a file at once, not
   just the first) and carry the file and a next step, per this project's
   error-reporting rule.
+- `state: {backend: sqlserver, artifacts: true}` no longer costs O(N^2) round
+  trips per run: `SqlRunArtifactStore.WriteSnapshot` now upserts only the nodes
+  that are new or changed since the store's last successful write for that run,
+  instead of every node in the cumulative list `SnapshotRunEvents.NodeCompleted`
+  re-sends on every call. A 300-node run used to make roughly 45,000 round
+  trips (1+2+...+300 across 300 snapshots); it now makes 300. A node is only
+  ever marked written after its snapshot's transaction actually commits, so a
+  failed write still retries on the next snapshot.
 
 ## [0.6.1] - 2026-09-10
 

@@ -112,4 +112,81 @@ public sealed class SqlRunArtifactStoreContractTests(SqlServerFixture fixture) :
 
         Assert.Null(run.Nodes.Single().Observed);
     }
+
+    /// <summary>The O(N^2) regression this store used to have: <c>SnapshotRunEvents.NodeCompleted</c>
+    /// hands the CUMULATIVE node list to every call, so a naive "upsert everything in the list" store
+    /// costs 1+2+...+N round trips across N growing snapshots of an N-node run. Proves the fix is a true
+    /// delta -- exactly one upsert per node, however many times its unchanged content is re-sent --
+    /// by counting actual <c>UpsertNode</c> executions rather than trusting timing.</summary>
+    [SkippableFact]
+    public void Growing_snapshots_upsert_only_new_nodes()
+    {
+        DockerFacts.SkipUnlessDocker();
+        var store = (SqlRunArtifactStore)NewStore();
+        const string startedAt = "2026-07-31T00:00:00.000Z";
+        const string runId = "20260731T000010Z";
+
+        var nodes = new List<NodeResult>();
+        for (var i = 1; i <= 5; i++)
+        {
+            nodes.Add(SucceededSourceLoad($"n{i}", $"src_{i}"));
+            store.WriteSnapshot(runId, startedAt, nodes, "running");
+        }
+
+        // Without delta tracking this would be 1+2+3+4+5 = 15; with it, one upsert per node.
+        Assert.Equal(5, store.NodeUpsertCountForTests);
+
+        // The terminal-status snapshot RunCommand.ExecuteRun takes at the end of a run re-sends the
+        // exact same cumulative list one more time -- must not upsert any node again.
+        store.WriteSnapshot(runId, startedAt, nodes, "success");
+        Assert.Equal(5, store.NodeUpsertCountForTests);
+
+        var run = store.ReadLatest()!;
+        Assert.Equal(5, run.Nodes.Count);
+        Assert.Equal("success", run.Status);
+    }
+
+    /// <summary>The delta is by CONTENT, not just presence: <see cref="IRunArtifactStore.WriteSnapshot"/>'s
+    /// contract is "new or changed", so a node id reported again with different content (never exercised
+    /// by the one real caller, whose <c>NodeResult</c>s are immutable and reported once, but not excluded
+    /// by the interface) must still land.</summary>
+    [SkippableFact]
+    public void A_node_reported_again_with_different_content_is_re_upserted()
+    {
+        DockerFacts.SkipUnlessDocker();
+        var store = (SqlRunArtifactStore)NewStore();
+        const string startedAt = "2026-07-31T00:00:00.000Z";
+        const string runId = "20260731T000011Z";
+
+        var node = SucceededSourceLoad("n1", "src_a");
+        store.WriteSnapshot(runId, startedAt, [node], "running");
+        Assert.Equal(1, store.NodeUpsertCountForTests);
+
+        var updated = node with { RowsMoved = 42 };
+        store.WriteSnapshot(runId, startedAt, [updated], "running");
+        Assert.Equal(2, store.NodeUpsertCountForTests);
+
+        Assert.Equal(42, store.ReadLatest()!.Nodes.Single().Rows);
+    }
+
+    /// <summary>A write whose transaction fails partway must not be marked written, or the next
+    /// snapshot would wrongly believe the node is already durable and skip it forever.
+    /// <see cref="SqlServerFixture.NewConnectionWithoutDdlRights"/>'s login authenticates fine but its
+    /// database has no <c>pz</c> schema at all -- <c>WriteSnapshot</c>'s very first statement
+    /// ("UPDATE pz.runs ...") fails with "Invalid object name", a deterministic failure independent of
+    /// ANSI truncation/warning settings.</summary>
+    [SkippableFact]
+    public void A_failed_write_does_not_mark_the_node_as_written()
+    {
+        DockerFacts.SkipUnlessDocker();
+        var connection = fixture.NewConnectionWithoutDdlRights();
+        var store = new SqlRunArtifactStore(connection, "test-project");
+        const string startedAt = "2026-07-31T00:00:00.000Z";
+        const string runId = "20260731T000012Z";
+
+        Assert.ThrowsAny<Exception>(() =>
+            store.WriteSnapshot(runId, startedAt, [SucceededSourceLoad("n1", "src_a")], "running"));
+
+        Assert.Equal(0, store.NodeUpsertCountForTests);
+    }
 }
