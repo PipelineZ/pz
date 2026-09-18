@@ -448,8 +448,18 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::ConfigureRequest>,
     ) -> Result<Response<pb::ConfigureResponse>, Status> {
         let msg = request.into_inner();
+        let mut config = self.config.lock().unwrap();
+        if config.is_some() {
+            // Mirrors the C# SDK's `PcpConnectorService.Configure` guard: a connector process is
+            // configured exactly once (its `ConnectorConfig` never changes mid-process), so a second
+            // Configure is a protocol violation, not a silent re-point.
+            return Err(Status::failed_precondition(
+                "connector is already configured",
+            ));
+        }
+
         *self.instance.lock().unwrap() = Some(msg.instance_id.clone());
-        *self.config.lock().unwrap() = Some(Config::from_struct(msg.config.as_ref()));
+        *config = Some(Config::from_struct(msg.config.as_ref()));
         Ok(Response::new(pb::ConfigureResponse {}))
     }
 
@@ -1735,5 +1745,28 @@ mod tests {
 
         assert!(response.ok);
         assert_eq!(response.message, None);
+    }
+
+    #[tokio::test]
+    async fn a_second_configure_is_refused_as_already_configured() {
+        let service = test_service(FixtureConnector::default());
+        service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "a".to_string(),
+                config: None,
+            }))
+            .await
+            .expect("the first Configure must succeed");
+
+        let err = service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "b".to_string(),
+                config: None,
+            }))
+            .await
+            .expect_err("a second Configure on the same process must be refused");
+
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.message(), "connector is already configured");
     }
 }

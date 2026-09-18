@@ -814,6 +814,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     mirroring the C# SDK, which never lets `CheckConnectionAsync`'s
     `ConnectionCheck(false, ...)` escape as an `RpcException`. `message` is
     exactly what the connector's own `check()` reported, verbatim.
+  - A second `Configure` RPC on the same process is now refused
+    (`FAILED_PRECONDITION`, "connector is already configured") instead of
+    silently re-pointing the connector at a different config, mirroring the
+    C# SDK's guard.
 
 ## [0.6.1] - 2026-09-10
 
