@@ -348,42 +348,51 @@ public class DocsToolsTests
         Assert.Equal("PZ0607", result.GetProperty("errors")[0].GetProperty("code").GetString());
     }
 
-    // Cap enforcement, both transports -- a response over the named limit is a coded refusal (PZ0610),
-    // never a silent truncation. MaxResponseBytes is an internal settable seam purely so the test does
-    // not need to actually transfer tens of megabytes.
+    // Cap enforcement, both transports -- a response over the limit is a coded refusal (PZ0610), never a
+    // silent truncation. The limit is a constructor argument so a test need not move tens of megabytes.
     [Fact]
     public async Task Oversized_http_response_is_PZ0610_not_silently_truncated()
     {
-        var original = DocsCatalog.MaxResponseBytes;
-        DocsCatalog.MaxResponseBytes = 16;
-        try
-        {
-            var catalog = new DocsCatalog(new HttpClient(new StubHandler(_ => Text(Index))), "https://pipelinez.dev");
+        var catalog = new DocsCatalog(
+            new HttpClient(new StubHandler(_ => Text(Index))), "https://pipelinez.dev", maxResponseBytes: 16);
 
-            var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+        var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
 
-            Assert.False(result.GetProperty("ok").GetBoolean());
-            var error = result.GetProperty("errors")[0];
-            Assert.Equal("PZ0610", error.GetProperty("code").GetString());
-            Assert.Contains("pipelinez.dev", error.GetProperty("message").GetString()!, StringComparison.Ordinal);
-        }
-        finally
-        {
-            DocsCatalog.MaxResponseBytes = original;
-        }
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        var error = result.GetProperty("errors")[0];
+        Assert.Equal("PZ0610", error.GetProperty("code").GetString());
+        Assert.Contains("pipelinez.dev", error.GetProperty("message").GetString()!, StringComparison.Ordinal);
+    }
+
+    // A response that declares no length must be refused while it is still arriving: reading all of it
+    // first to measure it is the unbounded read the limit exists to prevent.
+    [Fact]
+    public async Task An_oversized_response_with_no_declared_length_is_refused_before_it_is_all_read()
+    {
+        var body = new CountingStream(length: 1_000_000);
+        var catalog = new DocsCatalog(
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(body),
+            })),
+            "https://pipelinez.dev", maxResponseBytes: 1024);
+
+        var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+        Assert.Equal("PZ0610", result.GetProperty("errors")[0].GetProperty("code").GetString());
+        Assert.True(body.BytesRead < 100_000, $"read {body.BytesRead} bytes of a response capped at 1024");
     }
 
     [Fact]
     public async Task Oversized_file_response_is_PZ0610_not_silently_truncated()
     {
-        var original = DocsCatalog.MaxResponseBytes;
-        DocsCatalog.MaxResponseBytes = 16;
         var dir = Path.Combine(Path.GetTempPath(), "pz-docs-mirror-big-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
             File.WriteAllText(Path.Combine(dir, "llms.txt"), Index);
-            var catalog = new DocsCatalog(new HttpClient(new StubHandler(_ => Text(""))), "file://" + dir);
+            var catalog = new DocsCatalog(
+                new HttpClient(new StubHandler(_ => Text(""))), "file://" + dir, maxResponseBytes: 16);
 
             var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
 
@@ -392,8 +401,35 @@ public class DocsToolsTests
         }
         finally
         {
-            DocsCatalog.MaxResponseBytes = original;
             Directory.Delete(dir, recursive: true);
         }
+    }
+
+    /// <summary>A non-seekable body of a fixed size that counts what was actually pulled from it.</summary>
+    private sealed class CountingStream(long length) : Stream
+    {
+        private long _remaining = length;
+
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var n = (int)Math.Min(count, _remaining);
+            Array.Fill(buffer, (byte)'a', offset, n);
+            _remaining -= n;
+            BytesRead += n;
+            return n;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 }

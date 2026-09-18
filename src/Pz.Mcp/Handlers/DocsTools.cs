@@ -158,6 +158,6 @@ internal static class DocsTools
             ex.Message,
             File: null,
             Line: null,
-            Hint: $"pz refuses to read a documentation response over {DocsCatalog.MaxResponseBytes} bytes -- " +
+            Hint: $"pz refuses to read a documentation response over {ex.LimitBytes} bytes -- " +
                 $"point {DocsCatalog.BaseUrlEnvironmentVariable} at a smaller mirror, or trim the one it names")]);
 }

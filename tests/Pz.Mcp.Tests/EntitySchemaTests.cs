@@ -42,6 +42,32 @@ public sealed class EntitySchemaTests
         Assert.Equal("fetched", result.GetProperty("source").GetString());
     }
 
+    // The declared read is the one that applies to a declared entity. Options passed on top of it are
+    // not used, and the caller -- who would otherwise trust a schema shaped by options it never got --
+    // is told so.
+    [Fact]
+    public async Task Read_options_for_an_already_declared_entity_are_reported_as_unused()
+    {
+        using var p = new ParquetProject();
+        var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
+            p.Dir, "raw", "orders", read: new Dictionary<string, object?> { ["format"] = "csv" },
+            RealServices(), CancellationToken.None));
+
+        var result = doc.RootElement.GetProperty("result");
+        Assert.Equal("fetched", result.GetProperty("source").GetString());
+        Assert.Contains("already declared", result.GetProperty("note").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task No_note_when_no_read_options_were_passed()
+    {
+        using var p = new ParquetProject();
+        var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
+            p.Dir, "raw", "orders", read: null, RealServices(), CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("result").TryGetProperty("note", out _));
+    }
+
     [Fact]
     public async Task Entity_schema_falls_back_to_the_declared_contract_for_a_csv_entity()
     {

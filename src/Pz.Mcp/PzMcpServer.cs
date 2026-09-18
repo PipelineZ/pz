@@ -126,7 +126,7 @@ public static class PzMcpServer
                         "connection's entities: block -- an entity is just a name in that place. `read` " +
                         "supplies the options (e.g. format/path) the connector's schema discovery needs " +
                         "for an undeclared entity when the connection's default naming convention does " +
-                        "not apply; ignored for an already-declared entity. Read-only — does not write " +
+                        "not apply; for an already-declared entity its declared read is used and the result says so. Read-only — does not write " +
                         ".pz/target/schemas.json.",
                 }),
             McpServerTool.Create(

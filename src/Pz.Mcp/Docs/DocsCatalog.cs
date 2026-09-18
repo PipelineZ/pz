@@ -31,7 +31,7 @@ public sealed record DocPage(string Slug, string Title, string Description, stri
 ///
 /// One instance holds one process's cache: the index and the full text are each fetched at most
 /// once, because an agent typically searches several times in a session and the full text is large.
-/// Every fetch, over either transport, is capped at <see cref="MaxResponseBytes"/> -- a caller gets a
+/// Every fetch, over either transport, is capped (<see cref="DefaultMaxResponseBytes"/> unless told otherwise) -- a caller gets a
 /// coded refusal (PZ0610) rather than an unbounded read or a silent truncation.
 /// </summary>
 public sealed class DocsCatalog
@@ -39,11 +39,10 @@ public sealed class DocsCatalog
     public const string DefaultBaseUrl = "https://pipelinez.dev";
     public const string BaseUrlEnvironmentVariable = "PZ_DOCS_URL";
 
-    /// <summary>The largest response (`llms.txt`, `llms-full.txt`, or any other fetched page) this
-    /// catalog will read, over either transport. Internal and settable purely as a test seam --
-    /// production code never assigns it -- mirroring <c>ConnectivityValidator.ProbeTimeout</c>'s own
-    /// settable-for-tests pattern.</summary>
-    internal static long MaxResponseBytes { get; set; } = 25 * 1024 * 1024;
+    /// <summary>The largest response (`llms.txt`, `llms-full.txt`) this catalog reads by default, over
+    /// either transport. The whole corpus is a few megabytes; this leaves room to grow and still bounds
+    /// what a misconfigured mirror can make pz hold in memory.</summary>
+    public const long DefaultMaxResponseBytes = 25 * 1024 * 1024;
 
     // "- [Title](url)" with an optional ": description" tail. The description is optional because a
     // page without a leading prose paragraph produces no summary, and dropping the whole line for
@@ -57,13 +56,15 @@ public sealed class DocsCatalog
         RegexOptions.Compiled | RegexOptions.Multiline);
 
     private readonly HttpClient _http;
+    private readonly long _maxResponseBytes;
     private readonly string _baseUrl;
     private IReadOnlyList<DocPage>? _index;
     private IReadOnlyDictionary<string, string>? _bodies;
 
-    public DocsCatalog(HttpClient http, string? baseUrl = null)
+    public DocsCatalog(HttpClient http, string? baseUrl = null, long maxResponseBytes = DefaultMaxResponseBytes)
     {
         _http = http;
+        _maxResponseBytes = maxResponseBytes;
         _baseUrl = (baseUrl
             ?? Environment.GetEnvironmentVariable(BaseUrlEnvironmentVariable)
             ?? DefaultBaseUrl).TrimEnd('/');
@@ -138,24 +139,18 @@ public sealed class DocsCatalog
         var url = _baseUrl + path;
         try
         {
-            using var response = await _http.GetAsync(url, ct).ConfigureAwait(false);
+            // Headers first: the body is pulled through the limit below, never buffered whole.
+            using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct)
+                .ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
-            // Content-Length is a declared, not enforced, bound -- checked first so an honestly-labeled
-            // oversized response is refused without reading it at all; the post-read count below is
-            // the backstop for a chunked response that never declared a length.
-            if (response.Content.Headers.ContentLength is { } declared && declared > MaxResponseBytes)
+            // A declared length over the limit is refused without reading anything.
+            if (response.Content.Headers.ContentLength is { } declared && declared > _maxResponseBytes)
             {
-                throw new DocsResponseTooLargeException(url, declared);
+                throw new DocsResponseTooLargeException(url, declared, _maxResponseBytes);
             }
 
-            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            var actual = Encoding.UTF8.GetByteCount(body);
-            if (actual > MaxResponseBytes)
-            {
-                throw new DocsResponseTooLargeException(url, actual);
-            }
-
-            return body;
+            await using var body = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false);
+            return await ReadBoundedAsync(body, url, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
         {
@@ -163,6 +158,27 @@ public sealed class DocsCatalog
             // the message has to say WHICH url failed for a mirror misconfiguration to be diagnosable.
             throw new DocsUnavailableException(url, ex);
         }
+    }
+
+    /// <summary>Reads <paramref name="body"/> as UTF-8, stopping the moment it has yielded more than the
+    /// limit -- a response with no declared length (chunked) is measured as it arrives, not afterwards.</summary>
+    private async Task<string> ReadBoundedAsync(Stream body, string url, CancellationToken ct)
+    {
+        using var buffered = new MemoryStream();
+        var chunk = new byte[81920];
+        int read;
+        while ((read = await body.ReadAsync(chunk, ct).ConfigureAwait(false)) > 0)
+        {
+            buffered.Write(chunk, 0, read);
+            if (buffered.Length > _maxResponseBytes)
+            {
+                throw new DocsResponseTooLargeException(url, buffered.Length, _maxResponseBytes);
+            }
+        }
+
+        buffered.Position = 0;
+        using var reader = new StreamReader(buffered, Encoding.UTF8);
+        return await reader.ReadToEndAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>Resolves <paramref name="path"/> (always one of the two fixed corpus paths today, but
@@ -191,9 +207,9 @@ public sealed class DocsCatalog
                 throw new FileNotFoundException($"no such file: '{resolved}'", resolved);
             }
 
-            if (info.Length > MaxResponseBytes)
+            if (info.Length > _maxResponseBytes)
             {
-                throw new DocsResponseTooLargeException(url, info.Length);
+                throw new DocsResponseTooLargeException(url, info.Length, _maxResponseBytes);
             }
 
             return await File.ReadAllTextAsync(resolved, ct).ConfigureAwait(false);
@@ -295,12 +311,15 @@ public sealed class DocsUnavailableException(string url, Exception inner)
     public string Url { get; } = url;
 }
 
-/// <summary>A documentation response exceeded <see cref="DocsCatalog.MaxResponseBytes"/>. Deliberately
-/// its own type, not folded into <see cref="DocsUnavailableException"/> — the source WAS reached, so
-/// "could not reach" and its mirror-misconfiguration hint would misdiagnose the real cause.</summary>
-public sealed class DocsResponseTooLargeException(string url, long sizeBytes)
-    : Exception($"the documentation response from {url} is {sizeBytes} bytes, over pz's " +
-        $"{DocsCatalog.MaxResponseBytes}-byte limit")
+/// <summary>A documentation response exceeded the catalog's size limit. Deliberately its own type, not
+/// folded into <see cref="DocsUnavailableException"/> — the source WAS reached, so "could not reach" and
+/// its mirror-misconfiguration hint would misdiagnose the real cause. <paramref name="sizeBytes"/> is
+/// the declared size when the source declared one, otherwise how much had arrived when pz stopped.</summary>
+public sealed class DocsResponseTooLargeException(string url, long sizeBytes, long limitBytes)
+    : Exception($"the documentation response from {url} is over pz's {limitBytes}-byte limit " +
+        $"({sizeBytes} bytes and counting)")
 {
     public string Url { get; } = url;
+
+    public long LimitBytes { get; } = limitBytes;
 }

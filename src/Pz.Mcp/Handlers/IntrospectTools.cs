@@ -291,11 +291,16 @@ internal static class IntrospectTools
             // refusal -- see the class doc above. `read` supplies whatever options the connector's
             // schema discovery needs beyond the bare name (e.g. `format: parquet` -- localfiles
             // defaults every undeclared entity to csv, which needs a columns: contract this call
-            // deliberately does not have); ignored once the entity IS declared, since that dataset's
-            // real options already apply.
-            var matchedDataset = matchedConnection.Datasets.FirstOrDefault(
-                d => string.Equals(d.Name, entity, StringComparison.Ordinal))
+            // deliberately does not have). Once the entity IS declared its own read applies, and the
+            // result says the passed options went unused.
+            var declaredDataset = matchedConnection.Datasets.FirstOrDefault(
+                d => string.Equals(d.Name, entity, StringComparison.Ordinal));
+            var matchedDataset = declaredDataset
                 ?? new DatasetDef(entity, read ?? new Dictionary<string, object?>(), Columns: null);
+            var unusedReadNote = declaredDataset is not null && read is { Count: > 0 }
+                ? $"'{entity}' is already declared on connection '{connection}', so its declared read was " +
+                  "used and the `read` options passed here were not"
+                : null;
 
             var filteredProject = project with
             {
@@ -353,6 +358,11 @@ internal static class IntrospectTools
 
                 json.WriteEndArray();
                 json.WriteString("source", source);
+                if (unusedReadNote is not null)
+                {
+                    json.WriteString("note", unusedReadNote);
+                }
+
                 if (source == "declared_contract")
                 {
                     json.WriteBoolean("differs_from_contract", extraColumns is { Count: > 0 });
