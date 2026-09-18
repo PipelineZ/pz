@@ -1,15 +1,15 @@
 using System.CommandLine;
-using System.Text;
 using Pz.Core.Validation;
 
 namespace Pz.Cli.Commands;
 
-/// <summary>`pz completion bash|zsh|fish|pwsh`: prints a shell completion script for pz's verbs
-/// (and one level of sub-verbs — `connector test`, `cdc status`/`drop`, etc.) to stdout. Generated from
-/// <see cref="CommandTree"/>'s walk of the real <see cref="CliApp.Build"/> tree, never a hand-maintained
-/// list, so a verb cannot drift out of sync with `--help`. Static only: no dynamic completion of node,
-/// connection, or entity names (that needs a live project and is out of scope here) — no network, no
-/// file writes, byte-stable output (LF line endings, final newline).</summary>
+/// <summary>`pz completion bash|zsh|fish|pwsh`: prints a shell completion script to stdout. A script
+/// carries no list of its own — it hands the command line and the cursor position back to pz
+/// (<c>pz "[suggest:&lt;position&gt;]" "&lt;line&gt;"</c>, answered by the command-line parser itself), so
+/// verbs, sub-verbs and options complete from whatever the installed pz accepts and an upgrade never
+/// leaves a stale script behind. Where pz has nothing to offer — an option's value is usually a path —
+/// each script falls back to the shell's own file completion. No network, no file writes, byte-stable
+/// output (LF line endings, final newline).</summary>
 internal static class CompletionCommand
 {
     private static readonly string[] SupportedShells = ["bash", "zsh", "fish", "pwsh"];
@@ -20,7 +20,8 @@ internal static class CompletionCommand
         {
             Description = "Shell to generate a completion script for: bash, zsh, fish, or pwsh",
         };
-        var command = new Command("completion", "Print a shell completion script for pz's verbs to stdout");
+        shellArgument.CompletionSources.Add(SupportedShells);
+        var command = new Command("completion", "Print a shell completion script for pz to stdout");
         command.Arguments.Add(shellArgument);
         command.SetAction(parseResult => Execute(parseResult.GetValue(shellArgument)!));
         return command;
@@ -28,7 +29,15 @@ internal static class CompletionCommand
 
     internal static int Execute(string shell)
     {
-        if (Array.IndexOf(SupportedShells, shell) < 0)
+        var script = shell switch
+        {
+            "bash" => Bash,
+            "zsh" => Zsh,
+            "fish" => Fish,
+            "pwsh" => Pwsh,
+            _ => null,
+        };
+        if (script is null)
         {
             Console.Error.WriteLine(
                 $"error {PzErrorCode.CompletionShellInvalid}: unknown shell '{shell}' — expected one of: " +
@@ -36,104 +45,59 @@ internal static class CompletionCommand
             return ExitCodes.ConfigError;
         }
 
-        var groups = CommandTree.Collect(CliApp.Build());
-        var script = shell switch
-        {
-            "bash" => BashScript(groups),
-            "zsh" => ZshScript(groups),
-            "fish" => FishScript(groups),
-            "pwsh" => PwshScript(groups),
-            _ => throw new ArgumentOutOfRangeException(nameof(shell), shell, "unknown shell"),
-        };
-
-        Console.Out.Write(script);
+        Console.Out.Write(script.ReplaceLineEndings("\n"));
         return ExitCodes.Ok;
     }
 
-    private static string BashScript(IReadOnlyList<CommandTree.VerbGroup> groups)
-    {
-        var sb = new StringBuilder();
-        sb.Append("_pz_complete() {\n");
-        sb.Append("    local cur=${COMP_WORDS[COMP_CWORD]}\n");
-        sb.Append($"    local commands=\"{string.Join(' ', groups.Select(g => g.Name))}\"\n");
-        sb.Append("    if [[ $COMP_CWORD -eq 1 ]]; then\n");
-        sb.Append("        COMPREPLY=( $(compgen -W \"$commands\" -- \"$cur\") )\n");
-        sb.Append("        return 0\n");
-        sb.Append("    fi\n");
-        sb.Append("    case \"${COMP_WORDS[1]}\" in\n");
-        foreach (var g in groups.Where(g => g.Children.Count > 0))
-        {
-            sb.Append($"        {g.Name}) COMPREPLY=( $(compgen -W \"{string.Join(' ', g.Children)}\" -- \"$cur\") ) ;;\n");
+    // `-o default` is what hands an empty reply on to bash's file name completion.
+    private const string Bash = """
+        _pz_complete() {
+            local IFS=$'\n'
+            local suggestions
+            suggestions=$(pz "[suggest:${COMP_POINT}]" "${COMP_LINE}" 2>/dev/null)
+            COMPREPLY=( $(compgen -W "${suggestions}" -- "${COMP_WORDS[COMP_CWORD]}") )
+        }
+        complete -o default -F _pz_complete pz
+
+        """;
+
+    // Works both ways a zsh user installs it: autoloaded from fpath (the function is then called for a
+    // completion straight away) and sourced from .zshrc (it only registers itself).
+    private const string Zsh = """
+        #compdef pz
+
+        _pz() {
+            local -a suggestions
+            suggestions=(${(f)"$(pz "[suggest:${CURSOR}]" "${BUFFER}" 2>/dev/null)"})
+            compadd -- ${suggestions} || _files
         }
 
-        sb.Append("    esac\n");
-        sb.Append("}\n");
-        sb.Append("complete -F _pz_complete pz\n");
-        return sb.ToString();
-    }
+        if [ "${funcstack[1]}" = "_pz" ]; then
+            _pz "$@"
+        else
+            compdef _pz pz
+        fi
 
-    private static string ZshScript(IReadOnlyList<CommandTree.VerbGroup> groups)
-    {
-        var sb = new StringBuilder();
-        sb.Append("#compdef pz\n\n");
-        sb.Append("_pz() {\n");
-        sb.Append("    local -a commands\n");
-        sb.Append($"    commands=({string.Join(' ', groups.Select(g => g.Name))})\n\n");
-        sb.Append("    if (( CURRENT == 2 )); then\n");
-        sb.Append("        compadd -a commands\n");
-        sb.Append("        return\n");
-        sb.Append("    fi\n\n");
-        sb.Append("    case \"${words[2]}\" in\n");
-        foreach (var g in groups.Where(g => g.Children.Count > 0))
-        {
-            sb.Append($"        {g.Name}) compadd {string.Join(' ', g.Children)} ;;\n");
+        """;
+
+    // File names stay out of the way only where a verb is expected; everywhere else fish offers them
+    // beside pz's own suggestions.
+    private const string Fish = """
+        complete -c pz -n "__fish_use_subcommand" -f
+        complete -c pz -a '(pz "[suggest:"(string length -- (commandline -cp))"]" (commandline -cp) 2>/dev/null)'
+
+        """;
+
+    // The AST's text drops the trailing space of `pz state `, which is the difference between
+    // completing `state` and completing what follows it, so the line is padded back out to the cursor.
+    private const string Pwsh = """
+        Register-ArgumentCompleter -Native -CommandName pz -ScriptBlock {
+            param($wordToComplete, $commandAst, $cursorPosition)
+            $line = "$commandAst".PadRight($cursorPosition)
+            pz "[suggest:$cursorPosition]" $line 2>$null |
+                Where-Object { $_ -like "$wordToComplete*" } |
+                ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }
         }
 
-        sb.Append("    esac\n");
-        sb.Append("}\n\n");
-        sb.Append("_pz \"$@\"\n");
-        return sb.ToString();
-    }
-
-    private static string FishScript(IReadOnlyList<CommandTree.VerbGroup> groups)
-    {
-        var sb = new StringBuilder();
-        sb.Append($"set -l pz_commands {string.Join(' ', groups.Select(g => g.Name))}\n");
-        sb.Append("complete -c pz -f -n \"not __fish_seen_subcommand_from $pz_commands\" -a \"$pz_commands\"\n");
-        foreach (var g in groups.Where(g => g.Children.Count > 0))
-        {
-            sb.Append(
-                $"complete -c pz -f -n \"__fish_seen_subcommand_from {g.Name}\" -a \"{string.Join(' ', g.Children)}\"\n");
-        }
-
-        return sb.ToString();
-    }
-
-    private static string PwshScript(IReadOnlyList<CommandTree.VerbGroup> groups)
-    {
-        var sb = new StringBuilder();
-        sb.Append("Register-ArgumentCompleter -Native -CommandName pz -ScriptBlock {\n");
-        sb.Append("    param($wordToComplete, $commandAst, $cursorPosition)\n");
-        sb.Append($"    $commands = {string.Join(',', groups.Select(g => $"'{g.Name}'"))}\n");
-        sb.Append("    $tokens = $commandAst.CommandElements | ForEach-Object { $_.Extent.Text }\n");
-        sb.Append("    if ($tokens.Count -le 2) {\n");
-        sb.Append("        $commands | Where-Object { $_ -like \"$wordToComplete*\" } | " +
-            "ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }\n");
-        sb.Append("        return\n");
-        sb.Append("    }\n");
-        sb.Append("    $sub = $tokens[1]\n");
-        sb.Append("    $subcommands = @{\n");
-        foreach (var g in groups.Where(g => g.Children.Count > 0))
-        {
-            sb.Append($"        '{g.Name}' = @({string.Join(',', g.Children.Select(c => $"'{c}'"))})\n");
-        }
-
-        sb.Append("    }\n");
-        sb.Append("    if ($subcommands.ContainsKey($sub)) {\n");
-        sb.Append("        $subcommands[$sub] | Where-Object { $_ -like \"$wordToComplete*\" } | " +
-            "ForEach-Object { [System.Management.Automation.CompletionResult]::new($_, $_, 'ParameterValue', $_) }\n");
-        sb.Append("    }\n");
-        sb.Append("}\n");
-        return sb.ToString();
-    }
+        """;
 }

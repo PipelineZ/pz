@@ -417,7 +417,9 @@ public sealed class RunResultsWriterTests : IDisposable
     [Fact]
     public void WriteSnapshot_omits_finishedAt_while_running_and_stamps_it_on_terminal_status()
     {
-        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+        var clock = new Resilience.ManualTimeProvider();
+        clock.Advance(new DateTimeOffset(2026, 7, 2, 10, 15, 42, 500, TimeSpan.Zero) - DateTimeOffset.UnixEpoch);
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z", clock);
         var node = new NodeResult(new NodeId("aaaaaaaaaaaaaaaa"), NodeKind.SourceLoad, "src_files__orders",
             NodeStatus.Success, 12, TimeSpan.FromMilliseconds(417), null);
 
@@ -431,9 +433,7 @@ public sealed class RunResultsWriterTests : IDisposable
         writer.WriteSnapshot([node], "success");
         using (var terminal = JsonDocument.Parse(File.ReadAllBytes(Paths.RunResultsPath)))
         {
-            var finishedAt = terminal.RootElement.GetProperty("finishedAt").GetString();
-            Assert.False(string.IsNullOrEmpty(finishedAt));
-            Assert.True(DateTimeOffset.TryParse(finishedAt, out _), $"'{finishedAt}' must parse as an ISO timestamp");
+            Assert.Equal("2026-07-02T10:15:42.500Z", terminal.RootElement.GetProperty("finishedAt").GetString());
         }
     }
 

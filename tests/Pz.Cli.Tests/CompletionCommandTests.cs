@@ -1,5 +1,3 @@
-using Pz.Cli.Commands;
-
 namespace Pz.Cli.Tests;
 
 /// <summary>`pz completion` end to end. Entirely offline and side-effect-free -- no project, no
@@ -21,23 +19,109 @@ public sealed class CompletionCommandTests
         Assert.NotEmpty(stdout);
     }
 
-    /// <summary>The whole point of generating from <see cref="Commands.CommandTree"/> rather than a
-    /// hand-maintained list: every verb AND sub-verb registered on the real <see cref="CliApp.Build"/>
-    /// tree must appear in every shell's script, so a new verb cannot silently drift out of sync with
-    /// `--help`.</summary>
+    // A script that carries its own list of verbs is out of date the day a verb or an option is
+    // added. Each one asks pz itself instead, so it completes whatever the installed pz accepts.
     [Theory]
     [InlineData("bash"), InlineData("zsh"), InlineData("fish"), InlineData("pwsh")]
-    public void Every_registered_command_name_appears_in_the_generated_script(string shell)
+    public void Every_script_asks_pz_for_its_suggestions(string shell)
     {
-        var names = CommandTree.AllNames(CliApp.Build());
-        Assert.NotEmpty(names);
+        var stdout = CaptureOut(() => CliApp.Build().Parse(["completion", shell]).Invoke(), out _);
 
-        var stdout = CaptureOut(() => CliApp.Build().Parse(["completion", shell]).Invoke(), out var exit);
+        Assert.Contains("[suggest:", stdout);
+        Assert.DoesNotContain("rollback", stdout);
+    }
+
+    // What the scripts call. It goes through CliApp.Run, the entrypoint that rewrites a usage error's
+    // exit code, because that override must leave the directive alone.
+    [Theory]
+    [InlineData("pz ", "run")]
+    [InlineData("pz ", "completion")]
+    [InlineData("pz state ", "rollback")]
+    [InlineData("pz connector ", "test")]
+    [InlineData("pz run --", "--project")]
+    [InlineData("pz runs --", "--limit")]
+    [InlineData("pz completion ", "zsh")]
+    public void The_suggest_directive_answers_with_verbs_sub_verbs_and_options(string line, string expected)
+    {
+        var position = line.Length.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var stdout = CaptureOut(
+            () => CliApp.Run(CliApp.Build(), [$"[suggest:{position}]", line], new StringWriter(), _ => null),
+            out var exit);
 
         Assert.Equal(ExitCodes.Ok, exit);
-        foreach (var name in names)
+        Assert.Contains(expected, stdout.Split('\n', StringSplitOptions.TrimEntries));
+    }
+
+    [Fact]
+    public void Every_registered_verb_is_suggested()
+    {
+        var stdout = CaptureOut(
+            () => CliApp.Run(CliApp.Build(), ["[suggest:3]", "pz "], new StringWriter(), _ => null), out _);
+        var suggested = stdout.Split('\n', StringSplitOptions.TrimEntries);
+
+        Assert.All(CliApp.Build().Subcommands.Where(c => !c.Hidden), verb => Assert.Contains(verb.Name, suggested));
+    }
+
+    // The script as a shell runs it: `pz` is a function over the CLI this test project was built with.
+    [SkippableTheory]
+    [InlineData("pz sta", "state")]
+    [InlineData("pz state ro", "rollback")]
+    [InlineData("pz run --proj", "--project")]
+    public void The_bash_script_completes_the_word_under_the_cursor(string line, string expected)
+    {
+        Assert.Equal(expected, Assert.Single(BashComplete(line)));
+    }
+
+    // An option's value is usually a path. With nothing of pz's own to offer, the script has to leave
+    // the reply empty and be registered so that bash then falls back to file names.
+    [SkippableFact]
+    public void The_bash_script_leaves_a_path_argument_to_the_shells_own_file_completion()
+    {
+        Assert.Empty(BashComplete("pz run --project ./"));
+
+        var script = CaptureOut(() => CliApp.Build().Parse(["completion", "bash"]).Invoke(), out _);
+        Assert.Contains("complete -o default -F", script);
+    }
+
+    private static string[] BashComplete(string line)
+    {
+        Skip.If(OperatingSystem.IsWindows(), "needs bash");
+        var script = CaptureOut(() => CliApp.Build().Parse(["completion", "bash"]).Invoke(), out _);
+        var cli = Path.Combine(AppContext.BaseDirectory, "Pz.Cli.dll");
+        var words = line.Split(' ');
+        var driver =
+            $"pz() {{ dotnet '{cli}' \"$@\"; }}\n" + script +
+            $"COMP_LINE='{line}'\nCOMP_POINT={line.Length}\n" +
+            $"COMP_WORDS=({string.Join(' ', words.Select(w => $"'{w}'"))})\nCOMP_CWORD={words.Length - 1}\n" +
+            "_pz_complete\nprintf '%s\\n' \"${COMPREPLY[@]}\"\n";
+
+        var start = new System.Diagnostics.ProcessStartInfo("bash")
         {
-            Assert.Contains(name, stdout);
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("-s");
+        System.Diagnostics.Process? process = null;
+        try
+        {
+            process = System.Diagnostics.Process.Start(start);
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // no bash on this machine
+        }
+
+        Skip.If(process is null, "needs bash");
+        using (process)
+        {
+            process!.StandardInput.Write(driver);
+            process.StandardInput.Close();
+            var stdout = process.StandardOutput.ReadToEnd();
+            var stderr = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            Assert.True(process.ExitCode == 0, stderr);
+            return stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         }
     }
 

@@ -84,13 +84,29 @@ internal static class RunsCommand
             return ExitCodes.ConfigError;
         }
 
-        var runs = backends.Artifacts.ReadAllNewestFirst();
+        return Report(backends.Artifacts, json, limit);
+    }
+
+    internal static int Report(IRunArtifactStore store, bool json, int? limit)
+    {
+        var runs = store.ReadAllNewestFirst();
         if (limit is { } n)
         {
             runs = runs.Take(n);
         }
 
-        var rows = runs.Select(Summarize).ToList();
+        // The store is read lazily, so a remote one fails here, part-way through, rather than above.
+        // Nothing is printed before every row is in hand: half a listing reads as the whole history.
+        List<RunRow> rows;
+        try
+        {
+            rows = runs.Select(Summarize).ToList();
+        }
+        catch (PzConfigException ex)
+        {
+            Console.Error.WriteLine($"error {ex.Error}");
+            return ExitCodes.ConfigError;
+        }
 
         if (json)
         {

@@ -171,6 +171,39 @@ public sealed class RunsCommandTests : IDisposable
             $$"""{"version":1,"runId":"{{runId}}","status":"running","startedAt":"{{startedAt}}","nodes":[{{nodesJson}}]}""");
     }
 
+    // A state store on another machine can be down. That is the store's own coded failure with its
+    // next step -- exit 2, and never the "this is a bug in pz" report an escaped exception gets.
+    [Fact]
+    public void A_state_store_that_cannot_be_read_is_its_own_coded_error()
+    {
+        var stderr = Capture(() => Commands.RunsCommand.Report(new UnreachableStore(), json: false, limit: null), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0529", stderr);
+        Assert.Contains("check the server", stderr);
+    }
+
+    private sealed class UnreachableStore : Pz.Engine.Artifacts.IRunArtifactStore
+    {
+        public IEnumerable<Pz.Engine.Artifacts.PriorRun> ReadAllNewestFirst()
+        {
+            yield return new Pz.Engine.Artifacts.PriorRun("20260702T101500123Z-0001", "success", []);
+            throw new Pz.Core.Validation.PzConfigException(new Pz.Core.Validation.PzError(
+                "PZ0529", "the state store was reached, but the operation failed", "project.yml", null,
+                "check the server"));
+        }
+
+        public void WriteSnapshot(string runId, string startedAtIso,
+            IReadOnlyList<Pz.Engine.Execution.NodeResult> completed, string status, long? eventsDropped = null) =>
+            throw new NotSupportedException();
+
+        public Pz.Engine.Artifacts.PriorRun? ReadLatest() => throw new NotSupportedException();
+
+        public IReadOnlyList<Pz.Engine.Artifacts.RunCandidate> ListCandidates() => throw new NotSupportedException();
+
+        public void Delete(string runId) => throw new NotSupportedException();
+    }
+
     private static string Capture(Func<int> action, out int exit)
     {
         var stderr = new StringWriter();

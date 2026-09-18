@@ -25,7 +25,7 @@ namespace Pz.Engine.Artifacts;
 /// lock (e.g. <c>ConsoleRunEvents._gate</c>) — callers must not couple their own synchronization to
 /// this writer's.
 /// </summary>
-public sealed class RunResultsWriter(RunPaths paths, string startedAtIso)
+public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimeProvider? time = null)
 {
     private readonly Lock _publishLock = new();
 
@@ -48,7 +48,8 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso)
             if (status != "running")
             {
                 writer.WriteString("finishedAt",
-                    DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
+                    (time ?? TimeProvider.System).GetUtcNow().UtcDateTime
+                        .ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
             }
 
             writer.WriteStartArray("nodes");
