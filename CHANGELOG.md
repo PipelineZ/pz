@@ -621,6 +621,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   URL-shaped value passes through untouched. The shared resolver
   (`Pz.Connectors.Toolkit.ProjectRelativePath`) is available to any other
   first-party connector with the same shape of option.
+- The sftp connector's connect (both `pz validate --connect`'s probe and
+  every source/sink open) now honours cancellation and a new
+  `connect_timeout_seconds` connection option (integer, 1-3600; absent ->
+  SSH.NET's own 30s default, unchanged behaviour). `CheckConnectionAsync`
+  used to ignore its `CancellationToken` entirely and the underlying
+  connect ran SSH.NET's synchronous `Connect()`, so a hung/firewalled host
+  could not be cancelled and had no way to bound the wait. A cancelled
+  connect now surfaces as a plain `OperationCanceledException`, never
+  wrapped into a connector error.
 
 ## [0.6.1] - 2026-09-10
 

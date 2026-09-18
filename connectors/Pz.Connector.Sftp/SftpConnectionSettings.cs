@@ -9,7 +9,8 @@ namespace Pz.Connector.Sftp;
 /// not re-verified here.</summary>
 internal sealed record SftpConnectionSettings(
     string Host, int Port, string Username, string? Password,
-    string? PrivateKeyPath, string? PrivateKeyPassphrase, string? HostKeyFingerprint, string? Root)
+    string? PrivateKeyPath, string? PrivateKeyPassphrase, string? HostKeyFingerprint, string? Root,
+    int? ConnectTimeoutSeconds = null)
 {
     public static SftpConnectionSettings Parse(ConnectorConfig config) => new(
         Require(config, "host"),
@@ -21,7 +22,8 @@ internal sealed record SftpConnectionSettings(
         ProjectRelativePath.Resolve(config.GetString("private_key_path"), config.GetString("base_dir")),
         config.GetString("private_key_passphrase"),
         NormalizeFingerprint(config.GetString("host_key_fingerprint")),
-        config.GetString("root"));
+        config.GetString("root"),
+        (int?)config.GetInt("connect_timeout_seconds"));
 
     /// <summary>Canonical comparison form: the OpenSSH "SHA256:" prefix and base64 '=' padding are
     /// both presentation, so both are stripped before storing/comparing.</summary>

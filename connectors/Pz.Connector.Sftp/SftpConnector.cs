@@ -20,7 +20,7 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
         ConnectorCapabilities.GatedOperations;
 
     public string ConnectionConfigSchema =>
-        """{ "type": "object", "required": ["host","username"], "properties": { "host": { "type": "string" }, "port": { "type": "integer" }, "username": { "type": "string" }, "password": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "host_key_fingerprint": { "type": "string" }, "root": { "type": "string" } }, "additionalProperties": false }""";
+        """{ "type": "object", "required": ["host","username"], "properties": { "host": { "type": "string" }, "port": { "type": "integer" }, "username": { "type": "string" }, "password": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "host_key_fingerprint": { "type": "string" }, "root": { "type": "string" }, "connect_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 } }, "additionalProperties": false }""";
 
     // Strict source-dataset schema (the azureblob/s3 parity shape): unknown/typo'd options fail
     // `pz validate` with PZ0301 instead of being silently ignored. files_per_partition is genuinely
@@ -87,19 +87,18 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
     /// a false ConnectionCheck. Everything the try can throw -- connect, auth, and the stat itself --
     /// is a genuine connectivity outcome, folded into the message with the transient/permanent tag
     /// (the Azure/Postgres convention; ConnectionCheck carries no separate transience field).</summary>
-    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
+    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
     {
         var settings = SftpConnectionSettings.Parse(config);
         var auth = SftpClientFactory.BuildAuth(settings);
         try
         {
-            using var fs = SftpClientFactory.Connect(settings, auth);
-            return new ValueTask<ConnectionCheck>(ProbeRoot(fs, settings));
+            using var fs = await SftpClientFactory.ConnectAsync(settings, auth, ct).ConfigureAwait(false);
+            return ProbeRoot(fs, settings);
         }
         catch (PzConnectorException ex)
         {
-            return new ValueTask<ConnectionCheck>(new ConnectionCheck(false,
-                $"{(ex.IsTransient ? "transient" : "permanent")}: {ex.Message}"));
+            return new ConnectionCheck(false, $"{(ex.IsTransient ? "transient" : "permanent")}: {ex.Message}");
         }
     }
 
