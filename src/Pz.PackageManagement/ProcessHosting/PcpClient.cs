@@ -98,11 +98,13 @@ public sealed class PcpClient : IAsyncDisposable
         ConnectAndConfigureAsync(process, manifest, instanceId, config, HostTelemetry.None, handshakeTimeout, ct);
 
     /// <summary>Same discipline, with what the connector should know about the run and where to
-    /// export telemetry (<see cref="HostTelemetry"/>), carried in the handshake's <c>HostInfo</c>.</summary>
+    /// export telemetry (<see cref="HostTelemetry"/>), carried in the handshake's <c>HostInfo</c>.
+    /// <paramref name="warn"/> reports a capability name or bit this build does not recognize — never a
+    /// handshake failure by itself, see the seven-argument overload's doc.</summary>
     public static Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
-        ConnectorConfig config, HostTelemetry telemetry, CancellationToken ct) =>
-        ConnectAndConfigureAsync(process, manifest, instanceId, config, telemetry, ProtocolConstants.HandshakeTimeout, ct);
+        ConnectorConfig config, HostTelemetry telemetry, CancellationToken ct, Action<string>? warn = null) =>
+        ConnectAndConfigureAsync(process, manifest, instanceId, config, telemetry, ProtocolConstants.HandshakeTimeout, ct, warn);
 
     /// <summary>Same as the five-argument overload, with an injectable handshake timeout — the only
     /// reason this overload exists is so a test can force a short one instead of waiting out the real
@@ -126,10 +128,18 @@ public sealed class PcpClient : IAsyncDisposable
     /// <c>ct.IsCancellationRequested</c> against the RPC's status code and rethrow a plain
     /// <see cref="OperationCanceledException"/> instead of wrapping it as PZ0356/PZ0357/PZ0358. The
     /// internal <paramref name="handshakeTimeout"/> firing is a different token (this method's own linked
-    /// <c>handshakeCts</c>, not the caller's) and still maps to PZ0356.</para></summary>
+    /// <c>handshakeCts</c>, not the caller's) and still maps to PZ0356.</para>
+    ///
+    /// <para>Capability agreement is judged on bits this build's <see cref="ConnectorCapabilities"/>
+    /// actually defines: a manifest-declared name or a Hello-reported bit outside that set is a
+    /// newer-SDK flag this host has not learned yet, not a disagreement, and is dropped from both sides
+    /// before they are compared (see <see cref="CapabilityNames(long)"/>). It is reported once through
+    /// <paramref name="warn"/> instead — the sanctioned ABI growth path, additive by design, must not
+    /// fail an older host's handshake against a newer connector.</para></summary>
     public static async Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
-        ConnectorConfig config, HostTelemetry telemetry, TimeSpan handshakeTimeout, CancellationToken ct)
+        ConnectorConfig config, HostTelemetry telemetry, TimeSpan handshakeTimeout, CancellationToken ct,
+        Action<string>? warn = null)
     {
         // h2c: SocketsHttpHandler refuses to negotiate HTTP/2 over a plaintext transport (there is no
         // TLS/ALPN here to advertise it) unless this switch is set. Idempotent, so setting it on every
@@ -237,7 +247,8 @@ public sealed class PcpClient : IAsyncDisposable
 
         if (manifest is { Capabilities.Count: > 0 })
         {
-            var declared = new HashSet<string>(manifest.Capabilities, StringComparer.Ordinal);
+            var declared = new HashSet<string>(
+                manifest.Capabilities.Where(name => KnownCapabilityNames.Contains(name)), StringComparer.Ordinal);
             var reported = CapabilityNames(hello.Capabilities);
             if (!declared.SetEquals(reported))
             {
@@ -248,6 +259,23 @@ public sealed class PcpClient : IAsyncDisposable
                     $"({string.Join(", ", Sorted(reported))}) do not match the manifest's declared " +
                     $"capabilities ({string.Join(", ", Sorted(declared))})");
             }
+
+            var unknownDeclared = manifest.Capabilities.Where(name => !KnownCapabilityNames.Contains(name)).ToArray();
+            if (unknownDeclared.Length > 0)
+            {
+                warn?.Invoke(
+                    $"connector '{hello.Info.Name}' manifest declares capabilities this pz build does not " +
+                    $"recognize ({string.Join(", ", Sorted(unknownDeclared))}); it will not offer them to the " +
+                    "planner -- upgrade pz to use them");
+            }
+        }
+
+        var unknownReported = hello.Capabilities & ~(long)KnownCapabilities;
+        if (unknownReported != 0)
+        {
+            warn?.Invoke(
+                $"connector '{hello.Info.Name}' handshake reported capability bits this pz build does not " +
+                $"recognize (0x{unknownReported:X}); it will not offer them to the planner -- upgrade pz to use them");
         }
 
         var client = new PcpClient(process, channel, hello, grpc);
@@ -469,14 +497,28 @@ public sealed class PcpClient : IAsyncDisposable
             "check the connector's startup logs and confirm its declared protocol major and capabilities match what it actually implements");
     }
 
+    /// <summary>Every bit this build's <see cref="ConnectorCapabilities"/> defines, OR'd together --
+    /// what separates a genuine capability disagreement from a newer connector's flag this host has
+    /// never heard of.</summary>
+    private static readonly ConnectorCapabilities KnownCapabilities =
+        Enum.GetValues<ConnectorCapabilities>().Aggregate(ConnectorCapabilities.None, (acc, v) => acc | v);
+
+    private static readonly HashSet<string> KnownCapabilityNames =
+        new(Enum.GetNames<ConnectorCapabilities>(), StringComparer.Ordinal);
+
     /// <summary>Decomposes a <see cref="Hello.Capabilities"/> flags value into the
-    /// <see cref="ConnectorCapabilities"/> member names it is the OR of. Relies on every declared member
-    /// being a single bit (true in this enum today), which is what lets <see cref="Enum.ToString()"/>
-    /// decompose a [Flags] value into an exact name list instead of falling back to the raw number.</summary>
-    private static HashSet<string> CapabilityNames(long flags) =>
-        new(
-            ((ConnectorCapabilities)unchecked((int)flags)).ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries),
+    /// <see cref="ConnectorCapabilities"/> member names it is the OR of, first masking away any bit
+    /// this build's enum does not define. Masking first is load-bearing: <see cref="Enum.ToString()"/>
+    /// on a [Flags] value decomposes into a name list only when every set bit maps to a declared member
+    /// -- one unrecognized bit (a newer SDK's flag) makes it fall back to the raw decimal number for the
+    /// WHOLE value, which would read as every known capability disagreeing too.</summary>
+    private static HashSet<string> CapabilityNames(long flags)
+    {
+        var known = (ConnectorCapabilities)unchecked((int)flags) & KnownCapabilities;
+        return new HashSet<string>(
+            known == ConnectorCapabilities.None ? [] : known.ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries),
             StringComparer.Ordinal);
+    }
 
     private static IEnumerable<string> Sorted(IEnumerable<string> names) => names.OrderBy(n => n, StringComparer.Ordinal);
 

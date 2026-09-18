@@ -69,6 +69,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- A connector reporting a capability bit or manifest capability name this pz
+  build does not define — the sanctioned way an out-of-process connector's SDK
+  grows the ABI — no longer fails the handshake with PZ0356 "capabilities
+  (98304) do not match". Only bits this build's `ConnectorCapabilities`
+  actually defines are compared; an unrecognized name or bit is reported once
+  as a warning instead, the same way an out-of-process host already reports a
+  declared-but-unimplemented capability.
 - Cancelling a run now interrupts a statement already running inside DuckDB.
   Ctrl-C (and the new node timeout) used to wait for the statement to finish on
   its own, however long that took.

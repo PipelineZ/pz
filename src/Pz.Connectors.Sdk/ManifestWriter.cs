@@ -36,13 +36,25 @@ internal static class ManifestWriter
         return JsonSerializer.Serialize(document, Contract.ManifestDocument) + "\n";
     }
 
+    /// <summary>Every bit this build's <see cref="ConnectorCapabilities"/> defines, OR'd together.
+    /// Masking a value against this before decomposing it is what keeps one undefined bit from making
+    /// <see cref="Enum.ToString()"/> fall back to the raw decimal number for the whole value instead of
+    /// a name list -- the same hazard <c>PcpClient.CapabilityNames</c> guards against on the host side.
+    /// A connector never sets a bit outside its own build's enum, but a manifest is read by other pz
+    /// builds too, so this stays the one place capability names are ever rendered.</summary>
+    private static readonly ConnectorCapabilities KnownCapabilities =
+        Enum.GetValues<ConnectorCapabilities>().Aggregate(ConnectorCapabilities.None, (acc, v) => acc | v);
+
     /// <summary>Member names of the set flags, in ascending flag order -- the order the flags
     /// enum's own ToString yields, which is also how the host spells a Hello's capabilities when it
     /// compares them to a manifest.</summary>
-    public static IReadOnlyList<string> CapabilityNames(ConnectorCapabilities capabilities) =>
-        capabilities == ConnectorCapabilities.None
+    public static IReadOnlyList<string> CapabilityNames(ConnectorCapabilities capabilities)
+    {
+        var known = capabilities & KnownCapabilities;
+        return known == ConnectorCapabilities.None
             ? []
-            : capabilities.ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries);
+            : known.ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries);
+    }
 }
 
 internal sealed record ManifestDocument(

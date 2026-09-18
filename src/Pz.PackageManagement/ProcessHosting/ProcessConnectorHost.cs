@@ -137,7 +137,8 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
             }
 
             var connector = new LazyProcessConnector(
-                name, packageRef, manifest, entrypoint, socketRootDir, logSink, cancelGrace, shutdownGrace, telemetry);
+                name, packageRef, manifest, entrypoint, socketRootDir, warn, logSink, cancelGrace, shutdownGrace,
+                telemetry);
 
             var dropped = connector.DeclaredCapabilities & ~connector.Capabilities;
             if (dropped != ConnectorCapabilities.None)
@@ -213,6 +214,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     private readonly ConnectorManifest _manifest;
     private readonly string _entrypoint;
     private readonly string _socketRootDir;
+    private readonly Action<string>? _warn;
     private readonly Action<int, string, IReadOnlyDictionary<string, string>>? _logSink;
     private readonly TimeSpan _cancelGrace;
     private readonly TimeSpan _shutdownGrace;
@@ -226,13 +228,15 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
     public LazyProcessConnector(
         string name, ConnectorPackageRef packageRef, ConnectorManifest manifest, string entrypoint,
-        string socketRootDir, Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
+        string socketRootDir, Action<string>? warn,
+        Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
         TimeSpan cancelGrace, TimeSpan shutdownGrace, HostTelemetry telemetry)
     {
         _packageRef = packageRef;
         _manifest = manifest;
         _entrypoint = entrypoint;
         _socketRootDir = socketRootDir;
+        _warn = warn;
         _logSink = logSink;
         _cancelGrace = cancelGrace;
         _shutdownGrace = shutdownGrace;
@@ -324,7 +328,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         {
             var (instanceId, connectorConfig) = SplitInstanceId(config, ordinal);
             client = await PcpClient
-                .ConnectAndConfigureAsync(process, _manifest, instanceId, connectorConfig, _telemetry, ct)
+                .ConnectAndConfigureAsync(process, _manifest, instanceId, connectorConfig, _telemetry, ct, _warn)
                 .ConfigureAwait(false);
             client.CancelGrace = _cancelGrace;
             client.ShutdownGrace = _shutdownGrace;

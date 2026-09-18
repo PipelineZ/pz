@@ -87,6 +87,14 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
                 capabilities |= ConnectorCapabilities.CheckpointableReads;
             }
 
+            // Simulates a newer SDK build whose Abstractions defines a flag this fixture's own
+            // ConnectorCapabilities enum does not: an undefined bit, cast rather than named, since
+            // there is no later member to reference from this build.
+            if (options.ReportUnknownCapabilityBit)
+            {
+                capabilities |= (ConnectorCapabilities)(1 << 24);
+            }
+
             return capabilities;
         }
     }

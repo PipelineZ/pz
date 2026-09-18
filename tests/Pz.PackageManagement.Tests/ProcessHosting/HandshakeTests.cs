@@ -86,6 +86,27 @@ public sealed class HandshakeTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Unknown_capability_bit_from_a_newer_sdk_does_not_fail_the_handshake()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        // The manifest and the true capability set agree; the fixture's Hello additionally reports one
+        // bit outside every ConnectorCapabilities member this build defines, the shape a connector built
+        // against a newer SDK sends an older host that has not learned its newest flag yet.
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--report-unknown-capability-bit"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+        var warnings = new List<string>();
+
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, HostTelemetry.None, CancellationToken.None,
+            warnings.Add);
+
+        Assert.Equal("localfiles-pcp", client.Hello.Info.Name);
+        Assert.Contains(warnings, w => w.Contains("capabilit", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [SkippableFact]
     public async Task Name_mismatch_vs_manifest_is_PZ0356_and_never_reaches_Configure()
     {
         Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");

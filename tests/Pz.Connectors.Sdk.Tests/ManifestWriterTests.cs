@@ -88,4 +88,15 @@ public sealed class ManifestWriterTests
                 ConnectorCapabilities.SyncState | ConnectorCapabilities.NativeScan | ConnectorCapabilities.PartitionedRead));
         Assert.Empty(ManifestWriter.CapabilityNames(ConnectorCapabilities.None));
     }
+
+    [Fact]
+    public void Capability_names_masks_off_a_bit_no_declared_member_defines()
+    {
+        // No enum member covers this bit; without masking, Enum.ToString() would fall back to the raw
+        // decimal number for the WHOLE value -- silently writing a bogus "capability" name into the
+        // manifest instead of the real, known ones alongside it.
+        var withUnknownBit = ConnectorCapabilities.NativeScan | (ConnectorCapabilities)(1 << 24);
+
+        Assert.Equal(["NativeScan"], ManifestWriter.CapabilityNames(withUnknownBit));
+    }
 }
