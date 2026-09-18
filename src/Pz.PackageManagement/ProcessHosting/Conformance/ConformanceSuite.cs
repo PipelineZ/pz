@@ -3,6 +3,7 @@ using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Grpc.Core;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
 using Pz.Connectors.Protocol.V1;
@@ -261,7 +262,11 @@ public static class ConformanceSuite
             : VectorVerdict.Pass("the probe dataset produced no batches; nothing to compare against the declared schema");
     }
 
-    private static VectorVerdict? CompareSchemas(Schema declared, Schema batch)
+    /// <summary>Internal (not private) so <c>Pz.PackageManagement.Tests</c> can drive it directly with
+    /// a TypeId-matching-but-structurally-different pair (e.g. `list&lt;int32&gt;` vs `list&lt;utf8&gt;`)
+    /// without staging a live connector whose data-plane batches disagree with its own declared
+    /// schema.</summary>
+    internal static VectorVerdict? CompareSchemas(Schema declared, Schema batch)
     {
         if (declared.FieldsList.Count != batch.FieldsList.Count)
         {
@@ -276,11 +281,15 @@ public static class ConformanceSuite
                 return VectorVerdict.Fail($"field {i}: declared and batch schema disagree on field name");
             }
 
-            if (declared.FieldsList[i].DataType.TypeId != batch.FieldsList[i].DataType.TypeId)
+            // Structural, not TypeId-only: nested child types, decimal precision/scale, timestamp
+            // unit/timezone, fixed-size widths and the rest of ArrowSchemaShape's contract -- a
+            // TypeId-only check would pass `list<int32>` against a batch's `list<utf8>`, which
+            // `pz connector test` would then wave through onto a run that DuckDB ingest refuses.
+            if (!ArrowSchemaShape.SameType(declared.FieldsList[i].DataType, batch.FieldsList[i].DataType))
             {
                 return VectorVerdict.Fail(
-                    $"field {i}: declared type {declared.FieldsList[i].DataType.TypeId} " +
-                    $"!= batch type {batch.FieldsList[i].DataType.TypeId}");
+                    $"field {i}: declared type {ArrowSchemaShape.Describe(declared.FieldsList[i].DataType)} " +
+                    $"!= batch type {ArrowSchemaShape.Describe(batch.FieldsList[i].DataType)}");
             }
         }
 
@@ -884,7 +893,9 @@ public static class ConformanceSuite
 
     private static Task<VectorVerdict> SkippedAsync(string reason) => Task.FromResult(VectorVerdict.Skip(reason));
 
-    private readonly struct VectorVerdict(ConformanceOutcome outcome, string? detail)
+    /// <summary>Internal (not private): <see cref="CompareSchemas"/> returns it, and that method is
+    /// internal so a test can drive it directly.</summary>
+    internal readonly struct VectorVerdict(ConformanceOutcome outcome, string? detail)
     {
         public ConformanceOutcome Outcome { get; } = outcome;
 

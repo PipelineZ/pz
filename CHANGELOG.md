@@ -171,6 +171,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   universal read path at all (`PlanRead` always refuses), mirroring the
   TestKit's own `SkipIfNativeOnly`. Until now these vectors called `PlanRead`
   unconditionally and reported the refusal as a protocol failure.
+- Three more type comparisons are now structural instead of `TypeId`-only, using
+  the same shape guard as the SDK data plane and engine Arrow ingest: `pz
+  connector test`'s schema/batch-equality vector (a `list<int32>` vs
+  `list<utf8>` mismatch used to pass conformance and only fail at run time),
+  the TestKit's own `SourceConnectorAcceptanceTests.AssertSchemasMatch`, and
+  `ContractTypes.ArrowTypesEqual` (the `columns:` contract drift check behind
+  PZ0331) — the last of these already compared decimal precision/scale and
+  timestamp unit/timezone by hand; it now shares the general comparison
+  instead of falling back to `_ => true` for nested, fixed-size and other
+  decimal-width types.
 - An exception no verb anticipated now ends as `error PZ0500: internal error …`
   with exit code 3 and a request to report it, instead of a raw stack trace
   with exit code 1 (which the exit-code contract reserves for node failures).

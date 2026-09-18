@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Xunit;
 
@@ -1198,13 +1199,24 @@ public abstract class SourceConnectorAcceptanceTests
         }
     }
 
-    private static void AssertSchemasMatch(Schema expected, Schema actual)
+    /// <summary>Internal (not private) so a unit test can drive it directly with a
+    /// TypeId-matching-but-structurally-different pair (e.g. a declared `list&lt;int32&gt;` against a
+    /// batch's `list&lt;utf8&gt;`), which every acceptance-test subclass's own connector would have to
+    /// misbehave on purpose to exercise.</summary>
+    internal static void AssertSchemasMatch(Schema expected, Schema actual)
     {
         Assert.Equal(expected.FieldsList.Count, actual.FieldsList.Count);
         for (var i = 0; i < expected.FieldsList.Count; i++)
         {
             Assert.Equal(expected.FieldsList[i].Name, actual.FieldsList[i].Name);
-            Assert.Equal(expected.FieldsList[i].DataType.TypeId, actual.FieldsList[i].DataType.TypeId);
+            // Structural, not TypeId-only: nested child types, decimal precision/scale, timestamp
+            // unit/timezone, fixed-size widths and the rest of ArrowSchemaShape's contract -- a
+            // TypeId-only check would pass a declared `list<int32>` against a batch's `list<utf8>`.
+            Assert.True(
+                ArrowSchemaShape.SameType(expected.FieldsList[i].DataType, actual.FieldsList[i].DataType),
+                $"field {i} ('{expected.FieldsList[i].Name}'): expected type " +
+                $"{ArrowSchemaShape.Describe(expected.FieldsList[i].DataType)}, got " +
+                $"{ArrowSchemaShape.Describe(actual.FieldsList[i].DataType)}");
         }
     }
 

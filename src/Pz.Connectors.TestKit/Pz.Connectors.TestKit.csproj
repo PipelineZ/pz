@@ -21,4 +21,18 @@
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- SourceConnectorAcceptanceTests.AssertSchemasMatch shares the same positional shape guard the
+         SDK's data plane and the engine's Arrow ingest use; the assemblies may not reference each
+         other, so the source is compiled into each. Nothing here receives InternalsVisibleTo from
+         Pz.Connectors.Sdk or Pz.DuckDb, so there is no ambiguity to guard against. -->
+    <Compile Include="..\Shared\ArrowSchemaShape.cs" Link="Shared\ArrowSchemaShape.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- AssertSchemasMatch is internal (not private) so a unit test can drive it directly with a
+         TypeId-matching-but-structurally-different pair. -->
+    <InternalsVisibleTo Include="Pz.Connectors.TestKit.Tests" />
+  </ItemGroup>
+
 </Project>

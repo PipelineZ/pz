@@ -13,7 +13,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- src/Shared/ArrowSchemaShape.cs compiles into this assembly as internal Pz.Arrow.ArrowSchemaShape
+         too (alongside Pz.Connectors.Sdk's and Pz.DuckDb's own copies); nothing here receives
+         InternalsVisibleTo from either of those, so there is no ambiguity to guard against. -->
     <InternalsVisibleTo Include="Pz.PackageManagement.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ConformanceSuite's schema/batch-equality vector shares the same positional shape guard the SDK's
+         data plane and the engine's Arrow ingest use; the assemblies may not reference each other, so
+         the source is compiled into each. -->
+    <Compile Include="..\Shared\ArrowSchemaShape.cs" Link="Shared\ArrowSchemaShape.cs" />
   </ItemGroup>
 
   <ItemGroup>
