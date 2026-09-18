@@ -47,11 +47,11 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         return new RunContext(_duck, reg, new RunPaths(_dir, "test-run"), NullRunEvents.Instance, Notice: notice);
     }
 
-    private static DagNode SourceNode()
+    private static DagNode SourceNode(string entity = "numbers")
     {
         var source = new ConnectionDef("mem", "noticestub", new Dictionary<string, object?>(),
-            [new DatasetDef("numbers", new Dictionary<string, object?>(), null)], "sources/mem.yml");
-        return new DagNode(new NodeId("eeeeeeeeeeeeeeee"), NodeKind.SourceLoad, "src_mem__numbers",
+            [new DatasetDef(entity, new Dictionary<string, object?>(), null)], "sources/mem.yml");
+        return new DagNode(new NodeId("eeeeeeeeeeeeeeee"), NodeKind.SourceLoad, $"src_mem__{entity}",
             [], null, new SourceDatasetDef(source, source.Datasets[0]));
     }
 
@@ -76,6 +76,26 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         Assert.Equal(1, source.UseNoticeCalls);
         source.FireNotice("unpinned host key");
         Assert.Equal(["unpinned host key"], received);
+    }
+
+    // Every node opens its own source, so a connection read by ten entities is opened ten times in one
+    // run. What a connector says about the CONNECTION must still reach the reader once.
+    [Fact]
+    public async Task The_same_connector_notice_from_two_nodes_of_one_run_is_delivered_once()
+    {
+        var first = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
+        var second = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
+        var received = new List<string>();
+        var ctx = SourceContext(new NoticeStubConnector(first), received.Add);
+        var reg = new ConnectorRegistry();
+        reg.AddSource("noticestub", new NoticeStubConnector(second));
+
+        await new SourceLoadExecutor().ExecuteAsync(SourceNode(), ctx, default);
+        await new SourceLoadExecutor().ExecuteAsync(SourceNode("letters"), ctx with { Connectors = reg }, default);
+
+        Assert.Equal(1, first.UseNoticeCalls);
+        Assert.Equal(1, second.UseNoticeCalls);
+        Assert.Equal(["sftp host 'h': accepting any SSH host key"], received);
     }
 
     [Fact]
@@ -141,10 +161,17 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
 
         public int UseNoticeCalls => Volatile.Read(ref _useNoticeCalls);
 
+        /// <summary>Raised the moment the engine hands over the callback, the way sftp does.</summary>
+        public string? NoticeOnUse { get; init; }
+
         public void UseNotice(Action<string> notice)
         {
             Interlocked.Increment(ref _useNoticeCalls);
             _notice = notice;
+            if (NoticeOnUse is not null)
+            {
+                notice(NoticeOnUse);
+            }
         }
 
         public void FireNotice(string message) => _notice!(message);

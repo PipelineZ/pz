@@ -634,13 +634,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `host_key_fingerprint` declared, `pz validate` now warns naming the
   option (a connector's own `ValidationResult.Warnings` is now collected
   and rendered as a non-blocking PZ0364, a new generic code any connector
-  can use the same way), `pz run` emits the same warning as a run notice
-  the first time the connection opens (a new additive `INoticeAware`
-  connector capability, wired the same way `IOperationGateAware` already
-  is), and `pz validate --connect` prints the fingerprint the server
+  can use the same way -- `ValidationResult.Warnings` is an init-only
+  member, so the record's one-argument constructor that compiled connectors
+  bind to is untouched), `pz run` says the same as a run notice, once per
+  run however many entities are read through the connection (a new additive
+  `INoticeAware` connector interface, wired the same way
+  `IOperationGateAware` already is; not yet forwarded over PCP, so it
+  reaches in-process connectors only), and `pz validate --connect` prints the fingerprint the server
   presented in the exact `SHA256:<base64>` form the option accepts, so
   pinning is copy-paste. The default (accept any host key when unpinned)
-  is unchanged.
+  is unchanged. That fingerprint rides a successful connection check's
+  message, which `pz validate --connect` used to discard: it now prints as
+  a `note:` line for every connector, so the "not checked: … has no offline
+  probe" and "reachable over tcp; credentials are verified at run time"
+  messages several connectors already returned are finally visible.
 - A forced-universal (`engine.force_universal`) xlsx write to the azure
   connector reported the native-COPY-only refusal ("xlsx write is
   localfiles-only ... DuckDB's excel writer aborts the whole process")
@@ -663,11 +670,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   the opposite -- `attach if not exists` refuses a zero-byte EXISTING
   file outright -- so both already agreed there.
 - Two motherduck connections declaring different tokens in one project
-  now fail `pz validate` (PZ0311, the same code the run-time failure
-  already used) instead of only at run time: DuckDB accepts
-  `set motherduck_token` only before the first attach in a session, so
-  the second connection's token never actually takes effect once a run
-  is under way. The check compares the two connections' resolved tokens
+  now draw a warning from `pz validate` (PZ0311, the code the run-time
+  failure uses) instead of being discovered only at run time: DuckDB accepts
+  `set motherduck_token` only before the first attach in a session, so a
+  run that touches both fails at the second one. A warning and not a
+  refusal, because the project is sound when each run selects only one of
+  them. The check compares the two connections' resolved tokens
   (after `${VAR}` interpolation) and names both connections without ever
   printing either token.
 

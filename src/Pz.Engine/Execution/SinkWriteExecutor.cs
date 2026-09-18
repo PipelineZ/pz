@@ -40,11 +40,11 @@ public sealed class SinkWriteExecutor : INodeExecutor
             gateAware.UseOperationGate(gate);
         }
 
-        // Same once-per-open guarantee as UseOperationGate above -- a notice-aware sink calls this at
-        // most once regardless of how many physical connections it opens underneath.
-        if (sink is INoticeAware noticeAware && ctx.Notice is not null)
+        // Called once per open, like UseOperationGate above. The callback itself delivers each distinct
+        // text once per RUN: other nodes open the same connection and would say the same thing.
+        if (sink is INoticeAware noticeAware && ctx.ConnectorNotice is { } connectorNotice)
         {
-            noticeAware.UseNotice(ctx.Notice);
+            noticeAware.UseNotice(connectorNotice);
         }
 
         var spec = SpecBuilder.ForSinkOutput(def);

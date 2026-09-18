@@ -67,6 +67,21 @@ public class AbiSurfaceTests
     /// <c>Apache.Arrow.Memory.MemoryAllocator</c> rather than pulling in any dependency the allowlist
     /// above doesn't already cover (<c>Apache.Arrow.Memory</c> ships inside the same Apache.Arrow
     /// assembly the allowlist test already permits, so this adds no new external reference).</summary>
+    // A connector compiled against an earlier ABI binds to this exact constructor. An optional
+    // parameter would keep source compiling and still remove it from the binary, so warnings are an
+    // init-only member instead.
+    [Fact]
+    public void Validation_result_keeps_its_one_argument_constructor_and_grows_by_a_member()
+    {
+        Assert.NotNull(typeof(ValidationResult).GetConstructor([typeof(IReadOnlyList<string>)]));
+
+        var withWarning = ValidationResult.Success with { Warnings = ["no host key is pinned"] };
+
+        Assert.True(withWarning.IsValid);
+        Assert.Empty(ValidationResult.Success.Warnings);
+        Assert.Equal(["no host key is pinned"], withWarning.Warnings);
+    }
+
     [Fact]
     public void PooledNativeAllocator_is_public_sealed_and_extends_arrow_memory_allocator()
     {

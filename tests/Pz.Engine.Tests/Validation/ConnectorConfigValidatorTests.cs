@@ -54,7 +54,7 @@ public sealed class ConnectorConfigValidatorTests
         var registry = new ConnectorRegistry();
         registry.AddSource("stub", new StubConnector
         {
-            ValidateFunc = _ => new ValidationResult([], ["no host key is pinned"]),
+            ValidateFunc = _ => ValidationResult.Success with { Warnings = ["no host key is pinned"] },
         });
 
         var source = new ConnectionDef("db", "stub", new Dictionary<string, object?>(), [], "sources/db.yml");
@@ -75,7 +75,7 @@ public sealed class ConnectorConfigValidatorTests
         var registry = new ConnectorRegistry();
         registry.AddSource("stub", new StubConnector
         {
-            ValidateFunc = _ => new ValidationResult(["bad config"], ["also a warning"]),
+            ValidateFunc = _ => ValidationResult.Failed("bad config") with { Warnings = ["also a warning"] },
         });
 
         var source = new ConnectionDef("db", "stub", new Dictionary<string, object?>(), [], "sources/db.yml");
@@ -460,15 +460,15 @@ public sealed class ConnectorConfigValidatorTests
         Assert.DoesNotContain(errors, e => e.Code == PzErrorCode.ReservedConnectionKey);
     }
 
-    // DuckDB accepts `set motherduck_token` only before the first attach in a session -- two motherduck
-    // connections with different tokens fail only at run time (PZ0311) today, when the second one's SET
-    // is a no-op. This reports the SAME PZ0311 condition at validate time, before anything runs, naming
-    // both connections and never the tokens themselves.
+    // DuckDB accepts `set motherduck_token` only before the first attach in a session, so a RUN that
+    // touches two motherduck connections with different tokens fails (PZ0311). The project is still
+    // legitimate when each run selects only one of them, so validate says it without refusing: a warning
+    // under the same code, naming both connections and never either token.
     private const string MotherDuckConnectionSchema =
         """{ "type": "object", "properties": { "database": { "type": "string" }, "token": { "type": "string" } } }""";
 
     [Fact]
-    public async Task Two_motherduck_connections_with_different_tokens_are_PZ0311_at_validate_time()
+    public async Task Two_motherduck_connections_with_different_tokens_draw_a_PZ0311_warning_at_validate_time()
     {
         var registry = new ConnectorRegistry();
         registry.AddSource("motherduck", new StubConnector { ConnectionConfigSchema = MotherDuckConnectionSchema });
@@ -479,14 +479,18 @@ public sealed class ConnectorConfigValidatorTests
         var second = new ConnectionDef("md2", "motherduck",
             new Dictionary<string, object?> { ["database"] = "d2", ["token"] = "secret-token-b" }, [], "connections.yml");
 
-        var errors = await ConnectorConfigValidator.ValidateAsync(Project([first], [second]), registry, default);
+        var warnings = new List<PzWarning>();
+        var errors = await ConnectorConfigValidator.ValidateAsync(
+            Project([first], [second]), registry, default, warnings);
 
-        var error = Assert.Single(errors);
-        Assert.Equal(PzErrorCode.NativeSetupFailed, error.Code);
-        Assert.Contains("md1", error.Message, StringComparison.Ordinal);
-        Assert.Contains("md2", error.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("secret-token-a", error.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("secret-token-b", error.Message, StringComparison.Ordinal);
+        Assert.Empty(errors);
+        var warning = Assert.Single(warnings);
+        Assert.Equal(PzErrorCode.NativeSetupFailed, warning.Code);
+        Assert.Contains("md1", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("md2", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("separate runs", warning.Hint, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-token-a", warning.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-token-b", warning.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -501,9 +505,11 @@ public sealed class ConnectorConfigValidatorTests
         var second = new ConnectionDef("md2", "motherduck",
             new Dictionary<string, object?> { ["database"] = "d2", ["token"] = "same-token" }, [], "connections.yml");
 
-        var errors = await ConnectorConfigValidator.ValidateAsync(Project([first], [second]), registry, default);
+        var warnings = new List<PzWarning>();
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([first], [second]), registry, default, warnings);
 
         Assert.DoesNotContain(errors, e => e.Code == PzErrorCode.NativeSetupFailed);
+        Assert.Empty(warnings);
     }
 
     // A connection missing 'token' entirely is the connector's own ValidateAsync's problem ("requires
@@ -520,8 +526,10 @@ public sealed class ConnectorConfigValidatorTests
         var withToken = new ConnectionDef("md2", "motherduck",
             new Dictionary<string, object?> { ["database"] = "d2", ["token"] = "tok" }, [], "connections.yml");
 
-        var errors = await ConnectorConfigValidator.ValidateAsync(Project([noToken], [withToken]), registry, default);
+        var warnings = new List<PzWarning>();
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([noToken], [withToken]), registry, default, warnings);
 
         Assert.DoesNotContain(errors, e => e.Code == PzErrorCode.NativeSetupFailed);
+        Assert.Empty(warnings);
     }
 }

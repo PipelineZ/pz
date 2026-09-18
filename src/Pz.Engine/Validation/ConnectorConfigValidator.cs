@@ -52,7 +52,7 @@ public static class ConnectorConfigValidator
         var errors = new List<PzError>();
         RefuseReservedProperties(project, registry, errors);
         RefuseUnknownConnectors(project, registry, errors);
-        RefuseMotherDuckTokenMismatch(project, errors);
+        WarnOnMotherDuckTokenMismatch(project, warnings);
 
         foreach (var source in project.Connections)
         {
@@ -135,19 +135,20 @@ public static class ConnectorConfigValidator
         }
     }
 
-    /// <summary>DuckDB's motherduck extension accepts <c>set motherduck_token</c> only before its
-    /// FIRST attach in a session (see <c>NativeSetupLedger</c>'s doc comment) -- the engine runs one
-    /// DuckDB session per run, so a project declaring two motherduck connections with different tokens
-    /// cannot share a run: the second connection's SET is a no-op against the already-authenticated
-    /// session, and its attach then fails or silently uses the first connection's identity. Today that
-    /// surfaces only at run time as PZ0311 ("native setup statement failed"); this reports the SAME
-    /// condition here, before anything runs, comparing the tokens themselves (never printing either)
-    /// so a project author sees it in `pz validate` alone. `motherduck` is a well-known first-party
-    /// connector name (the same style <c>ProjectDirectoryAnchor</c> already hardcodes), not something
-    /// read from the registry -- this is a property of DuckDB's own extension, not of whichever package
-    /// happens to be installed under that name.</summary>
-    private static void RefuseMotherDuckTokenMismatch(PzProject project, List<PzError> errors)
+    /// <summary>DuckDB's motherduck extension accepts <c>set motherduck_token</c> only before its FIRST
+    /// attach in a session, and the engine runs one DuckDB session per run. So a RUN that touches two
+    /// motherduck connections with different tokens fails at its second attach (PZ0311) -- but the
+    /// project itself is sound when every run selects only one of them, which is why this is a warning
+    /// under that same code and not a refusal. The tokens are compared, never printed. `motherduck` is a
+    /// well-known first-party connector name, not something read from the registry: this is a property
+    /// of DuckDB's extension, not of whichever package is installed under that name.</summary>
+    private static void WarnOnMotherDuckTokenMismatch(PzProject project, List<PzWarning>? warnings)
     {
+        if (warnings is null)
+        {
+            return;
+        }
+
         string? firstName = null;
         string? firstToken = null;
         foreach (var connection in project.Connections)
@@ -157,8 +158,8 @@ public static class ConnectorConfigValidator
                 continue;
             }
 
-            // A missing token is the connector's own ValidateAsync's problem to report ("motherduck
-            // connection requires 'token'") -- this check only ever compares tokens that are present.
+            // A missing token is the connector's own ValidateAsync's problem to report; this only
+            // compares tokens that are present.
             var token = new ConnectorConfig(connection.Connection).GetString("token");
             if (token is null)
             {
@@ -174,12 +175,12 @@ public static class ConnectorConfigValidator
 
             if (!string.Equals(firstToken, token, StringComparison.Ordinal))
             {
-                errors.Add(new PzError(PzErrorCode.NativeSetupFailed,
+                warnings.Add(new PzWarning(PzErrorCode.NativeSetupFailed,
                     $"motherduck connections '{firstName}' and '{connection.Name}' declare different " +
                     "tokens -- DuckDB accepts 'set motherduck_token' only before the first attach in a " +
-                    "run, so two motherduck connections with different tokens cannot share one.",
+                    "run, so a run that touches both fails at the second one.",
                     connection.FilePath, null,
-                    "use the same token for every motherduck connection in this project"));
+                    "use one token for every motherduck connection, or keep the two in separate runs"));
             }
         }
     }
@@ -586,7 +587,7 @@ public static class ConnectorConfigValidator
         var result = await connector.ValidateAsync(config, ct).ConfigureAwait(false);
         if (warnings is not null)
         {
-            foreach (var message in result.Warnings ?? [])
+            foreach (var message in result.Warnings)
             {
                 warnings.Add(new PzWarning(PzErrorCode.ConnectorConfigWarning,
                     $"{kind} '{name}' connection: {message}", filePath, null, null));

@@ -81,13 +81,13 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
         // silently, with no MITM protection and no signal -- unless something says so. This never fails
         // validation (a first connect to an unknown host is a legitimate, common case); it only makes
         // the choice visible.
-        List<string>? warnings = string.IsNullOrEmpty(declaredFingerprint)
+        string[] warnings = string.IsNullOrEmpty(declaredFingerprint)
             ? ["sftp connection accepts any SSH host key because 'host_key_fingerprint' is not set -- " +
                 "no protection against a man-in-the-middle; run 'pz validate --connect' to see the " +
                 "fingerprint the server presents, then pin it"]
-            : null;
+            : [];
 
-        return new ValueTask<ValidationResult>(new ValidationResult([], warnings));
+        return new ValueTask<ValidationResult>(ValidationResult.Success with { Warnings = warnings });
     }
 
     /// <summary>Real probe: connects, authenticates, then stats the root (or login directory) --

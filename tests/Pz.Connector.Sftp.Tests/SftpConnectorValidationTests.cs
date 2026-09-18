@@ -63,7 +63,7 @@ public class SftpConnectorValidationTests
         var result = Validate(Config(("host", "h"), ("username", "u"), ("password", "p")));
 
         Assert.True(result.IsValid);
-        var warning = Assert.Single(result.Warnings ?? []);
+        var warning = Assert.Single(result.Warnings);
         Assert.Contains("host_key_fingerprint", warning, StringComparison.Ordinal);
     }
 
@@ -74,7 +74,7 @@ public class SftpConnectorValidationTests
             ("host_key_fingerprint", "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU")));
 
         Assert.True(result.IsValid);
-        Assert.True(result.Warnings is null or { Count: 0 });
+        Assert.Empty(result.Warnings);
     }
 
     // CheckConnectionAsync: a key file that fails to load is a config-shape error discovered before
