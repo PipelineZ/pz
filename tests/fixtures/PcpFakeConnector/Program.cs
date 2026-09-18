@@ -74,7 +74,11 @@ internal static class Program
 /// raised where only the data plane is listening.
 /// <c>--report-unknown-capability-bit</c> ORs a bit outside every declared <see
 /// cref="Pz.Connectors.Abstractions.ConnectorCapabilities"/> member into Hello's reported capabilities —
-/// the shape a newer SDK sends an older host that has not learned its newest flag yet.</para></summary>
+/// the shape a newer SDK sends an older host that has not learned its newest flag yet.
+/// <c>--throw-unhandled</c> raises a plain <see cref="InvalidOperationException"/> from
+/// <c>CheckConnectionAsync</c> instead of a <see cref="Pz.Connectors.Abstractions.PzConnectorException"/>
+/// -- a connector bug the SDK never anticipated, not an operational failure it reported on
+/// purpose.</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -94,7 +98,8 @@ internal sealed record FixtureOptions(
     bool PruneColumns,
     bool FailReadMidstreamTransient,
     bool FailWriteMidstreamTransient,
-    bool ReportUnknownCapabilityBit)
+    bool ReportUnknownCapabilityBit,
+    bool ThrowUnhandled)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -112,6 +117,7 @@ internal sealed record FixtureOptions(
         bool syncState = false, declareSyncStateOnly = false, stableIds = false;
         bool pruneColumns = false;
         bool reportUnknownCapabilityBit = false;
+        bool throwUnhandled = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -196,6 +202,9 @@ internal sealed record FixtureOptions(
                 case "--report-unknown-capability-bit":
                     reportUnknownCapabilityBit = true;
                     break;
+                case "--throw-unhandled":
+                    throwUnhandled = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -210,6 +219,7 @@ internal sealed record FixtureOptions(
             hangHandshake, dieImmediately, wrongProtocolMajor, misreportCapabilities, misreportName,
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
-            failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit), passthrough.ToArray());
+            failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled),
+            passthrough.ToArray());
     }
 }

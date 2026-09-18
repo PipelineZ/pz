@@ -196,6 +196,38 @@ public sealed class HandshakeTests : IDisposable
         var connectorEx = Assert.IsType<PzConnectorException>(mapped);
         Assert.True(connectorEx.IsTransient);
         Assert.Equal(TimeSpan.FromMilliseconds(250), connectorEx.RetryAfter);
+        // The wire PzErrorDetail's code/hint must survive the round trip onto the exception the host
+        // reconstructs, not be discarded the way an all-empty ToErrorDetail used to leave them.
+        Assert.Equal("FIXTURE_CHECK_REFUSED", connectorEx.Code);
+        Assert.Equal("retry after the cool-down", connectorEx.Hint);
+        Assert.Contains("hint: retry after the cool-down", connectorEx.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Unhandled_exception_in_a_handler_maps_to_a_non_transient_connector_error_not_a_protocol_violation()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--throw-unhandled"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        var rpcEx = await Assert.ThrowsAsync<RpcException>(() => client.Grpc.CheckConnectionAsync(
+            new CheckRequest { Config = new Struct() }).ResponseAsync);
+
+        var mapped = client.MapRpcException(rpcEx);
+
+        // Not ConnectorHostException PZ0357 "protocol violation" -- a connector bug the SDK never
+        // anticipated is a connector-originated operational failure, the same taxonomy as one the
+        // connector reports on purpose, just permanent and unnamed.
+        var connectorEx = Assert.IsType<PzConnectorException>(mapped);
+        Assert.False(connectorEx.IsTransient);
+        Assert.Contains(
+            "unhandled InvalidOperationException: fixture: deliberate unhandled exception", connectorEx.Message,
+            StringComparison.Ordinal);
     }
 
     [SkippableFact]

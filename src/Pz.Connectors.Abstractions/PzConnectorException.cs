@@ -21,8 +21,21 @@ namespace Pz.Connectors.Abstractions;
 /// endpoint host and port — also reach run artifacts unchanged. That is intended: a message naming
 /// nothing is not a diagnosis. It is worth knowing when shipping run artifacts off the machine.</para></summary>
 public sealed class PzConnectorException(string message, bool isTransient, TimeSpan? retryAfter = null,
-    Exception? innerException = null) : Exception(message, innerException)
+    Exception? innerException = null, string? code = null, string? hint = null) : Exception(message, innerException)
 {
     public bool IsTransient { get; } = isTransient;
     public TimeSpan? RetryAfter { get; } = retryAfter;
+
+    /// <summary>A connector-assigned error code, when it has one; null otherwise. Additive -- every
+    /// exception thrown before this property existed reads null here, exactly as one that simply never
+    /// names a code does.</summary>
+    public string? Code { get; } = code;
+
+    /// <summary>A next step for whoever sees <see cref="Exception.Message"/>, when the connector has
+    /// one to offer; null otherwise. Carried structurally in addition to being folded into
+    /// <see cref="Exception.Message"/> at the point this exception is reconstructed from the wire
+    /// (<c>PcpClient.ToPzConnectorException</c>) -- <see cref="Exception.Message"/> is what every
+    /// existing consumer (run_results.json, the NDJSON stream, a retry_scheduled reason) already
+    /// renders, so a hint that only lived here would reach nobody.</summary>
+    public string? Hint { get; } = hint;
 }

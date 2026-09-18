@@ -69,6 +69,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- An unhandled exception inside a C# SDK connector handler — a connector
+  defect the SDK never anticipated, not an operational failure the connector
+  reported on purpose — now reaches the engine as a non-transient connector
+  error ("unhandled `<Type>`: `<message>`"), instead of surfacing as PZ0357
+  "protocol violation … confirm ABI versions", the wrong diagnosis for a bug
+  in the connector rather than a mismatch between it and the host.
+- A connector-reported error's `code`/`hint` (always sent empty by the C# SDK,
+  and discarded by the host even when a future SDK filled them) now survive
+  the round trip: `PzConnectorException` gains additive `Code`/`Hint`
+  properties, the C# SDK populates the wire detail from them, and the host
+  folds a present hint into the exception's message (every existing consumer
+  — run_results.json, the NDJSON stream, a retry_scheduled reason — already
+  renders `Message`, not a field nothing reads). The Rust SDK already filled
+  both; the two SDKs are consistent now.
 - PZ0356 (handshake failed), PZ0358 (connector died mid-operation), and a
   connector-reported error the host maps once the connector's process has
   also exited now name the child's exit code — `exited with code 137 (signal

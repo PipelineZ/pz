@@ -317,17 +317,34 @@ public sealed class PcpClient : IAsyncDisposable
     /// <see cref="ConnectorProcess.StderrTail"/> appended when non-empty.</para></summary>
     /// <summary>A connector-reported failure, rebuilt as the exception the connector raised. One place,
     /// because <see cref="LastErrorWasTransient"/> must see every detail this client maps, whichever
-    /// RPC carried it.</summary>
+    /// RPC carried it.
+    ///
+    /// <para><see cref="PzErrorDetail.Code"/>/<see cref="PzErrorDetail.Hint"/> are carried onto
+    /// <see cref="PzConnectorException.Code"/>/<see cref="PzConnectorException.Hint"/> structurally, and
+    /// the hint is also folded into <see cref="Exception.Message"/> -- the only field every existing
+    /// consumer (run_results.json, the NDJSON stream, a retry_scheduled reason) already renders, so a
+    /// hint the connector went to the trouble of setting is not silently dropped on the floor.</para></summary>
     internal PzConnectorException ToPzConnectorException(PzErrorDetail detail)
     {
         TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
         Volatile.Write(ref _lastErrorTransient, detail.IsTransient ? 1 : 2);
+
+        var message = detail.Message;
         // The connector reported this itself, over the trailer -- but if it has also exited by the
         // time the host gets here (reported, then died), the exit code is worth knowing too.
-        var message = _process.HasExited && _process.ExitDescription is { } exitDescription
-            ? $"{detail.Message} ({exitDescription})"
-            : detail.Message;
-        return new PzConnectorException(message, detail.IsTransient, retryAfter);
+        if (_process.HasExited && _process.ExitDescription is { } exitDescription)
+        {
+            message = $"{message} ({exitDescription})";
+        }
+
+        var hint = detail.Hint.Length > 0 ? detail.Hint : null;
+        if (hint is not null)
+        {
+            message = $"{message} — hint: {hint}";
+        }
+
+        var code = detail.Code.Length > 0 ? detail.Code : null;
+        return new PzConnectorException(message, detail.IsTransient, retryAfter, code: code, hint: hint);
     }
 
     public Exception MapRpcException(RpcException ex, CancellationToken ct = default)

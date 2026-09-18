@@ -128,7 +128,13 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
         if (options.FailCheckTransient)
         {
             throw new PzConnectorException(
-                "fixture: connection check refused on purpose", isTransient: true, TimeSpan.FromMilliseconds(250));
+                "fixture: connection check refused on purpose", isTransient: true, TimeSpan.FromMilliseconds(250),
+                code: "FIXTURE_CHECK_REFUSED", hint: "retry after the cool-down");
+        }
+
+        if (options.ThrowUnhandled)
+        {
+            throw new InvalidOperationException("fixture: deliberate unhandled exception");
         }
 
         return _inner.CheckConnectionAsync(config, ct);
