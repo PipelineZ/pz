@@ -1,0 +1,20 @@
+# Created with wingetcreate 1.10.0.0
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+#
+# InstallerSha256 is a placeholder -- it can only be computed from the real v0.7.0 release asset.
+# release.yml writes release-assets/checksums.txt alongside pz-win-x64.zip; replace the placeholder
+# with that value (sha256sum pz-win-x64.zip) before submitting.
+
+PackageIdentifier: PipelineZ.pz
+PackageVersion: 0.7.0
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: pz.exe
+    PortableCommandAlias: pz
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/PipelineZ/pz/releases/download/v0.7.0/pz-win-x64.zip
+    InstallerSha256: PLACEHOLDER_REPLACE_WITH_SHA256_FROM_V0.7.0_RELEASE_CHECKSUMS
+ManifestType: installer
+ManifestVersion: 1.10.0

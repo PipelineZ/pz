@@ -1,0 +1,32 @@
+# Created with wingetcreate 1.10.0.0
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.10.0.schema.json
+
+PackageIdentifier: PipelineZ.pz
+PackageVersion: 0.7.0
+PackageLocale: en-US
+Publisher: PipelineZ
+PublisherUrl: https://github.com/PipelineZ
+PublisherSupportUrl: https://github.com/PipelineZ/pz/issues
+PackageName: pz
+PackageUrl: https://pipelinez.dev
+License: MIT
+LicenseUrl: https://github.com/PipelineZ/pz/blob/main/LICENSE
+ShortDescription: A lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that runs anywhere without requiring a data platform.
+Description: >-
+  PipelineZ (pz) is a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT,
+  powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline
+  in plain SQL files; pz compiles them into a dependency-ordered DAG and executes it in-process.
+  Bundles connectors for local files, S3, Azure Blob, Google Cloud Storage, Postgres, SQL Server,
+  MySQL, SQLite, DuckDB, DuckLake, Apache Iceberg, Quack, MotherDuck and HTTP.
+Moniker: pz
+Tags:
+  - etl
+  - elt
+  - sql
+  - duckdb
+  - data-pipeline
+  - data-engineering
+  - cli
+ReleaseNotesUrl: https://github.com/PipelineZ/pz/releases/tag/v0.7.0
+ManifestType: defaultLocale
+ManifestVersion: 1.10.0
