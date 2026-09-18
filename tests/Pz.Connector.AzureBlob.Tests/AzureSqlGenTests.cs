@@ -419,6 +419,24 @@ public sealed class AzureSqlGenTests
             ex.Message);
     }
 
+    // engine.force_universal (or a partition_by fan-out) routes an xlsx write through BeginWriteAsync
+    // instead of TryGetNativeCopy's native COPY -- the refusal there must be the universal-tier one
+    // (xlsx has no managed writer at all), not the native-COPY crash-blast-radius message above, which
+    // describes a mechanism (DuckDB's excel writer) this path never uses.
+    [Fact]
+    public async Task Xlsx_forced_universal_write_is_the_universal_tier_refusal_not_the_native_one()
+    {
+        var sink = new AzureSink(Conn());
+        var schema = new Apache.Arrow.Schema([new Apache.Arrow.Field("id", Apache.Arrow.Types.Int64Type.Default, true)], null);
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await sink.BeginWriteAsync(Out(format: "xlsx"), schema, CancellationToken.None));
+
+        Assert.Contains("native-only", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("localfiles-only", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("excel writer aborts", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Avro_write_is_the_read_only_refusal()
     {

@@ -641,6 +641,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   presented in the exact `SHA256:<base64>` form the option accepts, so
   pinning is copy-paste. The default (accept any host key when unpinned)
   is unchanged.
+- A forced-universal (`engine.force_universal`) xlsx write to the azure
+  connector reported the native-COPY-only refusal ("xlsx write is
+  localfiles-only ... DuckDB's excel writer aborts the whole process")
+  instead of the universal-tier one ("format 'xlsx' is native-only ...
+  azureblob has no native tier here"), because `AzureSink.BeginWriteAsync`
+  resolved the final blob location -- which folds in the native-COPY
+  check -- before reaching its own universal-tier check. The native-COPY
+  check now runs only where it belongs, inside `TryGetNativeCopy`. gcs
+  and s3 do not share this bug: gcs's universal path never ran the
+  native-COPY check to begin with, and s3 has no universal write path at
+  all (`BeginWriteAsync` always refuses outright).
 
 ## [0.6.1] - 2026-09-10
 
