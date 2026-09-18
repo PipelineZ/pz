@@ -809,6 +809,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     `WriteSessionTicket.abort_semantics` verbatim. Every out-of-process Rust
     sink used to report `DiscardsAll` regardless of what it actually wrapped,
     which the delivery-guarantee matrix takes at face value.
+  - `CheckConnection` now answers a connector's failed `check()` as
+    `ConnectionCheckMsg { ok: false, message }` instead of a gRPC status --
+    mirroring the C# SDK, which never lets `CheckConnectionAsync`'s
+    `ConnectionCheck(false, ...)` escape as an `RpcException`. `message` is
+    exactly what the connector's own `check()` reported, verbatim.
 
 ## [0.6.1] - 2026-09-10
 

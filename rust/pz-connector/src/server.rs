@@ -473,13 +473,21 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::CheckRequest>,
     ) -> Result<Response<pb::ConnectionCheckMsg>, Status> {
         let config = Config::from_struct(request.into_inner().config.as_ref());
-        match self.connector.check(&config).await {
-            Ok(()) => Ok(Response::new(pb::ConnectionCheckMsg {
+        // A connectivity failure is an ordinary "no" for this probe, not a protocol-level error --
+        // mirrors `PcpConnectorService.CheckConnection`, which never lets a failed `ConnectionCheck`
+        // escape as an RpcException. `message` carries exactly what the connector's own `check()`
+        // reported, verbatim: no extra wrapping that could add a socket path or endpoint the
+        // connector chose not to include itself.
+        Ok(Response::new(match self.connector.check(&config).await {
+            Ok(()) => pb::ConnectionCheckMsg {
                 ok: true,
                 message: None,
-            })),
-            Err(e) => Err(to_status(&e)),
-        }
+            },
+            Err(e) => pb::ConnectionCheckMsg {
+                ok: false,
+                message: Some(e.message),
+            },
+        }))
     }
 
     async fn get_schema(
@@ -1550,12 +1558,14 @@ mod tests {
 
     struct FixtureConnector {
         sink_abort_semantics: AbortSemantics,
+        check_result: Result<(), PzError>,
     }
 
     impl Default for FixtureConnector {
         fn default() -> Self {
             FixtureConnector {
                 sink_abort_semantics: AbortSemantics::DiscardsAll,
+                check_result: Ok(()),
             }
         }
     }
@@ -1567,7 +1577,7 @@ mod tests {
         }
 
         async fn check(&self, _config: &Config) -> Result<(), PzError> {
-            Ok(())
+            self.check_result.clone()
         }
 
         async fn open(&self, _config: Config) -> Result<Box<dyn Sink>, PzError> {
@@ -1660,6 +1670,7 @@ mod tests {
     async fn begin_write_reports_the_sinks_declared_abort_semantics() {
         let service = test_service(FixtureConnector {
             sink_abort_semantics: AbortSemantics::BestEffort,
+            ..Default::default()
         });
         service
             .configure(Request::new(pb::ConfigureRequest {
@@ -1690,5 +1701,39 @@ mod tests {
             response.abort_semantics,
             pb::AbortSemanticsMsg::AbortSemanticsBestEffort as i32
         );
+    }
+
+    #[tokio::test]
+    async fn check_connection_reports_a_connectors_failure_as_ok_false_not_a_status() {
+        let service = test_service(FixtureConnector {
+            check_result: Err(PzError::new("could not reach the destination")),
+            ..Default::default()
+        });
+
+        let response = service
+            .check_connection(Request::new(pb::CheckRequest { config: None }))
+            .await
+            .expect("a connector-reported check failure must not cross as an RpcException")
+            .into_inner();
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.message.as_deref(),
+            Some("could not reach the destination")
+        );
+    }
+
+    #[tokio::test]
+    async fn check_connection_reports_success_with_no_message() {
+        let service = test_service(FixtureConnector::default());
+
+        let response = service
+            .check_connection(Request::new(pb::CheckRequest { config: None }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.ok);
+        assert_eq!(response.message, None);
     }
 }
