@@ -15,9 +15,10 @@ public sealed record StateResponse(HttpStatusCode Status, string Body, int? Vers
 
 /// <summary>The transport half of the HTTP state
 /// backend. Holds the run-scoped base URL the agent handed us plus the optional bearer token, builds
-/// <c>{base}/{scope}[/{key}]</c>, and maps every transport-level failure onto PZ0518 -- the same
-/// division of labour <see cref="Pz.State.SqlServer"/> splits between <c>SqlStateConnection</c> and
-/// <c>SqlKeyedStateStore</c>.
+/// <c>{base}/{scope}[/{key}]</c>, and maps every transport-level failure onto PZ0518 ("never got a
+/// response") or a received-but-unexpected response onto PZ0529 ("reached it, the request failed") --
+/// the same division of labour <see cref="Pz.State.SqlServer"/> splits between
+/// <c>SqlStateConnection.Unavailable</c>/<c>QueryFailed</c>.
 ///
 /// **The base URL is supplied whole, never composed.** It already carries the server's run id
 /// (<c>/api/agents/runs/{id}/state</c>), which resolves (project, environment) server-side. pz's own
@@ -29,18 +30,39 @@ public sealed record StateResponse(HttpStatusCode Status, string Body, int? Vers
 /// <see cref="Pz.Engine.State.IKeyedStateStore{T}"/> stays synchronous exactly as the SQL
 /// backend's blocking <c>ExecuteReader</c> does.
 ///
+/// **Retry.** A <c>429</c>/<c>502</c>/<c>503</c>/<c>504</c> response is retried up to
+/// <see cref="_maxAttempts"/> times, honouring a server <c>Retry-After</c> up to
+/// <see cref="MaxRetryDelay"/> (never longer -- a server asking for minutes is a reason to give up and
+/// let the caller decide, not to block a run's node indefinitely), through the constructor's
+/// <see cref="TimeProvider"/> so a test can prove the retry count and delay deterministically. Every
+/// call this endpoint serves is either read-only or a versioned compare-and-swap (<c>If-Match</c>) or
+/// a tombstoning delete, so replaying it after a retryable response -- one the server itself said to
+/// retry, or explicitly rejected before applying -- can never double-apply a write.
+///
 /// Secret hygiene: the token travels in an <c>Authorization</c> header and never reaches an error
 /// message; failures name the host and the path only.</summary>
 public sealed class HttpStateEndpoint : IDisposable
 {
+    private static readonly HashSet<HttpStatusCode> RetryableStatuses =
+    [
+        (HttpStatusCode)429, HttpStatusCode.BadGateway, HttpStatusCode.ServiceUnavailable, HttpStatusCode.GatewayTimeout,
+    ];
+
+    private static readonly TimeSpan RetryBaseDelay = TimeSpan.FromMilliseconds(200);
+    private static readonly TimeSpan MaxRetryDelay = TimeSpan.FromSeconds(30);
+
     private readonly string _root;
     private readonly Uri _rootUri;
     private readonly HttpClient _client = new();
+    private readonly TimeProvider _time;
+    private readonly int _maxAttempts;
 
-    public HttpStateEndpoint(string url, string? token)
+    public HttpStateEndpoint(string url, string? token, TimeProvider? timeProvider = null, int maxAttempts = 3)
     {
         _root = url.TrimEnd('/');
         _rootUri = new Uri(_root, UriKind.Absolute);
+        _time = timeProvider ?? TimeProvider.System;
+        _maxAttempts = maxAttempts;
 
         if (!string.IsNullOrWhiteSpace(token))
         {
@@ -51,43 +73,54 @@ public sealed class HttpStateEndpoint : IDisposable
         }
     }
 
-    /// <summary>One request. <paramref name="key"/> null addresses the whole scope (the list
-    /// endpoint); otherwise it is percent-encoded into a single path segment -- the wire contract
-    /// forbids a raw <c>/</c> in a key and requires <c>%</c> and <c>#</c> to be encoded.</summary>
+    /// <summary>One logical request, transparently retried while the response keeps coming back
+    /// retryable. <paramref name="key"/> null addresses the whole scope (the list endpoint); otherwise
+    /// it is percent-encoded into a single path segment -- the wire contract forbids a raw <c>/</c> in a
+    /// key and requires <c>%</c> and <c>#</c> to be encoded.</summary>
     public StateResponse Send(HttpMethod method, string scope, string? key,
         string? payload = null, int? ifMatch = null)
     {
         var path = key is null ? $"{_root}/{scope}" : $"{_root}/{scope}/{Uri.EscapeDataString(key)}";
 
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            using var request = new HttpRequestMessage(method, path);
-            if (payload is not null)
+            try
             {
-                // Explicitly BOM-free UTF-8: the contract promises byte-exact round-tripping, and pz's
-                // KeyedJsonStateStore has a byte-stability contract with golden files.
-                request.Content = new StringContent(payload, new UTF8Encoding(false), "application/json");
-            }
+                using var request = new HttpRequestMessage(method, path);
+                if (payload is not null)
+                {
+                    // Explicitly BOM-free UTF-8: the contract promises byte-exact round-tripping, and pz's
+                    // KeyedJsonStateStore has a byte-stability contract with golden files.
+                    request.Content = new StringContent(payload, new UTF8Encoding(false), "application/json");
+                }
 
-            if (ifMatch is { } expected)
+                if (ifMatch is { } expected)
+                {
+                    request.Headers.TryAddWithoutValidation("If-Match", Tag(expected));
+                }
+
+                using var response = _client.Send(request, HttpCompletionOption.ResponseContentRead);
+
+                if (RetryableStatuses.Contains(response.StatusCode) && attempt < _maxAttempts)
+                {
+                    Delay(attempt, response);
+                    continue;
+                }
+
+                using var reader = new StreamReader(response.Content.ReadAsStream(), new UTF8Encoding(false));
+                return new StateResponse(response.StatusCode, reader.ReadToEnd(), ReadVersion(response));
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException
+                or TaskCanceledException or InvalidOperationException)
             {
-                request.Headers.TryAddWithoutValidation("If-Match", Tag(expected));
+                throw Unavailable(ex.GetType().Name);
             }
-
-            using var response = _client.Send(request, HttpCompletionOption.ResponseContentRead);
-            using var reader = new StreamReader(response.Content.ReadAsStream(), new UTF8Encoding(false));
-            return new StateResponse(response.StatusCode, reader.ReadToEnd(), ReadVersion(response));
-        }
-        catch (Exception ex) when (ex is HttpRequestException or IOException
-            or TaskCanceledException or InvalidOperationException)
-        {
-            throw Unavailable(ex.GetType().Name);
         }
     }
 
-    /// <summary>The transport worked but said something the contract does not allow (or the URL points
-    /// at something that is not this run's state resource). PZ0518 for the same reason the SQL backend
-    /// uses it: the state store did not answer, so nothing downstream may assume "no watermark".</summary>
+    /// <summary>The transport worked -- a response came back -- but it is not one the contract expects
+    /// (or the URL points at something that is not this run's state resource). PZ0529: the store IS
+    /// reachable, only this request failed, unlike <see cref="Unavailable"/>.</summary>
     public PzConfigException Unexpected(HttpStatusCode status, string scope, string? key)
     {
         var what = key is null ? $"scope '{scope}'" : $"key '{key}' (scope '{scope}')";
@@ -96,7 +129,7 @@ public sealed class HttpStateEndpoint : IDisposable
               "(.../api/agents/runs/{id}/state) for a run the server knows"
             : "check PZ_STATE_URL / state.url and PZ_STATE_TOKEN, and that the server is healthy";
 
-        return new PzConfigException(new PzError(PzErrorCode.StateStoreUnavailable,
+        return new PzConfigException(new PzError(PzErrorCode.StateQueryFailed,
             $"the state store at '{Host}' answered {(int)status} {status} for {what}.",
             "project.yml", null, hint));
     }
@@ -106,6 +139,22 @@ public sealed class HttpStateEndpoint : IDisposable
             $"cannot reach the state store at '{Host}': {cause}.",
             "project.yml", null,
             "check PZ_STATE_URL / state.url, and that the server is reachable from this host"));
+
+    private void Delay(int attempt, HttpResponseMessage response)
+    {
+        var retryAfter = ParseRetryAfter(response) is { } serverDelay
+            ? serverDelay
+            : RetryBaseDelay * attempt;
+        var bounded = retryAfter > MaxRetryDelay ? MaxRetryDelay : retryAfter;
+        Task.Delay(bounded, _time).GetAwaiter().GetResult();
+    }
+
+    /// <summary>Delta-seconds only (<c>Retry-After: 3</c>) -- the HTTP-date form exists for browser
+    /// redirect targets, not the state server's own retry hint, so it is not worth the extra parsing
+    /// surface here. A missing or unparsable header (or a negative value) falls back to the base delay
+    /// in <see cref="Delay"/>.</summary>
+    private static TimeSpan? ParseRetryAfter(HttpResponseMessage response) =>
+        response.Headers.RetryAfter?.Delta is { } delta && delta > TimeSpan.Zero ? delta : null;
 
     private string Host => _rootUri.GetLeftPart(UriPartial.Authority);
 

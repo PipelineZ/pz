@@ -508,6 +508,22 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `AzureTransient`) now also recognizes the deadlock/timeout numbers plus the
   documented pre-login-transport and Azure SQL throttling/failover numbers
   (233, 64, 10053, 10054, 10060, 40613, 40197, 40501, 49918, 49919, 49920).
+- The SQL Server and HTTP state backends now split "never reached the store"
+  from "reached it, the request itself failed": every `SqlException` and every
+  HTTP 429/5xx used to land on PZ0518 ("cannot reach"), which the engine never
+  retries, even once a connection or an HTTP response had already come back --
+  and the message rendered only the exception's .NET type name, so a 18456
+  login failure, a 229 permission error and a 1205 deadlock were
+  indistinguishable. A query or request that fails after a successful
+  connect/response is now the new PZ0529, naming the SQL error number or HTTP
+  status (never the connection string or a bearer token); a SQL error number
+  or an HTTP 429/502/503/504 that `MsTransient`/a small closed status set
+  classifies transient is retried a bounded number of times first (delay
+  through `TimeProvider`, honouring a server's `Retry-After` up to a 30s cap)
+  before either succeeding or reporting PZ0529 -- every retried operation is
+  read-only, naturally idempotent, or (the keyed store's compare-and-swap
+  `Set`) fails closed on replay into a spurious PZ0520 conflict, never a
+  double write.
 
 ## [0.6.1] - 2026-09-10
 

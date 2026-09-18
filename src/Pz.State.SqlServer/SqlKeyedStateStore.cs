@@ -44,10 +44,8 @@ public sealed class SqlKeyedStateStore<T>(
     /// further locking, because <see cref="Set"/> is once-per-key-at-advancement (see the class doc).</summary>
     private readonly ConcurrentDictionary<string, int> _versions = new(StringComparer.Ordinal);
 
-    public T? Get(string key, Action<string>? notice = null)
-    {
-        using var sqlConnection = connection.Open();
-        try
+    public T? Get(string key, Action<string>? notice = null) =>
+        connection.Execute(sqlConnection =>
         {
             using var command = new SqlCommand(
                 "DECLARE @sql NVARCHAR(MAX) = N'SELECT payload, version FROM ' + QUOTENAME(@schema) + " +
@@ -86,17 +84,10 @@ public sealed class SqlKeyedStateStore<T>(
             }
 
             return value;
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            throw connection.Unavailable(ex);
-        }
-    }
+        });
 
-    public IReadOnlyList<KeyValuePair<string, T>>? ListAll(Action<string>? notice = null)
-    {
-        using var sqlConnection = connection.Open();
-        try
+    public IReadOnlyList<KeyValuePair<string, T>>? ListAll(Action<string>? notice = null) =>
+        connection.Execute(sqlConnection =>
         {
             using var command = new SqlCommand(
                 "DECLARE @sql NVARCHAR(MAX) = N'SELECT state_key, payload, version FROM ' + " +
@@ -135,57 +126,54 @@ public sealed class SqlKeyedStateStore<T>(
             // case-insensitive, which would not reproduce the ordinal order the contract (and
             // KeyedJsonStateStore) guarantee.
             return results.OrderBy(kv => kv.Key, StringComparer.Ordinal).ToList();
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            throw connection.Unavailable(ex);
-        }
-    }
+        });
 
+    /// <summary>Retried by <see cref="SqlStateConnection.Execute{T}"/> on a transient failure --
+    /// safe because the CAS WHERE clause fails closed on replay: if the prior attempt's UPDATE/INSERT
+    /// actually applied before its acknowledgment was lost, the retry's WHERE clause matches nothing and
+    /// this reports a spurious <see cref="Conflict"/> (PZ0520), never a double write.</summary>
     public void Set(string key, T value)
     {
-        using var sqlConnection = connection.Open();
         var payload = SerializePayload(value);
         var now = DateTime.UtcNow;
 
-        try
+        connection.Execute<object?>(sqlConnection =>
         {
-            if (_versions.TryGetValue(key, out var expectedVersion))
+            try
             {
-                var rows = ExecuteUpdate(sqlConnection, key, payload, expectedVersion, now);
-                if (rows == 0)
+                if (_versions.TryGetValue(key, out var expectedVersion))
+                {
+                    var rows = ExecuteUpdate(sqlConnection, key, payload, expectedVersion, now);
+                    if (rows == 0)
+                    {
+                        throw Conflict(key);
+                    }
+
+                    _versions[key] = expectedVersion + 1;
+                    return null;
+                }
+
+                var inserted = ExecuteInsertIfAbsent(sqlConnection, key, payload, now);
+                if (!inserted)
                 {
                     throw Conflict(key);
                 }
 
-                _versions[key] = expectedVersion + 1;
-                return;
+                _versions[key] = 1;
+                return null;
             }
-
-            var inserted = ExecuteInsertIfAbsent(sqlConnection, key, payload, now);
-            if (!inserted)
+            catch (SqlException ex) when (ex.Number is 2627 or 2601)
             {
+                // A genuine concurrent insert can race past the WHERE NOT EXISTS guard below and hit the
+                // primary key (scope, state_key) instead -- same conflict, reported the same way.
                 throw Conflict(key);
             }
-
-            _versions[key] = 1;
-        }
-        catch (SqlException ex) when (ex.Number is 2627 or 2601)
-        {
-            // A genuine concurrent insert can race past the WHERE NOT EXISTS guard below and hit the
-            // primary key (scope, state_key) instead -- same conflict, reported the same way.
-            throw Conflict(key);
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            throw connection.Unavailable(ex);
-        }
+        });
     }
 
     public void Remove(string key)
     {
-        using var sqlConnection = connection.Open();
-        try
+        connection.Execute<object?>(sqlConnection =>
         {
             using var command = new SqlCommand(
                 "DECLARE @sql NVARCHAR(MAX) = N'DELETE FROM ' + QUOTENAME(@schema) + " +
@@ -197,11 +185,8 @@ public sealed class SqlKeyedStateStore<T>(
             command.Parameters.AddWithValue("@scope", scope);
             command.Parameters.AddWithValue("@key", key);
             command.ExecuteNonQuery();
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            throw connection.Unavailable(ex);
-        }
+            return null;
+        });
 
         _versions.TryRemove(key, out _);
     }
