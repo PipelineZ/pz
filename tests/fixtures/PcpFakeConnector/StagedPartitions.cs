@@ -208,3 +208,44 @@ internal sealed class IdentifiedSyncStateReadPartition(SyncStateReadPartition in
 
     public bool TryGetSyncStateCandidate(out string? candidate) => inner.TryGetSyncStateCandidate(out candidate);
 }
+
+
+/// <summary>The failure both midstream switches raise: what a rate-limited API looks like to a
+/// connector, thrown from code only the data plane is driving.</summary>
+internal static class MidstreamFailure
+{
+    public const string Message = "fixture: rate limited mid-stream";
+
+    public static readonly TimeSpan RetryAfter = TimeSpan.FromSeconds(7);
+
+    public static PzConnectorException Create() => new(Message, isTransient: true, RetryAfter);
+}
+
+/// <summary>Yields the first batch of <paramref name="inner"/> and then throws
+/// <see cref="MidstreamFailure"/> — after data has crossed, so the stream is genuinely mid-flight
+/// rather than failing before its first message.</summary>
+internal sealed class FailingMidstreamReadPartition(IDatasetPartition inner) : IDatasetPartition
+{
+    public async IAsyncEnumerable<RecordBatch> ReadAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var batch in inner.ReadAsync(options, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            yield return batch;
+            throw MidstreamFailure.Create();
+        }
+    }
+}
+
+/// <summary>Throws <see cref="MidstreamFailure"/> from the first batch written; commit and abort go
+/// through to <paramref name="inner"/> untouched.</summary>
+internal sealed class FailingMidstreamWriteSession(ISinkWriteSession inner) : ISinkWriteSession
+{
+    public ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct) => throw MidstreamFailure.Create();
+
+    public ValueTask<WriteResult> CommitAsync(CancellationToken ct) => inner.CommitAsync(ct);
+
+    public ValueTask AbortAsync(CancellationToken ct) => inner.AbortAsync(ct);
+
+    public ValueTask DisposeAsync() => inner.DisposeAsync();
+}

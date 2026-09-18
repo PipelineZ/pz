@@ -97,8 +97,10 @@ internal sealed class DataPlaneListener : IAsyncDisposable
                         {
                             await ServeReadAsync(connection, stream, read).ConfigureAwait(false);
                         }
-                        catch
+                        catch (Exception ex)
                         {
+                            // Recorded first: the truncation is what makes the host ask why.
+                            read.Failure.Record(ex);
                             await SignalTruncatedAsync(stream).ConfigureAwait(false);
                             throw;
                         }

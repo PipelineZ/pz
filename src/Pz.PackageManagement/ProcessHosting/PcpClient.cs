@@ -287,6 +287,16 @@ public sealed class PcpClient : IAsyncDisposable
     /// surfaces as <see cref="ConnectorHostException"/> PZ0358 when the process has already exited
     /// (<see cref="ConnectorProcess.HasExited"/>), or PZ0357 otherwise, both with
     /// <see cref="ConnectorProcess.StderrTail"/> appended when non-empty.</para></summary>
+    /// <summary>A connector-reported failure, rebuilt as the exception the connector raised. One place,
+    /// because <see cref="LastErrorWasTransient"/> must see every detail this client maps, whichever
+    /// RPC carried it.</summary>
+    internal PzConnectorException ToPzConnectorException(PzErrorDetail detail)
+    {
+        TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
+        Volatile.Write(ref _lastErrorTransient, detail.IsTransient ? 1 : 2);
+        return new PzConnectorException(detail.Message, detail.IsTransient, retryAfter);
+    }
+
     public Exception MapRpcException(RpcException ex, CancellationToken ct = default)
     {
         if (IsCallerCancellation(ex, ct))
@@ -298,10 +308,7 @@ public sealed class PcpClient : IAsyncDisposable
             string.Equals(entry.Key, ProtocolConstants.ErrorDetailTrailerKey, StringComparison.Ordinal));
         if (trailer is not null)
         {
-            var detail = PzErrorDetail.Parser.ParseFrom(trailer.ValueBytes);
-            TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
-            Volatile.Write(ref _lastErrorTransient, detail.IsTransient ? 1 : 2);
-            return new PzConnectorException(detail.Message, detail.IsTransient, retryAfter);
+            return ToPzConnectorException(PzErrorDetail.Parser.ParseFrom(trailer.ValueBytes));
         }
 
         var stderr = _process.StderrTail;

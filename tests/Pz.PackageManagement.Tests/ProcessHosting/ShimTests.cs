@@ -365,6 +365,82 @@ public sealed class ShimTests : IDisposable
         Assert.Equal(NaturalReadShape.Full, Assert.IsAssignableFrom<INaturalReadShapeSource>(source).GetNaturalReadShape(SmallCsvSpec()));
     }
 
+    // ---- a failure raised mid-stream keeps what the connector raised it with -------------------
+    // In-process, a partition that throws a transient PzConnectorException from ReadAsync is retried,
+    // honouring its retry-after. The data plane carries Arrow bytes and nothing else, so the same
+    // failure out of process can only truncate the stream; the shim asks the still-living connector
+    // what it threw rather than reporting a protocol break the engine will never retry.
+
+    [SkippableFact]
+    public async Task A_transient_failure_raised_mid_read_stays_transient_and_keeps_its_retry_after()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--fail-read-midstream-transient"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+        await using var source = await new ProcessSourceConnector(client, process).OpenAsync(config, CancellationToken.None);
+        var partition = Assert.Single(await source.PlanReadAsync(SmallCsvSpec(), ReadHints.None, CancellationToken.None));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => DrainAsync(partition));
+
+        Assert.False(process.HasExited); // the connector is alive: this is its own failure, not a crash
+        Assert.True(ex.IsTransient);
+        Assert.Equal(TimeSpan.FromSeconds(7), ex.RetryAfter);
+        Assert.Contains("rate limited mid-stream", ex.Message, StringComparison.Ordinal);
+
+        // Reading the partition again is a new stream with its own outcome, not the last one's echo.
+        var again = await Assert.ThrowsAsync<PzConnectorException>(() => DrainAsync(partition));
+        Assert.True(again.IsTransient);
+    }
+
+    [SkippableFact]
+    public async Task A_transient_failure_raised_mid_write_stays_transient_and_the_session_is_still_abortable()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        var dataDir = NewTempDir();
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--fail-write-midstream-transient"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+        await using var sink = await new ProcessSinkConnector(client, process).OpenAsync(config, CancellationToken.None);
+        var schema = BuildSchema();
+        var outputSpec = new OutputSpec("lake", "out", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["path"] = "out", ["format"] = "parquet" });
+
+        await using var session = await sink.BeginWriteAsync(outputSpec, schema, CancellationToken.None);
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+        {
+            // The connector's pump throws on the first batch it reads; the host learns of it on
+            // whichever later write or the completion finds the socket closed.
+            for (var i = 0; i < 200; i++)
+            {
+                using var batch = BuildBatch(schema, i * 3, 3);
+                await session.WriteBatchAsync(batch, CancellationToken.None);
+            }
+
+            await session.CommitAsync(CancellationToken.None);
+        });
+
+        Assert.False(process.HasExited);
+        Assert.True(ex.IsTransient);
+        Assert.Equal(TimeSpan.FromSeconds(7), ex.RetryAfter);
+        Assert.Contains("rate limited mid-stream", ex.Message, StringComparison.Ordinal);
+
+        // Asking why is side-effect free: nothing was committed, and the engine's abort still lands.
+        await session.AbortAsync(CancellationToken.None);
+        Assert.False(File.Exists(Path.Combine(dataDir, "out", "part-0.parquet")));
+        Assert.Empty(Directory.Exists(Path.Combine(dataDir, "out"))
+            ? Directory.GetFiles(Path.Combine(dataDir, "out"), "*.parquet", SearchOption.AllDirectories)
+            : []);
+    }
+
     // ---- Step 1: write path, through the shim end to end -------------------------------------
 
     [SkippableFact]

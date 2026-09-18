@@ -44,7 +44,8 @@ internal sealed class PcpConnectorService(
     private sealed record PlannedRead(
         Schema Schema,
         IReadOnlyList<IDatasetPartition> Partitions,
-        ConcurrentDictionary<string, SyncStateCapture> Captures);
+        ConcurrentDictionary<string, SyncStateCapture> Captures,
+        ConcurrentDictionary<string, StreamFailureCapture> Failures);
 
     // ---- identity + config ------------------------------------------------------------------
 
@@ -196,7 +197,8 @@ internal sealed class PcpConnectorService(
             // writes as the stream header.
             _plans[request.OpId] = new PlannedRead(
                 ReadSchemaProjection.Apply(declared.Schema, hints, connector.Capabilities),
-                partitions, new ConcurrentDictionary<string, SyncStateCapture>(StringComparer.Ordinal));
+                partitions, new ConcurrentDictionary<string, SyncStateCapture>(StringComparer.Ordinal),
+                new ConcurrentDictionary<string, StreamFailureCapture>(StringComparer.Ordinal));
 
             for (var i = 0; i < partitions.Count; i++)
             {
@@ -238,6 +240,9 @@ internal sealed class PcpConnectorService(
                 SpecMapping.ToBatchOptions(request.Options),
                 OpToken(request.OpId),
                 plan.Captures.GetOrAdd(request.PartitionId, _ => new SyncStateCapture()),
+                // A fresh capture per stream, never GetOrAdd: a partition read again after a failed
+                // attempt must not answer with the earlier attempt's failure.
+                plan.Failures[request.PartitionId] = new StreamFailureCapture(),
                 Activity.Current?.Context ?? default));
             return Task.FromResult(new ReadStreamTicket { Ticket = ByteString.CopyFrom(ticket) });
         });
@@ -288,6 +293,39 @@ internal sealed class PcpConnectorService(
 
             return Task.FromResult(response);
         });
+
+    /// <summary>Answers from what the data plane recorded; it never touches the partition or the
+    /// session, so it can neither commit nor free anything, and an op, partition or session this
+    /// service no longer knows is simply "no failure known".</summary>
+    public override Task<StreamFailureResponse> GetStreamFailure(
+        StreamFailureRequest request, ServerCallContext context)
+    {
+        var failure = request.StreamCase switch
+        {
+            StreamFailureRequest.StreamOneofCase.Read =>
+                _plans.TryGetValue(request.Read.OpId, out var plan) &&
+                plan.Failures.TryGetValue(request.Read.PartitionId, out var capture)
+                    ? capture.Failure
+                    : null,
+            // A write's failure is what faulted its Drained gate: the sink's own exception, raised
+            // from the pump. The session is still registered here because a failed write is aborted,
+            // not committed, and the host asks before it aborts.
+            StreamFailureRequest.StreamOneofCase.Write =>
+                _sessions.TryGetValue(request.Write.SessionId, out var state) &&
+                state.Drained.Task is { IsFaulted: true } drained
+                    ? drained.Exception.InnerException as PzConnectorException
+                    : null,
+            _ => null,
+        };
+
+        var response = new StreamFailureResponse();
+        if (failure is not null)
+        {
+            response.Failure = ToErrorDetail(failure);
+        }
+
+        return Task.FromResult(response);
+    }
 
     // ---- sink -------------------------------------------------------------------------------
 
@@ -617,16 +655,18 @@ internal sealed class PcpConnectorService(
     /// readable logs; a host must decide by the trailer's presence, because the protocol-violation
     /// statuses this service raises elsewhere (no config, unknown partition, unknown session) carry no
     /// trailer and are a different failure entirely.</para></summary>
+    private static PzErrorDetail ToErrorDetail(PzConnectorException ex) => new()
+    {
+        Code = string.Empty,
+        Message = ex.Message,
+        IsTransient = ex.IsTransient,
+        RetryAfterMs = (long)(ex.RetryAfter?.TotalMilliseconds ?? 0),
+        Hint = string.Empty,
+    };
+
     private static RpcException ToRpcException(PzConnectorException ex)
     {
-        var detail = new PzErrorDetail
-        {
-            Code = string.Empty,
-            Message = ex.Message,
-            IsTransient = ex.IsTransient,
-            RetryAfterMs = (long)(ex.RetryAfter?.TotalMilliseconds ?? 0),
-            Hint = string.Empty,
-        };
+        var detail = ToErrorDetail(ex);
         var trailers = new Metadata { { ProtocolConstants.ErrorDetailTrailerKey, detail.ToByteArray() } };
         var status = new Status(ex.IsTransient ? StatusCode.Unavailable : StatusCode.FailedPrecondition, ex.Message);
         return new RpcException(status, trailers);

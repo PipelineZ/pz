@@ -305,8 +305,13 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
                 // into this. IDatasetPartition.ReadAsync's contract wants PzConnectorException
                 // specifically -- the only exception type the engine's retry logic understands --
                 // transient only when the process is confirmed gone; a still-alive connector that broke
-                // the wire protocol is a bug a retry will not fix.
-                throw ProcessFailureMapping.ToPzConnectorException(client, process, ex.Message);
+                // the wire protocol is a bug a retry will not fix. A still-alive connector that
+                // truncated because its partition THREW is neither: it is asked what it threw, so a rate
+                // limit raised mid-read keeps its transience and retry-after, as it would in-process.
+                throw await ProcessFailureMapping.StreamFailureAsync(
+                    client, process,
+                    new StreamFailureRequest { Read = new ReadStateRequest { OpId = opId, PartitionId = partitionId } },
+                    ex.Message).ConfigureAwait(false);
             }
 
             if (batch is null)
@@ -524,6 +529,41 @@ internal static class ProcessFailureMapping
             "connector instance was shut down while this operation was in flight " +
             $"(a cancellation ladder condemned the process){suffix}",
             isTransient: true);
+    }
+
+    /// <summary>How long the host waits for a connector to say why a stream failed. The answer is a
+    /// dictionary lookup on the other side; this only bounds a connector too wedged to give it.</summary>
+    private static readonly TimeSpan StreamFailureTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>The failure to report for a data-plane stream that tore. The data plane carries bytes and
+    /// no diagnosis, so while the process is still alive the connector is asked what happened
+    /// (<c>GetStreamFailure</c>): a failure it raised on purpose comes back with the transience and
+    /// retry-after it was raised with. Anything short of that answer — a dead process, a connector
+    /// built before the RPC (UNIMPLEMENTED), no failure recorded, the question itself failing — falls
+    /// back to <see cref="ToPzConnectorException"/>'s own diagnosis of <paramref name="cause"/>, so
+    /// asking can never hide the original failure or make it worse.</summary>
+    public static async Task<PzConnectorException> StreamFailureAsync(
+        PcpClient client, ConnectorProcess process, StreamFailureRequest request, string cause)
+    {
+        if (!process.HasExited)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(StreamFailureTimeout);
+                var response = await client.Grpc
+                    .GetStreamFailureAsync(request, cancellationToken: cts.Token).ConfigureAwait(false);
+                if (response.Failure is { } detail)
+                {
+                    return client.ToPzConnectorException(detail);
+                }
+            }
+            catch (Exception ex) when (ex is RpcException or ObjectDisposedException or OperationCanceledException)
+            {
+                // Unimplemented, timed out, or the process went away while being asked.
+            }
+        }
+
+        return ToPzConnectorException(client, process, cause);
     }
 
     /// <summary>Same conversion for a data-plane failure that never went through an

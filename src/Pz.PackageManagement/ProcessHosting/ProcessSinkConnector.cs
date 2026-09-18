@@ -205,9 +205,17 @@ internal sealed class ProcessSinkWriteSession(
             // surfaces as a raw broken-pipe IOException/SocketException off the underlying socket, not
             // a ConnectorHostException. The ABI still promises PzConnectorException here (transient,
             // stderr tail) regardless of which concrete exception the socket happened to throw.
-            throw ProcessFailureMapping.ToPzConnectorException(client, process, ex.Message);
+            // A connector still alive hung up because its sink THREW: it is asked what, so a transient
+            // failure raised mid-write is retried as it would be in-process. Asking is side-effect
+            // free — CommitWrite is never used for this, since a commit issued after a torn stream
+            // could land the prefix that did arrive.
+            throw await StreamFailureAsync(ex.Message).ConfigureAwait(false);
         }
     }
+
+    private Task<PzConnectorException> StreamFailureAsync(string cause) =>
+        ProcessFailureMapping.StreamFailureAsync(
+            client, process, new StreamFailureRequest { Write = new SessionRef { SessionId = sessionId } }, cause);
 
     public async ValueTask<WriteResult> CommitAsync(CancellationToken ct)
     {
@@ -223,7 +231,7 @@ internal sealed class ProcessSinkWriteSession(
         {
             // Same gap as WriteBatchAsync above: CompleteAsync's WriteEndAsync/socket shutdown can
             // throw a raw IOException/SocketException on a dead connector, not a ConnectorHostException.
-            throw ProcessFailureMapping.ToPzConnectorException(client, process, ex.Message);
+            throw await StreamFailureAsync(ex.Message).ConfigureAwait(false);
         }
 
         try

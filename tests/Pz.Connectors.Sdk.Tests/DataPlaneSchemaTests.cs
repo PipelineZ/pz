@@ -32,7 +32,7 @@ public sealed class DataPlaneSchemaTests
     private static RecordBatch Batch(Schema schema, params IArrowArray[] arrays) => new(schema, arrays, arrays[0].Length);
 
     private static ReadTicket Ticket(Schema schema, IDatasetPartition partition) =>
-        new(schema, partition, BatchOptions.Default, CancellationToken.None, new SyncStateCapture(), default);
+        new(schema, partition, BatchOptions.Default, CancellationToken.None, new SyncStateCapture(), new StreamFailureCapture(), default);
 
     [Fact]
     public async Task A_batch_with_fewer_columns_than_the_stream_schema_is_refused_before_it_is_written()

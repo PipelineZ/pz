@@ -24,6 +24,7 @@ internal sealed record ReadTicket(
     BatchOptions Options,
     CancellationToken OpToken,
     SyncStateCapture Capture,
+    StreamFailureCapture Failure,
     ActivityContext Parent) : TicketEntry;
 
 /// <summary>Host -> connector: the data plane reads batches off the stream into
@@ -132,6 +133,29 @@ internal sealed class TicketRegistry
     }
 
     private static string Key(ReadOnlySpan<byte> ticket) => Convert.ToHexString(ticket);
+}
+
+/// <summary>Why one data-plane stream failed, parked where the control plane can answer
+/// <c>GetStreamFailure</c> from it. The data plane carries Arrow bytes and nothing else, so a failure
+/// raised mid-stream can only truncate the stream; this is what lets the host learn that the failure
+/// was, say, a rate limit with a retry-after rather than a protocol break. It is recorded BEFORE the
+/// stream is truncated, so it is there by the time the host can ask. Only a
+/// <see cref="PzConnectorException"/> is recorded: it is the one failure a connector raises on purpose,
+/// with transience it means; anything else is a bug, and the host's own diagnosis of a torn stream
+/// (with the stderr tail) is the honest report of that.</summary>
+internal sealed class StreamFailureCapture
+{
+    private PzConnectorException? _failure;
+
+    public void Record(Exception failure)
+    {
+        if (failure is PzConnectorException known)
+        {
+            Volatile.Write(ref _failure, known);
+        }
+    }
+
+    public PzConnectorException? Failure => Volatile.Read(ref _failure);
 }
 
 /// <summary>The sync-state candidate of one planned partition, captured exactly once by the data

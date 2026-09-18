@@ -23,7 +23,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::config::Config;
 use crate::data_plane;
-use crate::error::{to_status, PzError};
+use crate::error::{to_error_detail, to_status, PzError};
 use crate::pb;
 use crate::pb::pz_connector_server::{PzConnector, PzConnectorServer};
 use crate::telemetry;
@@ -170,6 +170,11 @@ pub(crate) struct SessionState {
     write_session: AsyncMutex<Option<Box<dyn WriteSession>>>,
     drained_tx: StdMutex<Option<oneshot::Sender<Result<(), PzError>>>>,
     drained_rx: AsyncMutex<Option<oneshot::Receiver<Result<(), PzError>>>>,
+    /// Why the drain failed, kept for `GetStreamFailure`. The oneshot above is consumed by the one
+    /// `CommitWrite` that awaits it, but the host asks this AFTER the data stream tore and never
+    /// commits a torn stream -- so the failure has to survive here, readable any number of times, or
+    /// a transient error the sink raised mid-write would reach the host as nothing but a hang-up.
+    drain_failure: StdMutex<Option<PzError>>,
     /// A clone of the connected data-plane socket, attached once the pump claims it. `AbortWrite`/
     /// `Cancel`/a `Shutdown`-triggered sweep use it to force a blocking read to fail, unblocking a pump
     /// that would otherwise wait forever for bytes the host is never going to send.
@@ -193,6 +198,7 @@ impl SessionState {
             write_session: AsyncMutex::new(Some(session)),
             drained_tx: StdMutex::new(Some(tx)),
             drained_rx: AsyncMutex::new(Some(rx)),
+            drain_failure: StdMutex::new(None),
             data_conn: StdMutex::new(None),
             parent,
         })
@@ -254,10 +260,20 @@ impl SessionState {
         }
     }
 
+    /// Recorded before it is sent: the pump calls this before the data connection closes, so by the
+    /// time the host notices the hang-up and asks `GetStreamFailure`, the answer already exists.
     pub(crate) fn signal_drained(&self, result: Result<(), PzError>) {
+        if let Err(e) = &result {
+            *self.drain_failure.lock().unwrap() = Some(e.clone());
+        }
         if let Some(tx) = self.drained_tx.lock().unwrap().take() {
             let _ = tx.send(result);
         }
+    }
+
+    /// The failure the drain ended with, if it has ended and failed. Readable any number of times.
+    pub(crate) fn drain_failure(&self) -> Option<PzError> {
+        self.drain_failure.lock().unwrap().clone()
     }
 
     /// Taken exactly once, by the first `CommitWrite` attempt that reaches it. A `CommitWrite` call
@@ -457,6 +473,16 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         _request: Request<pb::ReadStateRequest>,
     ) -> Result<Response<pb::ReadStateResponse>, Status> {
         Err(source_unimplemented())
+    }
+
+    async fn get_stream_failure(
+        &self,
+        request: Request<pb::StreamFailureRequest>,
+    ) -> Result<Response<pb::StreamFailureResponse>, Status> {
+        Ok(Response::new(stream_failure(
+            &self.sessions,
+            request.into_inner(),
+        )))
     }
 
     async fn try_native_copy(
@@ -672,6 +698,27 @@ fn unknown_session(session_id: &str) -> Status {
     Status::not_found(format!(
         "unknown or already-finished write session '{session_id}'"
     ))
+}
+
+/// `GetStreamFailure`: what a write session's drain ended with. Side-effect free -- it never
+/// commits, aborts, revokes or removes anything, so the host may ask as often as it likes and the
+/// session stays exactly as abortable as before. Absent covers every "nothing to say": a read stream
+/// (this SDK serves none), a session already finished and forgotten, a drain still in flight, or one
+/// that ended cleanly. Only a failure the pump actually recorded is an answer.
+fn stream_failure(
+    sessions: &StdMutex<HashMap<String, Arc<SessionState>>>,
+    request: pb::StreamFailureRequest,
+) -> pb::StreamFailureResponse {
+    let failure = match request.stream {
+        Some(pb::stream_failure_request::Stream::Write(session)) => sessions
+            .lock()
+            .unwrap()
+            .get(&session.session_id)
+            .and_then(|state| state.drain_failure())
+            .map(|e| to_error_detail(&e)),
+        Some(pb::stream_failure_request::Stream::Read(_)) | None => None,
+    };
+    pb::StreamFailureResponse { failure }
 }
 
 fn to_output_spec(msg: pb::OutputSpecMsg) -> OutputSpec {
@@ -1272,6 +1319,77 @@ mod tests {
             !*shutdown_rx.borrow(),
             "a long-idle but still-open connection must never be treated as orphaned"
         );
+    }
+
+    fn sessions_with(
+        session_id: &str,
+        state: Arc<SessionState>,
+    ) -> Arc<StdMutex<HashMap<String, Arc<SessionState>>>> {
+        let mut map = HashMap::new();
+        map.insert(session_id.to_string(), state);
+        Arc::new(StdMutex::new(map))
+    }
+
+    fn write_ref(session_id: &str) -> pb::StreamFailureRequest {
+        pb::StreamFailureRequest {
+            stream: Some(pb::stream_failure_request::Stream::Write(pb::SessionRef {
+                session_id: session_id.to_string(),
+            })),
+        }
+    }
+
+    #[test]
+    fn a_transient_drain_failure_is_answered_with_its_transience_and_retry_after() {
+        let state = SessionState::new_for_test();
+        state.signal_drained(Err(PzError::transient("rate limited mid-stream", 7_000)));
+        let sessions = sessions_with("s1", state);
+
+        let failure = stream_failure(&sessions, write_ref("s1")).failure;
+
+        let detail = failure.expect("the failure the pump recorded must be reported");
+        assert_eq!(detail.message, "rate limited mid-stream");
+        assert!(detail.is_transient);
+        assert_eq!(detail.retry_after_ms, 7_000);
+    }
+
+    #[test]
+    fn a_clean_drain_has_no_failure_to_report() {
+        let state = SessionState::new_for_test();
+        state.signal_drained(Ok(()));
+        let sessions = sessions_with("s1", state);
+
+        assert!(stream_failure(&sessions, write_ref("s1")).failure.is_none());
+    }
+
+    #[test]
+    fn a_session_still_draining_has_no_failure_to_report() {
+        let sessions = sessions_with("s1", SessionState::new_for_test());
+
+        assert!(stream_failure(&sessions, write_ref("s1")).failure.is_none());
+    }
+
+    #[test]
+    fn an_unknown_session_is_no_failure_known_not_an_error() {
+        let sessions = sessions_with("s1", SessionState::new_for_test());
+
+        assert!(stream_failure(&sessions, write_ref("gone"))
+            .failure
+            .is_none());
+    }
+
+    #[test]
+    fn a_read_stream_is_never_known_to_a_sink_only_connector() {
+        let sessions = sessions_with("s1", SessionState::new_for_test());
+        let request = pb::StreamFailureRequest {
+            stream: Some(pb::stream_failure_request::Stream::Read(
+                pb::ReadStateRequest {
+                    op_id: "op".to_string(),
+                    partition_id: "p0".to_string(),
+                },
+            )),
+        };
+
+        assert!(stream_failure(&sessions, request).failure.is_none());
     }
 
     #[test]
