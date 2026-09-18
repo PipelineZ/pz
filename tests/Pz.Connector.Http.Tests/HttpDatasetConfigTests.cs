@@ -28,6 +28,36 @@ public class HttpDatasetConfigTests
         Assert.Equal(10, config.MaxPages);
     }
 
+    /// <summary>An unquoted `archived: true` or `since: 1.5` arrives typed; on the wire it must read the
+    /// way it was written, not as .NET's <c>True</c> or a comma-decimal.</summary>
+    [Fact]
+    public void Typed_query_values_are_sent_the_way_they_were_written()
+    {
+        var original = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.GetCultureInfo("de-DE");
+            var config = HttpDatasetConfig.Parse(Spec(new()
+            {
+                ["path"] = "/issues",
+                ["query"] = new Dictionary<string, object?>
+                {
+                    ["archived"] = true,
+                    ["ratio"] = 1.5,
+                    ["tenant"] = "007",
+                },
+            }));
+
+            Assert.Equal("true", config.Query["archived"]);
+            Assert.Equal("1.5", config.Query["ratio"]);
+            Assert.Equal("007", config.Query["tenant"]);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = original;
+        }
+    }
+
     [Fact]
     public void Aggregates_option_errors_into_one_permanent_exception()
     {

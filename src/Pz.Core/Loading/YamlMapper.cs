@@ -89,7 +89,13 @@ public static class YamlMapper
         switch (node)
         {
             case YamlScalarNode scalar:
-                return ConvertScalar(scalar.Value);
+                // Only a PLAIN scalar is typed. Quotes and block styles are how YAML says "a string":
+                // re-typing them turns a password "0123456" into 123456 and a connector version
+                // "1.10" into 1.1 — a different package — and undoes the quoting the authoring tools
+                // add around number-like strings precisely so that they survive.
+                return scalar.Style is ScalarStyle.Plain or ScalarStyle.Any
+                    ? ConvertScalar(scalar.Value)
+                    : scalar.Value;
             case YamlMappingNode or YamlSequenceNode:
                 if (!state.Path.Add(node))
                 {

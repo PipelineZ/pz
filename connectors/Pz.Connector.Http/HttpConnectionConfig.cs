@@ -92,7 +92,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         {
             foreach (var (name, value) in map)
             {
-                headers[name] = value?.ToString() ?? "";
+                headers[name] = YamlScalarText.Of(value) ?? "";
             }
         }
 

@@ -86,4 +86,58 @@ public class YamlMapperTests
         Assert.Equal(1L, a["x"]);
         Assert.Equal(1L, b["x"]);
     }
+
+    // -- scalar typing ----------------------------------------------------------------------------
+    // Quoting is how YAML says "this is a string". Re-typing a quoted scalar turns a password
+    // "0123456" into 123456 and a connector version "1.10" into 1.1 — a different package.
+
+    [Theory]
+    [InlineData("v: \"0123456\"", "0123456")]
+    [InlineData("v: '0123456'", "0123456")]
+    [InlineData("v: \"1.10\"", "1.10")]
+    [InlineData("v: \"1e5\"", "1e5")]
+    [InlineData("v: \"true\"", "true")]
+    [InlineData("v: 'false'", "false")]
+    [InlineData("v: \"42\"", "42")]
+    [InlineData("v: |\n  42\n", "42\n")]
+    [InlineData("v: >\n  true\n", "true\n")]
+    public void A_quoted_or_block_scalar_stays_a_string(string yaml, string expected)
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(LoadString(yaml, out var error));
+        Assert.Null(error);
+        Assert.Equal(expected, Assert.IsType<string>(map["v"]));
+    }
+
+    [Fact]
+    public void A_plain_scalar_is_still_typed()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadString("i: 42\nd: 1.5\nt: true\nf: false\ns: hello\nz: 0123456\n", out var error));
+        Assert.Null(error);
+        Assert.Equal(42L, map["i"]);
+        Assert.Equal(1.5, map["d"]);
+        Assert.Equal(true, map["t"]);
+        Assert.Equal(false, map["f"]);
+        Assert.Equal("hello", map["s"]);
+        Assert.Equal(123456L, map["z"]);
+    }
+
+    [Fact]
+    public void Quoted_scalars_stay_strings_inside_sequences_and_nested_mappings()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadString("headers:\n  X-Tenant: \"007\"\nvalues: [\"1\", 2, 'true']\n", out var error));
+        Assert.Null(error);
+        Assert.Equal("007", Assert.IsType<Dictionary<string, object?>>(map["headers"])["X-Tenant"]);
+        Assert.Equal(new object?[] { "1", 2L, "true" }, Assert.IsType<List<object?>>(map["values"]));
+    }
+
+    /// <summary>A quoted mapping KEY was never re-typed (keys are always text); pinned so the scalar
+    /// rule cannot grow to cover it by accident.</summary>
+    [Fact]
+    public void A_quoted_key_is_plain_text()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(LoadString("\"200\": ok\n", out _));
+        Assert.Equal("ok", map["200"]);
+    }
 }
