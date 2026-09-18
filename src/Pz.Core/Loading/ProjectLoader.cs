@@ -1,3 +1,4 @@
+using System.Globalization;
 using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.Core.Templating;
@@ -23,7 +24,7 @@ public static class ProjectLoader
         RetiredConnectionDirectories.Refuse(projectDir, errors);
         var pipelines = LoadPipelines(projectDir, errors, warnings);
 
-        ValidateStateConnection(state, connections, errors);
+        ValidateStateConnection(state, connections, errors, warnings);
 
         var mergedVars = new Dictionary<string, object?>(vars);
         if (varOverrides is not null)
@@ -93,7 +94,7 @@ public static class ProjectLoader
         IReadOnlyList<ConnectionDef> connections = state.Connection is null
             ? []
             : ConnectionsLoader.Load(projectDir, env, errors, []);
-        ValidateStateConnection(state, connections, errors);
+        ValidateStateConnection(state, connections, errors, []);
 
         if (errors.Count > 0)
         {
@@ -476,7 +477,7 @@ public static class ProjectLoader
     {
         [StateConfig.Local] = ["backend"],
         [StateConfig.SqlServer] = ["backend", "connection", "schema", "artifacts", "events"],
-        [StateConfig.Http] = ["backend", "url", "artifacts", "events"],
+        [StateConfig.Http] = ["backend", "url", "artifacts", "events", "timeout_seconds"],
     };
 
     /// <summary>Resolution is per key: an explicit
@@ -586,8 +587,62 @@ public static class ProjectLoader
                 "or set events: false"));
         }
 
+        var timeoutSeconds = ParseStateTimeoutSeconds(stateYaml, env, relativePath, errors);
+
         return new StateConfig(backend, connection, connectionString, schema ?? "pz", artifacts, events,
-            backendSource, url, token);
+            backendSource, url, token, timeoutSeconds);
+    }
+
+    private const int MinStateTimeoutSeconds = 1;
+    private const int MaxStateTimeoutSeconds = 3600;
+
+    /// <summary>`backend: http`'s <c>state.timeout_seconds</c> (or <c>PZ_STATE_TIMEOUT_SECONDS</c>):
+    /// null means "the HTTP client's own default" (unchanged behaviour), never a value substituted
+    /// silently for an absent one. A project.yml value that is not a whole number, or the environment
+    /// variable's text not parsing as one, is PZ0124 rather than a silently-ignored knob, matching every
+    /// other state.* key's error discipline.</summary>
+    private static int? ParseStateTimeoutSeconds(Dictionary<string, object?> stateYaml,
+        IReadOnlyDictionary<string, string> env, string relativePath, List<PzError> errors)
+    {
+        int? seconds;
+        if (stateYaml.TryGetValue("timeout_seconds", out var raw) && raw is not null)
+        {
+            seconds = TryGetInt(stateYaml, "timeout_seconds");
+            if (seconds is null)
+            {
+                errors.Add(new PzError(PzErrorCode.StateBackendConfigInvalid,
+                    $"{relativePath}: state.timeout_seconds must be an integer (got '{raw}').",
+                    relativePath, null, "timeout_seconds: 30"));
+                return null;
+            }
+        }
+        else if (env.TryGetValue("PZ_STATE_TIMEOUT_SECONDS", out var fromEnv) && !string.IsNullOrWhiteSpace(fromEnv))
+        {
+            if (!int.TryParse(fromEnv, NumberStyles.None, CultureInfo.InvariantCulture, out var envSeconds))
+            {
+                errors.Add(new PzError(PzErrorCode.StateBackendConfigInvalid,
+                    $"PZ_STATE_TIMEOUT_SECONDS must be an integer (got '{fromEnv}').", relativePath, null,
+                    "set PZ_STATE_TIMEOUT_SECONDS to a positive integer number of seconds, or unset it"));
+                return null;
+            }
+
+            seconds = envSeconds;
+        }
+        else
+        {
+            return null;
+        }
+
+        if (seconds is { } s && (s < MinStateTimeoutSeconds || s > MaxStateTimeoutSeconds))
+        {
+            errors.Add(new PzError(PzErrorCode.StateBackendConfigInvalid,
+                $"{relativePath}: state.timeout_seconds must be between {MinStateTimeoutSeconds} and " +
+                $"{MaxStateTimeoutSeconds} (got {s}).", relativePath, null,
+                $"timeout_seconds must be between {MinStateTimeoutSeconds} and {MaxStateTimeoutSeconds}"));
+            return null;
+        }
+
+        return seconds;
     }
 
     /// <summary>project.yml value, else the environment counterpart, else null — with the source name so
@@ -649,7 +704,7 @@ public static class ProjectLoader
     /// PZ_STATE_CONNECTION_STRING (host-scoped default). Neither is PZ0125 at validation time rather than
     /// a runtime surprise on the first watermark write.</summary>
     private static void ValidateStateConnection(StateConfig state, IReadOnlyList<ConnectionDef> connections,
-        List<PzError> errors)
+        List<PzError> errors, List<PzWarning> warnings)
     {
         if (state.IsLocal)
         {
@@ -658,7 +713,7 @@ public static class ProjectLoader
 
         if (state.IsHttp)
         {
-            ValidateStateUrl(state, errors);
+            ValidateStateUrl(state, errors, warnings);
             return;
         }
 
@@ -699,7 +754,7 @@ public static class ProjectLoader
     /// unauthenticated, so demanding a credential here would refuse a config that
     /// works. pz sends the bearer header the moment PZ_STATE_TOKEN is set, which is what makes turning
     /// authentication on a server-side change alone.</summary>
-    private static void ValidateStateUrl(StateConfig state, List<PzError> errors)
+    private static void ValidateStateUrl(StateConfig state, List<PzError> errors, List<PzWarning> warnings)
     {
         if (state.Url is not { } url)
         {
@@ -717,6 +772,18 @@ public static class ProjectLoader
                 $"state.url '{url}' is not an absolute http(s) URL.", "project.yml", null,
                 "use the run-scoped state URL the server issued, e.g. " +
                 "https://state.example/api/agents/runs/<id>/state"));
+            return;
+        }
+
+        // A bearer token over a plaintext connection is readable by anything on the network path --
+        // worth a loud warning, not silence, but not a hard refusal either: an operator may have a
+        // deliberate reason (a loopback/VPN-only endpoint) this check cannot see.
+        if (parsed.Scheme == Uri.UriSchemeHttp && !string.IsNullOrWhiteSpace(state.Token))
+        {
+            warnings.Add(new PzWarning(PzErrorCode.HttpStateTokenOverInsecureUrl,
+                "state.url uses http:// with a bearer token configured (PZ_STATE_TOKEN) -- the token " +
+                "travels in cleartext.", "project.yml", null,
+                "use an https:// state.url, or drop the token if this endpoint genuinely needs none"));
         }
     }
 

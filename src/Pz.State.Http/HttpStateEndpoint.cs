@@ -56,13 +56,28 @@ public sealed class HttpStateEndpoint : IDisposable
     private readonly HttpClient _client = new();
     private readonly TimeProvider _time;
     private readonly int _maxAttempts;
+    private readonly CancellationToken _ct;
 
-    public HttpStateEndpoint(string url, string? token, TimeProvider? timeProvider = null, int maxAttempts = 3)
+    /// <summary><paramref name="timeout"/> null keeps <see cref="HttpClient"/>'s own 100s default
+    /// (<c>state.timeout_seconds</c> absent -- unchanged behaviour). <paramref name="ct"/> is this
+    /// endpoint's run's cancellation token, captured once: one instance serves one run (the class doc's
+    /// "lives exactly as long as the process that built it"), so there is no per-call token to thread
+    /// through <see cref="Pz.Engine.State.IKeyedStateStore{T}"/>'s synchronous, cancellation-unaware
+    /// surface -- this is what lets Ctrl-C actually abort a state request instead of the fixed 100s
+    /// timeout being the only way out.</summary>
+    public HttpStateEndpoint(string url, string? token, TimeProvider? timeProvider = null, int maxAttempts = 3,
+        TimeSpan? timeout = null, CancellationToken ct = default)
     {
         _root = url.TrimEnd('/');
         _rootUri = new Uri(_root, UriKind.Absolute);
         _time = timeProvider ?? TimeProvider.System;
         _maxAttempts = maxAttempts;
+        _ct = ct;
+
+        if (timeout is { } t)
+        {
+            _client.Timeout = t;
+        }
 
         if (!string.IsNullOrWhiteSpace(token))
         {
@@ -99,7 +114,7 @@ public sealed class HttpStateEndpoint : IDisposable
                     request.Headers.TryAddWithoutValidation("If-Match", Tag(expected));
                 }
 
-                using var response = _client.Send(request, HttpCompletionOption.ResponseContentRead);
+                using var response = _client.Send(request, HttpCompletionOption.ResponseContentRead, _ct);
 
                 if (RetryableStatuses.Contains(response.StatusCode) && attempt < _maxAttempts)
                 {
@@ -109,6 +124,14 @@ public sealed class HttpStateEndpoint : IDisposable
 
                 using var reader = new StreamReader(response.Content.ReadAsStream(), new UTF8Encoding(false));
                 return new StateResponse(response.StatusCode, reader.ReadToEnd(), ReadVersion(response));
+            }
+            catch (OperationCanceledException) when (_ct.IsCancellationRequested)
+            {
+                // The run's own cancellation, not a request timeout: propagates uncaught, exactly like a
+                // cancellation from anywhere else in the run (KindDispatchingExecutor's contract) --
+                // never wrapped into a PzConfigException the dispatcher would otherwise have to unwrap
+                // to tell "cancelled" apart from "genuinely failed".
+                throw;
             }
             catch (Exception ex) when (ex is HttpRequestException or IOException
                 or TaskCanceledException or InvalidOperationException)
@@ -161,9 +184,14 @@ public sealed class HttpStateEndpoint : IDisposable
     private static string Tag(int version) =>
         string.Create(CultureInfo.InvariantCulture, $"\"{version}\"");
 
-    /// <summary>The server's <c>ETag</c> is a strong tag holding a 1-based version. Read leniently:
-    /// a missing or unparseable tag is null, which downgrades the next write to insert-if-absent
-    /// rather than sending a fabricated expected version.</summary>
+    /// <summary>The server's <c>ETag</c> holds a 1-based version. Read leniently: a missing or
+    /// unparseable tag is null, which downgrades the next write to insert-if-absent rather than sending
+    /// a fabricated expected version. A weak tag (<c>W/"3"</c> -- common once a reverse proxy's gzip
+    /// layer sits in front of the state server) carries the same version as the strong form; the
+    /// weakness marker means only "byte-for-byte identity is not guaranteed", irrelevant to a version
+    /// counter pz never compares byte-for-byte. Stripped before parsing rather than rejected, which used
+    /// to read as null and spuriously downgrade every write behind such a proxy to insert-if-absent --
+    /// PZ0520 on every run.</summary>
     private static int? ReadVersion(HttpResponseMessage response)
     {
         if (!response.Headers.TryGetValues("ETag", out var values))
@@ -172,7 +200,17 @@ public sealed class HttpStateEndpoint : IDisposable
         }
 
         var raw = values.FirstOrDefault()?.Trim();
-        if (raw is null || raw.Length < 3 || raw[0] != '"' || raw[^1] != '"')
+        if (raw is null)
+        {
+            return null;
+        }
+
+        if (raw.StartsWith("W/", StringComparison.Ordinal))
+        {
+            raw = raw[2..];
+        }
+
+        if (raw.Length < 3 || raw[0] != '"' || raw[^1] != '"')
         {
             return null;
         }

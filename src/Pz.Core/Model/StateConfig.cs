@@ -10,7 +10,8 @@ namespace Pz.Core.Model;
 /// what keeps env-supplied defaults inside the no-silent-failures rule.
 ///
 /// For <see cref="Http"/>: <see cref="Url"/> is the run-scoped state endpoint a server handed this run,
-/// <see cref="Token"/> its bearer credential.</summary>
+/// <see cref="Token"/> its bearer credential, and <see cref="TimeoutSeconds"/> (null = the HTTP client's
+/// own default) bounds every request against it.</summary>
 public sealed record StateConfig(
     string Backend,
     string? Connection,
@@ -20,7 +21,8 @@ public sealed record StateConfig(
     bool Events,
     string BackendSource,
     string? Url = null,
-    string? Token = null)
+    string? Token = null,
+    int? TimeoutSeconds = null)
 {
     public const string Local = "local";
     public const string SqlServer = "sqlserver";

@@ -524,6 +524,22 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   read-only, naturally idempotent, or (the keyed store's compare-and-swap
   `Set`) fails closed on replay into a spurious PZ0520 conflict, never a
   double write.
+- `Pz.State.Http` (`backend: http`) is no longer stuck on a fixed 100s
+  `HttpClient` timeout with no way to cancel it mid-request: a new
+  `state.timeout_seconds` (or `PZ_STATE_TIMEOUT_SECONDS`) bounds every
+  request, and a run's own cancellation now aborts an in-flight state
+  request instead of only the 100s timeout being able to end it -- the
+  cancellation propagates uncaught, the same as anywhere else in a run,
+  never wrapped into a config-error exit. `Set`/`Remove` now accept `200`
+  as success (some servers answer with a body instead of `201`/`204`) and
+  `412` as the same version conflict as `409` (the RFC-native rejection
+  for a failed `If-Match`); a weak `ETag` (`W/"3"`, common once a reverse
+  proxy's gzip layer sits in front of the state server) is now accepted
+  for its version instead of reading as absent and downgrading the next
+  write to insert-if-absent -- which used to report a spurious PZ0520 on
+  every single run behind such a proxy. A `state.url` of `http://` with a
+  bearer token configured now warns (new PZ0530, never blocks a run): the
+  token would otherwise travel in cleartext with no signal at all.
 
 ## [0.6.1] - 2026-09-10
 

@@ -598,6 +598,12 @@ public static class PzErrorCode
     /// HTTP status, never the connection string, a bearer token, or SQL text.</summary>
     public const string StateQueryFailed = "PZ0529";
 
+    /// <summary>A WARNING code, never a failure: <c>backend: http</c>'s <c>state.url</c> is plain
+    /// <c>http://</c> and a bearer token (<c>PZ_STATE_TOKEN</c>) is configured -- the token travels in
+    /// cleartext on the wire. Never blocks a run; an operator may have a deliberate reason (a
+    /// loopback/VPN-only endpoint) this check cannot see.</summary>
+    public const string HttpStateTokenOverInsecureUrl = "PZ0530";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

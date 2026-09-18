@@ -118,11 +118,13 @@ public sealed class HttpKeyedStateStore<T>(
         {
             case HttpStatusCode.Created:
             case HttpStatusCode.NoContent:
+            case HttpStatusCode.OK: // some servers answer 200 with a body instead of 201/204
                 Remember(key, response.Version);
                 return;
 
             case HttpStatusCode.Conflict:
-                // The 409's ETag is the server's true current version, but it may belong to a
+            case HttpStatusCode.PreconditionFailed: // If-Match's RFC-native rejection -- same conflict as 409
+                // The response's ETag is the server's true current version, but it may belong to a
                 // tombstone -- so it is deliberately NOT remembered here. A retry after a conflict must
                 // re-Get and find out whether the key is present at all.
                 _versions.TryRemove(key, out _);
@@ -138,14 +140,19 @@ public sealed class HttpKeyedStateStore<T>(
         var response = endpoint.Send(HttpMethod.Delete, scope, key);
         _versions.TryRemove(key, out _);
 
-        if (response.Status == HttpStatusCode.NoContent)
+        switch (response.Status)
         {
-            return; // Idempotent: absent, already tombstoned, or this call wrote the tombstone.
-        }
+            case HttpStatusCode.NoContent:
+            case HttpStatusCode.OK: // some servers answer 200 with a body instead of 204
+                return; // Idempotent: absent, already tombstoned, or this call wrote the tombstone.
 
-        throw response.Status == HttpStatusCode.Conflict
-            ? Conflict(key)
-            : endpoint.Unexpected(response.Status, scope, key);
+            case HttpStatusCode.Conflict:
+            case HttpStatusCode.PreconditionFailed:
+                throw Conflict(key);
+
+            default:
+                throw endpoint.Unexpected(response.Status, scope, key);
+        }
     }
 
     private void Remember(string key, int? version)
