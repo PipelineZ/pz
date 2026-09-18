@@ -114,13 +114,20 @@ public static class PzMcpServer
                     Description = "Report stored watermarks, sync-state, and schema baselines, plus the latest run's summary.",
                 }),
             McpServerTool.Create(
-                (string connection, string entity, CancellationToken ct) =>
-                    IntrospectTools.EntitySchemaAsync(projectDir, connection, entity, services, ct),
+                (string connection, string entity, CancellationToken ct, JsonElement? read = null) =>
+                    IntrospectTools.EntitySchemaAsync(
+                        projectDir, connection, entity, ToConnectionOptionsOrNull(read), services, ct),
                 new McpServerToolCreateOptions
                 {
+                    SchemaCreateOptions = OptionMapSchema,
                     Name = "pz_entity_schema",
                     Description = "Live schema fetch for one connection+entity: opens the connection and " +
-                        "fetches its columns/types. Read-only — does not write .pz/target/schemas.json.",
+                        "fetches its columns/types. Works for an entity not yet declared under the " +
+                        "connection's entities: block -- an entity is just a name in that place. `read` " +
+                        "supplies the options (e.g. format/path) the connector's schema discovery needs " +
+                        "for an undeclared entity when the connection's default naming convention does " +
+                        "not apply; ignored for an already-declared entity. Read-only — does not write " +
+                        ".pz/target/schemas.json.",
                 }),
             McpServerTool.Create(
                 (string name, string connector, JsonElement connection, CancellationToken ct) =>

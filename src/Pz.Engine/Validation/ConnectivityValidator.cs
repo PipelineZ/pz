@@ -9,9 +9,17 @@ namespace Pz.Engine.Validation;
 /// every source/sink connection, plus schema drift detection for every declared source dataset. Fetched
 /// schemas for datasets WITHOUT a declared `columns:` contract are returned so the caller
 /// (<c>ValidateCommand</c>) can persist them via <see cref="Pz.Engine.Artifacts.SchemaCacheWriter"/>.</summary>
+/// <param name="ExtraColumnsByDataset">Additive: for a dataset WITH a declared `columns:` contract,
+/// the fetched field names that exist live but are not in the contract -- "source.dataset" keyed, same
+/// as <paramref name="FetchedSchemas"/>. A contract prunes on read (extra fetched columns are never a
+/// drift error -- see <see cref="ConnectivityValidator"/>'s own doc), so this is the only signal that a
+/// contract-bearing dataset's live shape has grown since the contract was written. Absent (no key) for
+/// a dataset with no extra columns, and never populated for a contract-less dataset (its whole fetched
+/// shape already rides <paramref name="FetchedSchemas"/>).</param>
 public sealed record ConnectivityResult(
     IReadOnlyList<PzError> Errors,
-    IReadOnlyDictionary<string, string> FetchedSchemas);
+    IReadOnlyDictionary<string, string> FetchedSchemas,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? ExtraColumnsByDataset = null);
 
 public static class ConnectivityValidator
 {
@@ -60,6 +68,7 @@ public static class ConnectivityValidator
         errors.AddRange(connectionResults.Where(e => e is not null)!);
 
         var fetchedSchemas = new Dictionary<string, string>(StringComparer.Ordinal);
+        var extraColumns = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         foreach (var source in project.Connections)
         {
             if (!registry.TryGetSource(source.Connector, out var connector) || source.Datasets.Count == 0)
@@ -67,11 +76,11 @@ public static class ConnectivityValidator
                 continue;
             }
 
-            await ProbeSourceSchemasAsync(connector, registry.ConfigFor(source), source, errors, fetchedSchemas, ct)
-                .ConfigureAwait(false);
+            await ProbeSourceSchemasAsync(connector, registry.ConfigFor(source), source, errors, fetchedSchemas,
+                extraColumns, ct).ConfigureAwait(false);
         }
 
-        return new ConnectivityResult(errors, fetchedSchemas);
+        return new ConnectivityResult(errors, fetchedSchemas, extraColumns);
     }
 
     private static async Task<PzError?> ProbeConnectionAsync(IConnector connector,
@@ -109,7 +118,8 @@ public static class ConnectivityValidator
     /// dataset's schema through it; any failure while opening or fetching is caught and reported as one
     /// PZ0330 naming the source, without aborting probing of any OTHER source.</summary>
     private static async Task ProbeSourceSchemasAsync(ISourceConnector connector, ConnectorConfig config,
-        ConnectionDef source, List<PzError> errors, Dictionary<string, string> fetchedSchemas, CancellationToken ct)
+        ConnectionDef source, List<PzError> errors, Dictionary<string, string> fetchedSchemas,
+        Dictionary<string, IReadOnlyList<string>> extraColumns, CancellationToken ct)
     {
         ISource? opened = null;
         try
@@ -118,7 +128,8 @@ public static class ConnectivityValidator
                 t => connector.OpenAsync(config, t), ct).ConfigureAwait(false);
             foreach (var dataset in source.Datasets)
             {
-                await ProbeDatasetSchemaAsync(opened, source, dataset, errors, fetchedSchemas, ct).ConfigureAwait(false);
+                await ProbeDatasetSchemaAsync(opened, source, dataset, errors, fetchedSchemas, extraColumns, ct)
+                    .ConfigureAwait(false);
             }
         }
         catch (ProbeTimedOutException)
@@ -140,7 +151,8 @@ public static class ConnectivityValidator
     }
 
     private static async Task ProbeDatasetSchemaAsync(ISource source, ConnectionDef sourceDef, DatasetDef dataset,
-        List<PzError> errors, Dictionary<string, string> fetchedSchemas, CancellationToken ct)
+        List<PzError> errors, Dictionary<string, string> fetchedSchemas,
+        Dictionary<string, IReadOnlyList<string>> extraColumns, CancellationToken ct)
     {
         // Same options+columns merge SpecBuilder.ForSourceLoad performs for a real read -- connectors
         // that require the declared contract to be present in DatasetSpec.Options (e.g. CsvSource) must
@@ -204,7 +216,15 @@ public static class ConnectivityValidator
             }
 
             // Extra fetched columns (present in fetchedFields but not in contract) are tolerated by
-            // design: contracts prune on read, so this loop never iterates them.
+            // design: contracts prune on read, so this loop never iterates them -- recorded separately
+            // below instead, for a caller that wants to know the live shape grew.
+        }
+
+        var extra = fetchedFields.Keys.Except(contract.Keys, StringComparer.Ordinal)
+            .OrderBy(n => n, StringComparer.Ordinal).ToList();
+        if (extra.Count > 0)
+        {
+            extraColumns[$"{sourceDef.Name}.{dataset.Name}"] = extra;
         }
     }
 

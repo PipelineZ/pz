@@ -76,13 +76,29 @@ public class ConnectionAuthoringTests
     }
 
     [Fact]
+    public async Task Removing_a_missing_connection_is_pz0602()
+    {
+        using var p = new TempProject();
+        var doc = JsonDocument.Parse(await AuthoringTools.RemoveConnectionAsync(
+            p.Dir, "nope", RealServices(), CancellationToken.None));
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
+    }
+
+    [Fact]
     public async Task Add_existing_name_is_pz0602_pointing_at_update()
     {
         using var p = new TempProject();
         var doc = JsonDocument.Parse(await AuthoringTools.AddConnectionAsync(
             p.Dir, "raw", "localfiles", new() { ["root"] = "x" }, RealServices(), CancellationToken.None));
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
-        Assert.Contains("pz_update_connection", doc.RootElement.GetProperty("errors")[0].GetProperty("next_step").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        Assert.Contains("pz_update_connection", error.GetProperty("next_step").GetString());
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
     }
 
     [Fact]
@@ -91,8 +107,10 @@ public class ConnectionAuthoringTests
         using var p = new TempProject();
         var doc = JsonDocument.Parse(await AuthoringTools.UpdateConnectionAsync(
             p.Dir, "nope", "localfiles", new() { ["root"] = "x" }, RealServices(), CancellationToken.None));
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
-        Assert.Contains("pz_add_connection", doc.RootElement.GetProperty("errors")[0].GetProperty("next_step").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        Assert.Contains("pz_add_connection", error.GetProperty("next_step").GetString());
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
     }
 
     [Fact]

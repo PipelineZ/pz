@@ -35,7 +35,7 @@ public sealed class EntitySchemaTests
     {
         using var p = new ParquetProject();
         var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
-            p.Dir, "raw", "orders", RealServices(), CancellationToken.None));
+            p.Dir, "raw", "orders", read: null, RealServices(), CancellationToken.None));
         var result = doc.RootElement.GetProperty("result");
         Assert.Contains(result.GetProperty("columns").EnumerateArray(),
             c => c.GetProperty("name").GetString() == "id");
@@ -47,12 +47,60 @@ public sealed class EntitySchemaTests
     {
         using var p = new CsvWithContractProject();
         var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
-            p.Dir, "raw", "orders", RealServices(), CancellationToken.None));
+            p.Dir, "raw", "orders", read: null, RealServices(), CancellationToken.None));
         Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
         var result = doc.RootElement.GetProperty("result");
         Assert.Contains(result.GetProperty("columns").EnumerateArray(),
             c => c.GetProperty("name").GetString() == "id");
         Assert.Equal("declared_contract", result.GetProperty("source").GetString());
+        // Nothing lives beyond the declared columns for this csv entity -- additive field, but present
+        // and false rather than omitted, since we DID check.
+        Assert.False(result.GetProperty("differs_from_contract").GetBoolean());
+    }
+
+    // A parquet file is self-describing, so a `columns:` contract narrower than the file's real shape
+    // is exactly the case ConnectivityValidator only ever drift-checks (never errors on an EXTRA fetched
+    // column -- contracts prune on read, they don't widen). pz_entity_schema must surface that the live
+    // table grew, additively, without changing what `columns`/`source` already report for every other
+    // contract-bearing entity.
+    [Fact]
+    public async Task Entity_schema_flags_a_declared_contract_that_is_narrower_than_the_live_schema()
+    {
+        using var p = new ParquetWithNarrowContractProject();
+        var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
+            p.Dir, "raw", "orders", read: null, RealServices(), CancellationToken.None));
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+        var result = doc.RootElement.GetProperty("result");
+        Assert.Equal("declared_contract", result.GetProperty("source").GetString());
+        Assert.True(result.GetProperty("differs_from_contract").GetBoolean());
+        Assert.Contains(result.GetProperty("extra_columns").EnumerateArray(),
+            c => c.GetString() == "extra");
+        // The declared contract's own two columns still ride `columns` unchanged -- additive, not a
+        // field swap.
+        Assert.Equal(2, result.GetProperty("columns").GetArrayLength());
+    }
+
+    // The natural authoring order: look at the table, then write the pipeline. An entity not yet
+    // declared under connections.yml's `entities:` block is still just a name in that place -- the
+    // connector only needs the connection + entity name (+ optional read options this call supplies)
+    // to discover a schema, exactly what a bare `source()` call site already gets away with. `read`
+    // carries `format: parquet` because localfiles defaults every undeclared entity to csv, which would
+    // otherwise require the very columns: contract this call is trying to avoid pre-declaring.
+    [Fact]
+    public async Task Entity_schema_fetches_live_columns_for_an_undeclared_entity_of_a_declared_connection()
+    {
+        using var p = new ParquetProject();
+        await ParquetProject.WriteParquetAsync(Path.Combine(p.Dir, "customers.parquet"), "id", "name");
+        var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
+            p.Dir, "raw", "customers", read: new() { ["format"] = "parquet" },
+            RealServices(), CancellationToken.None));
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+        var result = doc.RootElement.GetProperty("result");
+        Assert.Equal("fetched", result.GetProperty("source").GetString());
+        Assert.Contains(result.GetProperty("columns").EnumerateArray(),
+            c => c.GetProperty("name").GetString() == "id");
+        Assert.Contains(result.GetProperty("columns").EnumerateArray(),
+            c => c.GetProperty("name").GetString() == "name");
     }
 
     [Fact]
@@ -60,16 +108,22 @@ public sealed class EntitySchemaTests
     {
         using var p = new TempProject();
         var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
-            p.Dir, "nope", "orders", RealServices(), CancellationToken.None));
+            p.Dir, "nope", "orders", read: null, RealServices(), CancellationToken.None));
         Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0330", error.GetProperty("code").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
     }
 
+    // "no such table/file" is a genuinely unprobable entity, even on a declared connection -- this must
+    // still fail cleanly (unlike an UNDECLARED entity, which the two tests above now resolve).
     [Fact]
     public async Task Unknown_entity_on_a_real_connection_is_an_enveloped_error_not_a_throw()
     {
         using var p = new TempProject();
         var doc = JsonDocument.Parse(await IntrospectTools.EntitySchemaAsync(
-            p.Dir, "raw", "no_such_entity", RealServices(), CancellationToken.None));
+            p.Dir, "raw", "no_such_entity", read: null, RealServices(), CancellationToken.None));
         Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
         Assert.Equal("PZ0330", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
     }
@@ -111,6 +165,78 @@ public sealed class EntitySchemaTests
             using var rowGroup = writer.CreateRowGroup();
             await rowGroup.WriteAsync<int>(id, new int?[] { 1, 2 }, cancellationToken: default);
             await rowGroup.WriteAsync<double>(amount, new double?[] { 10.0, 20.0 }, cancellationToken: default);
+        }
+
+        /// <summary>A minimal self-describing parquet file with the given column names, each written as
+        /// nullable string -- only column NAMES are asserted on by the tests that use this, never types.</summary>
+        internal static async Task WriteParquetAsync(string path, params string[] columnNames)
+        {
+            var fields = columnNames.Select(n => new DataField(n, typeof(string))).ToArray();
+            var schema = new ParquetSchema(fields);
+
+            await using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
+            await using var writer = await ParquetWriter.CreateAsync(schema, stream);
+            using var rowGroup = writer.CreateRowGroup();
+            foreach (var field in fields)
+            {
+                await rowGroup.WriteAsync(field, new List<string?> { "a", "b" });
+            }
+        }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Dir, recursive: true); } catch { /* best-effort cleanup */ }
+        }
+    }
+
+    /// <summary>A minimal self-contained project (no docker, no network) with one `raw.orders` PARQUET
+    /// entity whose declared `columns:` contract (id, amount) is narrower than the file's real shape
+    /// (id, amount, extra) -- parquet is self-describing, so the live fetch always sees `extra` even
+    /// though the contract never declared it. Exercises <c>differs_from_contract</c>/<c>extra_columns</c>.</summary>
+    private sealed class ParquetWithNarrowContractProject : IDisposable
+    {
+        public string Dir { get; } = Path.Combine(Path.GetTempPath(), "pz-mcp-pqx-" + Guid.NewGuid().ToString("N"));
+
+        public ParquetWithNarrowContractProject()
+        {
+            Directory.CreateDirectory(Path.Combine(Dir, "pipelines"));
+            Directory.CreateDirectory(Path.Combine(Dir, "data"));
+            File.WriteAllText(Path.Combine(Dir, "project.yml"), "name: mcp_test\nversion: \"0.1.0\"\n");
+            File.WriteAllText(Path.Combine(Dir, "connections.yml"),
+                """
+                raw:
+                  connector: localfiles
+                  entities:
+                    orders:
+                      read:
+                        path: data/orders.parquet
+                        format: parquet
+                        columns:
+                          id: bigint
+                          amount: double
+                """ + "\n");
+            WriteOrdersParquetAsync(Path.Combine(Dir, "data", "orders.parquet")).GetAwaiter().GetResult();
+        }
+
+        // id/amount match the declared contract's types exactly (int64/double) -- a type MISMATCH is a
+        // drift error (PZ0331) this test is not about; only `extra`, absent from the contract entirely,
+        // is the divergence under test.
+        private static async Task WriteOrdersParquetAsync(string path)
+        {
+            // id is int64 (long), matching the declared "bigint" contract's exact Arrow expectation --
+            // ContractTypes.ToArrowExpectation("bigint") is Int64Type, and int32 would mismatch it,
+            // which is a real drift error (PZ0331) this test is not about.
+            var id = new DataField("id", typeof(long?));
+            var amount = new DataField("amount", typeof(double?));
+            var extra = new DataField("extra", typeof(string));
+            var schema = new ParquetSchema(id, amount, extra);
+
+            await using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
+            await using var writer = await ParquetWriter.CreateAsync(schema, stream);
+            using var rowGroup = writer.CreateRowGroup();
+            await rowGroup.WriteAsync<long>(id, new long?[] { 1, 2 }, cancellationToken: default);
+            await rowGroup.WriteAsync<double>(amount, new double?[] { 10.0, 20.0 }, cancellationToken: default);
+            await rowGroup.WriteAsync(extra, new List<string?> { "x", "y" });
         }
 
         public void Dispose()

@@ -78,6 +78,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- `pz_entity_schema` now works for an entity not yet declared under a
+  connection's `entities:` block -- an entity is just a name in that place,
+  matching the natural authoring order (look at the table, then write the
+  pipeline). Its new optional `read` argument supplies whatever options the
+  connector's schema discovery needs beyond the bare name (e.g.
+  `format: parquet`, since localfiles otherwise defaults an undeclared
+  entity to csv, which requires a `columns:` contract this call deliberately
+  doesn't have). A contract-bearing entity whose live schema has grown
+  beyond the declared contract now says so additively (`differs_from_contract`
+  plus `extra_columns`) instead of silently reporting only the stale
+  contract. Every `PzError.File` this tool and the connection/entity/pipeline
+  authoring tools emit is project-relative now (e.g. `connections.yml`,
+  `pipelines/<name>.sql`), never the machine's absolute temp/project path.
 - `pz_run`/`pz_retry` now report the run they just executed instead of
   whatever run happens to read back as "latest" — a stale/foreign run could
   win that race (another run's artifacts sorting newer by the time the MCP
