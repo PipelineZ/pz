@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Diagnostics;
+using System.Globalization;
 using Pz.Cli;
 using Pz.Cli.Otel;
 using Pz.Cli.Rendering;
@@ -231,7 +232,9 @@ internal static class RunCommand
     {
         // Sortable, unique-enough-for-a-local-tool run identity. Runtime identity, not
         // compile output — golden/determinism rules do not apply here.
-        var runId = $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfff}Z-{Random.Shared.Next(0, 0x10000):x4}";
+        var runId =
+            $"{DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfff", CultureInfo.InvariantCulture)}Z-" +
+            $"{Random.Shared.Next(0, 0x10000):x4}";
         // `pz mcp`'s RunAsync/RetryAsync adapters have no other way to learn which run this call
         // actually performed -- the id is generated here, inside the run's own lifetime, and nowhere
         // else. Invoked once, before anything can fail, so a caller that wants it always gets it even
@@ -361,7 +364,7 @@ internal static class RunCommand
         // being alive. RunEventPublisher is the second CompositeRunEvents target, mapping the same
         // callbacks onto the bus for whichever renderer --log-format selected. Writes go through
         // backends.Artifacts (Local or SQL).
-        var startedAtIso = startedAt.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+        var startedAtIso = startedAt.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
         var snapshotEvents = new SnapshotRunEvents(backends.Artifacts, runId, startedAtIso);
         var bus = new RunEventBus();
         var publisher = new RunEventPublisher(bus, runId, TimeProvider.System);

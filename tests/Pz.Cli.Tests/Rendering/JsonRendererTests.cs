@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Pz.Cli.Rendering;
@@ -356,5 +357,28 @@ public class JsonRendererTests
         var actual = Encoding.UTF8.GetString(Render(ScriptedSequence()));
         Assert.DoesNotContain("\r\n", actual);
         Assert.EndsWith("\n", actual);
+    }
+
+    /// <summary>`at` must be Gregorian-year, invariant-digit ISO-8601 regardless of the process
+    /// culture -- th-TH's default calendar is Buddhist (year 2026 renders as 2569), which would
+    /// silently break every consumer of the events.md contract on a Thai-locale machine.</summary>
+    [Fact]
+    public void At_is_invariant_culture_even_under_a_non_Gregorian_current_culture()
+    {
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("th-TH");
+            var evt = new RunStartedEvent(new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero),
+                "run-1", "hello_pz", 2);
+
+            var actual = Encoding.UTF8.GetString(Render([evt]));
+            using var doc = System.Text.Json.JsonDocument.Parse(actual.TrimEnd('\n'));
+            Assert.Equal("2026-07-04T10:00:00.000Z", doc.RootElement.GetProperty("at").GetString());
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
     }
 }

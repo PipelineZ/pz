@@ -744,6 +744,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   them. The check compares the two connections' resolved tokens
   (after `${VAR}` interpolation) and names both connections without ever
   printing either token.
+- `pz run`'s minted run id (and therefore `.pz/runs/<id>`, the NDJSON `runId`
+  field, and every artifact keyed by it) and `run_results.json`'s `startedAt`
+  no longer pick up the process's current culture. Both were formatted with a
+  custom `yyyy-MM-dd`/`yyyyMMdd`-style pattern and no explicit
+  `CultureInfo.InvariantCulture`, so on a machine whose locale uses a
+  non-Gregorian calendar (Thai Buddhist, for example) the year rendered
+  543 years off and `RunRetention.TryParseRunTimestamp`'s age math silently
+  went wrong. `--log-format json`'s `at` field (`JsonRenderer`) had the same
+  bug and is fixed the same way.
 
 ## [0.6.1] - 2026-09-10
 

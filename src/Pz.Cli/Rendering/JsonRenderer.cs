@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Pz.Diagnostics.Events;
@@ -38,7 +39,7 @@ public sealed class JsonRenderer(TextWriter? writer = null) : IEventRenderer
     {
         json.WriteStartObject();
         json.WriteString("event", RunEventFields.EventName(evt));
-        json.WriteString("at", evt.At.ToString(AtFormat));
+        json.WriteString("at", evt.At.UtcDateTime.ToString(AtFormat, CultureInfo.InvariantCulture));
         json.WriteString("runId", evt.RunId);
 
         RunEventFields.WriteFields(json, evt);

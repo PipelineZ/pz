@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Globalization;
 using Pz.Cli;
 using Pz.Cli.Commands;
 using Pz.Cli.Rendering;
@@ -348,6 +349,43 @@ public class RunCommandTests : IDisposable
         }
         finally
         {
+            try { Directory.Delete(work, recursive: true); } catch { /* best-effort cleanup */ }
+        }
+    }
+
+    /// <summary>Both the minted run id (its <c>yyyyMMddTHHmmssfff</c> prefix, used verbatim as the run
+    /// directory name and the events.md <c>runId</c> field) and `run_results.json`'s `startedAt` must be
+    /// Gregorian-year, invariant-digit ISO-8601 regardless of the process culture -- th-TH's default
+    /// calendar is Buddhist (year renders 543 years ahead), which would silently corrupt both, break
+    /// <see cref="RunRetention.TryParseRunTimestamp"/>'s age math, and break the events.md contract.</summary>
+    [Fact]
+    public void Run_id_and_startedAt_are_invariant_culture_under_a_non_Gregorian_current_culture()
+    {
+        var work = Path.Combine(Path.GetTempPath(), "pz-run-tests", Guid.NewGuid().ToString("N"));
+        CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
+        var original = CultureInfo.CurrentCulture;
+        var nowYear = DateTime.UtcNow.Year;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("th-TH");
+
+            var exit = CliApp.Build().Parse(["run", "--project", work, "--all"]).Invoke();
+            Assert.Equal(ExitCodes.Ok, exit);
+
+            var runDir = Directory.GetDirectories(Path.Combine(work, ".pz", "runs")).Single();
+            var runId = Path.GetFileName(runDir);
+            Assert.StartsWith(nowYear.ToString(CultureInfo.InvariantCulture), runId);
+            Assert.Matches(@"^\d{8}T\d{9}Z-[0-9a-f]{4}$", runId);
+
+            using var doc = System.Text.Json.JsonDocument.Parse(
+                File.ReadAllBytes(Path.Combine(runDir, "run_results.json")));
+            var startedAt = doc.RootElement.GetProperty("startedAt").GetString()!;
+            Assert.StartsWith(nowYear.ToString(CultureInfo.InvariantCulture), startedAt);
+            Assert.Matches(@"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$", startedAt);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
             try { Directory.Delete(work, recursive: true); } catch { /* best-effort cleanup */ }
         }
     }
