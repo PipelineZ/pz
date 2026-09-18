@@ -82,6 +82,12 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// ABI-facing surface (see <c>InternalsVisibleTo</c> in the csproj).</summary>
     internal int ProcessIdForTests => _process.Id;
 
+    /// <summary>Test-only: completes when the child has exited and its stderr has finished draining —
+    /// the same moment <see cref="Exited"/> fires, but observable however late the caller looks. An
+    /// event subscribed after a child that exits at once is never raised, and
+    /// <see cref="HasExited"/> alone can read true before <see cref="StderrTail"/> is complete.</summary>
+    internal Task ExitedForTests => _exitSignal.Task;
+
     /// <summary>Creates the run-scoped socket directory (owner-only permissions), then spawns
     /// <paramref name="entrypointPath"/> with <c>--pz-socket &lt;SocketPath&gt;</c> and a minimal env
     /// allowlist. Throws <see cref="ConnectorHostException"/> PZ0355 if the entrypoint is missing, is
@@ -197,6 +203,14 @@ public sealed class ConnectorProcess : IAsyncDisposable
             Exited?.Invoke();
         };
         _process.BeginErrorReadLine();
+
+        // Stdout is redirected only to keep a connector's chatter off pz's own stdout, which may be
+        // the NDJSON event stream. A redirected pipe nobody reads fills at the OS buffer size and
+        // blocks the child's next write forever, so it is read to nowhere — as raw bytes, because a
+        // line reader would buffer without bound on output that never sends a newline. The copy ends
+        // at EOF when the child exits; a read fault only ever means the pipe is already gone.
+        _ = _process.StandardOutput.BaseStream.CopyToAsync(Stream.Null)
+            .ContinueWith(static t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
 
         // Stdin is redirected (never inherited from this process's own console) but deliberately
         // left open: nothing in the protocol talks over stdin, so a child that happens to block on

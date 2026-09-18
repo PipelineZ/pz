@@ -73,12 +73,31 @@ public sealed class ConnectorProcessTests : IDisposable
 
         await using var process = ConnectorProcess.Spawn(FixturePath("die.sh"), NewSocketDir(), "test-package");
 
-        var exited = new TaskCompletionSource();
-        process.Exited += () => exited.TrySetResult();
-        await exited.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        // Not the Exited event: die.sh can be gone before a handler is attached, and an event
+        // subscribed after it fired is never raised.
+        await process.ExitedForTests.WaitAsync(TimeSpan.FromSeconds(30));
 
         Assert.True(process.HasExited);
         Assert.Contains("die.sh: known failure line", process.StderrTail);
+    }
+
+    /// <summary>Stdout is redirected so a connector's chatter can never reach pz's own stdout (which
+    /// may be the NDJSON event stream). A redirected pipe nobody reads fills at the OS buffer size and
+    /// blocks the child's next write forever — a hang with no diagnostic. The fixture writes past that
+    /// size, including a megabyte with no newline, and only then reports on stderr.</summary>
+    [SkippableFact]
+    public async Task Chatty_stdout_does_not_block_the_child()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "bash fixtures are unix-only");
+        ChmodExecutable(FixturePath("chatty.sh"));
+
+        await using var process = ConnectorProcess.Spawn(FixturePath("chatty.sh"), NewSocketDir(), "test-package");
+
+        await process.ExitedForTests.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Contains("chatty.sh: finished writing", process.StderrTail);
+        // Stdout is drained, not kept: the tail stays the connector's own diagnostics.
+        Assert.DoesNotContain("progress line", process.StderrTail);
     }
 
     [SkippableFact]
