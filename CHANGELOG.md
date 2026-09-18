@@ -498,6 +498,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   *Not addressed*: feed credentials (a bearer token or basic auth for a
   private feed) remain out of scope -- `--feeds`/`PZ_FEEDS` still take only a
   URL or a local path.
+- The SQL Server connector and state store no longer forward
+  `SqlException.IsTransient` unchanged: Microsoft.Data.SqlClient's own signal
+  covers Azure SQL's connection-resiliency reconnect cases only, so a deadlock
+  victim (error 1205) or a client-side command timeout (error -2) both come
+  back `IsTransient == false` -- verified against a live SQL Server container
+  -- and every raise site treated them as permanent instead of retrying. A
+  shared `MsTransient` classifier (linked into both assemblies, mirroring
+  `AzureTransient`) now also recognizes the deadlock/timeout numbers plus the
+  documented pre-login-transport and Azure SQL throttling/failover numbers
+  (233, 64, 10053, 10054, 10060, 40613, 40197, 40501, 49918, 49919, 49920).
 
 ## [0.6.1] - 2026-09-10
 

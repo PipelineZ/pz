@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
+using Pz.Shared;
 
 namespace Pz.Connector.SqlServer;
 
@@ -219,5 +220,5 @@ internal sealed class SqlServerCdcPartition(string connectionString, DatasetSpec
     }
 
     private PzConnectorException Wrap(SqlException ex) =>
-        new($"dataset '{spec.Dataset}': sqlserver cdc failed: {ex.Message}", ex.IsTransient, innerException: ex);
+        new($"dataset '{spec.Dataset}': sqlserver cdc failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
 }

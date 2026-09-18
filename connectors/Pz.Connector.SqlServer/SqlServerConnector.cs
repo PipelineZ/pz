@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
+using Pz.Shared;
 
 [assembly: PzConnector("sqlserver", typeof(Pz.Connector.SqlServer.SqlServerConnector))]
 
@@ -47,7 +48,7 @@ public sealed class SqlServerConnector : ISourceConnector, ISinkConnector
         {
             // ConnectionCheck carries no transience field; fold it into the message tag so callers
             // can parse it (same convention as the other database connector checks).
-            return new ConnectionCheck(false, $"{(ex.IsTransient ? "transient" : "permanent")}: {ex.Message}");
+            return new ConnectionCheck(false, $"{(MsTransient.IsTransient(ex) ? "transient" : "permanent")}: {ex.Message}");
         }
     }
 

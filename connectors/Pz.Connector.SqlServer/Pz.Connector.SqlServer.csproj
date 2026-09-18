@@ -16,6 +16,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- src/Shared/MsTransient.cs compiles into this assembly and into Pz.State.SqlServer's; the two
+         assemblies may not reference each other (connector-to-state and state-to-connector are both
+         forbidden), so the classifier is linked into each. -->
+    <Compile Include="..\..\src\Shared\MsTransient.cs" Link="Shared\MsTransient.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Pz.Connector.SqlServer.Tests" />
     <InternalsVisibleTo Include="Pz.Benchmarks" />
   </ItemGroup>
