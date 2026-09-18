@@ -137,6 +137,47 @@ public class ConnectionsLoaderTests
     }
 
     [Fact]
+    public void An_unknown_rate_limit_key_is_refused()
+    {
+        var error = Assert.Single(Errors("""
+            warehouse:
+              connector: postgres
+              host: h
+              rate_limit: { requests_per_minute: 60, bogus: 1 }
+            """), e => e.Code == PzErrorCode.RateLimitConfigInvalid);
+
+        Assert.Contains("bogus", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unknown_instance_retry_key_is_refused_the_same_code_as_the_kwarg_surface()
+    {
+        // SinkFunction.ParseRetry already refuses an unknown sink('...', retry: {...}) key under
+        // PzErrorCode.RetryConfigInvalid; the YAML retry: surface must agree.
+        var error = Assert.Single(Errors("""
+            warehouse:
+              connector: postgres
+              host: h
+              retry: { max_attempts: 3, bogus: 1 }
+            """), e => e.Code == PzErrorCode.RetryConfigInvalid);
+
+        Assert.Contains("bogus", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_non_mapping_entities_block_is_refused_not_silently_empty()
+    {
+        var error = Assert.Single(Errors("""
+            warehouse:
+              connector: postgres
+              host: h
+              entities: nope
+            """), e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("entities", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Instance_tuning_is_not_connector_config()
     {
         var connection = Assert.Single(Load("""

@@ -108,6 +108,18 @@ internal static class ConnectionsLoader
         var datasets = new List<DatasetDef>();
         var writes = new Dictionary<string, SinkWriteOptions>(StringComparer.Ordinal);
 
+        if (block.TryGetValue("entities", out var entitiesValue) && entitiesValue is not (null or ""))
+        {
+            if (entitiesValue is not Dictionary<string, object?>)
+            {
+                errors.Add(new PzError(PzErrorCode.YamlShape,
+                    $"{FileName}: connection '{connectionName}' field 'entities' must be a mapping of " +
+                    "entity name to read:/write:.",
+                    FileName, null, "entities:\n    <entity>:\n      read: {}"));
+                return (datasets, writes);
+            }
+        }
+
         foreach (var (entity, value) in ProjectLoader.GetDict(block, "entities"))
         {
             var where = $"connection '{connectionName}' entity '{entity}'";

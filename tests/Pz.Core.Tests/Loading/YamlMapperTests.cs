@@ -87,6 +87,45 @@ public class YamlMapperTests
         Assert.Equal(1L, b["x"]);
     }
 
+    // -- root document shape ------------------------------------------------------------------------
+    // A list/scalar root or a second document used to fall back to Convert's own "not a
+    // Dictionary<string,object?>" default, which LoadFile then swallowed into an empty {} -- silently
+    // discarding whatever the author actually wrote, indistinguishable from a genuinely empty file.
+
+    [Fact]
+    public void A_list_root_is_a_config_error_not_an_empty_map()
+    {
+        LoadString("- a\n- b\n", out var error);
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Contains("mapping", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_scalar_root_is_a_config_error_not_an_empty_map()
+    {
+        LoadString("just text\n", out var error);
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+    }
+
+    [Fact]
+    public void A_second_yaml_document_is_a_config_error()
+    {
+        LoadString("a: 1\n---\nb: 2\n", out var error);
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Contains("document", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void An_empty_file_is_still_an_empty_map_not_an_error()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(LoadString("", out var error));
+        Assert.Null(error);
+        Assert.Empty(map);
+    }
+
     // -- scalar typing ----------------------------------------------------------------------------
     // Quoting is how YAML says "this is a string". Re-typing a quoted scalar turns a password
     // "0123456" into 123456 and a connector version "1.10" into 1.1 — a different package.

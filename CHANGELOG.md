@@ -313,6 +313,36 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   raises a load-time warning naming the connection and option instead of
   reaching the connector unexpanded with no signal at all. The value itself
   is unchanged; only connection-level config is interpolated.
+- Several YAML blocks silently ignored an unknown or mistyped key instead of
+  refusing it: `engine:`, `engine.duckdb`, `engine.breaker`, the instance-level
+  `rate_limit:`, and the YAML `retry:` surface (which now agrees with the
+  `sink()`/`source()` kwarg surface's existing unknown-key refusal, using the
+  same code). All go through one shared "unknown key" check that also
+  suggests a near-miss (e.g. `thread:` → "did you mean 'threads'"). Also:
+  - A sidecar `pipelines/configs/*.yml`'s unknown key is refused the same way
+    (`materialisation:` now says "did you mean 'materialization'"); its
+    `materialization:` value is validated against `table`/`view`/`ephemeral`
+    — dbt's `incremental`, or a near-miss like `ephemral`, are now errors
+    instead of silently landing as an unrecognized string nothing downstream
+    reads. A scalar `tags: daily` is now the one-element list `[daily]`
+    rather than silently dropped to no tags.
+  - `connections.yml`'s `entities:` being anything other than a mapping (a
+    list, a string) used to silently drop every entity to `{}`; it is now a
+    load-time error.
+  - A `.yaml` file sitting where pz only ever reads `.yml` — `project.yaml`,
+    `connections.yaml`, or a `pipelines/configs/*.yaml` sidecar — is silently
+    never loaded; it now raises a load-time warning naming the file.
+  - A YAML file (`project.yml`, `connections.yml`, a sidecar) whose document
+    root is a list or a bare scalar, or that contains a second `---`-separated
+    document, used to silently read as `{}`; both are now load-time errors.
+  - `project.yml`'s `pz:` key (documented as an engine-version constraint)
+    remains accepted but unenforced — nothing in the loader or engine reads
+    it today, and its exact constraint syntax is not established in this
+    repository, so guessing a shape to enforce risked being wrong. Left as a
+    deliberately open follow-up rather than a guess.
+  All errors aggregate (a run reports every mistake in a file at once, not
+  just the first) and carry the file and a next step, per this project's
+  error-reporting rule.
 
 ## [0.6.1] - 2026-09-10
 

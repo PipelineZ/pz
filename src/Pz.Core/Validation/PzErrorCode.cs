@@ -66,6 +66,15 @@ public static class PzErrorCode
     // deliberate literal option value that merely CONTAINS "${...}" text from an author's actual
     // env-var reference, so refusing outright would be wrong more often than it would be right.
     public const string EnvRefNotInterpolatedInEntity = "PZ0133";
+    // A sidecar pipelines/configs/*.yml's `materialization:` is not one of table/view/ephemeral --
+    // e.g. dbt's `incremental`, or a near-miss like `ephemral`. Mirrors DriftPolicyInvalid/
+    // RetentionConfigInvalid's granularity: one code for the whole enum check.
+    public const string MaterializationInvalid = "PZ0134";
+    // A `*.yaml` file sits where pz only ever looks for `*.yml` (project.yml, connections.yml,
+    // pipelines/configs/*.yml) -- silently never loaded. A warning, not an error: the file might be
+    // unrelated to pz entirely (a CI config, a k8s manifest) and pz cannot tell intent from a bare
+    // extension, only flag the ambiguity.
+    public const string YamlExtensionIgnored = "PZ0135";
     public const string UnresolvedRef = "PZ0201";
     public const string Cycle = "PZ0202";
     // PZ0203 (was SinkInputMissing: a YAML `input:` that matched no pipeline/source dataset) is

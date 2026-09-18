@@ -72,15 +72,47 @@ public static class YamlMapper
                 "fix the YAML syntax in this file"));
         }
 
+        if (yamlStream.Documents.Count > 1)
+        {
+            throw new PzConfigException(new PzError(
+                PzErrorCode.YamlShape,
+                $"Malformed YAML: this file has {yamlStream.Documents.Count} YAML documents " +
+                "(separated by '---'); pz reads only one document per file.",
+                relativePath,
+                null,
+                "remove the extra document(s), or split them into separate files"));
+        }
+
         if (yamlStream.Documents.Count == 0)
         {
+            // A genuinely empty file, not a shape problem: "no content" reads the same as "no keys".
             return new Dictionary<string, object?>();
         }
 
         var state = new ConversionState(relativePath, interpolate);
         var converted = Convert(yamlStream.Documents[0].RootNode, state);
-        return converted as Dictionary<string, object?> ?? new Dictionary<string, object?>();
+        if (converted is not Dictionary<string, object?> dict)
+        {
+            var rootLine = yamlStream.Documents[0].RootNode.Start.Line;
+            var line = rootLine > 0 ? (int?)rootLine : null;
+            throw new PzConfigException(new PzError(
+                PzErrorCode.YamlShape,
+                $"Malformed YAML: the document's root must be a mapping of keys to values " +
+                $"(got {DescribeRootShape(converted)}).",
+                relativePath,
+                line,
+                "start the file with `key: value` pairs, not a list or a bare scalar"));
+        }
+
+        return dict;
     }
+
+    private static string DescribeRootShape(object? converted) => converted switch
+    {
+        null => "an empty/null document",
+        List<object?> => "a list",
+        _ => "a scalar",
+    };
 
     /// <summary>An alias makes the parsed node graph shared — and, for a self-referencing anchor,
     /// cyclic — so the graph-to-tree conversion below needs two guards: the current recursion path
