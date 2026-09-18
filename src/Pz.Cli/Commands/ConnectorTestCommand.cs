@@ -124,8 +124,11 @@ internal static class ConnectorTestCommand
             // --config, a setup-time ConnectorHostException) is already handled above and returns
             // before reaching here. Anything else escaping -- a bug in the suite, an unexpected
             // exception type -- must never surface as a raw stack trace under exit code 1 (reserved for
-            // "a vector failed"); PZ0500 fatal is the same catch-all RunCommand uses for the same reason.
-            Console.Error.WriteLine($"error {PzErrorCode.UnexpectedEngineFailure}: unexpected failure — {ex.Message}");
+            // "a vector failed"); PZ0500 fatal is the same catch-all RunCommand uses for the same reason,
+            // including EngineFailureMapper's fingerprinting of the three diagnosable local I/O shapes.
+            Console.Error.WriteLine(EngineFailureMapper.TryMap(ex) is { } mapped
+                ? $"error {mapped}"
+                : $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected failure — {ex.Message}");
             return ExitCodes.Fatal;
         }
         finally

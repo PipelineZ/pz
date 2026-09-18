@@ -170,9 +170,10 @@ internal static class RetryCommand
         catch (Exception ex)
         {
             // Mirrors RunCommand.Execute's outer catch: an unexpected exception must never surface as a
-            // raw stack trace.
-            Console.Error.WriteLine(
-                $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
+            // raw stack trace, and the same three diagnosable local I/O shapes get fingerprinted.
+            Console.Error.WriteLine(EngineFailureMapper.TryMap(ex) is { } mapped
+                ? $"error {mapped}"
+                : $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
             return ExitCodes.Fatal;
         }
     }

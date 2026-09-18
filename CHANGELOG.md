@@ -559,6 +559,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   accepting the option and silently doing nothing with it would be exactly
   the deployment-knob-ignored failure this project's error philosophy
   forbids.
+- `pz run`/`pz retry`/`pz test`/`pz connector test` (and the `pz mcp` tools
+  that share the same execute path) no longer forward a raw OS exception as
+  the generic PZ0500 for three diagnosable local I/O failures: permission
+  denied writing under the project directory or `.pz` (new PZ0531), the
+  filesystem out of space (new PZ0532), and, on Windows, a file another
+  process has open without sharing it (new PZ0533). Each names the path and
+  a next step; anything else still stays PZ0500 with the underlying
+  exception's own message. Classified by exception type/HResult only, never
+  by message text.
 
 ## [0.6.1] - 2026-09-10
 
