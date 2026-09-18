@@ -35,6 +35,14 @@
 # install through the pointer and fails if a referenced sub-package is not there yet. MinVer computes
 # the same version in every job from the same tag, which is what makes the sub-packages and the
 # pointer agree (a version mismatch breaks installs).
+#
+# The win-x64 leg additionally produces a standalone zip of the raw AOT-published exe (a `dotnet
+# publish` into its own directory, never the `-o packages` used for the nupkg) and uploads it under an
+# artifact name that does NOT match the `pz-*` download pattern the release job uses to collect
+# nupkgs -- keeping it out of the `packages` directory and out of every nupkg entirely. The release job
+# attaches that zip to a GitHub Release, which is the download URL winget's manifest (and the
+# winget-releaser automation in winget-releaser.yml) points at; nuget.org's `dotnet tool install` path
+# is unaffected.
 name: release
 
 on:
@@ -80,6 +88,22 @@ jobs:
           name: pz-${{ matrix.rid }}
           path: packages/pz.${{ matrix.rid }}.*.nupkg
           if-no-files-found: error
+      # Separate publish output, separate artifact name (deliberately not `pz-win-x64`, which would
+      # collide with the release job's `pz-*` nupkg download pattern) -- this zip never enters the
+      # `packages` directory or any nupkg. It exists only to become a GitHub Release asset.
+      - name: Publish standalone win-x64 binary (GitHub Release / winget)
+        if: matrix.rid == 'win-x64'
+        run: dotnet publish src/Pz.Cli -c Release -r win-x64 -o publish-win-x64
+      - name: Zip win-x64 binary
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: Compress-Archive -Path publish-win-x64/pz.exe -DestinationPath pz-win-x64.zip
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: matrix.rid == 'win-x64'
+        with:
+          name: winget-win-x64-zip
+          path: pz-win-x64.zip
+          if-no-files-found: error
 
   # The same three end-to-end proofs PR CI's pack-and-verify/verify-aot jobs run (identical
   # invocations, toolchain setup, and runner OS), run again here against the exact tagged commit
@@ -106,7 +130,7 @@ jobs:
     timeout-minutes: 30
     environment: release # secret-scopes NUGET_USER to this job; supports required-reviewer gating too.
     permissions:
-      contents: read
+      contents: write # also creates the GitHub Release the win-x64 zip is attached to.
       id-token: write # required for NuGet/login's OIDC exchange AND attest-build-provenance's Sigstore signing.
       attestations: write # required for attest-build-provenance to publish the attestation.
     steps:
@@ -167,3 +191,21 @@ jobs:
           --source https://api.nuget.org/v3/index.json
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --skip-duplicate
+      # Downloaded by exact artifact name into its own directory -- deliberately not the `packages`
+      # download above, so this zip never sits alongside a nupkg. This is the first GitHub Release
+      # this repo has ever created; winget's manifest (and winget-releaser.yml) target its zip asset.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: winget-win-x64-zip
+          path: release-assets
+      - name: Checksum the release asset
+        working-directory: release-assets
+        run: sha256sum pz-win-x64.zip > checksums.txt
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          gh release create ${{ github.ref_name }}
+          release-assets/pz-win-x64.zip release-assets/checksums.txt
+          --title ${{ github.ref_name }}
+          --generate-notes
