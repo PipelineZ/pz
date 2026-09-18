@@ -1,3 +1,4 @@
+using System.Data;
 using Microsoft.Data.SqlClient;
 using Pz.Core.Validation;
 
@@ -12,6 +13,13 @@ namespace Pz.State.SqlServer;
 /// elsewhere may already depend on columns this build does not know about — guessing would be worse
 /// than failing loud.
 ///
+/// **Concurrent first use.** Two processes racing against the same empty (or stale) database must not
+/// both decide to migrate: <see cref="EnsureCurrent"/> takes a transaction-owned, exclusive
+/// `sp_getapplock` FIRST, inside its transaction, before reading the version at all -- the loser waits
+/// (up to <see cref="LockTimeoutMs"/>, else PZ0528) and then re-reads the version under the lock, so it
+/// sees whatever the winner committed and does nothing further if that is already
+/// <see cref="CurrentVersion"/>. The version is never trusted from a read taken before the lock.
+///
 /// The schema name (`state.schema`) is operator-supplied, so every statement that names it goes through
 /// SQL Server's own `QUOTENAME` (as a bound parameter fed to dynamic SQL) rather than C#-side string
 /// interpolation — that keeps escaping in the one place that already knows the identifier-quoting rules
@@ -19,7 +27,12 @@ namespace Pz.State.SqlServer;
 /// interpolating those directly is safe.</summary>
 public static class SqlStateSchema
 {
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
+
+    /// <summary>How long <see cref="EnsureCurrent"/> waits on the migration `sp_getapplock` before
+    /// giving up and reporting PZ0528, rather than hanging indefinitely behind a stuck or unusually slow
+    /// concurrent migrator.</summary>
+    public const int LockTimeoutMs = 30_000;
 
     public static int ReadVersion(SqlStateConnection connection)
     {
@@ -34,48 +47,52 @@ public static class SqlStateSchema
         }
     }
 
-    public static void EnsureCurrent(SqlStateConnection connection)
+    public static void EnsureCurrent(SqlStateConnection connection) => EnsureCurrent(connection, LockTimeoutMs);
+
+    /// <summary>Test-only overload (mirrors <see cref="SqlEventSink.WithWriterGatedForTests"/>'s
+    /// dispose-deadline override): lets a lock-timeout test bound a REAL wait to a few hundred
+    /// milliseconds instead of <see cref="LockTimeoutMs"/>'s production value.</summary>
+    internal static void EnsureCurrent(SqlStateConnection connection, int lockTimeoutMs)
     {
         // PZ0518 is scoped to Open() alone (below) -- a failure past this point means the connection
         // was fine, so it is never "cannot reach the store" and must not tell the operator to check
-        // connectivity (that failure mode is PZ0519, "a migration failed partway").
+        // connectivity (that failure mode is PZ0519/PZ0528).
         using var sqlConnection = connection.Open();
-
-        int version;
-        try
-        {
-            version = ReadVersionCore(sqlConnection, null, connection.Schema);
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            throw connection.MigrationFailed(ex);
-        }
-
-        if (version > CurrentVersion)
-        {
-            throw new PzConfigException(new PzError(PzErrorCode.StateSchemaVersionMismatch,
-                $"the state store's schema is at version {version}, newer than this build of pz " +
-                $"understands (version {CurrentVersion}).",
-                "project.yml", null,
-                "upgrade pz, or point state.connection at a store this build created"));
-        }
-
-        if (version == CurrentVersion)
-        {
-            return;
-        }
 
         try
         {
             using var transaction = sqlConnection.BeginTransaction();
             try
             {
-                for (var target = version + 1; target <= CurrentVersion; target++)
+                // Taken FIRST, before the version is read at all: the whole point is that neither
+                // racing caller may act on a version read outside this lock, because it could already
+                // be stale by the time it is acted on.
+                AcquireMigrationLock(sqlConnection, transaction, connection, lockTimeoutMs);
+
+                var version = ReadVersionCore(sqlConnection, transaction, connection.Schema);
+
+                if (version > CurrentVersion)
                 {
-                    Migrate(sqlConnection, transaction, connection.Schema, target);
+                    throw new PzConfigException(new PzError(PzErrorCode.StateSchemaVersionMismatch,
+                        $"the state store's schema is at version {version}, newer than this build of pz " +
+                        $"understands (version {CurrentVersion}).",
+                        "project.yml", null,
+                        "upgrade pz, or point state.connection at a store this build created"));
                 }
 
-                StampVersion(sqlConnection, transaction, connection.Schema, CurrentVersion, insert: version == 0);
+                if (version < CurrentVersion)
+                {
+                    for (var target = version + 1; target <= CurrentVersion; target++)
+                    {
+                        Migrate(sqlConnection, transaction, connection.Schema, target);
+                    }
+
+                    StampVersion(sqlConnection, transaction, connection.Schema, CurrentVersion, insert: version == 0);
+                }
+
+                // Else: already current. The lock above still serialized this decision against a
+                // concurrent migrator, but there is nothing left to do -- committing an empty
+                // transaction releases the lock and leaves the schema exactly as the winner left it.
                 transaction.Commit();
             }
             catch
@@ -90,11 +107,41 @@ public static class SqlStateSchema
         }
     }
 
+    /// <summary>Acquires a transaction-owned, exclusive `sp_getapplock` scoped to this schema, so two
+    /// different `state.schema` values never block each other. `@LockOwner = 'Transaction'` (rather than
+    /// the session-scoped default outside an explicit transaction) means the lock is released
+    /// automatically on <see cref="SqlTransaction.Commit"/>/<see cref="SqlTransaction.Rollback"/> --
+    /// there is no separate release call to forget. `sp_getapplock` returns &lt; 0 on timeout/cancel/
+    /// deadlock (-1/-2/-3) or a parameter error (-999); &gt;= 0 (0 = acquired immediately, 1 = acquired
+    /// after waiting) is success.</summary>
+    private static void AcquireMigrationLock(
+        SqlConnection sqlConnection, SqlTransaction transaction, SqlStateConnection connection, int lockTimeoutMs)
+    {
+        using var command = new SqlCommand(
+            "DECLARE @result INT; " +
+            "EXEC @result = sp_getapplock @Resource = @resource, @LockMode = 'Exclusive', " +
+            "@LockOwner = 'Transaction', @LockTimeout = @timeout; " +
+            "SELECT @result;",
+            sqlConnection, transaction);
+        // Scoped by schema (not database-wide): two independent `state.schema` values must not block
+        // each other's migration.
+        command.Parameters.Add("@resource", SqlDbType.NVarChar, 255).Value = "pz_state_schema:" + connection.Schema;
+        command.Parameters.AddWithValue("@timeout", lockTimeoutMs);
+
+        var result = Convert.ToInt32(command.ExecuteScalar());
+        if (result < 0)
+        {
+            throw connection.MigrationLockTimedOut(lockTimeoutMs, result);
+        }
+    }
+
     /// <summary>Runs the DDL that takes the schema from <paramref name="target"/> - 1 to
     /// <paramref name="target"/>. Version 1 is the schema's inaugural shape; version
     /// 2 heals `scope`/`state_key`'s collation on databases created
     /// before that column definition carried `COLLATE ... BIN2` -- see <see cref="MigrateToBinaryCollation"/>.
-    /// Each version gets its own case here; earlier cases are never rewritten, only added to.</summary>
+    /// Version 3 adds a PRIMARY KEY to `schema_version`, which had none -- see
+    /// <see cref="MigrateToSchemaVersionPrimaryKey"/>. Each version gets its own case here; earlier
+    /// cases are never rewritten, only added to.</summary>
     private static void Migrate(SqlConnection sqlConnection, SqlTransaction transaction, string schema, int target)
     {
         switch (target)
@@ -104,6 +151,9 @@ public static class SqlStateSchema
                 return;
             case 2:
                 MigrateToBinaryCollation(sqlConnection, transaction, schema);
+                return;
+            case 3:
+                MigrateToSchemaVersionPrimaryKey(sqlConnection, transaction, schema);
                 return;
             default:
                 throw new InvalidOperationException($"no migration defined for state schema version {target}.");
@@ -228,6 +278,38 @@ public static class SqlStateSchema
             sqlConnection, transaction);
         command.Parameters.AddWithValue("@schema", schema);
         command.Parameters.Add("@pk", System.Data.SqlDbType.NVarChar, 128).Value = primaryKeyName;
+        command.ExecuteNonQuery();
+    }
+
+    /// <summary>`MigrateToV1` created `schema_version` with no key at all -- the gap that let two
+    /// racing first-use callers each successfully INSERT their own row instead of the second one being
+    /// refused loudly (the defect <see cref="EnsureCurrent"/>'s `sp_getapplock` above now prevents from
+    /// EVER happening again, but an existing database may already carry it from before this fix). A
+    /// single-row table needs a constant key -- `id` (always 1), not `version`, since `version` itself
+    /// is exactly the column a duplicate-insert race could have made non-unique. De-duplicates first,
+    /// keeping the highest `version` (the most-migrated row is the one to keep): adding a PRIMARY KEY
+    /// over duplicate rows would otherwise fail this migration outright.</summary>
+    private static void MigrateToSchemaVersionPrimaryKey(SqlConnection sqlConnection, SqlTransaction transaction, string schema)
+    {
+        using (var dedupe = new SqlCommand(
+            "DECLARE @sql NVARCHAR(MAX) = " +
+            "'DELETE t FROM ' + QUOTENAME(@schema) + '.schema_version t WHERE t.version < ' + " +
+            "'(SELECT MAX(version) FROM ' + QUOTENAME(@schema) + '.schema_version);'; " +
+            "EXEC(@sql);",
+            sqlConnection, transaction))
+        {
+            dedupe.Parameters.AddWithValue("@schema", schema);
+            dedupe.ExecuteNonQuery();
+        }
+
+        using var command = new SqlCommand(
+            "DECLARE @sql NVARCHAR(MAX) = " +
+            "'ALTER TABLE ' + QUOTENAME(@schema) + '.schema_version ADD id TINYINT NOT NULL DEFAULT 1; ' + " +
+            "'ALTER TABLE ' + QUOTENAME(@schema) + " +
+            "'.schema_version ADD CONSTRAINT PK_schema_version PRIMARY KEY (id);'; " +
+            "EXEC(@sql);",
+            sqlConnection, transaction);
+        command.Parameters.AddWithValue("@schema", schema);
         command.ExecuteNonQuery();
     }
 

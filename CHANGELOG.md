@@ -404,6 +404,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   snapshot-write warning that always said "could not write run_results.json"
   now names the store that actually failed -- "the SQL state store" under
   `state.artifacts: true`, instead of misnaming it as the local JSON file.
+- `SqlStateSchema.EnsureCurrent` (the SQL Server state store's first-use/
+  migration path) is now safe against two processes racing the same schema:
+  an exclusive, transaction-owned `sp_getapplock` is taken first, inside the
+  transaction, and the version is re-read only under it, instead of a version
+  read before the transaction even began. A caller that loses the race and
+  wakes to find the schema already migrated now does nothing, instead of
+  racing a second migration attempt (previously an occasional raw `2714`
+  surfaced as PZ0519 with the wrong "check DDL rights" advice, or a duplicate
+  `schema_version` row, since that table had no key). A lock that cannot be
+  acquired within 30s is the new PZ0528 with a "retry" next step. Schema
+  version 3 adds a PRIMARY KEY to `schema_version`, de-duplicating any
+  existing rows first; migrates automatically, same as version 2.
 
 ## [0.6.1] - 2026-09-10
 
