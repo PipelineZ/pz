@@ -30,6 +30,7 @@ public static class CliApp
         root.Subcommands.Add(StateCommand.Create());
         root.Subcommands.Add(SchemaCommand.Create());
         root.Subcommands.Add(McpCommand.Create());
+        root.Subcommands.Add(CompletionCommand.Create());
 
         return root;
     }

@@ -55,6 +55,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   terminal snapshot, absent while a run is still "running"), and both backends'
   `PriorRun`/`PriorNode` now round-trip `startedAt`/`finishedAt` and a node's
   `provenance` for readers.
+- `pz completion bash|zsh|fish|pwsh`: prints a shell completion script to
+  stdout, generated from the actual registered command tree so it cannot drift
+  from `--help`. No network, no file writes; an unrecognized shell name is a
+  config error (PZ0535).
 - Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
   the acceptance fact for the `ColumnPruning` capability. It plans a read with a
   non-prefix, reordered column hint and requires every batch to carry exactly
