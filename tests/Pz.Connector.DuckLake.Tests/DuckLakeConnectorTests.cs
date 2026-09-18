@@ -171,6 +171,34 @@ public sealed class DuckLakeConnectorTests : IDisposable
         Assert.True(check.Ok);
     }
 
+    // A zero-byte SQLite catalog file is what `pz run` itself accepts: ducklake's sqlite catalog
+    // backend (verified directly against the sqlite/ducklake DuckDB extensions) initializes an
+    // existing-but-empty file as a fresh catalog on first attach, the same way a brand new file would
+    // be. The connect check must accept what the run accepts, not refuse it as "not a SQLite database
+    // file" -- a real corrupt/truncated file (a few non-empty garbage bytes) must still be refused, so
+    // this is specifically about zero length, never about skipping the header check altogether.
+    [Fact]
+    public async Task Check_reports_a_zero_byte_sqlite_catalog_file_as_ok_with_a_note()
+    {
+        await File.WriteAllBytesAsync(Path.Combine(dir, "catalog.sqlite"), []);
+        var check = await new DuckLakeConnector().CheckConnectionAsync(FileCatalog("sqlite", "catalog.sqlite"), CancellationToken.None);
+        Assert.True(check.Ok);
+        Assert.Contains("empty", check.Message, StringComparison.Ordinal);
+    }
+
+    // The duckdb catalog backend is the opposite case: DuckDB's own native format (verified directly
+    // against `attach if not exists` on a zero-byte file) refuses a zero-byte EXISTING file outright --
+    // unlike a genuinely missing path, it does NOT treat it as a fresh empty database. The connect
+    // check must keep refusing it here, matching what a real run would also fail on.
+    [Fact]
+    public async Task Check_fails_permanently_on_a_zero_byte_duckdb_catalog_file()
+    {
+        await File.WriteAllBytesAsync(Path.Combine(dir, "catalog.ducklake"), []);
+        var check = await new DuckLakeConnector().CheckConnectionAsync(FileCatalog(), CancellationToken.None);
+        Assert.False(check.Ok);
+        Assert.Contains("header magic", check.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Check_fails_permanently_when_the_catalog_parent_directory_is_missing()
     {

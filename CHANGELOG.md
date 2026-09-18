@@ -652,6 +652,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   and s3 do not share this bug: gcs's universal path never ran the
   native-COPY check to begin with, and s3 has no universal write path at
   all (`BeginWriteAsync` always refuses outright).
+- `pz validate --connect` no longer refuses a ducklake `catalog: sqlite`
+  connection whose catalog file exists but is empty: verified directly
+  against the sqlite/ducklake DuckDB extensions, that backend initializes
+  a zero-byte existing file as a fresh catalog on first attach, the same
+  way `pz run` already treats it -- the connect check was refusing it as
+  "not a SQLite database file", disagreeing with the run it is supposed
+  to predict. `catalog: duckdb` (and the plain `duckdb` connector) is
+  unaffected and deliberately unchanged: DuckDB's own native format does
+  the opposite -- `attach if not exists` refuses a zero-byte EXISTING
+  file outright -- so both already agreed there.
 
 ## [0.6.1] - 2026-09-10
 
