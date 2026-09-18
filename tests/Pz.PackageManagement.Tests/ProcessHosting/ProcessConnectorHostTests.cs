@@ -187,6 +187,83 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.False(Directory.Exists(socketDir));
     }
 
+    /// <summary>The engine opens a connection once per node — every SourceLoad, every SinkWrite, the
+    /// planner and the connectivity probe each open and dispose their own — so a project with a hundred
+    /// entities on one external connection opens it a few hundred times in a run. Each open is a child
+    /// process; disposing what the open returned must end that child, or all of them stay alive (each
+    /// possibly holding a remote connection) until the run ends.</summary>
+    [SkippableFact]
+    public async Task Disposing_an_opened_source_reaps_its_process_so_repeated_opens_do_not_accumulate()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var dataDir = NewTempDir();
+        var socketRoot = NewTempDir();
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], socketRoot);
+        var connector = (ISourceConnector)host.Get(ConnectorName);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+
+        for (var i = 0; i < 5; i++)
+        {
+            var source = await connector.OpenAsync(config, CancellationToken.None);
+            Assert.Single(Directory.GetDirectories(socketRoot)); // this open's process, and no earlier one
+            await source.DisposeAsync();
+            Assert.Empty(Directory.GetDirectories(socketRoot));
+        }
+    }
+
+    [SkippableFact]
+    public async Task Disposing_an_opened_sink_reaps_its_process()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var socketRoot = NewTempDir();
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], socketRoot);
+        var connector = (ISinkConnector)host.Get(ConnectorName);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = NewTempDir() });
+
+        var sink = await connector.OpenAsync(config, CancellationToken.None);
+        Assert.Single(Directory.GetDirectories(socketRoot));
+        await sink.DisposeAsync();
+
+        Assert.Empty(Directory.GetDirectories(socketRoot));
+    }
+
+    /// <summary>Two live opens of one connection are two processes, and disposing one leaves the other
+    /// working: nothing is shared between them that the first dispose could take away.</summary>
+    [SkippableFact]
+    public async Task Disposing_one_open_leaves_a_concurrent_open_of_the_same_connection_working()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var dataDir = NewTempDir();
+        WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
+        var socketRoot = NewTempDir();
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], socketRoot);
+        var connector = (ISourceConnector)host.Get(ConnectorName);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+
+        var first = await connector.OpenAsync(config, CancellationToken.None);
+        await using var second = await connector.OpenAsync(config, CancellationToken.None);
+        Assert.Equal(2, Directory.GetDirectories(socketRoot).Length);
+
+        await first.DisposeAsync();
+        await first.DisposeAsync(); // idempotent
+
+        Assert.Single(Directory.GetDirectories(socketRoot));
+        var spec = new DatasetSpec("files", "orders", new Dictionary<string, object?>
+        {
+            ["path"] = "small.csv",
+            ["format"] = "csv",
+            ["columns"] = CsvColumns,
+        });
+        var schema = await second.GetSchemaAsync(spec, CancellationToken.None);
+        Assert.Equal(CsvColumns.Keys, schema.Schema.FieldsList.Select(field => field.Name));
+    }
+
     /// <summary>The engine threads the connection name in under <see cref="ProcessConnectorHost.InstanceIdKey"/>;
     /// the host names the instance after it and strips the key before anything crosses to the connector.
     /// The fixture throws on any config that still carries a host key, so every RPC below doubles as

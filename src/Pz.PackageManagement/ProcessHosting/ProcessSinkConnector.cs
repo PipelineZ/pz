@@ -148,7 +148,17 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
         return new ProcessSinkWriteSession(client, process, opId, ticket.SessionId, writer);
     }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    private Func<ValueTask>? _onDispose;
+
+    Func<ValueTask>? IGatedShim.OnDispose
+    {
+        set => Volatile.Write(ref _onDispose, value);
+    }
+
+    /// <summary>Ends the process this sink was opened on, when a host owns one for it. Exchanged to
+    /// null first, so a second dispose — or one racing the host's own teardown — does nothing.</summary>
+    public ValueTask DisposeAsync() =>
+        Interlocked.Exchange(ref _onDispose, null)?.Invoke() ?? ValueTask.CompletedTask;
 
     /// <summary>Best-effort only: the <see cref="ConnectorHostException"/> already caught by the caller
     /// is the failure that matters, and swallowing whatever this does here (including the connector
