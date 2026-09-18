@@ -53,11 +53,15 @@ updates:
         patterns:
           - "JsonSchema.Net"
         update-types: ["minor", "patch"]
+      # DuckDB.NET bundles the native DuckDB engine, so a bump here is a new engine: SQL semantics,
+      # the parser pz reads watermarks and read hints through, and the extensions the file formats
+      # and the native connectors ride on all move with it. Its own group, so it never arrives
+      # inside the catch-all PR below and a regression bisects to one change.
+      duckdb:
+        patterns:
+          - "DuckDB.NET.*"
+        update-types: ["minor", "patch"]
       # Everything else: one grouped PR per week for every other package's minor/patch bump.
-      # DuckDB.NET.Data.Full lands here too -- it has no second in-repo package pinned to the same
-      # native DuckDB engine version to keep in sync with, so there is nothing to group it against,
-      # but it bundles that native engine and deserves the same reviewer attention as any other
-      # dependency bump here (no auto-merge, so every bump in this group is read before it merges).
       nuget-minor-patch:
         patterns:
           - "*"
