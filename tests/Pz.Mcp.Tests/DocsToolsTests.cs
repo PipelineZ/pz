@@ -305,4 +305,95 @@ public class DocsToolsTests
         Assert.NotNull(page);
         Assert.Contains("DuckDB is the hub", page.Body);
     }
+
+    // PZ_DOCS_URL=file://... is the documented air-gapped route: a directory holding the same two
+    // files (llms.txt/llms-full.txt) the site serves over http. The HttpClient handed to the catalog
+    // throws if touched at all -- a file:// catalog must never reach it.
+    [Fact]
+    public async Task File_url_reads_the_index_and_full_text_from_disk()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-docs-mirror-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "llms.txt"), Index);
+            File.WriteAllText(Path.Combine(dir, "llms-full.txt"), FullText);
+            var neverHttp = new HttpClient(new StubHandler(
+                _ => throw new InvalidOperationException("a file:// catalog must never use HttpClient")));
+            var catalog = new DocsCatalog(neverHttp, "file://" + dir);
+
+            var result = Parse(await DocsTools.GetAsync(catalog, "concepts/data-plane", CancellationToken.None));
+
+            Assert.True(result.GetProperty("ok").GetBoolean());
+            Assert.Contains(
+                "DuckDB is the hub", result.GetProperty("doc").GetProperty("markdown").GetString());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // A missing/misconfigured file:// mirror is exactly the same user-facing failure as an unreachable
+    // http one -- PZ0607, naming the path, never a bare NotSupportedException/PZ0609 "pz defect".
+    [Fact]
+    public async Task File_url_with_a_missing_mirror_directory_is_PZ0607_not_a_defect()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-docs-mirror-missing-" + Guid.NewGuid().ToString("N"));
+        var catalog = new DocsCatalog(new HttpClient(new StubHandler(_ => Text(""))), "file://" + dir);
+
+        var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        Assert.Equal("PZ0607", result.GetProperty("errors")[0].GetProperty("code").GetString());
+    }
+
+    // Cap enforcement, both transports -- a response over the named limit is a coded refusal (PZ0610),
+    // never a silent truncation. MaxResponseBytes is an internal settable seam purely so the test does
+    // not need to actually transfer tens of megabytes.
+    [Fact]
+    public async Task Oversized_http_response_is_PZ0610_not_silently_truncated()
+    {
+        var original = DocsCatalog.MaxResponseBytes;
+        DocsCatalog.MaxResponseBytes = 16;
+        try
+        {
+            var catalog = new DocsCatalog(new HttpClient(new StubHandler(_ => Text(Index))), "https://pipelinez.dev");
+
+            var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+            Assert.False(result.GetProperty("ok").GetBoolean());
+            var error = result.GetProperty("errors")[0];
+            Assert.Equal("PZ0610", error.GetProperty("code").GetString());
+            Assert.Contains("pipelinez.dev", error.GetProperty("message").GetString()!, StringComparison.Ordinal);
+        }
+        finally
+        {
+            DocsCatalog.MaxResponseBytes = original;
+        }
+    }
+
+    [Fact]
+    public async Task Oversized_file_response_is_PZ0610_not_silently_truncated()
+    {
+        var original = DocsCatalog.MaxResponseBytes;
+        DocsCatalog.MaxResponseBytes = 16;
+        var dir = Path.Combine(Path.GetTempPath(), "pz-docs-mirror-big-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "llms.txt"), Index);
+            var catalog = new DocsCatalog(new HttpClient(new StubHandler(_ => Text(""))), "file://" + dir);
+
+            var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+            Assert.False(result.GetProperty("ok").GetBoolean());
+            Assert.Equal("PZ0610", result.GetProperty("errors")[0].GetProperty("code").GetString());
+        }
+        finally
+        {
+            DocsCatalog.MaxResponseBytes = original;
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

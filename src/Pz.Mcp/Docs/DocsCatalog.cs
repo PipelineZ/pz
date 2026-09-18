@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Pz.Mcp.Docs;
@@ -23,15 +24,26 @@ public sealed record DocPage(string Slug, string Title, string Description, stri
 ///   /llms-full.txt  every page's markdown, each introduced by "===== pz-doc: slug | url =====".
 ///
 /// Set PZ_DOCS_URL to point at a mirror (an internal copy of the site, or a file:// tree) when the
-/// public site is not reachable. That is the supported answer for air-gapped use.
+/// public site is not reachable. That is the supported answer for air-gapped use. A <c>file:</c> URL
+/// names a directory holding the same two files the site serves over http -- resolved as a root:
+/// every fetched path is combined against it and refused if normalization would walk it outside that
+/// root, since a page name can in principle come from a tool caller (<see cref="FetchFileAsync"/>).
 ///
 /// One instance holds one process's cache: the index and the full text are each fetched at most
 /// once, because an agent typically searches several times in a session and the full text is large.
+/// Every fetch, over either transport, is capped at <see cref="MaxResponseBytes"/> -- a caller gets a
+/// coded refusal (PZ0610) rather than an unbounded read or a silent truncation.
 /// </summary>
 public sealed class DocsCatalog
 {
     public const string DefaultBaseUrl = "https://pipelinez.dev";
     public const string BaseUrlEnvironmentVariable = "PZ_DOCS_URL";
+
+    /// <summary>The largest response (`llms.txt`, `llms-full.txt`, or any other fetched page) this
+    /// catalog will read, over either transport. Internal and settable purely as a test seam --
+    /// production code never assigns it -- mirroring <c>ConnectivityValidator.ProbeTimeout</c>'s own
+    /// settable-for-tests pattern.</summary>
+    internal static long MaxResponseBytes { get; set; } = 25 * 1024 * 1024;
 
     // "- [Title](url)" with an optional ": description" tail. The description is optional because a
     // page without a leading prose paragraph produces no summary, and dropping the whole line for
@@ -115,17 +127,80 @@ public sealed class DocsCatalog
 
     private async Task<string> FetchAsync(string path, CancellationToken ct)
     {
+        // file: is a directory mirror read straight off disk -- HttpClient has no concept of it at
+        // all (GetAsync throws NotSupportedException for any non-http(s) scheme), so it must be
+        // handled before anything here touches _http.
+        if (Uri.TryCreate(_baseUrl, UriKind.Absolute, out var baseUri) && baseUri.Scheme == Uri.UriSchemeFile)
+        {
+            return await FetchFileAsync(baseUri, path, ct).ConfigureAwait(false);
+        }
+
         var url = _baseUrl + path;
         try
         {
             using var response = await _http.GetAsync(url, ct).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            // Content-Length is a declared, not enforced, bound -- checked first so an honestly-labeled
+            // oversized response is refused without reading it at all; the post-read count below is
+            // the backstop for a chunked response that never declared a length.
+            if (response.Content.Headers.ContentLength is { } declared && declared > MaxResponseBytes)
+            {
+                throw new DocsResponseTooLargeException(url, declared);
+            }
+
+            var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            var actual = Encoding.UTF8.GetByteCount(body);
+            if (actual > MaxResponseBytes)
+            {
+                throw new DocsResponseTooLargeException(url, actual);
+            }
+
+            return body;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException && !ct.IsCancellationRequested)
         {
             // Wrapped rather than surfaced raw: the handler turns this into a PZ-coded envelope, and
             // the message has to say WHICH url failed for a mirror misconfiguration to be diagnosable.
+            throw new DocsUnavailableException(url, ex);
+        }
+    }
+
+    /// <summary>Resolves <paramref name="path"/> (always one of the two fixed corpus paths today, but
+    /// treated as caller-influenced on principle -- see the class doc) under <paramref name="baseUri"/>'s
+    /// local directory and reads it. Refuses a resolved path that normalizes outside that root, and
+    /// maps every I/O/permission/path failure to <see cref="DocsUnavailableException"/> (PZ0607) -- the
+    /// same user-facing failure an unreachable http mirror produces, named types only, so a genuine
+    /// defect elsewhere still surfaces as PZ0609 rather than being misdiagnosed here.</summary>
+    private async Task<string> FetchFileAsync(Uri baseUri, string path, CancellationToken ct)
+    {
+        var url = _baseUrl + path;
+        var root = Path.GetFullPath(baseUri.LocalPath);
+        var resolved = Path.GetFullPath(Path.Combine(root, path.TrimStart('/')));
+        if (!string.Equals(resolved, root, StringComparison.Ordinal) &&
+            !resolved.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        {
+            throw new DocsUnavailableException(url,
+                new UnauthorizedAccessException($"resolved path escapes the configured docs root '{root}'"));
+        }
+
+        try
+        {
+            var info = new FileInfo(resolved);
+            if (!info.Exists)
+            {
+                throw new FileNotFoundException($"no such file: '{resolved}'", resolved);
+            }
+
+            if (info.Length > MaxResponseBytes)
+            {
+                throw new DocsResponseTooLargeException(url, info.Length);
+            }
+
+            return await File.ReadAllTextAsync(resolved, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException
+            or ArgumentException)
+        {
             throw new DocsUnavailableException(url, ex);
         }
     }
@@ -216,6 +291,16 @@ public sealed class DocsCatalog
 /// undiagnosable from a bare "network error".</summary>
 public sealed class DocsUnavailableException(string url, Exception inner)
     : Exception($"could not reach the documentation at {url}", inner)
+{
+    public string Url { get; } = url;
+}
+
+/// <summary>A documentation response exceeded <see cref="DocsCatalog.MaxResponseBytes"/>. Deliberately
+/// its own type, not folded into <see cref="DocsUnavailableException"/> — the source WAS reached, so
+/// "could not reach" and its mirror-misconfiguration hint would misdiagnose the real cause.</summary>
+public sealed class DocsResponseTooLargeException(string url, long sizeBytes)
+    : Exception($"the documentation response from {url} is {sizeBytes} bytes, over pz's " +
+        $"{DocsCatalog.MaxResponseBytes}-byte limit")
 {
     public string Url { get; } = url;
 }

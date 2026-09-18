@@ -678,4 +678,11 @@ public static class PzErrorCode
     /// server-side trace either. A PZ0609 in the wild means a real handler is missing a typed catch;
     /// the exception text it carries is what identifies which.</summary>
     public const string McpToolFailed = "PZ0609";
+
+    /// <summary>Under `pz mcp`, a documentation response (the http/file `llms.txt`/`llms-full.txt`
+    /// fetch, or an individual page) exceeded the size pz's docs tools refuse to consume. Deliberately
+    /// distinct from PZ0607 -- the source WAS reached; "could not reach" would misdiagnose an
+    /// unbounded/misconfigured mirror as a connectivity problem. Never a silent truncation: a caller
+    /// gets a real error naming the cap, not a corrupt partial document.</summary>
+    public const string McpDocsResponseTooLarge = "PZ0610";
 }

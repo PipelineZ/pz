@@ -78,6 +78,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
+  tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
+  disk instead of handing it to `HttpClient`, which threw `NotSupportedException`
+  and surfaced as PZ0609 "this is a pz defect". A missing/unreadable mirror
+  now reports PZ0607, the same coded failure an unreachable http mirror
+  already gives. Every fetch, over either transport, is capped at a named
+  size limit (`DocsCatalog.MaxResponseBytes`, 25 MB) -- an oversized
+  `llms.txt`/`llms-full.txt`/page is a coded refusal (new PZ0610) rather than
+  an unbounded read or a silent truncation.
 - `pz_entity_schema` now works for an entity not yet declared under a
   connection's `entities:` block -- an entity is just a name in that place,
   matching the natural authoring order (look at the table, then write the
