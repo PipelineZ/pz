@@ -69,4 +69,24 @@ public class DagCompilerAggregationTests
         Assert.Equal("pipelines/a_pipeline.sql", ex.Errors[0].File);
         Assert.Equal("pipelines/z_pipeline.sql", ex.Errors[1].File);
     }
+
+    [Fact]
+    public void Incremental_and_cdc_pairing_violations_both_report_in_one_compile()
+    {
+        var erp = new ConnectionDef("erp", "postgres", new Dictionary<string, object?>(),
+            [new DatasetDef("invoices", new Dictionary<string, object?>(), null, new SyncModeDef(SyncMode.Cdc, null))],
+            "connections.yml");
+        var p = Project(
+            [
+                Pipe("stg1", Into("out1", "append") + "select * from {{ source('crm', 'orders') }}"),
+                Pipe("stg2", Into("out2", "replace") + "select * from {{ source('erp', 'invoices') }}"),
+            ],
+            sources: [CrmIncremental("orders", "id", new Dictionary<string, string> { ["id"] = "bigint" }), erp],
+            sinks: [Sink()]);
+
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+
+        Assert.Contains(ex.Errors, e => e.Code == PzErrorCode.IncrementalAppendUnacknowledged && e.Message.Contains("lake.out1"));
+        Assert.Contains(ex.Errors, e => e.Code == PzErrorCode.IncompatiblePair && e.Message.Contains("lake.out2"));
+    }
 }

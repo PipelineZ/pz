@@ -200,7 +200,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   pipeline A and never attempt pipeline B, C, … at all. Four independent
   validation stages (incremental/merge-keys, ref()/source() resolution,
   checks-on-ephemeral, ephemeral-chain) that used to stop at whichever ran
-  first now also report together in one throw. Aggregated errors are ordered
+  first now also report together in one throw, and so do the incremental and
+  cdc pairing matrices. Aggregated errors are ordered
   by file, then position, for a deterministic report. Stages with a genuine
   dependency on an earlier one's success (sink-output binding, the one-reader
   rule, SQL-declared incremental inference, and later) are unchanged.

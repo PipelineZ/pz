@@ -1138,11 +1138,6 @@ public static class DagCompiler
             }
         }
 
-        if (deliveryErrors.Count > 0)
-        {
-            throw new PzValidationException(deliveryErrors);
-        }
-
         // 10b2. CDC pairing matrix: the cdc column of the same published (read x write) matrix as
         //       stage 10b above. cdc is always EXPLICITLY declared
         //       (never auto-resolved), so -- unlike the feed column, which needs ExecutionPlanner's
@@ -1219,9 +1214,11 @@ public static class DagCompiler
             }
         }
 
-        if (cdcErrors.Count > 0)
+        // Both pairing matrices read the finished node list and nothing of each other's, so an
+        // incremental violation on one output must not hide a cdc violation on another.
+        if (deliveryErrors.Count > 0 || cdcErrors.Count > 0)
         {
-            throw new PzValidationException(cdcErrors);
+            throw new PzValidationException(OrderErrors(deliveryErrors.Concat(cdcErrors)));
         }
 
         // 10c. Dead-leaf detection: a non-ephemeral pipeline consumed by no ref()
