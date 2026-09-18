@@ -97,6 +97,14 @@ internal static class PcpServer
         // SIGINT/SIGTERM and the Shutdown RPC both land here, via IHostApplicationLifetime.
         await using var stopping = app.Lifetime.ApplicationStopping.Register(() => exit.TrySetResult(0))
             .ConfigureAwait(false);
+        // Bounds the peer's buffer-until-attach wait even for a HostChannel RPC that never started at
+        // all (Detach is never called for a channel that was never attached): once the process begins
+        // shutting down, any gated operation still waiting to attach fails now instead of blocking
+        // this very shutdown forever.
+        await using var closing = app.Lifetime.ApplicationStopping.Register(() => peer.Close(
+                new PzConnectorException(
+                    "connector process is stopping; the PCP reverse channel will not attach", isTransient: false)))
+            .ConfigureAwait(false);
         var exitCode = await exit.Task.ConfigureAwait(false);
         await app.StopAsync().ConfigureAwait(false);
         // After the server has stopped, so nothing can start a span this flush would miss; bounded by

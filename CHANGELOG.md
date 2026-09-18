@@ -160,6 +160,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
+  - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
+    all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.
+    `HostChannelPeer` fails a send issued after the channel is gone instead of buffering it for a
+    reattach that (the host opens `HostChannel` exactly once per process) is never coming, and the
+    SDK also closes the peer once the process starts stopping, bounding the "never attaches at
+    all" case the same way.
 - `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
   tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
   disk instead of handing it to `HttpClient`, which threw `NotSupportedException`
