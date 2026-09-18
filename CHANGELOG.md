@@ -803,6 +803,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   543 years off and `RunRetention.TryParseRunTimestamp`'s age math silently
   went wrong. `--log-format json`'s `at` field (`JsonRenderer`) had the same
   bug and is fixed the same way.
+- Rust connector SDK (`pz-connector`) parity fixes against the C# SDK:
+  - A sink's `Sink::abort_semantics()` (new, defaulted to `DiscardsAll` --
+    additive, an existing sink keeps compiling unchanged) now crosses into
+    `WriteSessionTicket.abort_semantics` verbatim. Every out-of-process Rust
+    sink used to report `DiscardsAll` regardless of what it actually wrapped,
+    which the delivery-guarantee matrix takes at face value.
 
 ## [0.6.1] - 2026-09-10
 

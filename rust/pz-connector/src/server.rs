@@ -87,6 +87,32 @@ pub struct WriteResult {
     pub batches_written: i64,
 }
 
+/// What [`Sink::abort_semantics`] declares this sink's [`WriteSession::abort`] actually achieves.
+/// Mirrors `Pz.Connectors.Abstractions.AbortSemantics` by ordinal (`DiscardsAll`=0/`BestEffort`=1/
+/// `None`=2) -- the engine surfaces it in run artifacts on a non-`DiscardsAll` write failure, so a
+/// non-transactional sink never claims cleanup that did not happen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AbortSemantics {
+    /// Abort removes every trace of the session's writes (temp-write + discard). The contract for an
+    /// owned destination, and this trait's default.
+    #[default]
+    DiscardsAll,
+    /// Abort attempts cleanup but cannot guarantee it; some written data may remain visible
+    /// downstream.
+    BestEffort,
+    /// Abort cleans up nothing: every delivered row is already visible downstream (destinations with
+    /// side effects -- you cannot un-POST).
+    None,
+}
+
+fn to_abort_semantics_msg(semantics: AbortSemantics) -> pb::AbortSemanticsMsg {
+    match semantics {
+        AbortSemantics::DiscardsAll => pb::AbortSemanticsMsg::AbortSemanticsDiscardsAll,
+        AbortSemantics::BestEffort => pb::AbortSemanticsMsg::AbortSemanticsBestEffort,
+        AbortSemantics::None => pb::AbortSemanticsMsg::AbortSemanticsNone,
+    }
+}
+
 /// One `(temp_path, final_path)` finalization the host performs after its own copy commits.
 pub type FileMove = (String, String);
 
@@ -124,6 +150,13 @@ pub trait Sink: Send + Sync {
         spec: OutputSpec,
         schema: SchemaRef,
     ) -> Result<Box<dyn WriteSession>, PzError>;
+
+    /// Abort semantics for sessions this sink opens. Mirrors `Pz.Connectors.Abstractions.
+    /// ISink.AbortSemantics`: additive (a defaulted trait method), so a sink written before this
+    /// method existed keeps declaring [`AbortSemantics::DiscardsAll`] without any source change.
+    fn abort_semantics(&self) -> AbortSemantics {
+        AbortSemantics::DiscardsAll
+    }
 }
 
 #[async_trait]
@@ -562,10 +595,9 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         Ok(Response::new(pb::WriteSessionTicket {
             session_id,
             ticket: ticket_bytes.to_vec(),
-            // The trait surface this SDK exposes has no way for a connector author to declare anything
-            // else yet -- DiscardsAll is the ABI's own default, and every PCP sink looks like it until
-            // this is threaded through.
-            abort_semantics: pb::AbortSemanticsMsg::AbortSemanticsDiscardsAll as i32,
+            // Without this every PCP sink would look like DiscardsAll to the host, whatever it
+            // actually wraps -- the sink's own declaration crosses verbatim (Sink::abort_semantics).
+            abort_semantics: to_abort_semantics_msg(sink.abort_semantics()) as i32,
         }))
     }
 
@@ -1500,6 +1532,163 @@ mod tests {
         assert_eq!(
             data_socket_path(Path::new("/tmp/run/control.sock")),
             PathBuf::from("/tmp/run/control.sock.data")
+        );
+    }
+
+    // ---- ConnectorDecl fixtures and a minimal SinkConnector for exercising the RPC handlers below --
+
+    fn fixture_decl() -> ConnectorDecl {
+        ConnectorDecl {
+            name: "acme-sink",
+            version: "9.9.9",
+            capabilities: 0,
+            connection_config_schema: "",
+            dataset_config_schema: "",
+            output_config_schema: "",
+        }
+    }
+
+    struct FixtureConnector {
+        sink_abort_semantics: AbortSemantics,
+    }
+
+    impl Default for FixtureConnector {
+        fn default() -> Self {
+            FixtureConnector {
+                sink_abort_semantics: AbortSemantics::DiscardsAll,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SinkConnector for FixtureConnector {
+        async fn validate(&self, _config: &Config) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn check(&self, _config: &Config) -> Result<(), PzError> {
+            Ok(())
+        }
+
+        async fn open(&self, _config: Config) -> Result<Box<dyn Sink>, PzError> {
+            Ok(Box::new(FixtureSink {
+                abort_semantics: self.sink_abort_semantics,
+            }))
+        }
+    }
+
+    struct FixtureSink {
+        abort_semantics: AbortSemantics,
+    }
+
+    #[async_trait]
+    impl Sink for FixtureSink {
+        async fn begin_write(
+            &self,
+            _spec: OutputSpec,
+            _schema: SchemaRef,
+        ) -> Result<Box<dyn WriteSession>, PzError> {
+            Ok(Box::new(FixtureWriteSession))
+        }
+
+        fn abort_semantics(&self) -> AbortSemantics {
+            self.abort_semantics
+        }
+    }
+
+    struct FixtureWriteSession;
+
+    #[async_trait]
+    impl WriteSession for FixtureWriteSession {
+        async fn write_batch(&mut self, _batch: RecordBatch) -> Result<(), PzError> {
+            Ok(())
+        }
+
+        async fn commit(&mut self) -> Result<WriteResult, PzError> {
+            Ok(WriteResult::default())
+        }
+
+        async fn abort(&mut self) -> Result<(), PzError> {
+            Ok(())
+        }
+    }
+
+    fn encode_schema_ipc(schema: &arrow::datatypes::Schema) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut buf, schema)
+                .expect("a two-column schema always encodes");
+            writer
+                .finish()
+                .expect("finishing an empty stream always succeeds");
+        }
+        buf
+    }
+
+    fn test_service(connector: FixtureConnector) -> PzConnectorService<FixtureConnector> {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        PzConnectorService {
+            decl: fixture_decl(),
+            connector,
+            config: StdMutex::new(None),
+            sink: AsyncMutex::new(None),
+            sessions: Arc::new(StdMutex::new(HashMap::new())),
+            tickets: Arc::new(TicketRegistry::default()),
+            shutdown_tx,
+            shutdown_rx,
+            instance: Arc::new(StdMutex::new(None)),
+        }
+    }
+
+    #[test]
+    fn abort_semantics_maps_to_proto_ordinals_matching_the_csharp_abi() {
+        assert_eq!(
+            to_abort_semantics_msg(AbortSemantics::DiscardsAll),
+            pb::AbortSemanticsMsg::AbortSemanticsDiscardsAll
+        );
+        assert_eq!(
+            to_abort_semantics_msg(AbortSemantics::BestEffort),
+            pb::AbortSemanticsMsg::AbortSemanticsBestEffort
+        );
+        assert_eq!(
+            to_abort_semantics_msg(AbortSemantics::None),
+            pb::AbortSemanticsMsg::AbortSemanticsNone
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_write_reports_the_sinks_declared_abort_semantics() {
+        let service = test_service(FixtureConnector {
+            sink_abort_semantics: AbortSemantics::BestEffort,
+        });
+        service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "a".to_string(),
+                config: None,
+            }))
+            .await
+            .expect("Configure must succeed before BeginWrite can open a sink");
+
+        let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "value",
+            arrow::datatypes::DataType::Int64,
+            false,
+        )]);
+        let response = service
+            .begin_write(Request::new(pb::BeginWriteRequest {
+                op_id: "op1".to_string(),
+                spec: Some(pb::OutputSpecMsg::default()),
+                arrow_schema_ipc: encode_schema_ipc(&schema),
+            }))
+            .await
+            .expect("BeginWrite must succeed against the fixture sink")
+            .into_inner();
+
+        // Without Sink::abort_semantics being threaded through, this would always answer DiscardsAll
+        // -- see BeginWrite's own comment on why every PCP sink used to look transactional.
+        assert_eq!(
+            response.abort_semantics,
+            pb::AbortSemanticsMsg::AbortSemanticsBestEffort as i32
         );
     }
 }

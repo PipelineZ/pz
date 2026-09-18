@@ -41,7 +41,7 @@ mod ticket;
 pub use config::Config;
 pub use error::PzError;
 pub use server::{
-    serve_sink, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink, SinkConnector,
-    WriteAttempt, WriteResult, WriteSession,
+    serve_sink, AbortSemantics, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink,
+    SinkConnector, WriteAttempt, WriteResult, WriteSession,
 };
 pub use telemetry::{layer, meter};
