@@ -17,7 +17,7 @@ namespace Pz.Connector.LocalFiles;
 /// <see cref="DatasetSpec.WatermarkUpperBound"/> down into the native-scan fragment via
 /// <see cref="LocalFilesWindowSql"/>; the universal (non-native) read path does not, so a windowed
 /// LocalFiles dataset requires the native tier (see <see cref="CsvPartition.ReadAsync"/>'s doc comment).</summary>
-public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector
+public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("localfiles", "0.1.0", ProtocolVersion.Major);
 
@@ -40,6 +40,13 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
         """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+
+    // Mirrors what LocalFilesSink actually reads: `path` (ResolveOutputDir) plus the same
+    // format-scoped options CopyClause/EnsureUniversalTierSupported read for a write. No `columns` --
+    // that is a read-side contract, never an output option.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """ }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(ValidationResult.Success);

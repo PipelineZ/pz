@@ -407,6 +407,8 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
 
     public string DatasetConfigSchema => client.Hello.DatasetConfigSchema;
 
+    public string OutputConfigSchema => client.Hello.OutputConfigSchema;
+
     public async ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         try

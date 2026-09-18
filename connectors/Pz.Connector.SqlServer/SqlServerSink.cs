@@ -132,10 +132,13 @@ internal sealed class SqlServerSink(string connectionString) : ISink
         }
     }
 
-    /// <summary>Sink output options are not schema-validated, so a malformed 'tablock'
-    /// value reaches here unchecked -- parse it the same way <c>SqlServerSource.ParsePartitionCount</c>
-    /// parses 'partitions': a bad value is a named, non-transient <see cref="PzConnectorException"/>,
-    /// never a raw .NET exception surfacing to the user.</summary>
+    /// <summary>SqlServerConnector.OutputConfigSchema declares 'tablock' as a boolean, so `pz validate`
+    /// catches a typo'd key or a non-boolean value before a run -- but a caller that skips validation
+    /// (a run against a project.yml `pz` block resolved differently, or an ABI consumer that builds an
+    /// OutputSpec directly) still reaches this unchecked, so it stays defended: parse it the same way
+    /// <c>SqlServerSource.ParsePartitionCount</c> parses 'partitions': a bad value is a named,
+    /// non-transient <see cref="PzConnectorException"/>, never a raw .NET exception surfacing to the
+    /// user.</summary>
     private static bool ParseTablock(OutputSpec spec)
     {
         if (!spec.Options.TryGetValue("tablock", out var tl) || tl is null)

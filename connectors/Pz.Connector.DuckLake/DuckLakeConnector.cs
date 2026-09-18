@@ -12,7 +12,7 @@ namespace Pz.Connector.DuckLake;
 /// object-store data path. Zero drivers: `pz validate --connect` verifies file catalogs by header
 /// magic and server catalogs by TCP reachability only, and its schema fetch works only for datasets
 /// with a declared `columns:` contract. Registered under the logical name "ducklake".</summary>
-public sealed class DuckLakeConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class DuckLakeConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     private static readonly byte[] DuckDbMagic = "DUCK"u8.ToArray();
     private static readonly byte[] SqliteMagic = "SQLite format 3\0"u8.ToArray();
@@ -47,6 +47,11 @@ public sealed class DuckLakeConnector : ISourceConnector, ISinkConnector, INativ
           "timestamp": { "type": "string" }
         }, "additionalProperties": false }
         """;
+
+    // DuckLakeSink reads no connector-owned write option at all -- every write.* key beyond the
+    // engine-owned ones is unknown.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     /// <summary>The root a RELATIVE <c>path</c>/<c>data_path</c> is normalized against when no
     /// <c>base_dir</c> is present. Config validation runs on the connection as the user wrote it,

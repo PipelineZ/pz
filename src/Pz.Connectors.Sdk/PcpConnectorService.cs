@@ -67,6 +67,9 @@ internal sealed class PcpConnectorService(
             Capabilities = (long)ManifestWriter.DeclaredCapabilities(connector),
             ConnectionConfigSchema = connector.ConnectionConfigSchema,
             DatasetConfigSchema = connector.DatasetConfigSchema,
+            // Empty when the connector does not implement the optional capability -- the host treats
+            // that the same as a connector built before this field existed.
+            OutputConfigSchema = connector is IOutputConfigSchema outputSchema ? outputSchema.OutputConfigSchema : "",
             Sdk = new SdkInfoMsg { Name = SdkInfo.Name, Version = SdkInfo.Version },
         };
         hello.Transports.Add(ProtocolConstants.TransportPipe);

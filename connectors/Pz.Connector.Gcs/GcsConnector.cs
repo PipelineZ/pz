@@ -12,7 +12,7 @@ namespace Pz.Connector.Gcs;
 /// no reads at all. Reads are NATIVE-ONLY (<see cref="INativeOnlySource"/>): a source on a non-hmac
 /// connection is refused at open with the fix in the message, which is what keeps "no read path"
 /// from surfacing as a runtime mystery.</summary>
-public sealed class GcsConnector : ISourceConnector, ISinkConnector, INativeOnlySource
+public sealed class GcsConnector : ISourceConnector, ISinkConnector, INativeOnlySource, IOutputConfigSchema
 {
     private static readonly string[] ValidUrlStyles = ["vhost", "path"];
 
@@ -33,11 +33,16 @@ public sealed class GcsConnector : ISourceConnector, ISinkConnector, INativeOnly
     // and the `<entity>.<format>` default fill the gaps at probe time), format (parquet default),
     // the generic columns: contract. files_per_partition is deliberately ACCEPTED (int-or-string) so
     // the plan-time PZ0312 refusal on this native-only source keeps owning that case with its
-    // targeted message. Sink OUTPUT options stay plan/probe-validated by GcsSink — tier 3 never
-    // evaluates output options.
+    // targeted message.
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
         """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+
+    // Mirrors what GcsSink actually reads: bucket + path both optional (same fallback as the read
+    // side), the format-scoped options, and partition_by (write-only fan-out; a read never partitions).
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """, "partition_by": { "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] } }, "additionalProperties": false }""";
 
     /// <summary>Offline cross-field validation: the auth matrix's required fields (aggregate), plus
     /// <c>url_style</c> — when given — must be one of DuckDB's two accepted values. Never touches

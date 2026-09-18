@@ -9,7 +9,7 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// <summary>The <see cref="ISinkConnector"/> shim over one PCP connector instance -- the write-side
 /// twin of <see cref="ProcessSourceConnector"/>; see its doc for the shared construction/ownership
 /// discipline (already-connected client, no RPC of its own in <see cref="OpenAsync"/>).</summary>
-public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess process) : ISinkConnector
+public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess process) : ISinkConnector, IOutputConfigSchema
 {
     private readonly ProcessConnectorCore _core = new(client, process);
 
@@ -20,6 +20,12 @@ public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess proc
     public string ConnectionConfigSchema => _core.ConnectionConfigSchema;
 
     public string DatasetConfigSchema => _core.DatasetConfigSchema;
+
+    // Unconditional on the shim: the wrapped connector's own absence of IOutputConfigSchema already
+    // collapses to an empty Hello.output_config_schema (see PcpConnectorService.Handshake), and
+    // ValidateSchema treats an empty schema as "nothing to check" -- the same behavior a shim that
+    // conditionally implemented this interface would have to reproduce by hand.
+    public string OutputConfigSchema => _core.OutputConfigSchema;
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         _core.ValidateAsync(config, ct);

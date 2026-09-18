@@ -90,6 +90,11 @@ message Hello {
   // connector built before this field existed, which a host must treat the same as "unknown SDK",
   // never as a handshake disagreement.
   SdkInfoMsg sdk = 6;
+  // JSON Schema for the sink's own write() options (IOutputConfigSchema) -- the write-side twin of
+  // dataset_config_schema. Empty string (the field default) means either "this connector does not
+  // implement IOutputConfigSchema" or "not a sink" -- both mean tier 3 leaves its output options
+  // unchecked, exactly as a connector built before this field existed.
+  string output_config_schema = 7;
 }
 message ConnectorInfoMsg {
   string name = 1;

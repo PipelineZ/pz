@@ -14,7 +14,7 @@ namespace Pz.Connector.AzureBlob;
 /// routes every write session's open_write/commit_copy/delete_temp op through an engine-supplied
 /// <see cref="Pz.Connectors.Abstractions.IOperationGate"/> when one is provided; native COPY and
 /// native scan are unaffected (out of .NET reach).</summary>
-public sealed class AzureConnector : ISourceConnector, ISinkConnector, INativeOnlySource
+public sealed class AzureConnector : ISourceConnector, ISinkConnector, INativeOnlySource, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("azureblob", "0.1.0", ProtocolVersion.Major);
 
@@ -33,11 +33,17 @@ public sealed class AzureConnector : ISourceConnector, ISinkConnector, INativeOn
     // default), and the generic columns: contract (AzureTypeNameMap's eight type names).
     // files_per_partition is deliberately ACCEPTED here (int-or-string, DagCompiler's PZ0222 owns value
     // shape) so the plan-time PZ0312 refusal on this native-only source keeps owning that case with its
-    // targeted message. Sink OUTPUT options stay plan/probe-validated by AzureSink — tier 3 never
-    // evaluates output options.
+    // targeted message.
     public string DatasetConfigSchema =>
         """{ "type": "object", "required": ["container","path"], "properties": { "scheme": { "enum": ["az","azure","abfss"] }, "container": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
         """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+
+    // Mirrors what AzureUrl.ParseSink/AzureSink actually read: container required, path an optional
+    // prefix, the format-scoped options, and partition_by (write-only fan-out into per-folder blobs;
+    // a read never partitions).
+    public string OutputConfigSchema =>
+        """{ "type": "object", "required": ["container"], "properties": { "scheme": { "enum": ["az","azure","abfss"] }, "container": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """, "partition_by": { "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(AzureAuth.Validate(config));

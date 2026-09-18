@@ -62,6 +62,22 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   nothing to offer (an option's value is usually a path) the shell's own file
   completion takes over. No network, no file writes; an unrecognized shell
   name is a config error (PZ0535).
+- A sink can now publish `IOutputConfigSchema`, an optional JSON Schema for its own
+  `write:`/`sink()` options -- the write-side twin of `DatasetConfigSchema`. Before this, a sink's
+  output options reached the connector completely unchecked (`ConnectorConfigValidator`'s own
+  comment said so): `tablok: true` on a sqlserver output did nothing, silently. `pz validate`
+  (tier 3) now schema-checks a sink output's connector-owned options -- against `entities: <e>:
+  write:` and `sink()` kwargs alike, since both resolve to the same effective `OutputDef` -- when
+  the sink offers the capability, with the same `additionalProperties: false` unknown-option
+  message the connection/dataset schemas already give, now also carrying a near-miss "did you
+  mean" hint (the edit-distance matcher moved to a shared `Pz.Core.Validation.NearMiss`, with
+  `ScriptKwargs.NearMiss` kept as a thin forwarder for its existing call sites). Every builtin sink
+  adopts it. A sink that does not implement the interface is validated exactly as before --
+  additive-only, a new capability interface rather than a new `ISinkConnector` member. Forwarded
+  over PCP too: `Hello.output_config_schema` (`pz_connector.proto` field 7, additive), populated by
+  both SDKs (C# `Pz.Connectors.Sdk`, Rust `pz-connector`) and sanity-checked as valid JSON by
+  `pz connector test`'s handshake vector; `pz_connector_reference` (MCP) surfaces it alongside the
+  read-side schemas.
 - Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
   the acceptance fact for the `ColumnPruning` capability. It plans a read with a
   non-prefix, reordered column hint and requires every batch to carry exactly

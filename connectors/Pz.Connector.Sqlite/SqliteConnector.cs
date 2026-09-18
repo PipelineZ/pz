@@ -17,7 +17,7 @@ namespace Pz.Connector.Sqlite;
 /// declared `columns:` contract. Registered under the logical name "sqlite". Connection
 /// options: path required, nothing else. No `query:` datasets (upstream `sqlite_query` is unusable),
 /// no merge writes, no cdc.</summary>
-public sealed class SqliteConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class SqliteConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     /// <summary>The first 16 bytes of every SQLite database file: "SQLite format 3\0".</summary>
     private static ReadOnlySpan<byte> HeaderMagic => "SQLite format 3\0"u8;
@@ -34,6 +34,11 @@ public sealed class SqliteConnector : ISourceConnector, ISinkConnector, INativeO
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+
+    // SqliteSink reads no connector-owned write option at all -- every write.* key beyond the
+    // engine-owned ones is unknown.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     /// <summary>No cross-field rules: `path` required-ness is enforced by
     /// <see cref="ConnectionConfigSchema"/>'s `required` list, and a path is an ordinary

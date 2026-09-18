@@ -12,7 +12,7 @@ namespace Pz.Connector.Quack;
 /// first run's attach, whose failure is a redacted PZ0311), and `pz validate --connect`'s schema
 /// fetch works only with a declared `columns:` contract. TLS is the reverse proxy's job in front
 /// of the server; the client assumes HTTPS for non-loopback hosts. Registered as "quack".</summary>
-public sealed class QuackConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class QuackConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
 
@@ -28,6 +28,11 @@ public sealed class QuackConnector : ISourceConnector, ISinkConnector, INativeOn
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+
+    // QuackSink reads no connector-owned write option at all -- every write.* key beyond the
+    // engine-owned ones is unknown.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     /// <summary>Offline, aggregate: the uri must parse as quack:host[:port]; the server refuses tokens
     /// shorter than four characters, so refuse them here rather than at first run.</summary>
