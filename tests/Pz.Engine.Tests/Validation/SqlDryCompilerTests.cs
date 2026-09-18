@@ -52,6 +52,24 @@ public sealed class SqlDryCompilerTests
         Assert.Empty(result.SkippedPipelines);
     }
 
+    // DagCompiler.NormalizeSql strips only ONE trailing semicolon -- a genuine second statement
+    // stays a second statement, and a subquery can't contain one, so it fails loudly here rather than
+    // being silently truncated away at compile time.
+    [Fact]
+    public async Task Semicolon_in_the_middle_of_pipeline_sql_is_still_PZ0401()
+    {
+        var srcId = Id("1");
+        var src = SourceLoadNode(srcId, "s", "d", new Dictionary<string, string> { ["id"] = "bigint" });
+        var pipeline = PipelineNode(Id("2"), "two_statements", "select id from staging.src_s__d; select 1", [srcId]);
+        var dag = new CompiledDag([src, pipeline]);
+
+        var result = await SqlDryCompiler.RunAsync(dag, default);
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(PzErrorCode.SqlDryCompile, error.Code);
+        Assert.Equal("pipelines/two_statements.sql", error.File);
+    }
+
     [Fact]
     public async Task Valid_project_produces_no_errors_and_no_leftover_files()
     {

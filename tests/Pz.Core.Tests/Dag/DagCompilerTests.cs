@@ -94,6 +94,27 @@ public class DagCompilerTests
     }
 
     [Fact]
+    public void Trailing_semicolon_on_pipeline_sql_is_stripped()
+    {
+        var p = Project([Pipe("stg", "select * from {{ source('crm', 'orders') }} ;\n")], sources: [Crm("orders")]);
+        var dag = DagCompiler.Compile(p, Ctx(p));
+        var node = dag.Nodes.Single(n => n.Name == "stg");
+        Assert.DoesNotContain(";", node.RenderedSql);
+    }
+
+    [Fact]
+    public void Semicolon_in_the_middle_of_pipeline_sql_is_not_truncated()
+    {
+        // Two statements: NormalizeSql must strip only the ONE trailing semicolon, never anything
+        // that would make a genuine second statement disappear silently.
+        var p = Project([Pipe("stg", "select 1 as x; select 2 as y")]);
+        var dag = DagCompiler.Compile(p, Ctx(p));
+        var node = dag.Nodes.Single(n => n.Name == "stg");
+        Assert.Contains("select 2 as y", node.RenderedSql, StringComparison.Ordinal);
+        Assert.Contains(";", node.RenderedSql);
+    }
+
+    [Fact]
     public void Checks_on_ephemeral_pipeline_is_error_PZ0205()
     {
         var check = new CheckDef("not_null", ["id"], new Dictionary<string, object?>());

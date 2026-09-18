@@ -180,6 +180,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   processes — each with its gRPC channel and pump, each possibly holding a
   remote connection — over the course of one run. Live children now track the
   nodes in flight (bounded by `engine.threads`).
+- A pipeline ending in a trailing `;` (the way most SQL formatters write it) no
+  longer fails compile with a raw DuckDB parse error. `DagCompiler` now strips
+  exactly one trailing semicolon (plus surrounding whitespace) the way
+  custom_sql checks already did; a `;` anywhere else in the SQL — a genuine
+  second statement — is left alone and still fails loudly.
 
 ## [0.6.1] - 2026-09-10
 

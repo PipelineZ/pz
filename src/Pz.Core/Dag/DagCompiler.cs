@@ -1635,8 +1635,16 @@ public static class DagCompiler
         return $"with {cteList} {sql}";
     }
 
-    private static string NormalizeSql(string sql) =>
-        sql.Replace("\r\n", "\n").Replace('\r', '\n').TrimEnd();
+    /// <summary>LF-normalizes and trims trailing whitespace, then strips exactly one trailing
+    /// semicolon (plus any whitespace before it) -- mirroring CheckExecutor's custom_sql handling, so a
+    /// pipeline written the way most SQL tools format it (trailing `;`) is not a hard DuckDB parse
+    /// error. A `;` anywhere else in the text is left alone: a second statement stays a second
+    /// statement, and fails loudly rather than being silently truncated.</summary>
+    private static string NormalizeSql(string sql)
+    {
+        var normalized = sql.Replace("\r\n", "\n").Replace('\r', '\n').TrimEnd();
+        return normalized.EndsWith(';') ? normalized[..^1].TrimEnd() : normalized;
+    }
 
     /// <summary>How a sink output is fed. There is exactly one kind — an inline
     /// `sink()` claim by a pipeline — but the wrapper is retained so stage 5's resolution map and stage
