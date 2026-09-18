@@ -33,7 +33,9 @@ public sealed class ConnectorProcess : IAsyncDisposable
     private readonly StringBuilder _stderrTail = new();
     private readonly TaskCompletionSource _exitSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _disposed;
-    private int? _exitCode;
+    // Boxed so the exit callback's write and any thread's read are one reference swap: an int? is a
+    // flag plus a value, and a reader must never see one without the other.
+    private volatile object? _exitCode;
 
     private ConnectorProcess(Process process, string socketDir, string socketPath)
     {
@@ -77,12 +79,12 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// <summary>The child's exit code, once it has exited; null before then or if it could not be
     /// read. Captured from the <see cref="Process.Exited"/> callback, before the process handle is
     /// ever disposed, so it stays readable for the rest of this instance's lifetime.</summary>
-    public int? ExitCode => _exitCode;
+    public int? ExitCode => (int?)_exitCode;
 
     /// <summary>"exited with code N" (plus ", signal X)" on Unix when the code is the 128+signal shape
     /// a POSIX wait status gives a process killed by a signal -- OOM-kill (137) and a segfault (139)
     /// otherwise leave nothing to diagnose from. Null before the child has exited.</summary>
-    public string? ExitDescription => _exitCode is { } code ? DescribeExitCode(code) : null;
+    public string? ExitDescription => ExitCode is { } code ? DescribeExitCode(code) : null;
 
     internal static string DescribeExitCode(int code)
     {

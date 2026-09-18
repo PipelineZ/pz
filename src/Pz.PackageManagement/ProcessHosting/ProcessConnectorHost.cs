@@ -243,7 +243,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         _manifest = manifest;
         _entrypoint = entrypoint;
         _socketRootDir = socketRootDir;
-        _warn = warn;
+        _warn = OnceOnly(warn);
         _logSink = logSink;
         _cancelGrace = cancelGrace;
         _shutdownGrace = shutdownGrace;
@@ -417,6 +417,32 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     /// it" is the right, quiet answer.</summary>
     private static readonly HashSet<string> KnownCapabilityNames =
         new(Enum.GetNames<ConnectorCapabilities>(), StringComparer.Ordinal);
+
+    /// <summary>Every open spawns its own process and re-runs the handshake, so a warning the
+    /// handshake raises (an unrecognized capability) would otherwise print once per node. The returned
+    /// channel delivers each distinct message once for this connector's lifetime.</summary>
+    internal static Action<string>? OnceOnly(Action<string>? warn)
+    {
+        if (warn is null)
+        {
+            return null;
+        }
+
+        var delivered = new HashSet<string>(StringComparer.Ordinal);
+        return message =>
+        {
+            bool first;
+            lock (delivered)
+            {
+                first = delivered.Add(message);
+            }
+
+            if (first)
+            {
+                warn(message);
+            }
+        };
+    }
 
     private static ConnectorCapabilities ParseCapabilities(IReadOnlyList<string> names)
     {
