@@ -182,6 +182,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     Rust SDK already does); a mismatch is now refused there too, with both majors named.
   - `--pz-socket ""` (or an all-whitespace path) was accepted and only failed later, confusingly, in
     Kestrel; it is now a usage error naming `--pz-socket` directly.
+  - A relative `PzNativeStaging` (a project-file or `-p:` override; the props file's own default was
+    already absolute) resolved against two different roots: `PzStageNative`'s `Copy`/`RemoveDir`
+    against the project directory, `_PzFindStagedRids`'s raw `System.IO.Directory` call against the
+    invoking process's own working directory. `Pz.Connectors.Sdk.targets` now anchors it to an
+    absolute path once, before either target reads it.
 - `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
   tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
   disk instead of handing it to `HttpClient`, which threw `NotSupportedException`
