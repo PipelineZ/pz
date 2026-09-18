@@ -515,6 +515,19 @@ public static class PzErrorCode
     /// <c>ambiguous_date_inference_detected</c> run event's MCP-envelope warning projection.</summary>
     public const string AmbiguousDateInference = "PZ0524";
 
+    /// <summary>One attempt of a node ran longer than <c>engine.node_timeout</c>; the engine cancelled
+    /// it and the node stopped. The node fails without an in-run retry — a cancelled attempt can leave
+    /// half-built staging that a second attempt in the same run would collide with — and
+    /// <c>pz retry</c> reruns it in a fresh run. Next step: raise the limit if the node is
+    /// legitimately that slow, otherwise look at what it was waiting on.</summary>
+    public const string NodeTimedOut = "PZ0525";
+
+    /// <summary>A node was cancelled for exceeding <c>engine.node_timeout</c> and did not stop within
+    /// the grace period: some call under it ignores cancellation. The abandoned work may still hold the
+    /// run's DuckDB connection or a connector handle, so the rest of the run is cancelled rather than
+    /// left to queue behind it.</summary>
+    public const string NodeUnresponsive = "PZ0526";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

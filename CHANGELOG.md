@@ -18,8 +18,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   its declared order rather than the hint's order now fails this fact; a
   subclass that cannot satisfy it for a structural reason can exclude it
   through `ShouldRun`.
+- `engine.node_timeout` in `project.yml` (a duration such as `45m`; absent means
+  unbounded, as before): the longest one attempt of one node may run. Nothing
+  bounded a node until now, so a stalled read, a hung connector process, or a
+  stuck `ATTACH` hung the run forever. A node that exceeds the limit is
+  cancelled and fails with **PZ0525**, naming the node and the knob. It is not
+  retried inside the same run — a cancelled attempt can leave half-built
+  staging behind — and `pz retry` reruns it. If the cancelled work ignores
+  cancellation for 30 s the node fails with **PZ0526** and the rest of the run
+  is cancelled, because abandoned work may still hold the run's DuckDB
+  connection. The clock is wall time for the attempt, including time spent
+  queued for the run's one DuckDB connection, so size it for the slowest node
+  plus what may run ahead of it.
 
 ### Fixed
+
+- Cancelling a run now interrupts a statement already running inside DuckDB.
+  Ctrl-C (and the new node timeout) used to wait for the statement to finish on
+  its own, however long that took.
 
 - The shape guards on the Connectors SDK data plane and on the engine's Arrow
   ingest now compare Arrow types structurally: nested child types, decimal

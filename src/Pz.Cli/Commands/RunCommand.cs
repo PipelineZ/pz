@@ -402,7 +402,10 @@ internal static class RunCommand
 
         var runCtx = new RunContext(duck, registry, paths, events, plan, batchOptions, watermarkStore, fullRefresh,
             Notice, Breakers: breakers, Reuse: reuse, SyncState: syncStateStore,
-            RateLimiters: rateLimiters, SchemaBaselines: backends.Schemas, OnSourceDrift: project.OnSourceDrift);
+            RateLimiters: rateLimiters, SchemaBaselines: backends.Schemas, OnSourceDrift: project.OnSourceDrift)
+        {
+            NodeTimeout = project.Engine.NodeTimeout,
+        };
 
         var options = new RunOptions(project.Engine.Threads, failFast, selection, project.Name, carriedForward,
             runActivity);

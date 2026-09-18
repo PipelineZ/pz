@@ -313,7 +313,25 @@ public static class ProjectLoader
 
         var breaker = ParseBreakerConfig(engineYaml, relativePath, errors);
 
-        return new EngineConfig(threads, duckDb, forceUniversal, batchBytes, checkSamples, breaker);
+        // Absent -> null, meaning no node is ever cancelled for running long.
+        TimeSpan? nodeTimeout = null;
+        if (engineYaml.TryGetValue("node_timeout", out var nodeTimeoutRaw) && nodeTimeoutRaw is not null)
+        {
+            if (nodeTimeoutRaw is string or long &&
+                DurationParser.TryParse(nodeTimeoutRaw.ToString(), out var parsed) && parsed > TimeSpan.Zero)
+            {
+                nodeTimeout = parsed;
+            }
+            else
+            {
+                var shown = nodeTimeoutRaw is string or long or double or bool ? nodeTimeoutRaw : "a list or mapping";
+                errors.Add(new PzError(PzErrorCode.InvalidEngineConfig,
+                    $"{relativePath}: engine.node_timeout must be a positive duration like 30s, 45m, 6h, or 1d (got '{shown}').",
+                    relativePath, null, "node_timeout: 45m"));
+            }
+        }
+
+        return new EngineConfig(threads, duckDb, forceUniversal, batchBytes, checkSamples, breaker, nodeTimeout);
     }
 
     private const int MinBatchBytes = 1024 * 1024;

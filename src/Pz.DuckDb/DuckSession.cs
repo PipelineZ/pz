@@ -101,11 +101,31 @@ public sealed class DuckSession : IDuckSession
 
     private static string QuoteLiteral(string value) => "'" + value.Replace("'", "''") + "'";
 
-    private void ExecuteSync(string sql)
+    private void ExecuteSync(string sql, CancellationToken ct = default)
     {
         using var command = _connection.CreateCommand();
         command.CommandText = sql;
-        command.ExecuteNonQuery();
+        Interruptible(command, ct, static c => c.ExecuteNonQuery());
+    }
+
+    /// <summary>Runs a statement so that cancelling <paramref name="ct"/> interrupts it INSIDE DuckDB.
+    /// The calls here are synchronous and never look at a token, so without this a cancelled node — a
+    /// node timeout, Ctrl-C — waits for a runaway query to finish on its own, holding the gate the
+    /// whole time. The caller holds the gate, so the statement being interrupted is always its own;
+    /// DuckDB clears the interrupt flag when the next statement starts, so a cancel that lands just
+    /// after this one finished cannot leak into another node's statement. DuckDB reports the interrupt
+    /// as an ordinary error; with the token cancelled it is surfaced as the cancellation it is.</summary>
+    private static T Interruptible<T>(DuckDBCommand command, CancellationToken ct, Func<DuckDBCommand, T> run)
+    {
+        using var registration = ct.UnsafeRegister(static state => ((DuckDBCommand)state!).Cancel(), command);
+        try
+        {
+            return run(command);
+        }
+        catch (DuckDBException) when (ct.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(ct);
+        }
     }
 
     public Task ExecuteAsync(string sql, CancellationToken ct = default)
@@ -116,7 +136,7 @@ public sealed class DuckSession : IDuckSession
                 _gate.Wait(ct);
                 try
                 {
-                    ExecuteSync(sql);
+                    ExecuteSync(sql, ct);
                 }
                 finally
                 {
@@ -136,7 +156,7 @@ public sealed class DuckSession : IDuckSession
                 {
                     using var command = _connection.CreateCommand();
                     command.CommandText = sql;
-                    var result = command.ExecuteScalar();
+                    var result = Interruptible(command, ct, static c => c.ExecuteScalar());
                     return (T)Convert.ChangeType(result!, typeof(T), CultureInfo.InvariantCulture);
                 }
                 finally
@@ -320,7 +340,7 @@ public sealed class DuckSession : IDuckSession
                         foreach (var sql in statements)
                         {
                             ct.ThrowIfCancellationRequested();
-                            ExecuteSync(sql);
+                            ExecuteSync(sql, ct);
                         }
 
                         ExecuteSync("COMMIT");
