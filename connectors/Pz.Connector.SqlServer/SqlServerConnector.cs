@@ -12,7 +12,7 @@ namespace Pz.Connector.SqlServer;
 /// cdc delete-key batches, hard or soft, in the same transaction as the merge. Registered under the
 /// logical name "sqlserver". Connection options: host/database required; port,
 /// user/password, authentication (SqlClient passthrough for Entra ID), encrypt,
-/// trust_server_certificate optional.</summary>
+/// trust_server_certificate, connect_timeout_seconds, command_timeout_seconds optional.</summary>
 public sealed class SqlServerConnector : ISourceConnector, ISinkConnector
 {
     public ConnectorInfo Info => new("sqlserver", "0.1.0", ProtocolVersion.Major);
@@ -26,7 +26,7 @@ public sealed class SqlServerConnector : ISourceConnector, ISinkConnector
         ConnectorCapabilities.TextLengthStats;
 
     public string ConnectionConfigSchema =>
-        """{ "type": "object", "required": ["host","database"], "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "database": { "type": "string" }, "user": { "type": "string" }, "password": { "type": "string" }, "authentication": { "type": "string" }, "encrypt": { "type": "boolean" }, "trust_server_certificate": { "type": "boolean" } }, "additionalProperties": false }""";
+        """{ "type": "object", "required": ["host","database"], "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "database": { "type": "string" }, "user": { "type": "string" }, "password": { "type": "string" }, "authentication": { "type": "string" }, "encrypt": { "type": "boolean" }, "trust_server_certificate": { "type": "boolean" }, "connect_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }, "command_timeout_seconds": { "type": "integer", "minimum": 0, "maximum": 86400 } }, "additionalProperties": false }""";
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "query": { "type": "string" }, "procedure": { "type": "string" }, "parameters": { "type": "object", "additionalProperties": { "type": ["string","number","boolean","null"] } }, "partition_column": { "type": "string" }, "partitions": { "type": "integer", "minimum": 1, "maximum": 16 }, "capture_instance": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false, "not": { "required": ["query","procedure"] } }""";
@@ -113,6 +113,20 @@ public sealed class SqlServerConnector : ISourceConnector, ISinkConnector
         if (config.Values.ContainsKey("trust_server_certificate"))
         {
             builder.TrustServerCertificate = config.GetBool("trust_server_certificate");
+        }
+
+        // Absent -> SqlClient's own defaults (15s connect, 30s command), unchanged behaviour.
+        // `Command Timeout` becomes every SqlCommand's own default on this connection unless a call
+        // site sets one explicitly -- SqlServerSink's big merge/clear/delete-apply commands deliberately
+        // override to 0 (unbounded) regardless of this setting; see their own comments for why.
+        if (config.GetInt("connect_timeout_seconds") is { } connectTimeout)
+        {
+            builder.ConnectTimeout = (int)connectTimeout;
+        }
+
+        if (config.GetInt("command_timeout_seconds") is { } commandTimeout)
+        {
+            builder.CommandTimeout = (int)commandTimeout;
         }
 
         return builder.ConnectionString;

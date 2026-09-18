@@ -540,6 +540,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   every single run behind such a proxy. A `state.url` of `http://` with a
   bearer token configured now warns (new PZ0530, never blocks a run): the
   token would otherwise travel in cleartext with no signal at all.
+- The sqlserver and postgres connectors accept `connect_timeout_seconds`
+  and `command_timeout_seconds` on their connection config, applied to
+  every connection/command that does not already set its own (absent ->
+  each driver's own default, 15s connect / 30s command, unchanged
+  behaviour). A SQL Server command timeout already classifies transient
+  via the earlier `MsTransient` fix; a Postgres one already did (Npgsql's
+  own `IsTransient` reports true for a command timeout, unlike SqlClient's).
+  The mysql connector still refuses both keys: there is no driver here to
+  apply them to (DuckDB's own `mysql` extension is the entire data plane)
+  and its ATTACH/secret syntax accepts no timeout parameter at all --
+  accepting the option and silently doing nothing with it would be exactly
+  the deployment-knob-ignored failure this project's error philosophy
+  forbids.
 
 ## [0.6.1] - 2026-09-10
 

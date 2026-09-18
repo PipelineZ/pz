@@ -19,7 +19,8 @@ namespace Pz.Connector.Postgres;
 /// delete-key batches, hard or soft, in the same transaction as the upsert. Registered under the
 /// logical name "postgres".
 /// Connection options: <c>host</c> and <c>database</c> are required; <c>port</c> defaults to 5432;
-/// <c>user</c>, <c>password</c>, <c>ssl_mode</c> are optional. Sink output options: <c>schema</c> (default
+/// <c>user</c>, <c>password</c>, <c>ssl_mode</c>, <c>connect_timeout_seconds</c>,
+/// <c>command_timeout_seconds</c> are optional. Sink output options: <c>schema</c> (default
 /// <c>public</c>), <c>table</c> (default = the output's name).</summary>
 public sealed class PostgresConnector : ISourceConnector, ISinkConnector
 {
@@ -33,7 +34,7 @@ public sealed class PostgresConnector : ISourceConnector, ISinkConnector
         ConnectorCapabilities.ApplyDeletes | ConnectorCapabilities.ChangeCapture;
 
     public string ConnectionConfigSchema =>
-        """{ "type": "object", "required": ["host","database"], "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "database": { "type": "string" }, "user": { "type": "string" }, "password": { "type": "string" }, "ssl_mode": { "type": "string" } }, "additionalProperties": false }""";
+        """{ "type": "object", "required": ["host","database"], "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "database": { "type": "string" }, "user": { "type": "string" }, "password": { "type": "string" }, "ssl_mode": { "type": "string" }, "connect_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }, "command_timeout_seconds": { "type": "integer", "minimum": 0, "maximum": 86400 } }, "additionalProperties": false }""";
 
     // "columns" is not read by PostgresSource today (its schema is inferred from the ADO.NET reader,
     // not a declared contract), but the dataset-level columns: block is a generic mechanism --
@@ -106,6 +107,19 @@ public sealed class PostgresConnector : ISourceConnector, ISinkConnector
         if (sslMode is not null)
         {
             builder.SslMode = Enum.Parse<SslMode>(sslMode, ignoreCase: true);
+        }
+
+        // Absent -> Npgsql's own defaults (15s connect, 30s command), unchanged behaviour. `Command
+        // Timeout` becomes every NpgsqlCommand's own default on this connection unless a call site sets
+        // one explicitly.
+        if (config.GetInt("connect_timeout_seconds") is { } connectTimeout)
+        {
+            builder.Timeout = (int)connectTimeout;
+        }
+
+        if (config.GetInt("command_timeout_seconds") is { } commandTimeout)
+        {
+            builder.CommandTimeout = (int)commandTimeout;
         }
 
         return builder.ConnectionString;

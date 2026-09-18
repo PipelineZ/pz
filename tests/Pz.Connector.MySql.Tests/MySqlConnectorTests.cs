@@ -23,6 +23,23 @@ public sealed class MySqlConnectorTests
         }
     }
 
+    // #114: unlike sqlserver/postgres, there is no driver here (and no timeout parameter in DuckDB's
+    // mysql extension) to apply connect_timeout_seconds/command_timeout_seconds to, so the schema keeps
+    // refusing them -- silently accepting and ignoring the option would be exactly the deployment-knob-
+    // ignored failure this project's error philosophy forbids (see MySqlConnector's class doc).
+    [Theory]
+    [InlineData("connect_timeout_seconds")]
+    [InlineData("command_timeout_seconds")]
+    public void Connection_schema_still_refuses_timeout_options(string key)
+    {
+        var schema = Json.Schema.JsonSchema.FromText(new MySqlConnector().ConnectionConfigSchema);
+
+        var instance = System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(
+            $$"""{"host":"db","database":"analytics","{{key}}":30}""");
+
+        Assert.False(schema.Evaluate(instance).IsValid);
+    }
+
     [Fact]
     public void Connector_is_native_only_in_both_directions()
     {

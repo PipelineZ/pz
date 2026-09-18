@@ -60,6 +60,25 @@ public class SqlServerConnectorTests
     }
 
     [Fact]
+    public void BuildConnectionString_applies_connect_and_command_timeout_seconds()
+    {
+        var cs = SqlServerConnector.BuildConnectionString(Config(
+            ("host", "srv"), ("database", "db"), ("connect_timeout_seconds", 5), ("command_timeout_seconds", 90)));
+        var b = new SqlConnectionStringBuilder(cs);
+        Assert.Equal(5, b.ConnectTimeout);
+        Assert.Equal(90, b.CommandTimeout);
+    }
+
+    [Fact]
+    public void BuildConnectionString_omits_timeouts_when_not_configured_leaving_driver_defaults()
+    {
+        var cs = SqlServerConnector.BuildConnectionString(Config(("host", "srv"), ("database", "db")));
+        var b = new SqlConnectionStringBuilder(cs);
+        Assert.Equal(15, b.ConnectTimeout); // SqlClient's own default, unchanged
+        Assert.Equal(30, b.CommandTimeout); // SqlClient's own default, unchanged
+    }
+
+    [Fact]
     public void BuildConnectionString_supports_system_assigned_managed_identity()
     {
         var cs = SqlServerConnector.BuildConnectionString(Config(
