@@ -72,4 +72,32 @@ public sealed class DagCompilerEphemeralInliningTests
         Assert.Contains("__pz_cte__eph", node.RenderedSql, StringComparison.Ordinal);
         Assert.Empty(dryCompile.Errors);
     }
+
+    [Fact]
+    public void Watermark_inside_an_ephemeral_survives_the_ast_route_and_is_rewritten_on_the_consumer()
+    {
+        var dataset = new DatasetDef("orders",
+            new Dictionary<string, object?> { ["path"] = "orders.csv", ["format"] = "csv" },
+            new Dictionary<string, string> { ["updated_at"] = "timestamp", ["id"] = "bigint" });
+        var crm = new ConnectionDef("crm", "localfiles",
+            new Dictionary<string, object?> { ["root"] = "/data" }, [dataset], "connections.yml");
+        var eph = Pipe("orders_filtered",
+            "select * from {{ source('crm', 'orders') }} -- only what changed\n" +
+            "where updated_at > {{ watermark('crm', 'orders') }}", "ephemeral");
+        var consumer = Pipe("orders_curated",
+            "with latest as (select max(id) as max_id from {{ ref('orders_filtered') }}) " +
+            "select o.* from {{ ref('orders_filtered') }} o, latest");
+        var project = new PzProject("t", "0.0.0", new EngineConfig(),
+            new Dictionary<string, object?>(), [], [crm], [eph, consumer]);
+        var ctx = new RenderContext(project, "run-1", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+        var dag = DagCompiler.Compile(project, ctx, sqlAst: new DuckDbSqlAstReader());
+
+        var source = dag.Nodes.Single(n => n.Name == "src_crm__orders");
+        var incremental = Assert.IsType<SourceDatasetDef>(source.Definition).Dataset.SyncMode?.Incremental;
+        Assert.Equal("updated_at", incremental?.Cursor);
+        var node = dag.Nodes.Single(n => n.Name == "orders_curated");
+        Assert.NotEmpty(node.WatermarkSubstitutions);
+        Assert.Contains("__pz_cte__orders_filtered", node.RenderedSql, StringComparison.Ordinal);
+    }
 }

@@ -191,7 +191,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   trailing `;`. Assembly now prefers reading and re-emitting the parsed AST
   (DuckDB's own parser, via the existing `ISqlAstReader` seam) over sniffing
   consumer text for a `with` keyword; a textual splice remains the fallback
-  when no AST reader is wired or either side fails to parse.
+  when no AST reader is wired or either side fails to parse. A pipeline that
+  consumes an ephemeral pipeline therefore runs (and shows in `pz compile`
+  output) as DuckDB's own rendering of its SQL: comments are dropped and
+  keywords normalized, and its node id changes once on upgrade.
 - `pz compile`/`run`/`validate` now report every pipeline's broken template in
   one compile instead of stopping at the first: rendering used to throw on
   pipeline A and never attempt pipeline B, C, … at all. Four independent
