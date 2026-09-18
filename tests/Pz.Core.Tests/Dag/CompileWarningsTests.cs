@@ -87,6 +87,41 @@ public class CompileWarningsTests
         Assert.DoesNotContain(dag.Warnings, w => w.Code == PzErrorCode.InvalidSinkCall);
     }
 
+    // The read-side twin of the two facts above -- SourceFunction.NearMissKwarg existed but was never
+    // wired into DagCompiler, so `source(..., synk: {...})` used to ride along as a connector option
+    // with no warning at all.
+    [Theory]
+    [InlineData("colums")]
+    [InlineData("Sync")]
+    [InlineData("retri")]
+    public void A_source_kwarg_one_edit_from_a_pz_key_is_named_not_silently_sent_to_the_connector(string typo)
+    {
+        // `crm` declares no datasets in YAML -- the call site's kwargs are the whole story, so this
+        // never trips PZ0341 (declared in both places).
+        var p = Project(
+            [Pipe("a", $"select * from {{{{ source('crm', 'orders', {typo}: 'x') }}}}")],
+            sinks: [Sink("crm")]);
+
+        var dag = DagCompiler.Compile(p, Ctx(p)); // a warning, never an error
+
+        var warning = Assert.Single(dag.Warnings, w => w.Code == PzErrorCode.UnresolvedRef);
+        Assert.Contains(typo, warning.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("partitions")] // a genuine, pz-documented source() kwarg -- not a near miss of anything
+    [InlineData("connect_timeout")]
+    public void A_genuine_source_connector_option_draws_no_near_miss_warning(string option)
+    {
+        var p = Project(
+            [Pipe("a", $"select * from {{{{ source('crm', 'orders', {option}: 4) }}}}")],
+            sinks: [Sink("crm")]);
+
+        var dag = DagCompiler.Compile(p, Ctx(p));
+
+        Assert.DoesNotContain(dag.Warnings, w => w.Code == PzErrorCode.UnresolvedRef);
+    }
+
     [Fact]
     public void Dead_leaf_pipeline_is_PZ0223_warning()
     {

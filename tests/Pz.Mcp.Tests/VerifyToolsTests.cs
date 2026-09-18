@@ -30,14 +30,26 @@ public class VerifyToolsTests
     public async Task Compile_on_broken_project_returns_aggregate_errors()
     {
         using var p = new TempProject();
-        // A ref() to a missing pipeline (PZ0201) carries no hint — DagCompiler only attaches one to the
-        // unknown-connection form of PZ0201 ("declare it in connections.yml: ..."). Using that form
-        // rather than a plain ref('nope') is what makes the next_step assertion below meaningful.
+        // Every PZ0201 form now carries a next_step -- an unknown connection's is a declare-it-in-
+        // connections.yml hint or a near miss; an unknown ref()'s is a near miss or a pointer at
+        // pipelines/ (see Ref_to_a_missing_pipeline_also_carries_a_next_step below for that form).
         p.WritePipeline("bad", "SELECT * FROM {{ source('no_such_connection', 'x') }}\n");
         var doc = JsonDocument.Parse(await VerifyTools.CompileAsync(p.Dir, RealServices(), CancellationToken.None));
         Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
         var first = doc.RootElement.GetProperty("errors")[0];
         Assert.StartsWith("PZ", first.GetProperty("code").GetString());
+        Assert.False(string.IsNullOrEmpty(first.GetProperty("next_step").GetString()));
+    }
+
+    [Fact]
+    public async Task Ref_to_a_missing_pipeline_also_carries_a_next_step()
+    {
+        using var p = new TempProject();
+        p.WritePipeline("bad", "SELECT * FROM {{ ref('nope') }}\n");
+        var doc = JsonDocument.Parse(await VerifyTools.CompileAsync(p.Dir, RealServices(), CancellationToken.None));
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        var first = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0201", first.GetProperty("code").GetString());
         Assert.False(string.IsNullOrEmpty(first.GetProperty("next_step").GetString()));
     }
 

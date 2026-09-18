@@ -445,6 +445,29 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   names that were previously distinguishable only by letter case must rename
   the offending file/connection/dataset; every template and sample under
   `templates/`/`samples/` already conforms and needs no change.
+- Template/compile errors now carry a next step instead of `next_step: null`
+  on the MCP surface (or a bare code on the CLI): a `source()`/`sink()` call
+  split across more than one line -- documented as a single-line-only call,
+  but previously left to fail as several raw Scriban parser messages -- is
+  now named as exactly that, with a one-line hint, instead of surfacing
+  "Expecting an expression for argument function calls instead of this
+  token." verbatim; every other unrecognized `{{ }}` expression (PZ0104)
+  carries a hint naming the five reachable functions/constants. An unknown
+  `env()` reference (PZ0103) now names the variable to set in its hint, not
+  just its message. An unknown `var()` reference suggests a near miss among
+  the project's declared `vars:`, or points at declaring one. `ref()`,
+  `source()`, and `sink()` calls naming an unknown pipeline or connection
+  (PZ0201) now suggest a one-edit-or-case near miss the same way
+  `schema_policy`/materialization typos already did; the sink form's message
+  said "no sink named" for what is actually an unknown *connection* -- it now
+  matches the source form's wording. A dependency cycle (PZ0202) now names a
+  file (one of the pipelines in the cycle) instead of `file: null`, plus a
+  hint. A malformed date-templated path (PZ0218) now carries a hint. Read-side
+  kwargs one edit from a pz-owned `source()` option (`sync`/`retry`/
+  `columns`/`partition_column`/`partitions`) now draw the same near-miss
+  warning the write side already had -- `SourceFunction`'s near-miss check
+  existed but was never wired in, so e.g. `source(..., synk: {...})` rode
+  through as a silent connector option.
 
 ## [0.6.1] - 2026-09-10
 

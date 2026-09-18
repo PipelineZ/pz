@@ -147,4 +147,71 @@ public class TemplateRendererTests
         var result = TemplateRenderer.Render(pipeline, Ctx());
         Assert.Equal(2, result.WatermarkRefs.Count);
     }
+
+    // -- PZ0104/PZ0103 hints, and the multi-line source()/sink() detector ------------------------------
+
+    [Theory]
+    [InlineData("select * from {{ source('crm',\n  'orders') }}", "source")]
+    [InlineData("INSERT INTO {{ sink('lake',\n  'out', strategy: 'replace') }} select 1", "sink")]
+    public void A_multiline_source_or_sink_call_is_named_instead_of_raw_scriban_text(string sql, string call)
+    {
+        var p = Pipe("x", sql);
+        var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors);
+        Assert.Equal(PzErrorCode.TemplateError, error.Code);
+        Assert.Contains($"{call}() split across more than one line", error.Message, StringComparison.Ordinal);
+        Assert.Contains("one line", error.Hint, StringComparison.Ordinal);
+        // Never the raw Scriban parser vocabulary.
+        Assert.DoesNotContain("token", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void An_identifier_merely_ending_in_source_is_not_mistaken_for_a_call()
+    {
+        // "resource(" shares the "source(" suffix but is a different (and unrecognized) identifier --
+        // it must fail as the ordinary "unknown function" error, never as a misdetected multi-line
+        // source()/sink() call.
+        var p = Pipe("x", "select {{ resource(\n  'x') }}");
+        var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors);
+        Assert.DoesNotContain("split across more than one line", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unrecognized_expression_carries_the_sandbox_hint()
+    {
+        var p = Pipe("x", "select {{ date.now }}");
+        var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors);
+        Assert.NotNull(error.Hint);
+    }
+
+    [Fact]
+    public void Undeclared_env_var_carries_a_hint_naming_the_variable()
+    {
+        var p = Pipe("x", "select '{{ env('MISSING') }}'");
+        var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors);
+        Assert.Equal(PzErrorCode.UndeclaredEnvVar, error.Code);
+        Assert.Contains("MISSING", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unknown_var_suggests_a_near_miss()
+    {
+        var p = Pipe("x", "select {{ var('min_amont') }}");
+        var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors);
+        Assert.Equal(PzErrorCode.TemplateError, error.Code);
+        Assert.Contains("did you mean 'min_amount'", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unknown_var_with_no_near_miss_points_at_declaring_it()
+    {
+        var p = Pipe("x", "select {{ var('totally_unrelated') }}");
+        var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors);
+        Assert.Contains("vars:", error.Hint, StringComparison.Ordinal);
+    }
 }

@@ -101,7 +101,8 @@ public class DagCompilerTemplatingTests
         var columns = new Dictionary<string, string> { ["ts"] = "timestamp" };
         var project = TemplatedProject("e/{yyyy}/{dd}/*.parquet", new IncrementalDef("ts"), columns);
         var errors = CompileAndCollectErrors(project);
-        Assert.Contains(errors, e => e.Code == "PZ0218");
+        var error = Assert.Single(errors, e => e.Code == "PZ0218");
+        Assert.NotNull(error.Hint);
     }
 
     [Fact]
@@ -182,7 +183,8 @@ public class DagCompilerTemplatingTests
         // {yyyy} -> {dd} skips {MM}: not a contiguous coarse->fine run.
         var project = TemplatedOutputProject("e/{yyyy}/{dd}/*.parquet", "ts");
         var errors = CompileAndCollectErrors(project);
-        Assert.Contains(errors, e => e.Code == "PZ0218");
+        var error = Assert.Single(errors, e => e.Code == "PZ0218");
+        Assert.NotNull(error.Hint);
     }
 
     [Fact]
