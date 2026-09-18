@@ -170,7 +170,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   the new `NativeOnlyRead` capability — the wire signal for a source with no
   universal read path at all (`PlanRead` always refuses), mirroring the
   TestKit's own `SkipIfNativeOnly`. Until now these vectors called `PlanRead`
-  unconditionally and reported the refusal as a protocol failure.
+  unconditionally and reported the refusal as a protocol failure. The C# SDK
+  declares the capability for any connector that implements
+  `INativeOnlySource`, in the handshake and the manifest alike; an author
+  never sets the flag by hand.
 - Three more type comparisons are now structural instead of `TypeId`-only, using
   the same shape guard as the SDK data plane and engine Arrow ingest: `pz
   connector test`'s schema/batch-equality vector (a `list<int32>` vs
@@ -196,9 +199,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   catch-all and cross as .NET's default collection rendering
   (`System.Collections.Generic.List\`1[System.Int32]`) instead of a list of
   numbers; it now crosses correctly. `pz connector test` gained a
-  `numeric-option-fidelity` vector (Skip unless the connector cooperates with
-  the probe, never Fail) and the TestKit an opt-in
-  `Connection_integer_option_delivered_as_a_double_is_accepted` fact.
+  `numeric-option-fidelity` vector that both SDKs answer on the connector's
+  behalf (a connector built on an older SDK reports Skip), so every connector
+  proves the contract without its author writing anything; the TestKit gained
+  an opt-in `Connection_integer_option_delivered_as_a_double_is_accepted` fact.
 - An exception no verb anticipated now ends as `error PZ0500: internal error …`
   with exit code 3 and a request to report it, instead of a raw stack trace
   with exit code 1 (which the exit-code contract reserves for node failures).

@@ -419,7 +419,10 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::ValidateRequest>,
     ) -> Result<Response<pb::ValidationResultMsg>, Status> {
         let config = Config::from_struct(request.into_inner().config.as_ref());
-        let errors = self.connector.validate(&config).await;
+        let errors = match answer_numeric_probe(&config) {
+            Some(answer) => answer,
+            None => self.connector.validate(&config).await,
+        };
         Ok(Response::new(pb::ValidationResultMsg { errors }))
     }
 
@@ -704,6 +707,27 @@ fn unknown_session(session_id: &str) -> Status {
     Status::not_found(format!(
         "unknown or already-finished write session '{session_id}'"
     ))
+}
+
+/// Spelled exactly as `pz connector test` spells it.
+const NUMERIC_PROBE_KEY: &str = "pz_conformance_numeric_probe";
+
+/// `pz connector test` asks the SDK, not the connector, whether a whole number survives the wire as
+/// an integer: that is decided by this crate's own `Config::from_struct`. A Validate whose config is
+/// the probe key alone is answered here -- no errors when the value arrived integral, the agreed
+/// refusal otherwise -- and never reaches the connector. The host sends 0.5 first; only an SDK that
+/// answers the probe refuses it in exactly these words, which is how it tells one from a connector
+/// that merely tolerates an unknown key.
+fn answer_numeric_probe(config: &Config) -> Option<Vec<String>> {
+    if config.0.len() != 1 {
+        return None;
+    }
+    let value = config.0.get(NUMERIC_PROBE_KEY)?;
+    Some(if value.as_i64().is_some() {
+        Vec::new()
+    } else {
+        vec![format!("{NUMERIC_PROBE_KEY}: not integral")]
+    })
 }
 
 /// `GetStreamFailure`: what a write session's drain ended with. Side-effect free -- it never
@@ -1116,6 +1140,42 @@ mod tests {
     use tokio::io::AsyncReadExt;
 
     use super::*;
+
+    fn probe_config(number: f64) -> Config {
+        let mut root = prost_types::Struct::default();
+        root.fields.insert(
+            NUMERIC_PROBE_KEY.to_string(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::NumberValue(number)),
+            },
+        );
+        Config::from_struct(Some(&root))
+    }
+
+    #[test]
+    fn numeric_probe_whole_number_that_crossed_as_f64_is_answered_clean() {
+        assert_eq!(answer_numeric_probe(&probe_config(424_242.0)), Some(vec![]));
+    }
+
+    #[test]
+    fn numeric_probe_fractional_value_is_refused_in_the_agreed_words() {
+        assert_eq!(
+            answer_numeric_probe(&probe_config(0.5)),
+            Some(vec![
+                "pz_conformance_numeric_probe: not integral".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn numeric_probe_leaves_a_real_config_to_the_connector() {
+        assert_eq!(answer_numeric_probe(&Config::from_struct(None)), None);
+        let mut with_other_keys = probe_config(1.0);
+        with_other_keys
+            .0
+            .insert("host".to_string(), serde_json::Value::from("db"));
+        assert_eq!(answer_numeric_probe(&with_other_keys), None);
+    }
 
     fn test_watch(
         startup_deadline: Duration,

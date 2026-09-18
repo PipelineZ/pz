@@ -27,7 +27,7 @@ internal static class ManifestWriter
             connector.Info.Name,
             ProtocolVersion.Major,
             ProtocolVersion.Major,
-            CapabilityNames(connector.Capabilities),
+            CapabilityNames(DeclaredCapabilities(connector)),
             projectDirectoryAnchor,
             "process",
             new SortedDictionary<string, string>(
@@ -36,6 +36,15 @@ internal static class ManifestWriter
             new SdkDocument(SdkInfo.Name, SdkInfo.Version));
         return JsonSerializer.Serialize(document, Contract.ManifestDocument) + "\n";
     }
+
+    /// <summary>What the connector declares, plus what only its .NET type says. A marker interface
+    /// does not cross a process boundary, so a source that is <see cref="INativeOnlySource"/> is given
+    /// <see cref="ConnectorCapabilities.NativeOnlyRead"/> here -- once, for the manifest and the
+    /// handshake alike, because the host refuses a Hello whose capabilities differ from the manifest's.</summary>
+    public static ConnectorCapabilities DeclaredCapabilities(IConnector connector) =>
+        connector is INativeOnlySource
+            ? connector.Capabilities | ConnectorCapabilities.NativeOnlyRead
+            : connector.Capabilities;
 
     /// <summary>Every bit this build's <see cref="ConnectorCapabilities"/> defines, OR'd together.
     /// Masking a value against this before decomposing it is what keeps one undefined bit from making

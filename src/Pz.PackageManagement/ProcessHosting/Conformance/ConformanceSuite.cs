@@ -559,40 +559,39 @@ public static class ConformanceSuite
 
     // ---- vector: numeric option fidelity ---------------------------------------------------------
 
-    /// <summary>The value <see cref="NumericOptionProbeKey"/> must cross as, verbatim, for a connector
-    /// that cooperates with this probe -- never a real connection option, and small enough that no
-    /// wire-normalization boundary (|x| &lt;= 2^53, see <c>MessageMapping.NormalizeNumber</c>) is in
-    /// play; this vector is about the double-vs-integer shape, not the boundary itself.</summary>
+    /// <summary>A whole number small enough that no normalization boundary (|x| &lt;= 2^53) is in
+    /// play; this vector is about the double-vs-integer shape, not the boundary.</summary>
     private const long NumericOptionProbeValue = 424242;
 
-    /// <summary>Never a key a real connection ever needs -- reserved for this probe alone. Deliberately
-    /// NOT prefixed "__pz": that prefix is reserved for the host's own bookkeeping keys (see
-    /// <c>ConnectorRegistryFactory</c>/<c>PcpFakeConnector.RefuseHostKeys</c>), which a connector must
-    /// never see and would refuse outright.</summary>
+    /// <summary>Reserved for this probe alone, and answered by the connector's SDK, never by the
+    /// connector. Deliberately NOT prefixed "__pz": that prefix is the host's own bookkeeping, which a
+    /// connector must never see and refuses outright.</summary>
     private const string NumericOptionProbeKey = "pz_conformance_numeric_probe";
 
-    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so an integer option this
-    /// vector sends must still read back as an integer once it crosses -- exactly the bug the receiving
-    /// side's number normalization exists to close (<c>StructMapping.NormalizeNumber</c> in both SDKs).
-    /// No probe is required: this uses <c>Validate</c>, which every connector answers, with a sentinel
-    /// key a real connector's schema validation has no reason to know about. A connector that does not
-    /// implement this probe simply reports the unknown key as an error (or ignores it) -- either way
-    /// this reports Skip, never Fail, so an unrelated connector's own validation strictness can never
-    /// trip this vector. Only a connector built to answer the probe (the TestKit's own fixture
-    /// precedent) reports zero errors here, which is what proves the value round-tripped as an
-    /// integer.</summary>
+    /// <summary>What an SDK that answers the probe says about a probe value that did not reach it as
+    /// an integer -- the one reply that tells an answering SDK apart from a connector whose own
+    /// Validate merely ignores (or refuses) a key it has never heard of.</summary>
+    private const string NumericOptionProbeRefusal = NumericOptionProbeKey + ": not integral";
+
+    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so an integer option must
+    /// be turned back into an integer by the SDK that receives it. The SDK answers a Validate whose
+    /// config is the probe key alone: no errors when the value reached it as an integer,
+    /// <see cref="NumericOptionProbeRefusal"/> otherwise. 0.5 goes first -- only an SDK that answers
+    /// the probe refuses it in exactly those words, so anything else is a Skip (an SDK older than the
+    /// probe), never a Fail and never a Pass that proves nothing. The whole number then has to come
+    /// back clean.</summary>
     private static async Task<VectorVerdict> NumericOptionFidelityAsync(PcpClient client, CancellationToken ct)
     {
-        var request = new ValidateRequest
-        {
-            Config = MessageMapping.ToStruct(new Dictionary<string, object?> { [NumericOptionProbeKey] = NumericOptionProbeValue }),
-        };
-        ValidationResultMsg response;
+        IReadOnlyList<string> integral;
         try
         {
-            response = await client.Grpc
-                .ValidateAsync(request, deadline: DateTime.UtcNow.Add(ProbeRpcTimeout), cancellationToken: ct)
-                .ConfigureAwait(false);
+            var fractional = await ProbeNumericOptionAsync(client, 0.5, ct).ConfigureAwait(false);
+            if (fractional is not [NumericOptionProbeRefusal])
+            {
+                return VectorVerdict.Skip("the connector's SDK does not answer the numeric-option probe");
+            }
+
+            integral = await ProbeNumericOptionAsync(client, NumericOptionProbeValue, ct).ConfigureAwait(false);
         }
         catch (RpcException ex)
         {
@@ -600,9 +599,24 @@ public static class ConformanceSuite
                 $"Validate surfaced the numeric-option probe as an RPC status failure ({ex.StatusCode}) instead of an errors list");
         }
 
-        return response.Errors.Count == 0
+        return integral.Count == 0
             ? VectorVerdict.Pass()
-            : VectorVerdict.Skip("connector does not implement the numeric-option-fidelity probe");
+            : VectorVerdict.Fail(
+                $"the whole number {NumericOptionProbeValue} did not reach the connector as an integer " +
+                $"({string.Join("; ", integral)})");
+    }
+
+    private static async Task<IReadOnlyList<string>> ProbeNumericOptionAsync(
+        PcpClient client, object value, CancellationToken ct)
+    {
+        var request = new ValidateRequest
+        {
+            Config = MessageMapping.ToStruct(new Dictionary<string, object?> { [NumericOptionProbeKey] = value }),
+        };
+        var response = await client.Grpc
+            .ValidateAsync(request, deadline: DateTime.UtcNow.Add(ProbeRpcTimeout), cancellationToken: ct)
+            .ConfigureAwait(false);
+        return response.Errors;
     }
 
     // ---- vector 7: partition id stability ---------------------------------------------------------

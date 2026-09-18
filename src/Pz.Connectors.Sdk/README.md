@@ -48,6 +48,10 @@ fractional one, stays a `double` — `GetInt` throws a `PzConnectorException` na
 than silently rounding it, so `port: 5432.5` fails loudly instead of becoming port `5432` or `5433`
 depending on which way `Convert.ToInt64` happened to round.
 
+`pz connector test`'s `numeric-option-fidelity` vector checks this. The SDK answers it for you: a
+`Validate` call whose config is the single key `pz_conformance_numeric_probe` never reaches your
+connector.
+
 ## Packaging
 
 ```

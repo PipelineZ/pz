@@ -36,7 +36,9 @@ public sealed record ConnectorConfig(IReadOnlyDictionary<string, object?> Values
 
         if (v is double d)
         {
-            if (!double.IsFinite(d) || d != Math.Truncate(d) || d < long.MinValue || d > long.MaxValue)
+            // The upper bound is exclusive and spelled as 2^63: (double)long.MaxValue rounds up to it,
+            // so comparing against long.MaxValue would let through the one whole number a cast wraps.
+            if (!double.IsFinite(d) || d != Math.Truncate(d) || d < -9223372036854775808d || d >= 9223372036854775808d)
             {
                 throw new PzConnectorException(
                     $"connector option '{key}' is {d.ToString(System.Globalization.CultureInfo.InvariantCulture)}, not a whole number",

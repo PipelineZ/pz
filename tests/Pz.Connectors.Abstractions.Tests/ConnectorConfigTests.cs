@@ -86,4 +86,21 @@ public sealed class ConnectorConfigTests
     {
         Assert.Throws<PzConnectorException>(() => Config(value).GetInt("k"));
     }
+
+    // (double)long.MaxValue rounds UP to 2^63, which is a whole number and one past what a long
+    // holds: a cast would wrap it to long.MinValue rather than fail.
+    [Theory]
+    [InlineData(9223372036854775808d)]
+    [InlineData(-9223372036854777856d)]
+    [InlineData(1e300)]
+    public void GetInt_refuses_a_whole_double_that_no_long_holds(double value)
+    {
+        Assert.Throws<PzConnectorException>(() => Config(value).GetInt("k"));
+    }
+
+    [Fact]
+    public void GetInt_accepts_the_smallest_long_as_a_double()
+    {
+        Assert.Equal(long.MinValue, Config(-9223372036854775808d).GetInt("k"));
+    }
 }
