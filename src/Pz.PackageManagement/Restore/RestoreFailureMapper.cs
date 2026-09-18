@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
+using NuGet.Protocol.Core.Types;
 
 namespace Pz.PackageManagement.Restore;
 
@@ -21,21 +23,48 @@ public static class RestoreFailureMapper
 
     /// <summary>True for the two local-filesystem exception types any write under <c>.pz</c> can raise:
     /// a permission refusal, or any other I/O failure (disk full, a file locked by another process, a
-    /// path too long, ...). Everything else reaching <see cref="Map"/> is treated as a feed failure --
-    /// resolving is the only other place an uncoded exception can originate from.</summary>
-    public static bool IsDiskFailure(Exception ex) => ex is IOException or UnauthorizedAccessException;
+    /// path too long, ...). A response that broke mid-stream is an <see cref="IOException"/> too, but it is
+    /// the feed's failure, not the disk's.</summary>
+    public static bool IsDiskFailure(Exception ex) =>
+        ex is UnauthorizedAccessException or (IOException and not HttpIOException);
 
-    public static RestoreException Map(Exception ex, IReadOnlyList<string> feeds, string packagesDir) =>
-        IsDiskFailure(ex)
-            ? new RestoreException(
+    /// <summary>True when the feed client, an HTTP request or a socket failed anywhere in the chain --
+    /// the feed client wraps the transport failure, so the outermost type alone says little.</summary>
+    public static bool IsFeedFailure(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is NuGetProtocolException or HttpRequestException or HttpIOException
+                or SocketException or TimeoutException)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>The coded restore failure for <paramref name="ex"/>, or null when it is neither a disk
+    /// nor a feed failure: a defect inside pz must stay a fatal error with its stack trace, not send
+    /// the reader to check their network.</summary>
+    public static RestoreException? TryMap(Exception ex, IReadOnlyList<string> feeds, string packagesDir)
+    {
+        if (IsDiskFailure(ex))
+        {
+            return new RestoreException(
                 DiskFailure,
                 $"could not restore package files under '{packagesDir}': {ex.Message}",
-                "check permissions and free disk space under that path, then run 'pz restore' again")
-            : new RestoreException(
+                "check permissions and free disk space under that path, then run 'pz restore' again");
+        }
+
+        return IsFeedFailure(ex)
+            ? new RestoreException(
                 FeedUnreachable,
                 $"could not resolve packages from the configured feed(s) ({string.Join(", ", feeds.Select(RedactFeedUrl))}): " +
                 DescribeFeedFailure(ex),
-                "check network connectivity to the feed and, for a private feed, its credentials (--feeds / PZ_FEEDS)");
+                "check network connectivity to the feed and, for a private feed, its credentials (--feeds / PZ_FEEDS)")
+            : null;
+    }
 
     private static string DescribeFeedFailure(Exception ex)
     {

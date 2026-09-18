@@ -160,9 +160,9 @@ internal static class RestoreCommand
                 Console.Error.WriteLine($"error {new PzError(ex.Code, ex.Message, null, null, ex.Hint)}");
                 return ExitCodes.ConfigError;
             }
-            catch (Exception ex) when (RestoreFailureMapper.IsDiskFailure(ex))
+            catch (Exception ex) when (RestoreFailureMapper.IsDiskFailure(ex) &&
+                                       RestoreFailureMapper.TryMap(ex, [], packagesDir) is { } mapped)
             {
-                var mapped = RestoreFailureMapper.Map(ex, [], packagesDir);
                 Console.Error.WriteLine($"error {new PzError(mapped.Code, mapped.Message, null, null, mapped.Hint)}");
                 return ExitCodes.ConfigError;
             }
@@ -195,16 +195,12 @@ internal static class RestoreCommand
                 Console.Error.WriteLine($"error {new PzError(ex.Code, ex.Message, null, null, ex.Hint)}");
                 return ExitCodes.ConfigError;
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (ex is not OperationCanceledException &&
+                                       RestoreFailureMapper.TryMap(ex, feedList, packagesDir) is { } mapped)
             {
-                throw;
-            }
-            catch (Exception ex)
-            {
-                // Everything RestoreException doesn't already cover: an unreachable feed, an HTTP
-                // 401/403, or a local disk failure under .pz. Never the raw exception -- a feed's own
-                // exception text can embed a credential or a SAS token from the feed URL.
-                var mapped = RestoreFailureMapper.Map(ex, feedList, packagesDir);
+                // An unreachable feed, an HTTP 401/403, or a local disk failure under .pz. Never the raw
+                // exception -- a feed's own exception text can embed a credential or a SAS token from
+                // the feed URL. Anything else is a defect and stays a fatal error.
                 Console.Error.WriteLine($"error {new PzError(mapped.Code, mapped.Message, null, null, mapped.Hint)}");
                 return ExitCodes.ConfigError;
             }

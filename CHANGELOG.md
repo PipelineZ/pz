@@ -490,7 +490,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   one that returns an HTTP 401/403, or a local disk failure while writing
   under `.pz` is now PZ0328 (feed) or PZ0329 (disk) naming the feed
   (credentials and query stripped) or the path and the cause, instead of an
-  uncoded exception rendered as an "internal error" bug report. The feed
+  uncoded exception rendered as an "internal error" bug report. Only a
+  failure of the feed client, an HTTP request, a socket or the local disk is
+  mapped; anything else is still a fatal error with its stack trace. The feed
   resolver also no longer reads a downloaded `.nupkg` into memory whole to
   hash it; the hash is streamed.
   *Not addressed*: feed credentials (a bearer token or basic auth for a
