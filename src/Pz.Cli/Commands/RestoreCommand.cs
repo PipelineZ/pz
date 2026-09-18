@@ -12,7 +12,14 @@ namespace Pz.Cli.Commands;
 /// <see cref="BuiltinConnectors.PackageIds"/>) against the host feeds (<c>--feeds</c>, else
 /// <c>PZ_FEEDS</c>, else nuget.org; see <see cref="HostFeeds"/>), materializes them under
 /// <c>.pz/packages</c> via the content-addressed cache, and writes <c>pz.lock.json</c>. A project
-/// whose connectors are all builtin has nothing to restore: no lock is written, nothing is deleted.</summary>
+/// whose connectors are all builtin has nothing to restore: no lock is written, nothing is deleted.
+///
+/// <para>An existing lock is honoured, not overwritten: every package it names is restored at exactly
+/// the locked version and must hash to the locked sha512 (PZ0327 otherwise), so a range in project.yml
+/// cannot float between restores and a same-version republish cannot slip in. A requirement the lock no
+/// longer satisfies (a bumped version, a new or removed connector) is PZ0321 with <c>--update</c> as the
+/// next step; <c>--update</c> is the one way to re-resolve against the feeds and write a new lock. A
+/// malformed lock is never regenerated silently either: it too needs <c>--update</c>.</para></summary>
 internal static class RestoreCommand
 {
     public static Command Create()
@@ -24,18 +31,27 @@ internal static class RestoreCommand
                 "Overrides PZ_FEEDS; default nuget.org.",
             Arity = ArgumentArity.ZeroOrMore,
         };
+        var updateOption = new Option<bool>("--update")
+        {
+            Description = "Ignore the existing pz.lock.json: re-resolve every declared connector against " +
+                "the feeds and write a new lock. Without it, an existing lock pins every package to its " +
+                "locked version and content.",
+        };
         var command = new Command("restore",
             "Resolve declared non-builtin connectors against the host feeds (--feeds, else PZ_FEEDS, " +
-            "else nuget.org), materialize them under .pz/packages, and write pz.lock.json.");
+            "else nuget.org), materialize them under .pz/packages, and write pz.lock.json. An existing " +
+            "lock pins what is restored; --update re-resolves it.");
         command.Options.Add(projectOption);
         command.Options.Add(feedsOption);
+        command.Options.Add(updateOption);
         command.SetAction((parseResult, ct) => Execute(
             parseResult.GetValue(projectOption) ?? Directory.GetCurrentDirectory(),
-            parseResult.GetValue(feedsOption), ct));
+            parseResult.GetValue(feedsOption), parseResult.GetValue(updateOption), ct));
         return command;
     }
 
-    internal static async Task<int> Execute(string projectDir, IReadOnlyList<string>? feeds, CancellationToken ct)
+    internal static async Task<int> Execute(
+        string projectDir, IReadOnlyList<string>? feeds, bool update, CancellationToken ct)
     {
         var env = SharedInputHelpers.SnapshotEnvironment();
 
@@ -75,6 +91,41 @@ internal static class RestoreCommand
             return ExitCodes.Ok;
         }
 
+        var lockPath = Path.Combine(projectDir, "pz.lock.json");
+        var requirements = nonBuiltin
+            .Select(c => new ConnectorPackageRef(c.Package, c.Version))
+            .ToArray();
+
+        LockFile? pins = null;
+        if (!update)
+        {
+            try
+            {
+                pins = LockFileWriter.Read(lockPath);
+            }
+            catch (RestoreException ex)
+            {
+                Console.Error.WriteLine($"error {new PzError(ex.Code, ex.Message, null, null, ex.Hint)}");
+                return ExitCodes.ConfigError;
+            }
+
+            if (pins is not null)
+            {
+                // The lock can only pin a project it still describes. Every mismatch is reported, then
+                // the one next step: this restore never quietly re-resolves around a lock it disagrees with.
+                var drift = DriftChecker.VerifyRequirements(requirements, pins);
+                if (drift.Count > 0)
+                {
+                    foreach (var finding in drift)
+                    {
+                        Console.Error.WriteLine($"error {new PzError(finding.Code, finding.Message, null, null, finding.Hint)}");
+                    }
+
+                    return ExitCodes.ConfigError;
+                }
+            }
+        }
+
         var packagesDir = Path.Combine(projectDir, ".pz", "packages");
         var workDir = Path.Combine(projectDir, ".pz", "tmp", $"restore-{Guid.NewGuid():N}");
 
@@ -84,17 +135,13 @@ internal static class RestoreCommand
         var workDirLock = Pz.Engine.Execution.RunDirLock.Acquire(workDir);
         try
         {
-            var requirements = nonBuiltin
-                .Select(c => new ConnectorPackageRef(c.Package, c.Version))
-                .ToArray();
-
             ResolveResult resolved;
             IReadOnlyDictionary<string, bool> hits;
             try
             {
                 resolved = await NuGetResolver.ResolveAsync(
                     requirements, HostFeeds.Resolve(feeds, env), RuntimeInformation.RuntimeIdentifier, workDir, ct,
-                    warn: message => Console.Error.WriteLine($"warning: {message}"));
+                    warn: message => Console.Error.WriteLine($"warning: {message}"), pins: pins);
 
                 // Materialization is inside the same arm: it is where the resolver's per-asset choices
                 // are acted on, so an asset the lock names but the package does not carry, and two
@@ -107,12 +154,18 @@ internal static class RestoreCommand
                 return ExitCodes.ConfigError;
             }
 
-            LockFileWriter.Write(resolved.Lock, Path.Combine(projectDir, "pz.lock.json"));
+            LockFileWriter.Write(resolved.Lock, lockPath);
 
             foreach (var package in resolved.Lock.Packages.OrderBy(p => p.Id, StringComparer.Ordinal))
             {
                 var mode = hits.TryGetValue(package.Id, out var wasHit) && wasHit ? "cache hit" : "downloaded";
                 Console.WriteLine($"restored {package.Id} {package.Version} ({mode})");
+            }
+
+            if (pins is not null)
+            {
+                Console.WriteLine(
+                    $"pz.lock.json pinned {pins.Packages.Count} package(s); run 'pz restore --update' to re-resolve them");
             }
 
             Console.WriteLine($"wrote pz.lock.json ({resolved.Lock.Packages.Count} packages)");

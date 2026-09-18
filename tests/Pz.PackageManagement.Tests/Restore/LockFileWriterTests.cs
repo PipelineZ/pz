@@ -32,6 +32,26 @@ public sealed class LockFileWriterTests
     }
 
     [Fact]
+    public void An_asset_hash_roundtrips_and_an_asset_without_one_reads_as_unhashed()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"))).FullName;
+        var path = Path.Combine(dir, "pz.lock.json");
+        var hash = new string('b', 128);
+        LockFileWriter.Write(new LockFile(LockFileWriter.CurrentVersion, "linux-x64", [
+            new LockedPackage("Alpha", "1.0.0", "aa", new LockedAssets(
+                [new LockedAsset("a.dll", "lib/net10.0/a.dll", hash)],
+                [new LockedAsset("n.so", "runtimes/linux-x64/native/n.so")])),
+        ]), path);
+
+        var read = LockFileWriter.Read(path)!;
+        var package = Assert.Single(read.Packages);
+
+        Assert.Equal(hash, Assert.Single(package.Assets.Lib).Sha512);
+        Assert.Null(Assert.Single(package.Assets.Native).Sha512);
+        Assert.DoesNotContain("\"sha512\": null", File.ReadAllText(path));
+    }
+
+    [Fact]
     public void Read_roundtrips_and_missing_is_null()
     {
         var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"))).FullName;

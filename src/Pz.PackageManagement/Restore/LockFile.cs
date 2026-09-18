@@ -9,8 +9,14 @@ namespace Pz.PackageManagement.Restore;
 /// re-find the name by prefix scan — where archive order, not the resolver, decides whether a
 /// <c>net472</c> or a <c>net9.0</c> build (and an <c>arm64</c> or an <c>x64</c> native library) lands
 /// on disk. Extracting <paramref name="ArchivePath"/> verbatim is what makes the asset the resolver
-/// chose the asset that is installed.</para></summary>
-public sealed record LockedAsset(string File, string ArchivePath);
+/// chose the asset that is installed.</para>
+///
+/// <para><paramref name="Sha512"/> is the lowercase hex SHA-512 of the file's content as extracted, so a
+/// materialized file — the entrypoint binary the host spawns above all — can be checked against what
+/// the restore installed, at every load and at every later restore. Null only for an asset recorded by
+/// a lock written before hashes were kept: such an asset is not checked, and the next restore records
+/// its hash.</para></summary>
+public sealed record LockedAsset(string File, string ArchivePath, string? Sha512 = null);
 
 /// <summary>The materialized files one locked package contributes, split by role, sorted ordinal by
 /// <see cref="LockedAsset.File"/>.</summary>

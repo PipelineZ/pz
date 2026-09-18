@@ -57,11 +57,12 @@ internal static class ConnectorRegistryFactory
         }
         else
         {
-            var findings = DriftChecker.Verify(nonBuiltinRefs, lockFile, packagesDir);
+            var findings = DriftChecker.Verify(
+                nonBuiltinRefs, lockFile, packagesDir, System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier);
             if (findings.Count > 0)
             {
                 throw new PzValidationException(findings
-                    .Select(f => new PzError(PzErrorCode.LockDrift, f, null, null, "run 'pz restore'"))
+                    .Select(f => new PzError(f.Code, f.Message, null, null, f.Hint))
                     .ToArray());
             }
         }

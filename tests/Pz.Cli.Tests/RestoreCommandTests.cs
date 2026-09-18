@@ -1,4 +1,5 @@
 using Pz.Cli;
+using Pz.PackageManagement.Restore;
 using Pz.TestSupport;
 
 namespace Pz.Cli.Tests;
@@ -123,6 +124,104 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         Assert.Contains("--no-lock-check", stderr);
         Assert.Contains("PZ0360", stderr);
         Assert.DoesNotContain("PZ0321", stderr);
+    }
+
+    [Fact]
+    public void Restore_with_a_lock_pins_the_locked_version_until_update()
+    {
+        WriteProject(FakeSourceConnectorProject(requiredVersion: "\"[1.0.0,2.0.0)\""));
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+        var lockBefore = File.ReadAllBytes(Path.Combine(_work, "pz.lock.json"));
+
+        // A newer satisfying version appears, in a feed probed FIRST — an unpinned restore takes it.
+        var newerFeed = Path.Combine(_work, "newer-feed");
+        Directory.CreateDirectory(newerFeed);
+        LocalFeed.Pack(newerFeed, "FakeSourceConnector", "1.9.0", versionProperty: "FakeSourceConnectorVersion");
+
+        var pinned = RunAndCapture(["restore", "--project", _work, "--feeds", newerFeed, "--feeds", feed.FeedDir]);
+        Assert.Contains("restored FakeSourceConnector 1.2.3", pinned);
+        Assert.Contains("--update", pinned);
+        Assert.Equal(lockBefore, File.ReadAllBytes(Path.Combine(_work, "pz.lock.json")));
+
+        var updated = RunAndCapture(["restore", "--project", _work, "--feeds", newerFeed, "--feeds", feed.FeedDir, "--update"]);
+        Assert.Contains("restored FakeSourceConnector 1.9.0", updated);
+        Assert.NotEqual(lockBefore, File.ReadAllBytes(Path.Combine(_work, "pz.lock.json")));
+    }
+
+    [Fact]
+    public void Restore_with_a_requirement_the_lock_cannot_satisfy_is_PZ0321_hint_update()
+    {
+        WriteProject(FakeSourceConnectorProject());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+        WriteProject(FakeSourceConnectorProject(requiredVersion: "9.9.9"));
+
+        var stderr = RunAndCaptureStderr(["restore", "--project", _work, "--feeds", feed.FeedDir]);
+        var exit = CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke();
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0321", stderr);
+        Assert.Contains("pz restore --update", stderr);
+    }
+
+    [Fact]
+    public void Restore_with_a_republished_locked_package_is_PZ0327_hint_update()
+    {
+        WriteProject(FakeSourceConnectorProject());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+
+        // The feed's bytes and the lock's hash no longer agree: the same version was republished.
+        var lockPath = Path.Combine(_work, "pz.lock.json");
+        var lockFile = LockFileWriter.Read(lockPath)!;
+        LockFileWriter.Write(new LockFile(lockFile.Version, lockFile.Rid, lockFile.Packages
+            .Select(p => p.Id == "FakeSourceConnector" ? p with { Sha512 = new string('0', 128) } : p)
+            .ToArray()), lockPath);
+
+        var stderr = RunAndCaptureStderr(["restore", "--project", _work, "--feeds", feed.FeedDir]);
+        Assert.Contains("PZ0327", stderr);
+        Assert.Contains("pz restore --update", stderr);
+
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir, "--update"]).Invoke());
+        Assert.NotEqual(new string('0', 128), LockFileWriter.Read(lockPath)!.Packages.Single(p => p.Id == "FakeSourceConnector").Sha512);
+    }
+
+    // The content check runs before the runtime check: a modified binary is refused as PZ0326, never
+    // reached as the PZ0360 the dotnet-runtime fixture would otherwise produce.
+    [Fact]
+    public void Run_with_a_modified_installed_file_is_PZ0326_hint_restore()
+    {
+        WriteProject(FakeSourceConnectorProject());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+        var dll = Path.Combine(_work, ".pz", "packages", "FakeSourceConnector", "1.2.3", "lib", "FakeSourceConnector.dll");
+        File.WriteAllBytes(dll, [.. File.ReadAllBytes(dll), 0x00]);
+
+        var stderr = RunAndCaptureStderr(["run", "--project", _work]);
+        var exit = CliApp.Build().Parse(["run", "--project", _work]).Invoke();
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0326", stderr);
+        Assert.Contains("lib/FakeSourceConnector.dll", stderr);
+        Assert.Contains("pz restore", stderr);
+        Assert.DoesNotContain("PZ0360", stderr);
+
+        // And a plain restore is the fix: it reinstalls the file as locked.
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+        Assert.DoesNotContain("PZ0326", RunAndCaptureStderr(["run", "--project", _work]));
+    }
+
+    [Fact]
+    public void Run_with_a_lock_restored_for_another_rid_is_PZ0321()
+    {
+        WriteProject(FakeSourceConnectorProject());
+        Assert.Equal(ExitCodes.Ok, CliApp.Build().Parse(["restore", "--project", _work, "--feeds", feed.FeedDir]).Invoke());
+        var lockPath = Path.Combine(_work, "pz.lock.json");
+        var lockFile = LockFileWriter.Read(lockPath)!;
+        LockFileWriter.Write(lockFile with { Rid = "osx-arm64" }, lockPath);
+
+        var stderr = RunAndCaptureStderr(["run", "--project", _work]);
+
+        Assert.Contains("PZ0321", stderr);
+        Assert.Contains("osx-arm64", stderr);
+        Assert.Contains("pz restore", stderr);
     }
 
     [Fact]

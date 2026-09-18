@@ -239,6 +239,14 @@ public static class PzErrorCode
     // than resolved by picking a winner: the flattening is a plain copy, so a "winner" is whichever
     // package enumeration reached last.
     public const string PackageAssetCollision = "PZ0325";
+    // A file under .pz/packages no longer has the content pz.lock.json recorded for it (modified,
+    // truncated or replaced after restore). Raised by DriftChecker at load; the next step is a plain
+    // 'pz restore', which reinstalls it from the locked package.
+    public const string PackageContentMismatch = "PZ0326";
+    // A locked package downloaded during a pinned restore hashes differently from what pz.lock.json
+    // recorded: the same version was republished or the feed's copy was tampered with. Raised by
+    // NuGetResolver; the next step is 'pz restore --update' once the new content is trusted.
+    public const string LockedPackageChanged = "PZ0327";
     // NOTE: Pz.PackageManagement cannot reference Pz.Core (see RestoreException's doc comment), so every
     // PZ032x code above is ALSO duplicated as a bare string literal over there (NuGetResolver.cs,
     // RestoreException.cs, DriftChecker.cs comments). This registry is the source of truth for the

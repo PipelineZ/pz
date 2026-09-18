@@ -48,6 +48,52 @@ public sealed class NuGetResolverTests(FeedFixture feed)
     }
 
     [Fact]
+    public async Task Every_asset_records_the_hash_of_its_own_content()
+    {
+        var result = await Resolve("1.2.3");
+        var root = result.Lock.Packages.Single(p => p.Id == "FakeSourceConnector");
+        var dll = Assert.Single(root.Assets.Lib, a => a.File == "FakeSourceConnector.dll");
+
+        using var reader = new NuGet.Packaging.PackageArchiveReader(result.NupkgPaths["FakeSourceConnector"]);
+        using var entry = reader.GetStream(dll.ArchivePath);
+        using var buffer = new MemoryStream();
+        await entry.CopyToAsync(buffer);
+        var expected = Convert.ToHexStringLower(System.Security.Cryptography.SHA512.HashData(buffer.ToArray()));
+
+        Assert.Equal(expected, dll.Sha512);
+    }
+
+    [Fact]
+    public async Task A_lock_pins_the_locked_version_even_when_the_range_admits_a_newer_one()
+    {
+        var pinned = await Resolve("1.0.0");
+
+        var result = await NuGetResolver.ResolveAsync(
+            [new ConnectorPackageRef("FakeSourceConnector", "[1.0.0,2.0.0)")],
+            [feed.FeedDir], "linux-x64", NewWorkDir(), pins: pinned.Lock);
+
+        var root = Assert.Single(result.Lock.Packages, p => p.Id == "FakeSourceConnector");
+        Assert.Equal("1.0.0", root.Version);
+    }
+
+    [Fact]
+    public async Task A_pinned_package_whose_feed_content_changed_is_PZ0327()
+    {
+        var pinned = await Resolve("1.2.3");
+        var tampered = new LockFile(pinned.Lock.Version, pinned.Lock.Rid, pinned.Lock.Packages
+            .Select(p => p.Id == "FakeSourceConnector" ? p with { Sha512 = new string('0', 128) } : p)
+            .ToArray());
+
+        var ex = await Assert.ThrowsAsync<RestoreException>(() => NuGetResolver.ResolveAsync(
+            [new ConnectorPackageRef("FakeSourceConnector", "1.2.3")],
+            [feed.FeedDir], "linux-x64", NewWorkDir(), pins: tampered));
+
+        Assert.Equal("PZ0327", ex.Code);
+        Assert.Contains("FakeSourceConnector", ex.Message);
+        Assert.Contains("--update", ex.Hint);
+    }
+
+    [Fact]
     public async Task Sha512_recorded_matches_nupkg_bytes()
     {
         var result = await Resolve("1.2.3");

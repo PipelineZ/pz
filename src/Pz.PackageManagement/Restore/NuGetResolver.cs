@@ -22,14 +22,26 @@ public static class NuGetResolver
     /// <paramref name="workDir"/>. Deterministic: feeds probed in declared order, first feed carrying
     /// any satisfying version wins the package; highest satisfying version within that feed.
     /// <paramref name="warn"/> receives diagnostics that must not stop the restore — today, a package
-    /// that ships native assets for no RID compatible with <paramref name="rid"/>.</summary>
+    /// that ships native assets for no RID compatible with <paramref name="rid"/>.
+    ///
+    /// <para><paramref name="pins"/> is the committed lock a restore must honour: every package it names
+    /// resolves to exactly the locked version (a range in <paramref name="requirements"/> or in a nuspec
+    /// is not consulted for a pinned id), and the downloaded bytes must hash to the locked
+    /// <see cref="LockedPackage.Sha512"/> — a same-version republish or a tampered feed copy is
+    /// PZ0327, never silently accepted into a rewritten lock. Asset selection is still done for
+    /// <paramref name="rid"/>, so a lock restored on another platform pins the same packages and picks
+    /// this platform's native assets. A requirement the lock does not satisfy at all is not this
+    /// method's concern: <see cref="DriftChecker.VerifyRequirements"/> reports it before resolution
+    /// starts.</para></summary>
     public static async Task<ResolveResult> ResolveAsync(
         IReadOnlyList<ConnectorPackageRef> requirements, IReadOnlyList<string> feeds,
-        string rid, string workDir, CancellationToken ct = default, Action<string>? warn = null)
+        string rid, string workDir, CancellationToken ct = default, Action<string>? warn = null,
+        LockFile? pins = null)
     {
         Directory.CreateDirectory(workDir);
 
         var ridChain = RuntimeIdentifierGraph.Expand(rid);
+        var pinned = (pins?.Packages ?? []).ToDictionary(p => p.Id, StringComparer.OrdinalIgnoreCase);
 
         var repositories = feeds.Select(feed => Repository.Factory.GetCoreV3(feed)).ToArray();
         using var cache = new SourceCacheContext { NoCache = true };
@@ -50,6 +62,10 @@ public static class NuGetResolver
         while (queue.Count > 0)
         {
             var (id, range) = queue.Dequeue();
+            if (pinned.TryGetValue(id, out var pin))
+            {
+                range = VersionRange.Parse($"[{pin.Version}]");
+            }
 
             var (bestVersion, byId) = await FindBestAsync(id, range, feeds, repositories, cache, ct);
             if (bestVersion is null)
@@ -91,12 +107,24 @@ public static class NuGetResolver
 
             var nupkgBytes = await File.ReadAllBytesAsync(nupkgPath, ct);
             var sha512 = Convert.ToHexStringLower(System.Security.Cryptography.SHA512.HashData(nupkgBytes));
+            if (pinned.TryGetValue(id, out var expected) &&
+                !string.Equals(expected.Sha512, sha512, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new RestoreException(
+                    "PZ0327",
+                    $"package '{id}' {bestVersion} downloaded from its feed hashes to sha512 {sha512[..16]}…, " +
+                    $"but pz.lock.json recorded {expected.Sha512[..Math.Min(16, expected.Sha512.Length)]}… for " +
+                    "that version; the package was republished under the same version, or the feed's copy " +
+                    "was tampered with",
+                    "run 'pz restore --update' to accept the new content, once you trust where it came from");
+            }
 
             using var readerStream = File.OpenRead(nupkgPath);
             using var reader = new PackageArchiveReader(readerStream);
 
-            var lib = SelectNearestFrameworkAssets(reader.GetLibItems());
-            var native = SelectNativeAssets(reader.GetFiles().ToArray(), ridChain, id, rid, warn);
+            var allFiles = reader.GetFiles().ToArray();
+            var lib = WithContentHashes(reader, allFiles, SelectNearestFrameworkAssets(reader.GetLibItems()));
+            var native = WithContentHashes(reader, allFiles, SelectNativeAssets(allFiles, ridChain, id, rid, warn));
 
             resolved[id] = new ResolvedPackage(id, bestVersion, sha512, nupkgPath, lib, native);
 
@@ -232,6 +260,29 @@ public static class NuGetResolver
         }
 
         return [];
+    }
+
+    /// <summary>The same assets, each carrying the SHA-512 of its content as it will be extracted — what
+    /// <see cref="DriftChecker"/> and the materializer later hold the installed file to.</summary>
+    private static IReadOnlyList<LockedAsset> WithContentHashes(
+        PackageArchiveReader reader, IReadOnlyList<string> allFiles, IReadOnlyList<LockedAsset> assets)
+    {
+        if (assets.Count == 0)
+        {
+            return assets;
+        }
+
+        var hashed = new LockedAsset[assets.Count];
+        for (var i = 0; i < assets.Count; i++)
+        {
+            // Looked up by normalized path, opened by the archive's own spelling: on Windows the reader
+            // can enumerate '\' where the recorded path says '/'.
+            var archivePath = allFiles.First(f => NormalizeArchivePath(f) == assets[i].ArchivePath);
+            using var entry = reader.GetStream(archivePath);
+            hashed[i] = assets[i] with { Sha512 = Convert.ToHexStringLower(System.Security.Cryptography.SHA512.HashData(entry)) };
+        }
+
+        return hashed;
     }
 
     /// <summary>Archive entry paths are '/'-separated by the zip format; a
