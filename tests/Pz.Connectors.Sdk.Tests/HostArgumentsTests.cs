@@ -38,6 +38,14 @@ public sealed class HostArgumentsTests
     }
 
     [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void An_empty_socket_path_is_a_usage_error_not_a_confusing_kestrel_failure(string socket)
+    {
+        Assert.IsType<InvalidCommand>(HostArguments.Parse(["--pz-socket", socket]));
+    }
+
+    [Theory]
     // Each case is ONE argv, so the string[] is wrapped: xunit would otherwise spread a bare
     // string[] across the theory's parameters.
     [InlineData(new object[] { new string[0] })]

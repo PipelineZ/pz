@@ -180,6 +180,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     failure capture already did.
   - `Handshake` never checked the host's declared protocol major against the connector's own (the
     Rust SDK already does); a mismatch is now refused there too, with both majors named.
+  - `--pz-socket ""` (or an all-whitespace path) was accepted and only failed later, confusingly, in
+    Kestrel; it is now a usage error naming `--pz-socket` directly.
 - `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
   tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
   disk instead of handing it to `HttpClient`, which threw `NotSupportedException`

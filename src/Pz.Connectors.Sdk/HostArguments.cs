@@ -38,6 +38,14 @@ internal static class HostArguments
                         return new InvalidCommand("--pz-socket needs a socket path");
                     }
 
+                    // An empty/whitespace value passed the "there is an arg" check above but names no
+                    // real socket; refused here with a clear message instead of reaching Kestrel's own
+                    // ListenUnixSocket, whose failure on "" does not say what was actually wrong.
+                    if (string.IsNullOrWhiteSpace(args[i]))
+                    {
+                        return new InvalidCommand("--pz-socket needs a non-empty socket path");
+                    }
+
                     socket = args[i];
                     break;
                 case "--pz-manifest":
