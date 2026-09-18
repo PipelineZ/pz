@@ -52,6 +52,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- `release.yml` gates the publish on three checks that previously ran only in PR CI:
+  `scripts/check-changelog-entry.sh` (new) fails the release before anything is packed unless
+  `CHANGELOG.md` has a `## [X.Y.Z]` heading for the tag (a pre-release tag like `v0.7.0-rc.1` is
+  checked against its base version's heading, `## [0.7.0]`), and a new `verify-release` job runs
+  `scripts/verify-tool-install.sh`, `verify-aot.sh`, and `verify-sdk-package.sh` against the tagged
+  commit before `release` is allowed to push to nuget.org.
 - `pz runs`: lists prior runs, newest first, over `IRunArtifactStore` (works
   under `state: {backend: sqlserver}` too, not just local files) — run id,
   status, started/finished time, duration, succeeded/failed/skipped node
