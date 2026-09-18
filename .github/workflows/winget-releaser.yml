@@ -17,7 +17,11 @@ jobs:
   publish:
     runs-on: windows-latest # vedantmgoyal9/winget-releaser shells out to wingetcreate.exe.
     steps:
-      - uses: vedantmgoyal9/winget-releaser@v2
+      # Pinned to v2's commit SHA, not the mutable `v2` tag -- this action receives WINGET_TOKEN
+      # (write access to open PRs against microsoft/winget-pkgs) on every run, so a tag that could be
+      # repointed is a supply-chain risk the rest of this repo's (lower-privilege) third-party actions
+      # don't carry.
+      - uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
           identifier: PipelineZ.pz
           installers-regex: 'pz-win-x64\.zip$' # the only asset release.yml attaches; skips checksums.txt.
