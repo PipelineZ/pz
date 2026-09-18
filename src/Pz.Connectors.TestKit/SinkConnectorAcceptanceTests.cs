@@ -575,11 +575,16 @@ public abstract class SinkConnectorAcceptanceTests
         Assert.Equal(0, committed.Sum(b => (long)b.Length));
     }
 
+    /// <summary>How many rows <see cref="Commit_persists_a_large_batch"/> writes, in four batches (so a
+    /// multiple of four). Lower it for a destination that throttles writes -- an emulator capped at a
+    /// few hundred rows a second -- rather than excluding the fact.</summary>
+    protected virtual int LargeBatchRows => 20_000;
+
     [SkippableFact]
     public async Task Commit_persists_a_large_batch()
     {
         Gate();
-        const int rowCount = 20_000;
+        var rowCount = LargeBatchRows;
         var connector = CreateSink();
         await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
         await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
@@ -732,7 +737,7 @@ public abstract class SinkConnectorAcceptanceTests
         Assert.Null(rows[2].Active);
     }
 
-    /// <summary>The #112 capability contract: a sink that offers <see cref="IOutputConfigSchema"/> must
+    /// <summary>The output-schema capability's contract: a sink that offers <see cref="IOutputConfigSchema"/> must
     /// offer valid JSON Schema, and that schema must refuse a key it does not declare -- otherwise tier
     /// 3's whole point (catching a typo'd write option) is lost. Self-detecting rather than a new
     /// null-hook: a connector that has not implemented the capability has nothing to prove here, so the

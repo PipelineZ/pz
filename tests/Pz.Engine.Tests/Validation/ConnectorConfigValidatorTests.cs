@@ -583,6 +583,27 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Contains("did you mean 'tablock'", error.Hint, StringComparison.Ordinal);
     }
 
+    // partition_by stays among an output's options because partitioning sinks read it, but whether a
+    // connector can honour it is the planner's question, answered from its capabilities with a refusal
+    // that says which capability is missing. A sink's schema calling it an unknown option would
+    // replace that answer with a worse one.
+    [Fact]
+    public async Task Partition_by_is_left_to_the_planners_capability_gate()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub-output", new StubOutputSchemaConnector());
+
+        var sink = new ConnectionDef("out", "stub-output", new Dictionary<string, object?>(), [], "sinks/out.yml")
+        {
+            Outputs = [new OutputDef("orders", "", "append", "fail_on_change",
+                new Dictionary<string, object?> { ["partition_by"] = "order_date" })],
+        };
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project(sinks: [sink]), registry, default);
+
+        Assert.Empty(errors);
+    }
+
     [Fact]
     public async Task A_sink_that_does_not_offer_IOutputConfigSchema_leaves_output_options_unchecked()
     {

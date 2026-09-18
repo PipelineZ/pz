@@ -114,7 +114,15 @@ public static class ConnectorConfigValidator
             {
                 foreach (var output in sink.Outputs)
                 {
-                    ValidateSchema(outputSchema.OutputConfigSchema, output.Options, "connection", sink.Name,
+                    // partition_by is set aside first. It stays among an output's options because the
+                    // sinks that partition read it, but its shape is the compiler's to check and whether
+                    // this connector can honour it is the planner's, answered from its capabilities. A
+                    // schema that does not list it must not turn that answer into "unknown option".
+                    var options = output.Options.ContainsKey(PartitionColumns.OptionName)
+                        ? output.Options.Where(o => o.Key != PartitionColumns.OptionName)
+                            .ToDictionary(o => o.Key, o => o.Value, StringComparer.Ordinal)
+                        : output.Options;
+                    ValidateSchema(outputSchema.OutputConfigSchema, options, "connection", sink.Name,
                         $"output '{output.Name}'", sink.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
                         new HashSet<string>(StringComparer.Ordinal));
                 }
