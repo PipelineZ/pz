@@ -61,8 +61,14 @@ public sealed class SftpClientFactoryConnectTests
         using var accepted = await acceptTask;
         cts.Cancel();
 
-        // SSH.NET's own protocol-version-exchange read throws TaskCanceledException specifically (a
-        // subtype of OperationCanceledException); either way, this must NOT be a PzConnectorException.
-        await Assert.ThrowsAsync<TaskCanceledException>(() => connectTask);
+        // Which OperationCanceledException subtype surfaces is a genuine race between two independent
+        // completions (the server-side accept the test awaited above, and the client-side socket
+        // connect's own async completion) -- cancelling right after the accept can still land either on
+        // the raw socket connect (plain OperationCanceledException) or, a moment later, on SSH.NET's
+        // protocol-version-exchange read (TaskCanceledException). Assert.ThrowsAsync<T> requires an
+        // EXACT type match, so it cannot express "either subtype" -- hence the manual catch, subtype-
+        // checked with IsAssignableFrom. Either way, this must NOT be a PzConnectorException.
+        var ex = await Record.ExceptionAsync(() => connectTask);
+        Assert.IsAssignableFrom<OperationCanceledException>(ex);
     }
 }
