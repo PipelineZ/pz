@@ -83,6 +83,9 @@ public sealed class HandshakeTests : IDisposable
             process, LocalFilesManifest(), "test-instance", ConnectorConfig.Empty, CancellationToken.None));
 
         Assert.Equal("PZ0356", ex.Code);
+        // Hello was actually received (the mismatch is IN its capabilities), so PZ0356 names which SDK
+        // reported it -- unlike a bare timeout or transport failure, which has no Hello to name one from.
+        Assert.Contains("sdk: Pz.Connectors.Sdk", ex.Message, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -271,6 +274,7 @@ public sealed class HandshakeTests : IDisposable
         var connectorMapped = client.MapRpcException(cancelledStatus, CancellationToken.None);
         var connectorEx = Assert.IsType<ConnectorHostException>(connectorMapped);
         Assert.Equal("PZ0357", connectorEx.Code);
+        Assert.Contains("sdk: Pz.Connectors.Sdk", connectorEx.Message, StringComparison.Ordinal);
     }
 
     private static ConnectorManifest LocalFilesManifest() => new(

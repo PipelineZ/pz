@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
+using System.Reflection;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
@@ -35,6 +36,15 @@ public sealed class PcpClient : IAsyncDisposable
     // partition reads share one PcpClient/Grpc client, so this needs a real memory barrier, not a plain
     // bool? field (a torn or stale read here would misclassify a crash's transience).
     private int _lastErrorTransient;
+
+    /// <summary>This build's own informational version, sent as <c>HostInfo.pz_version</c> on every
+    /// handshake -- MinVer-derived, the same number <c>pz connectors</c> reports for a builtin
+    /// connector. Reflection over this assembly's own attribute, the same pattern
+    /// <c>ConnectorsCommand.PzInformationalVersion</c> uses (this assembly cannot reference
+    /// <c>Pz.Cli</c>, so it cannot share that field directly).</summary>
+    private static readonly string PzInformationalVersion =
+        typeof(PcpClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion ?? "unknown";
 
     private PcpClient(ConnectorProcess process, GrpcChannel channel, Hello hello, PzConnector.PzConnectorClient grpc)
     {
@@ -199,7 +209,7 @@ public sealed class PcpClient : IAsyncDisposable
                 var request = new HandshakeRequest
                 {
                     ProtocolMajor = ProtocolVersion.Major,
-                    HostInfo = new HostInfo { RunId = telemetry.RunId ?? string.Empty },
+                    HostInfo = new HostInfo { RunId = telemetry.RunId ?? string.Empty, PzVersion = PzInformationalVersion },
                 };
                 request.HostInfo.Transports.Add(ProtocolConstants.TransportPipe);
                 if (telemetry.OtelEndpoint is { } endpoint)
@@ -230,7 +240,8 @@ public sealed class PcpClient : IAsyncDisposable
             channel.Dispose();
             throw HandshakeFailed(
                 process,
-                $"connector's Hello reported protocol major {hello.Info.ProtocolMajor} during handshake, but this host speaks {ProtocolVersion.Major}");
+                $"connector's Hello reported protocol major {hello.Info.ProtocolMajor} during handshake, but this host speaks {ProtocolVersion.Major}",
+                hello);
         }
 
         // Identity before configuration: a connector that is not the one the manifest registers must
@@ -242,7 +253,8 @@ public sealed class PcpClient : IAsyncDisposable
             channel.Dispose();
             throw HandshakeFailed(
                 process,
-                $"connector introduced itself as '{hello.Info.Name}' but its manifest registers the name '{declaredName}'");
+                $"connector introduced itself as '{hello.Info.Name}' but its manifest registers the name '{declaredName}'",
+                hello);
         }
 
         if (manifest is { Capabilities.Count: > 0 })
@@ -257,7 +269,8 @@ public sealed class PcpClient : IAsyncDisposable
                     process,
                     "handshake-reported capabilities " +
                     $"({string.Join(", ", Sorted(reported))}) do not match the manifest's declared " +
-                    $"capabilities ({string.Join(", ", Sorted(declared))})");
+                    $"capabilities ({string.Join(", ", Sorted(declared))})",
+                    hello);
             }
 
             var unknownDeclared = manifest.Capabilities.Where(name => !KnownCapabilityNames.Contains(name)).ToArray();
@@ -365,9 +378,10 @@ public sealed class PcpClient : IAsyncDisposable
         var suffix = stderr.Length > 0 ? $"\nstderr:\n{stderr}" : string.Empty;
         if (!_process.HasExited)
         {
+            var sdkNote = Hello.Sdk is { Name.Length: > 0 } sdk ? $" (sdk: {sdk.Name} {sdk.Version})" : string.Empty;
             return new ConnectorHostException(
                 "PZ0357",
-                $"connector protocol violation: {ex.Status.Detail}{suffix}",
+                $"connector protocol violation: {ex.Status.Detail}{sdkNote}{suffix}",
                 "check connector logs and confirm the connector and host ABI versions are compatible");
         }
 
@@ -511,8 +525,16 @@ public sealed class PcpClient : IAsyncDisposable
         await _process.DisposeAsync().ConfigureAwait(false);
     }
 
-    private static ConnectorHostException HandshakeFailed(ConnectorProcess process, string reason)
+    /// <summary><paramref name="hello"/> is passed only from the gates that run AFTER a Hello was
+    /// actually received (protocol major, name, capabilities) -- a timeout or a transport-level RPC
+    /// failure has none to name an SDK from.</summary>
+    private static ConnectorHostException HandshakeFailed(ConnectorProcess process, string reason, Hello? hello = null)
     {
+        if (hello?.Sdk is { Name.Length: > 0 } sdk)
+        {
+            reason = $"{reason} (sdk: {sdk.Name} {sdk.Version})";
+        }
+
         if (process.ExitDescription is { } exitDescription)
         {
             reason = $"{reason} ({exitDescription})";

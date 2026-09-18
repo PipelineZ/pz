@@ -22,7 +22,7 @@ namespace Pz.PackageManagement.Hosting;
 public sealed record ConnectorManifest(
     string? Name, int ProtocolMajorMin, int ProtocolMajorMax, IReadOnlyList<string> Capabilities,
     bool ProjectDirectoryAnchor = false, string? Runtime = null,
-    IReadOnlyDictionary<string, string>? Entrypoints = null)
+    IReadOnlyDictionary<string, string>? Entrypoints = null, ConnectorManifestSdk? Sdk = null)
 {
     /// <summary>RID → package-relative entrypoint path. Never null, even when <see cref="Runtime"/> is
     /// null/<c>"dotnet"</c> (empty in that case) — callers never null-check it.</summary>
@@ -31,6 +31,11 @@ public sealed record ConnectorManifest(
     private static readonly IReadOnlyDictionary<string, string> EmptyEntrypoints =
         new Dictionary<string, string>();
 }
+
+/// <summary>Which SDK built this connector and at what version, when the manifest names one --
+/// additive (<see cref="ManifestReader.ManifestDto.Sdk"/>), so a manifest written before this
+/// existed reads null here rather than failing to parse.</summary>
+public sealed record ConnectorManifestSdk(string? Name, string? Version);
 
 /// <summary>Reads a connector package's <c>pz.connector.json</c> manifest, if any — one small JSON
 /// read, which is what lets the host reject an incompatible package before anything is spawned.</summary>
@@ -97,7 +102,8 @@ public static class ManifestReader
 
         return new ConnectorManifest(
             dto.Name, dto.ProtocolMajorMin, dto.ProtocolMajorMax, dto.Capabilities ?? [],
-            dto.ProjectDirectoryAnchor, dto.Runtime, dto.Entrypoints);
+            dto.ProjectDirectoryAnchor, dto.Runtime, dto.Entrypoints,
+            dto.Sdk is { } sdk ? new ConnectorManifestSdk(sdk.Name, sdk.Version) : null);
     }
 
     /// <summary>Resolves <paramref name="rid"/> against <paramref name="manifest"/>'s <c>entrypoints</c>
@@ -187,5 +193,12 @@ public static class ManifestReader
         public bool ProjectDirectoryAnchor { get; set; }
         public string? Runtime { get; set; }
         public Dictionary<string, string>? Entrypoints { get; set; }
+        public SdkDto? Sdk { get; set; }
+    }
+
+    internal sealed class SdkDto
+    {
+        public string? Name { get; set; }
+        public string? Version { get; set; }
     }
 }

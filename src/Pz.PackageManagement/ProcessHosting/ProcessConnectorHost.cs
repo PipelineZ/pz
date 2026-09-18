@@ -183,6 +183,13 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
             .OrderBy(info => info.Name, StringComparer.Ordinal)
             .ToArray();
 
+    /// <summary>Each registered connector's manifest-declared SDK, by name -- a separate lookup
+    /// rather than folded into <see cref="Installed"/> because <see cref="ConnectorInfo"/> is the
+    /// shared ABI identity type every connector (builtin included) answers, and only a hosted one has
+    /// an SDK to name.</summary>
+    public IReadOnlyDictionary<string, ConnectorManifestSdk?> InstalledSdks =>
+        _connectorsByName.ToDictionary(pair => pair.Key, pair => pair.Value.Sdk, StringComparer.Ordinal);
+
     /// <summary>Runs every spawned process through the shutdown ladder (Shutdown RPC → grace → kill the
     /// process tree) and closes its reverse channel first. Registered-but-never-spawned connectors have
     /// nothing to reap.</summary>
@@ -251,6 +258,11 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     public ConnectorCapabilities DeclaredCapabilities { get; }
 
     public ConnectorInfo Info { get; }
+
+    /// <summary>Which SDK the manifest says built this connector, when it names one -- available
+    /// without spawning (unlike a live handshake's <c>Hello.sdk</c>), which is what lets
+    /// <c>pz connectors</c> show it for a connector that has never been opened this run.</summary>
+    public ConnectorManifestSdk? Sdk => _manifest.Sdk;
 
     /// <summary>Manifest-declared, masked by <see cref="ProcessCapabilities"/>. The handshake is
     /// authoritative once a process exists, but <c>PcpClient</c> refuses any Hello whose capability set

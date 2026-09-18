@@ -67,6 +67,7 @@ internal sealed class PcpConnectorService(
             Capabilities = (long)connector.Capabilities,
             ConnectionConfigSchema = connector.ConnectionConfigSchema,
             DatasetConfigSchema = connector.DatasetConfigSchema,
+            Sdk = new SdkInfoMsg { Name = SdkInfo.Name, Version = SdkInfo.Version },
         };
         hello.Transports.Add(ProtocolConstants.TransportPipe);
 

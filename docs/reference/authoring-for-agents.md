@@ -240,6 +240,10 @@ in-process loading is reserved for builtins — declared in the package's `pz.co
   Resolved with `RuntimeIdentifierGraph` fallback (a package shipping only `linux-x64` is still
   reachable from `linux-musl-x64`), and rejected if a path would resolve outside the package
   directory.
+- `sdk: {name, version}` — which SDK built the connector and at what version, distinct from the
+  connector's own `name`/entrypoint version. Additive: absent on a manifest written before this
+  existed, which reads as an unnamed SDK, never a handshake disagreement. Both SDKs' Hello echoes
+  the same name/version, and `pz connectors`/`pz connector test`/PZ0356/PZ0357 show it.
 - The host masks `CheckpointableReads`, `CheckpointableWrites`, and `ChangeCapture` until they are
   wired over the wire; declared flags whose ABI interface the host shim does not implement
   (`StreamingPartitions`) take the materialized path. `SyncState` (opaque-token feeds) is honored:

@@ -108,6 +108,9 @@ public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposab
         Assert.Equal("1.0.0", fields[2]);
         Assert.Equal("src:native+universal", fields[3]);
         Assert.Equal("snk:native+universal", fields[4]);
+        // Manifest-declared, not handshaken -- pz connectors never spawns, so this comes off
+        // pz.connector.json's "sdk" property alone.
+        Assert.Contains("Pz.Connectors.Sdk 0.7.0", hostedLine, StringComparison.Ordinal);
     }
 
     /// <summary>Mirrors <c>ConnectorTestCommandTests.WriteProcessPackage</c>, laid out under
@@ -145,6 +148,7 @@ public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposab
                 {
                     [RuntimeInformation.RuntimeIdentifier] = "bin/connector",
                 },
+                ["sdk"] = new Dictionary<string, string> { ["name"] = "Pz.Connectors.Sdk", ["version"] = "0.7.0" },
             }));
 
         LockFileWriter.Write(

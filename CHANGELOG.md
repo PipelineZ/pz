@@ -66,6 +66,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   connection. The clock is wall time for the attempt, including time spent
   queued for the run's one DuckDB connection, so size it for the slowest node
   plus what may run ahead of it.
+- Additive `Hello.sdk {name, version}` on the PCP wire, and a matching `sdk`
+  property in `pz.connector.json` — which SDK built an out-of-process
+  connector, and at what version, previously invisible anywhere. Populated by
+  both SDKs (C# `Pz.Connectors.Sdk`, Rust `pz-connector`) and shown in
+  `pz connectors`, `pz connector test`'s handshake vector, and PZ0356/PZ0357
+  messages. `HostInfo.pz_version` (declared but never set) now carries this
+  pz build's own version on every handshake. Both fields are additive:
+  absent on either side of an older SDK/manifest, never a mismatch. This gap
+  made the 0.6.1 pruning incident hard to triage.
 
 ### Fixed
 

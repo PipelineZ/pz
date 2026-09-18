@@ -205,7 +205,8 @@ public static class ConformanceSuite
             }
         }
 
-        return VectorVerdict.Pass();
+        return VectorVerdict.Pass(
+            hello.Sdk is { Name.Length: > 0 } sdk ? $"sdk: {sdk.Name} {sdk.Version}" : null);
     }
 
     // ---- vector 2: schema/batch equality -------------------------------------------------------

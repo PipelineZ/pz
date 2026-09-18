@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Sdk;
 
@@ -5,6 +6,13 @@ namespace Pz.Connectors.Sdk.Tests;
 
 public sealed class ManifestWriterTests
 {
+    // MinVer's informational version carries a `+<commit sha>` build-metadata suffix on an untagged
+    // commit, and the default JSON encoder escapes `+` as `+` -- serializing the same string the
+    // same (default-encoder) way ManifestWriter itself does is what keeps these golden literals correct
+    // regardless of which commit the suite runs against, rather than pinning one escaped form by hand.
+    private static string JsonString(string value) => JsonSerializer.Serialize(value);
+
+
     [Fact]
     public void Renders_byte_stable_json_in_fixed_key_order()
     {
@@ -31,6 +39,10 @@ public sealed class ManifestWriterTests
             "  \"entrypoints\": {\n" +
             "    \"linux-x64\": \"native/fake\",\n" +
             "    \"win-x64\": \"native/fake.exe\"\n" +
+            "  },\n" +
+            "  \"sdk\": {\n" +
+            $"    \"name\": \"{SdkInfo.Name}\",\n" +
+            $"    \"version\": {JsonString(SdkInfo.Version)}\n" +
             "  }\n" +
             "}\n",
             json);
@@ -43,6 +55,18 @@ public sealed class ManifestWriterTests
         var json = ManifestWriter.Render(connector, new SortedDictionary<string, string>(StringComparer.Ordinal));
         Assert.Contains("\"capabilities\": []", json, StringComparison.Ordinal);
         Assert.Contains("\"entrypoints\": {}", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sdk_names_this_build_always_present_even_with_no_capabilities()
+    {
+        var connector = new FakeSourceConnector(ConnectorCapabilities.None, feed: false);
+        var json = ManifestWriter.Render(connector, new SortedDictionary<string, string>(StringComparer.Ordinal));
+
+        using var doc = JsonDocument.Parse(json);
+        var sdk = doc.RootElement.GetProperty("sdk");
+        Assert.Equal(SdkInfo.Name, sdk.GetProperty("name").GetString());
+        Assert.Equal(SdkInfo.Version, sdk.GetProperty("version").GetString());
     }
 
     [Fact]
@@ -74,7 +98,11 @@ public sealed class ManifestWriterTests
             "  \"capabilities\": [],\n" +
             "  \"projectDirectoryAnchor\": true,\n" +
             "  \"runtime\": \"process\",\n" +
-            "  \"entrypoints\": {}\n" +
+            "  \"entrypoints\": {},\n" +
+            "  \"sdk\": {\n" +
+            $"    \"name\": \"{SdkInfo.Name}\",\n" +
+            $"    \"version\": {JsonString(SdkInfo.Version)}\n" +
+            "  }\n" +
             "}\n",
             json);
     }

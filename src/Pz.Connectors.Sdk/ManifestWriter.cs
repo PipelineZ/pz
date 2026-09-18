@@ -32,7 +32,8 @@ internal static class ManifestWriter
             "process",
             new SortedDictionary<string, string>(
                 entrypoints.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
-                StringComparer.Ordinal));
+                StringComparer.Ordinal),
+            new SdkDocument(SdkInfo.Name, SdkInfo.Version));
         return JsonSerializer.Serialize(document, Contract.ManifestDocument) + "\n";
     }
 
@@ -69,7 +70,19 @@ internal sealed record ManifestDocument(
     [property: JsonPropertyName("projectDirectoryAnchor"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool ProjectDirectoryAnchor,
     [property: JsonPropertyName("runtime")] string Runtime,
-    [property: JsonPropertyName("entrypoints")] SortedDictionary<string, string> Entrypoints);
+    [property: JsonPropertyName("entrypoints")] SortedDictionary<string, string> Entrypoints,
+    // Last, always present: the newest field, and unlike projectDirectoryAnchor there is no
+    // "unset" shape worth omitting -- every manifest this writer produces names its own SDK.
+    [property: JsonPropertyName("sdk")] SdkDocument Sdk);
+
+/// <summary>Which SDK produced the manifest and at what version -- distinct from
+/// <see cref="ManifestDocument.Name"/> (the CONNECTOR's own identity). Mirrors
+/// <c>Hello.sdk</c>, so the manifest and the handshake never disagree about which SDK built this
+/// connector, the same guarantee <see cref="ManifestWriter"/>'s own doc comment already makes for
+/// name and capabilities.</summary>
+internal sealed record SdkDocument(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("version")] string Version);
 
 [JsonSerializable(typeof(ManifestDocument))]
 internal sealed partial class SdkJsonContext : JsonSerializerContext;

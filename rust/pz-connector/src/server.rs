@@ -395,6 +395,12 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             connection_config_schema: self.decl.connection_config_schema.to_string(),
             dataset_config_schema: self.decl.dataset_config_schema.to_string(),
             transports: vec![TRANSPORT_PIPE.to_string()],
+            // This crate's own name/version (env!, baked in at compile time from Cargo.toml) --
+            // distinct from ConnectorInfoMsg's name/version, which is the CONNECTOR's own identity.
+            sdk: Some(pb::SdkInfoMsg {
+                name: env!("CARGO_PKG_NAME").to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            }),
         }))
     }
 

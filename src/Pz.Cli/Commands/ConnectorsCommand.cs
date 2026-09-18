@@ -47,13 +47,14 @@ internal static class ConnectorsCommand
 
             var hostedVersions = host?.Installed.ToDictionary(i => i.Name, i => i.Version, StringComparer.Ordinal)
                 ?? new Dictionary<string, string>(StringComparer.Ordinal);
+            var hostedSdks = host?.InstalledSdks ?? new Dictionary<string, ConnectorManifestSdk?>(StringComparer.Ordinal);
             var hostedPackage = DescribeHostedPackage(project, host);
 
             var names = registry.Sources.Keys
                 .Union(registry.Sinks.Keys, StringComparer.Ordinal)
                 .OrderBy(n => n, StringComparer.Ordinal);
 
-            Console.WriteLine($"{"name",-14} {"package",-28} {"version",-16} {"tiers",-18} capabilities");
+            Console.WriteLine($"{"name",-14} {"package",-28} {"version",-16} {"tiers",-18} {"sdk",-24} capabilities");
             foreach (var name in names)
             {
                 registry.Sources.TryGetValue(name, out var source);
@@ -65,8 +66,10 @@ internal static class ConnectorsCommand
                     ? (hostedPackage, hostedVersion)
                     : ("pz (builtin)", PzInformationalVersion);
 
+                var sdk = FormatSdk(hostedSdks.GetValueOrDefault(name));
                 var tiers = FormatTiers(source, sink, capabilities);
-                Console.WriteLine($"{name,-14} {package,-28} {version,-16} {tiers,-18} {FormatCapabilities(capabilities)}");
+                Console.WriteLine(
+                    $"{name,-14} {package,-28} {version,-16} {tiers,-18} {sdk,-24} {FormatCapabilities(capabilities)}");
             }
 
             return ExitCodes.Ok;
@@ -110,6 +113,11 @@ internal static class ConnectorsCommand
 
         return string.Join(" ", parts);
     }
+
+    /// <summary>"-" for a builtin (no SDK layer at all) or a connector whose manifest predates this
+    /// field; "Name Version" otherwise.</summary>
+    private static string FormatSdk(ConnectorManifestSdk? sdk) =>
+        sdk is { Name.Length: > 0 } ? $"{sdk.Name} {sdk.Version}" : "-";
 
     private static string FormatCapabilities(ConnectorCapabilities capabilities)
     {

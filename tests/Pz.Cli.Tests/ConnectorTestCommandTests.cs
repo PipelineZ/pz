@@ -38,7 +38,8 @@ public sealed class ConnectorTestCommandTests : IDisposable
         var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.NotEmpty(lines);
         Assert.DoesNotContain(lines, l => l.StartsWith("FAIL", StringComparison.Ordinal));
-        Assert.Contains(lines, l => l.StartsWith("PASS handshake", StringComparison.Ordinal));
+        var handshakeLine = Assert.Single(lines, l => l.StartsWith("PASS handshake", StringComparison.Ordinal));
+        Assert.Contains("sdk: Pz.Connectors.Sdk", handshakeLine, StringComparison.Ordinal);
 
         // Secret/PII hygiene: vector output must never echo the connection config values (the probe
         // config's root: is this project's own temp directory path).

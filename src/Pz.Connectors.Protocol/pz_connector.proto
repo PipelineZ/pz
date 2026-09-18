@@ -85,11 +85,20 @@ message Hello {
   string dataset_config_schema = 4;
   // transports the connector serves; host picks the first common one ("pipe" in v1).
   repeated string transports = 5;
+  // Which SDK built this connector and at what version -- distinct from ConnectorInfoMsg.version
+  // (the CONNECTOR's own version). Additive: absent (field default, the zero-value message) on a
+  // connector built before this field existed, which a host must treat the same as "unknown SDK",
+  // never as a handshake disagreement.
+  SdkInfoMsg sdk = 6;
 }
 message ConnectorInfoMsg {
   string name = 1;
   string version = 2;
   int32 protocol_major = 3;
+}
+message SdkInfoMsg {
+  string name = 1;    // "Pz.Connectors.Sdk" | "pz-connector" (the Rust crate)
+  string version = 2;
 }
 
 message ConfigureRequest {
