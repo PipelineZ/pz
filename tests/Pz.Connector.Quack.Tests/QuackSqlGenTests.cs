@@ -169,7 +169,7 @@ public sealed class QuackSqlGenTests
     {
         var table = $"{WhAlias}.\"events\"";
         Assert.True(QuackSql.TryCopySql(table, "append", [], out var append, out var m1));
-        Assert.Equal($"create table if not exists {table} as select * from {{{{source}}}} limit 0;\ninsert into {table} select * from {{{{source}}}};", append);
+        Assert.Equal($"create table if not exists {table} as select * from {{{{source}}}} limit 0;\ninsert into {table} by name select * from {{{{source}}}};", append);
         Assert.Equal("quack insert", m1);
 
         Assert.True(QuackSql.TryCopySql(table, "replace", [], out var replace, out var m2));

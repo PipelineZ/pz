@@ -189,7 +189,7 @@ public sealed class SqliteSqlGenTests
 
         Assert.Equal(
             $"create table if not exists {WhSinkAlias}.\"events_out\" as select * from {{{{source}}}} limit 0;\n" +
-            $"insert into {WhSinkAlias}.\"events_out\" select * from {{{{source}}}};", copy!.CopySql);
+            $"insert into {WhSinkAlias}.\"events_out\" by name select * from {{{{source}}}};", copy!.CopySql);
         Assert.Equal("sqlite insert", copy.Mechanism);
         Assert.Empty(copy.Finalizations);
     }

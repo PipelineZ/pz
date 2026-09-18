@@ -133,6 +133,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `query:`/`headers:` values used the machine's culture and .NET's spelling, so
   an unquoted `archived: true` was sent as `True` and `1.5` as `1,5` on a
   comma-decimal locale.
+- **Wrong columns.** Native `append` into SQLite, MySQL, DuckDB, DuckLake,
+  MotherDuck, Quack and Iceberg now matches columns by name
+  (`insert into … by name`). It was positional, so appending into a table that
+  predates pz, or orders its columns differently from the pipeline's select
+  list, succeeded whenever the types happened to be compatible — with every
+  value in the wrong column. A target column the pipeline does not produce
+  keeps its default; a produced column the target lacks is now an error naming
+  it, where a same-width positional insert used to accept it.
 
 ## [0.6.1] - 2026-09-10
 

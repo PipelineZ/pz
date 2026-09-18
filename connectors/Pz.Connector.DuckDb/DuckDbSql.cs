@@ -171,7 +171,9 @@ internal static class DuckDbSql
 
     /// <summary>The copy statement(s) for one output. <c>{{source}}</c> is the engine's placeholder
     /// for the staged relation (substituted by SinkWriteExecutor). Append and merge first create the
-    /// target from the staged shape so a first run needs no pre-created table; merge then matches on
+    /// target from the staged shape so a first run needs no pre-created table. Append inserts BY NAME:
+    /// the target may predate pz or order its columns differently, and a positional insert between
+    /// type-compatible columns succeeds with every value in the wrong place. Merge then matches on
     /// every declared key, updating all columns by name on a match and inserting otherwise. A
     /// keyless merge is refused at compile time; the throw here is ABI defense-in-depth.</summary>
     internal static bool TryCopySql(string table, string mode, IReadOnlyList<string> keys, out string sql, out string mechanism)
@@ -181,7 +183,7 @@ internal static class DuckDbSql
         {
             case "append":
                 sql = string.Format(null, create, table) +
-                    $"insert into {table} select * from {{{{source}}}};";
+                    $"insert into {table} by name select * from {{{{source}}}};";
                 mechanism = "duckdb insert";
                 return true;
             case "replace":

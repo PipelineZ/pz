@@ -207,7 +207,7 @@ public sealed class MySqlSqlGenTests
 
         Assert.Equal(
             $"create table if not exists {WhSinkAlias}.\"orders_out\" as select * from {{{{source}}}} limit 0;\n" +
-            $"insert into {WhSinkAlias}.\"orders_out\" select * from {{{{source}}}};", copy!.CopySql);
+            $"insert into {WhSinkAlias}.\"orders_out\" by name select * from {{{{source}}}};", copy!.CopySql);
         Assert.Equal("mysql insert", copy.Mechanism);
         Assert.Empty(copy.Finalizations);
     }

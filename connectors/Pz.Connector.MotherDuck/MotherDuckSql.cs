@@ -106,7 +106,7 @@ internal static class MotherDuckSql
         switch (mode)
         {
             case "append":
-                sql = create + $"insert into {table} select * from {{{{source}}}};";
+                sql = create + $"insert into {table} by name select * from {{{{source}}}};";
                 mechanism = "motherduck insert";
                 return true;
             case "replace":

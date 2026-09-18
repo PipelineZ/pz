@@ -340,7 +340,7 @@ public sealed class DuckLakeSqlGenTests
         Assert.True(DuckLakeSql.TryCopySql($"{WhAlias}.\"events\"", "append", [], out var sql, out var mechanism));
         Assert.Equal(
             $"create table if not exists {WhAlias}.\"events\" as select * from {{{{source}}}} limit 0;\n" +
-            $"insert into {WhAlias}.\"events\" select * from {{{{source}}}};",
+            $"insert into {WhAlias}.\"events\" by name select * from {{{{source}}}};",
             sql);
         Assert.Equal("ducklake insert", mechanism);
     }
