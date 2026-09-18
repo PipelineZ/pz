@@ -353,7 +353,7 @@ public class ConnectionsLoaderTests
                     schema_policy: aditive
             """), e => e.Code == PzErrorCode.SyncModeInvalid);
 
-        Assert.Contains("fail_on_change, additive", error.Message, StringComparison.Ordinal);
+        Assert.Contains("fail_on_change, additive, evolve", error.Message, StringComparison.Ordinal);
         Assert.Contains("did you mean 'additive'", error.Message, StringComparison.Ordinal);
     }
 

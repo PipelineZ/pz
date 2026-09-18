@@ -16,10 +16,9 @@ internal static class WriteOptionsLoader
 {
     private static readonly string[] WriteStrategies = ["replace", "append", "merge"];
 
-    /// <summary>Mirrors <c>SinkFunction.SchemaPolicies</c> — the only values a connector's own
-    /// schema-drift handling recognizes (see <c>PgDdl</c>/<c>MsDdl</c>); any other string reaches the
-    /// connector, which treats an unrecognized one as <c>fail_on_change</c> silently.</summary>
-    private static readonly string[] SchemaPolicies = ["fail_on_change", "additive"];
+    /// <summary>Mirrors <c>SinkFunction.SchemaPolicies</c>, the kwarg surface's copy of the same
+    /// vocabulary.</summary>
+    private static readonly string[] SchemaPolicies = ["fail_on_change", "additive", "evolve"];
 
     /// <summary>Parses one <c>entities: &lt;e&gt;: write:</c> block, or null when it is malformed --
     /// errors are aggregated, never thrown, so one load reports every bad block.</summary>

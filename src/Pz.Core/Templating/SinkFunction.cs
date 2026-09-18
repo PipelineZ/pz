@@ -31,10 +31,10 @@ internal sealed class SinkFunction : IScriptCustomFunction
 
     private static readonly string[] WriteStrategies = ["replace", "append", "merge"];
 
-    /// <summary>The only values a connector's own schema-drift handling recognizes (see
-    /// <c>PgDdl</c>/<c>MsDdl</c>); any other string reaches the connector, which treats an unrecognized
-    /// one as <c>fail_on_change</c> silently.</summary>
-    private static readonly string[] SchemaPolicies = ["fail_on_change", "additive"];
+    /// <summary>The schema-drift vocabulary. A connector is free to refuse a policy it does not
+    /// implement (the builtin sinks refuse <c>evolve</c> themselves), but a string outside this set is a
+    /// typo: it would reach the connector and be treated as <c>fail_on_change</c> without a word.</summary>
+    private static readonly string[] SchemaPolicies = ["fail_on_change", "additive", "evolve"];
 
     /// <summary>Kwargs pz owns. Everything else is a connector write option and rides
     /// <see cref="SinkWriteOptions.Options"/> unchecked, exactly as an unrecognized key under a YAML

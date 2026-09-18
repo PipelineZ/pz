@@ -277,8 +277,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   by file, then position, for a deterministic report. Stages with a genuine
   dependency on an earlier one's success (sink-output binding, the one-reader
   rule, SQL-declared incremental inference, and later) are unchanged.
-- `schema_policy` is now validated against its enum (`fail_on_change`,
-  `additive`) on both surfaces — the `sink()` keyword argument and the YAML
+- `schema_policy` is now validated against its vocabulary (`fail_on_change`,
+  `additive`, `evolve`) on both surfaces — the `sink()` keyword argument and the YAML
   `write:` block — instead of riding any string through to the connector,
   which silently treated an unrecognized one as `fail_on_change`
   (`schema_policy: aditive` used to reach postgres/sqlserver unchallenged). A
@@ -291,22 +291,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   connector option that received a YAML string a plain, lowercase
   `true`/`false` would have typed — `True`, `yes`, `null`, `~`, and similar
   YAML 1.1 lookalikes the loader deliberately leaves as text — now says "write
-  true/false in lower case, unquoted" instead of the JSON Schema library's raw
+  true/false in lower case, unquoted" (or, for `null`/`~`, "leave the option
+  out") instead of the JSON Schema library's raw
   `Value is "string" but should be "boolean"`.
-- A whole-value `${VAR}` reference (e.g. `port: ${PGPORT}`) is now retyped by
-  its substituted text's own shape, the same plain-scalar rule `YamlMapper`
-  applies to a literal value: `port: ${PGPORT}` with `PGPORT=5432` in the
-  environment is now the integer `5432`, instead of always being the string
-  `"5432"` and failing tier-3 validation with "expected integer". A reference
-  embedded in a longer value (`note: "port-${PGPORT}"`) or written quoted
-  (`port: "${PGPORT}"`) still always stays a string, matching quoting's
-  existing meaning everywhere else. Applies to `connections.yml` connection
-  config, `project.yml`'s `vars:` block, and `pz connector test --config`.
-  A literal `${` that must NOT be read as a reference is now written `$${`
-  (e.g. `$${NAME}` produces the literal text `${NAME}`).
-  *Migration:* a `${VAR}`-shaped value that was previously read as a string
-  because the substituted text happened to look like a number/boolean is now
-  typed — quote it (`"${VAR}"`) to keep it a string.
+- An unquoted `${VAR}` is now typed by the value it resolves to, when that loses
+  nothing: `port: ${PGPORT}` with `PGPORT=5432` is the integer `5432` instead
+  of the string `"5432"` that failed tier-3 validation with "expected integer",
+  and `${FLAG}` = `true` is a boolean. Substituted text that would not read
+  back the same stays a string — `0123456`, `1.10`, `1e5` — because a bare
+  `${VAR}` is a password or an account id as often as a port. A quoted
+  reference (`port: "${PGPORT}"`) always stays a string. Applies to
+  `connections.yml` connection config, `project.yml`'s `vars:` block, and
+  `pz connector test --config`. A literal `${` that must NOT be read as a
+  reference is now written `$${` (e.g. `$${NAME}` produces the literal text
+  `${NAME}`).
+  *Migration:* a text option fed by an unquoted `${VAR}` whose value is all
+  digits (or `true`/`false`) is now a number (or boolean) and fails validation
+  with "the value was read as a number, but this option is text" — quote the
+  reference (`password: "${PGPASSWORD}"`). The value is never echoed.
 - `${VAR}` inside an `entities: <e>: read:/write:` block in `connections.yml`
   was always silently left as literal, un-substituted text (unlike the
   connection's own top-level config, where it IS interpolated) — it now

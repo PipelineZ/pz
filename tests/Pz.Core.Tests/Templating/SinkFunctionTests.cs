@@ -74,6 +74,20 @@ public class SinkFunctionTests
         Assert.Equal("additive", binding.Write.SchemaPolicy);
     }
 
+    // 'evolve' is part of the vocabulary even though the builtin sinks refuse it themselves: a
+    // connector outside this repository implements it, and the option reaches the connector as written.
+    [Theory]
+    [InlineData("fail_on_change")]
+    [InlineData("additive")]
+    [InlineData("evolve")]
+    public void Every_schema_policy_a_connector_may_implement_is_accepted(string policy)
+    {
+        var binding = Assert.Single(Render(
+            $"INSERT INTO {{{{ sink('mart', 'orders', strategy: 'append', schema_policy: '{policy}') }}}} select 1")
+            .InlineBindings);
+        Assert.Equal(policy, binding.Write.SchemaPolicy);
+    }
+
     [Fact]
     public void A_kwarg_that_skips_an_earlier_one_still_binds_to_its_own_name()
     {
@@ -142,7 +156,7 @@ public class SinkFunctionTests
     [InlineData("{{ sink('lake', 'a', rate_limit: { requests_per_minute: 60 }) }}", "instance-level")]
     [InlineData("{{ sink('lake', 'a', max_concurrency: 4) }}", "instance-level")]
     [InlineData("{{ sink('lake', 'a', input: 'p') }}", "'input' is not a sink()")]
-    [InlineData("{{ sink('lake', 'a', schema_policy: 'aditive') }}", "fail_on_change, additive")]
+    [InlineData("{{ sink('lake', 'a', schema_policy: 'aditive') }}", "fail_on_change, additive, evolve")]
     [InlineData("{{ sink('lake', 'a', schema_policy: 'aditive') }}", "did you mean 'additive'")]
     [InlineData("{{ sink('lake', 'a', retry: 3) }}", "'retry' must be a mapping")]
     [InlineData("{{ sink('lake', 'a', retry: { max_attempts: 0 }) }}", "max_attempts must be an integer >= 1")]

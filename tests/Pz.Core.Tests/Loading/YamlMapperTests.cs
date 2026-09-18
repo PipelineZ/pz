@@ -118,10 +118,17 @@ public class YamlMapperTests
         Assert.Contains("document", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
-    [Fact]
-    public void An_empty_file_is_still_an_empty_map_not_an_error()
+    // A file holding only comments, a bare `---`, or `~` says nothing at all -- the same as an empty
+    // file, and what a project with every connection commented out looks like.
+    [Theory]
+    [InlineData("")]
+    [InlineData("# nothing declared yet\n")]
+    [InlineData("---\n")]
+    [InlineData("---\n# nothing declared yet\n")]
+    [InlineData("~\n")]
+    public void A_file_that_says_nothing_is_still_an_empty_map_not_an_error(string yaml)
     {
-        var map = Assert.IsType<Dictionary<string, object?>>(LoadString("", out var error));
+        var map = Assert.IsType<Dictionary<string, object?>>(LoadString(yaml, out var error));
         Assert.Null(error);
         Assert.Empty(map);
     }
@@ -213,6 +220,34 @@ public class YamlMapperTests
         var map = Assert.IsType<Dictionary<string, object?>>(
             LoadStringInterpolated("port: \"PLACEHOLDER\"\n", (text, _, _) => text == "PLACEHOLDER" ? "5432" : text));
         Assert.Equal("5432", map["port"]);
+    }
+
+    // A secret or an account id arrives through ${VAR} far more often than a port does. Typing the
+    // substituted text is only safe when nothing is lost by it: "0123456" read as a number is 123456,
+    // and "1.10" is 1.1 -- a different password and a different version.
+    [Theory]
+    [InlineData("0123456")]
+    [InlineData("1.10")]
+    [InlineData("1e5")]
+    [InlineData("+5")]
+    [InlineData(" 7")]
+    public void A_substituted_plain_scalar_that_would_not_read_back_the_same_stays_a_string(string substituted)
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("value: PLACEHOLDER\n", (text, _, _) => text == "PLACEHOLDER" ? substituted : text));
+        Assert.Equal(substituted, map["value"]);
+    }
+
+    [Theory]
+    [InlineData("5432", 5432L)]
+    [InlineData("-3", -3L)]
+    [InlineData("0.5", 0.5)]
+    [InlineData("true", true)]
+    public void A_substituted_plain_scalar_that_reads_back_the_same_is_typed(string substituted, object expected)
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("value: PLACEHOLDER\n", (text, _, _) => text == "PLACEHOLDER" ? substituted : text));
+        Assert.Equal(expected, map["value"]);
     }
 
     [Fact]

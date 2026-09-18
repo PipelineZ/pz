@@ -8,14 +8,12 @@ namespace Pz.Core.Loading;
 /// <summary>Called for every scalar as it is converted, text and whether it was written PLAIN (not
 /// quoted, not a block style) together with the key path leading to it (the connection name and
 /// option key for connections.yml, the top-level project.yml key for project.yml, ...). Returns the
-/// text to use instead -- typically an env-var substitution, or the text unchanged. The returned text
-/// is retyped by <see cref="YamlMapper"/>'s ordinary plain-scalar rule ONLY when <c>isPlain</c> is
-/// true, exactly as if that substituted text had been written directly: a quoted
-/// <c>"${PORT}"</c> is substituted but stays a string, while a bare <c>${PORT}</c> is substituted and
-/// then typed by the result's own shape (so <c>PORT=5432</c> makes it the integer 5432). This is what
-/// lets <c>${VAR}</c> substitution reuse the SAME typing rule as a literal value, instead of the
-/// substituted text being forced to stay a string because it arrived through a different code
-/// path.</summary>
+/// text to use instead -- typically an env-var substitution, or the text unchanged. Text the
+/// interpolator changed is typed only when <c>isPlain</c> is true AND the typed value writes back as
+/// exactly that text: a quoted <c>"${PORT}"</c> is substituted but stays a string, a bare
+/// <c>${PORT}</c> with <c>PORT=5432</c> becomes the integer 5432, and a bare <c>${PIN}</c> with
+/// <c>PIN=0123</c> stays the string "0123" -- substituted text is a secret as often as a port, and
+/// nobody reviewing the YAML ever saw it.</summary>
 public delegate string YamlScalarInterpolator(string text, bool isPlain, IReadOnlyList<string> path);
 
 /// <summary>
@@ -89,6 +87,14 @@ public static class YamlMapper
             return new Dictionary<string, object?>();
         }
 
+        // A document that holds only `---`, comments or an explicit null says as little as an empty
+        // file does -- a connections.yml with everything commented out is this, and is not a mistake.
+        if (yamlStream.Documents[0].RootNode is YamlScalarNode
+            { Style: ScalarStyle.Plain or ScalarStyle.Any, Value: null or "" or "~" or "null" })
+        {
+            return new Dictionary<string, object?>();
+        }
+
         var state = new ConversionState(relativePath, interpolate);
         var converted = Convert(yamlStream.Documents[0].RootNode, state);
         if (converted is not Dictionary<string, object?> dict)
@@ -109,7 +115,6 @@ public static class YamlMapper
 
     private static string DescribeRootShape(object? converted) => converted switch
     {
-        null => "an empty/null document",
         List<object?> => "a list",
         _ => "a scalar",
     };
@@ -159,7 +164,15 @@ public static class YamlMapper
                 var text = state.Interpolate is null || scalar.Value is null
                     ? scalar.Value
                     : state.Interpolate(scalar.Value, isPlain, state.PathSegments);
-                return isPlain ? ConvertScalar(text) : text;
+                if (!isPlain)
+                {
+                    return text;
+                }
+
+                // Text the author typed is typed as YAML says. Text that arrived by substitution is
+                // somebody's port as often as somebody's password, and the author never saw it: it is
+                // typed only when that loses nothing.
+                return text == scalar.Value ? ConvertScalar(text) : ConvertLossless(text);
             case YamlMappingNode or YamlSequenceNode:
                 if (!state.Path.Add(node))
                 {
@@ -195,6 +208,18 @@ public static class YamlMapper
 
         return dict;
     }
+
+    /// <summary><see cref="ConvertScalar"/>, kept only when the typed value writes back as exactly
+    /// <paramref name="value"/>: "5432" is the integer 5432, while "0123456" (123456), "1.10" (1.1) and
+    /// "1e5" (100000) stay the strings they are. A connector reading the option as text therefore sees
+    /// the same characters whichever way it was typed.</summary>
+    private static object? ConvertLossless(string? value) => ConvertScalar(value) switch
+    {
+        long l when l.ToString(CultureInfo.InvariantCulture) == value => l,
+        double d when d.ToString("R", CultureInfo.InvariantCulture) == value => d,
+        bool b => b,
+        _ => value,
+    };
 
     private static object? ConvertScalar(string? value)
     {

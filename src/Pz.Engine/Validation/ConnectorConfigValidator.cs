@@ -289,7 +289,22 @@ public static class ConnectorConfigValidator
                 errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
                     $"{kind} '{name}'{Where(blockLabel)}: {location}'{literal}' was read as text, not a " +
                     "boolean or number here",
-                    filePath, null, "write true/false in lower case, unquoted"));
+                    filePath, null,
+                    literal is "null" or "~"
+                        ? "leave the option out instead of writing null"
+                        : "write true/false in lower case, unquoted"));
+                continue;
+            }
+
+            if (TryDescribeTypedWhereTextExpected(schemaText, detail, valuesDoc.RootElement, out var readAs))
+            {
+                // The value is not echoed: an all-digit value where text is expected is a password or
+                // an account id at least as often as it is a mistake.
+                errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
+                    $"{kind} '{name}'{Where(blockLabel)}: {location}the value was read as {readAs}, but " +
+                    "this option is text",
+                    filePath, null,
+                    "quote it -- \"12345\", or \"${VAR}\" when it comes from the environment -- so it stays text"));
                 continue;
             }
 
@@ -409,6 +424,59 @@ public static class ConnectorConfigValidator
         }
 
         literal = raw;
+        return true;
+    }
+
+    /// <summary>The mirror of <see cref="TryDescribeYamlLikeScalar"/>: a "type" violation where the
+    /// option is declared <c>string</c> and the value is a number or boolean -- what a plain YAML scalar
+    /// (or a bare <c>${VAR}</c> whose value is all digits) becomes. Structural, like its sibling.</summary>
+    private static bool TryDescribeTypedWhereTextExpected(
+        string schemaText, EvaluationResults detail, JsonElement valuesRoot, out string readAs)
+    {
+        readAs = "";
+
+        if (detail.Errors is not { } detailErrors || !detailErrors.ContainsKey("type"))
+        {
+            return false;
+        }
+
+        if (!TryResolve(valuesRoot, SplitPointer(detail.InstanceLocation.ToString()), out var instance,
+                requireObject: false))
+        {
+            return false;
+        }
+
+        var kind = instance.ValueKind switch
+        {
+            JsonValueKind.Number => "a number",
+            JsonValueKind.True or JsonValueKind.False => "a boolean",
+            _ => null,
+        };
+        if (kind is null)
+        {
+            return false;
+        }
+
+        JsonElement schemaRoot;
+        try
+        {
+            using var schemaDoc = JsonDocument.Parse(schemaText);
+            schemaRoot = schemaDoc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (!TryResolve(schemaRoot, SplitPointer(detail.EvaluationPath.ToString()), out var propertySchema,
+                requireObject: true) ||
+            !propertySchema.TryGetProperty("type", out var declaredType) ||
+            declaredType.ValueKind != JsonValueKind.String || declaredType.GetString() != "string")
+        {
+            return false;
+        }
+
+        readAs = kind;
         return true;
     }
 
