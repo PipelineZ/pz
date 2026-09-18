@@ -293,6 +293,26 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   YAML 1.1 lookalikes the loader deliberately leaves as text — now says "write
   true/false in lower case, unquoted" instead of the JSON Schema library's raw
   `Value is "string" but should be "boolean"`.
+- A whole-value `${VAR}` reference (e.g. `port: ${PGPORT}`) is now retyped by
+  its substituted text's own shape, the same plain-scalar rule `YamlMapper`
+  applies to a literal value: `port: ${PGPORT}` with `PGPORT=5432` in the
+  environment is now the integer `5432`, instead of always being the string
+  `"5432"` and failing tier-3 validation with "expected integer". A reference
+  embedded in a longer value (`note: "port-${PGPORT}"`) or written quoted
+  (`port: "${PGPORT}"`) still always stays a string, matching quoting's
+  existing meaning everywhere else. Applies to `connections.yml` connection
+  config, `project.yml`'s `vars:` block, and `pz connector test --config`.
+  A literal `${` that must NOT be read as a reference is now written `$${`
+  (e.g. `$${NAME}` produces the literal text `${NAME}`).
+  *Migration:* a `${VAR}`-shaped value that was previously read as a string
+  because the substituted text happened to look like a number/boolean is now
+  typed — quote it (`"${VAR}"`) to keep it a string.
+- `${VAR}` inside an `entities: <e>: read:/write:` block in `connections.yml`
+  was always silently left as literal, un-substituted text (unlike the
+  connection's own top-level config, where it IS interpolated) — it now
+  raises a load-time warning naming the connection and option instead of
+  reaching the connector unexpanded with no signal at all. The value itself
+  is unchanged; only connection-level config is interpolated.
 
 ## [0.6.1] - 2026-09-10
 

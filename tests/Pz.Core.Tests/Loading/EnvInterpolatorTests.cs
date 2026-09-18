@@ -31,6 +31,28 @@ public class EnvInterpolatorTests
     }
 
     [Fact]
+    public void A_doubled_dollar_before_a_brace_is_a_literal_escape()
+    {
+        var errors = new List<PzError>();
+        var result = EnvInterpolator.Interpolate(
+            "template=$${NAME}", new Dictionary<string, string>(), "sources/db.yml", errors);
+
+        Assert.Equal("template=${NAME}", result);
+        Assert.Empty(errors); // never reported as an undeclared reference either
+    }
+
+    [Fact]
+    public void An_escaped_literal_and_a_real_reference_coexist_in_one_value()
+    {
+        var errors = new List<PzError>();
+        var result = EnvInterpolator.Interpolate(
+            "$${A}${B}", new Dictionary<string, string> { ["B"] = "b1" }, "sources/db.yml", errors);
+
+        Assert.Equal("${A}b1", result);
+        Assert.Empty(errors);
+    }
+
+    [Fact]
     public void InterpolateTree_reaches_nested_connection_dictionaries_and_lists()
     {
         var errors = new List<PzError>();

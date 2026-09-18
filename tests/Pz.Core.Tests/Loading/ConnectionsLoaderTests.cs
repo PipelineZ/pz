@@ -21,12 +21,14 @@ public class ConnectionsLoaderTests
         return dir;
     }
 
-    private static PzProject Load(string connectionsYaml)
+    private static PzProject Load(string connectionsYaml) => Load(connectionsYaml, Env);
+
+    private static PzProject Load(string connectionsYaml, IReadOnlyDictionary<string, string> env)
     {
         var dir = TempProject(connectionsYaml);
         try
         {
-            return ProjectLoader.Load(dir, Env);
+            return ProjectLoader.Load(dir, env);
         }
         finally
         {
@@ -52,6 +54,86 @@ public class ConnectionsLoaderTests
         Assert.Equal("db.internal", connection.Connection["host"]);
         Assert.Equal("prod", connection.Connection["database"]);
         Assert.Equal("connections.yml", connection.FilePath);
+    }
+
+    [Fact]
+    public void A_whole_value_env_reference_is_retyped_by_its_substituted_shape()
+    {
+        var env = new Dictionary<string, string> { ["PGPORT"] = "5432", ["TLS"] = "true" };
+        var connection = Assert.Single(Load("""
+            warehouse:
+              connector: postgres
+              host: h
+              port: ${PGPORT}
+              tls: ${TLS}
+            """, env).Connections);
+
+        Assert.Equal(5432L, connection.Connection["port"]);
+        Assert.Equal(true, connection.Connection["tls"]);
+    }
+
+    [Fact]
+    public void A_quoted_whole_value_env_reference_stays_a_string()
+    {
+        var env = new Dictionary<string, string> { ["PGPORT"] = "5432" };
+        var connection = Assert.Single(Load("""
+            warehouse:
+              connector: postgres
+              host: h
+              port: "${PGPORT}"
+            """, env).Connections);
+
+        Assert.Equal("5432", connection.Connection["port"]);
+    }
+
+    [Fact]
+    public void An_env_reference_embedded_in_a_longer_value_stays_a_string()
+    {
+        var env = new Dictionary<string, string> { ["PGPORT"] = "5432" };
+        var connection = Assert.Single(Load("""
+            warehouse:
+              connector: postgres
+              host: h
+              note: "port-${PGPORT}"
+            """, env).Connections);
+
+        Assert.Equal("port-5432", connection.Connection["note"]);
+    }
+
+    [Fact]
+    public void An_escaped_literal_dollar_brace_is_never_a_reference()
+    {
+        var connection = Assert.Single(Load("""
+            warehouse:
+              connector: postgres
+              host: h
+              template: $${NOT_A_VAR}
+            """).Connections);
+
+        Assert.Equal("${NOT_A_VAR}", connection.Connection["template"]);
+    }
+
+    [Fact]
+    public void An_env_reference_under_entities_is_left_literal_with_a_warning()
+    {
+        var env = new Dictionary<string, string> { ["API_URL"] = "https://api.example.com" };
+        var project = Load("""
+            lake:
+              connector: localfiles
+              root: /tmp
+              entities:
+                orders:
+                  read:
+                    base_url: ${API_URL}
+            """, env);
+
+        var dataset = Assert.Single(Assert.Single(project.Connections).Datasets);
+        Assert.Equal("${API_URL}", dataset.Options["base_url"]);
+
+        var warning = Assert.Single(project.Warnings);
+        Assert.Equal(PzErrorCode.EnvRefNotInterpolatedInEntity, warning.Code);
+        Assert.Contains("lake", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("API_URL", warning.Message, StringComparison.Ordinal);
     }
 
     [Fact]

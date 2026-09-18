@@ -1242,7 +1242,10 @@ public static class DagCompiler
 
         // 11. Deterministic Kahn topological order; leftover nodes -> a cycle -> PZ0202.
         var ordered = TopologicalSortOrThrow(nodes);
-        var compiled = new CompiledDag(ordered) { Warnings = sinkWarnings, Connections = project.Connections };
+        var compiled = new CompiledDag(ordered)
+        {
+            Warnings = [.. project.Warnings, .. sinkWarnings], Connections = project.Connections,
+        };
 
         // 12. Effectively-once advisory NOTICE -- non-fatal, same `notices`
         //     mechanism as the "cursor unverified" notice above. The effectively-once guarantee an

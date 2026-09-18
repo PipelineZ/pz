@@ -1,3 +1,5 @@
+using Pz.Core.Validation;
+
 namespace Pz.Core.Model;
 
 public sealed record PzProject(string Name, string Version, EngineConfig Engine,
@@ -12,6 +14,13 @@ public sealed record PzProject(string Name, string Version, EngineConfig Engine,
     /// null -- an omitted/null argument resolves to <see cref="StateConfig.Default"/> (local) right here,
     /// so callers never need a separate "OrDefault" accessor.</summary>
     public StateConfig State { get; init; } = State ?? StateConfig.Default;
+
+    /// <summary>Non-blocking findings from LOADING the project (connections.yml, project.yml) --
+    /// e.g. a <c>${VAR}</c> reference sitting somewhere it is never interpolated. Merged into
+    /// <see cref="Pz.Core.Dag.CompiledDag.Warnings"/> by the compiler, the same channel a compile-time
+    /// warning uses, so every caller renders both the same way without knowing which stage produced
+    /// them.</summary>
+    public IReadOnlyList<PzWarning> Warnings { get; init; } = [];
 }
 /// <summary><see cref="CheckSamples"/> is the project-wide default for whether a failing check's error
 /// message includes sample violating rows; defaults <c>true</c>. A per-check

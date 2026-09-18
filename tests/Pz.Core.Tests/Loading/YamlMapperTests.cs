@@ -140,4 +140,61 @@ public class YamlMapperTests
         var map = Assert.IsType<Dictionary<string, object?>>(LoadString("\"200\": ok\n", out _));
         Assert.Equal("ok", map["200"]);
     }
+
+    // -- scalar interpolation hook -----------------------------------------------------------------
+    // The overload a loader passes an interpolator to: the substituted text is typed by the SAME
+    // plain/quoted rule as any other scalar, which is what lets a whole-value "${VAR}" reference come
+    // out as an int/bool when the substitution looks like one, while a quoted reference never does.
+
+    private static object? LoadStringInterpolated(string yaml, YamlScalarInterpolator interpolate)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"pz-yamlmapper-{Guid.NewGuid():N}.yml");
+        File.WriteAllText(path, yaml);
+        try
+        {
+            return YamlMapper.LoadFile(path, "project.yml", interpolate);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void A_substituted_plain_scalar_is_typed_by_its_new_text()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("port: PLACEHOLDER\n", (text, _, _) => text == "PLACEHOLDER" ? "5432" : text));
+        Assert.Equal(5432L, map["port"]);
+    }
+
+    [Fact]
+    public void A_substituted_quoted_scalar_stays_a_string_even_though_the_result_looks_numeric()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("port: \"PLACEHOLDER\"\n", (text, _, _) => text == "PLACEHOLDER" ? "5432" : text));
+        Assert.Equal("5432", map["port"]);
+    }
+
+    [Fact]
+    public void The_interpolator_sees_the_key_path_to_the_scalar()
+    {
+        var seen = new List<string>();
+        LoadStringInterpolated("a:\n  b: x\n  c: [y]\n", (text, _, path) =>
+        {
+            seen.Add(string.Join('.', path));
+            return text;
+        });
+
+        Assert.Contains("a.b", seen);
+        Assert.Contains("a.c", seen); // a sequence element does not add its own path segment
+    }
+
+    [Fact]
+    public void No_interpolator_means_the_ordinary_two_argument_LoadFile_behaviour()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("i: 42\n", null!));
+        Assert.Equal(42L, map["i"]);
+    }
 }

@@ -81,6 +81,30 @@ public class ProjectLoaderTests
     }
 
     [Fact]
+    public void A_whole_value_env_reference_in_vars_is_retyped_by_its_substituted_shape()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-loader-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                "name: vars_retype\nversion: 0.1.0\nvars:\n  min_amount: ${MIN_AMOUNT}\n" +
+                "  label: prefix-${MIN_AMOUNT}\n  quoted: \"${MIN_AMOUNT}\"\n");
+
+            var env = new Dictionary<string, string> { ["MIN_AMOUNT"] = "25" };
+            var project = ProjectLoader.Load(dir, env);
+
+            Assert.Equal(25L, project.Vars["min_amount"]);
+            Assert.Equal("prefix-25", project.Vars["label"]);
+            Assert.Equal("25", project.Vars["quoted"]);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Duplicate_pipeline_name_is_error_PZ0110()
     {
         var ex = Assert.Throws<PzValidationException>(

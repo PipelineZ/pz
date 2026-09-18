@@ -224,8 +224,9 @@ internal static class ConnectorTestCommand
         }
 
         var errors = new List<PzError>();
-        var root = (Dictionary<string, object?>)EnvInterpolator.InterpolateTree(
-            YamlMapper.LoadFile(configPath, configPath), SharedInputHelpers.SnapshotEnvironment(), configPath, errors)!;
+        var env = SharedInputHelpers.SnapshotEnvironment();
+        var root = YamlMapper.LoadFile(configPath, configPath,
+            (text, _, _) => EnvInterpolator.Interpolate(text, env, configPath, errors));
         if (errors.Count > 0)
         {
             // Every undeclared variable at once, the way connections.yml reports them.

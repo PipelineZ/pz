@@ -60,6 +60,12 @@ public static class PzErrorCode
     // are valid and anything else is this error, so the code covers the whole shape rather than just
     // the missing-name half.
     public const string InitInvocationInvalid = "PZ0132";
+    // A `${VAR}` reference inside an `entities: <e>: read:/write:` block: unlike connection-level
+    // config, that block is never interpolated (see ConnectionsLoader), so the reference reaches the
+    // connector as the literal, un-substituted text. A warning, not an error -- pz cannot tell a
+    // deliberate literal option value that merely CONTAINS "${...}" text from an author's actual
+    // env-var reference, so refusing outright would be wrong more often than it would be right.
+    public const string EnvRefNotInterpolatedInEntity = "PZ0133";
     public const string UnresolvedRef = "PZ0201";
     public const string Cycle = "PZ0202";
     // PZ0203 (was SinkInputMissing: a YAML `input:` that matched no pipeline/source dataset) is

@@ -17,6 +17,27 @@ public class CompileWarningsTests
     }
 
     [Fact]
+    public void Load_time_warnings_on_the_project_surface_in_the_compiled_dag()
+    {
+        // ConnectionsLoader's "${VAR} inside entities: is never interpolated" warning (and any other
+        // load-time finding) is on PzProject, not CompiledDag -- this pins that DagCompiler merges it
+        // into the one channel every caller (plan/run/validate) already renders warnings through,
+        // rather than that finding being silently dropped between loading and compiling.
+        var loadTimeWarning = new PzWarning(PzErrorCode.EnvRefNotInterpolatedInEntity,
+            "connections.yml: something", "connections.yml", null, "fix it");
+        var p = Project(
+            [Pipe("totals", "INSERT INTO {{ sink('lake', 'totals', strategy: 'replace', format: 'parquet') }} select 1 as x")],
+            sinks: [Sink()]) with
+        {
+            Warnings = [loadTimeWarning],
+        };
+
+        var dag = DagCompiler.Compile(p, Ctx(p));
+
+        Assert.Contains(dag.Warnings, w => w.Code == PzErrorCode.EnvRefNotInterpolatedInEntity);
+    }
+
+    [Fact]
     public void A_sink_no_pipeline_writes_to_produces_no_node_and_no_warning()
     {
         // An output exists precisely because a sink() call site declared it, so one can no

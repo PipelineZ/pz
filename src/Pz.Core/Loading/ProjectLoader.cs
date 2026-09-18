@@ -11,10 +11,11 @@ public static class ProjectLoader
         IReadOnlyDictionary<string, object?>? varOverrides = null)
     {
         var errors = new List<PzError>();
+        var warnings = new List<PzWarning>();
 
         var (name, version, connectors, vars, engine, retention, state, onSourceDrift) =
             LoadProjectFile(projectDir, env, errors);
-        var connections = ConnectionsLoader.Load(projectDir, env, errors);
+        var connections = ConnectionsLoader.Load(projectDir, env, errors, warnings);
         RetiredConnectionDirectories.Refuse(projectDir, errors);
         var pipelines = LoadPipelines(projectDir, errors);
 
@@ -35,7 +36,10 @@ public static class ProjectLoader
         }
 
         return new PzProject(name, version, engine, mergedVars, connectors, connections, pipelines, retention, state,
-            onSourceDrift);
+            onSourceDrift)
+        {
+            Warnings = warnings,
+        };
     }
 
     /// <summary>Resolves ONLY <c>state:</c> (from project.yml plus the environment) and whatever
@@ -80,10 +84,11 @@ public static class ProjectLoader
         var state = ParseStateConfig(yaml, env, relativePath, errors);
 
         // connections.yml is read only when state.connection names an entry in it -- that is the one
-        // thing in that file this path can possibly need.
+        // thing in that file this path can possibly need. Warnings are discarded: this path exists so
+        // `pz state`/`pz clean` work when something else is already broken, not to report on it.
         IReadOnlyList<ConnectionDef> connections = state.Connection is null
             ? []
-            : ConnectionsLoader.Load(projectDir, env, errors);
+            : ConnectionsLoader.Load(projectDir, env, errors, []);
         ValidateStateConnection(state, connections, errors);
 
         if (errors.Count > 0)
@@ -122,7 +127,12 @@ public static class ProjectLoader
         Dictionary<string, object?> yaml;
         try
         {
-            yaml = YamlMapper.LoadFile(path, relativePath);
+            // Only the top-level `vars:` block is interpolated -- every other project.yml key (engine,
+            // retention, state, ...) never has been, and a bare ${VAR} elsewhere stays literal text.
+            yaml = YamlMapper.LoadFile(path, relativePath, (text, _, segments) =>
+                segments.Count > 0 && segments[0] == "vars"
+                    ? EnvInterpolator.Interpolate(text, env, relativePath, errors)
+                    : text);
         }
         catch (PzConfigException ex)
         {
@@ -204,9 +214,8 @@ public static class ProjectLoader
                 relativePath, null, "vars:\n  min_amount: 10"));
         }
 
-        var rawVars = GetDict(yaml, "vars");
-        var interpolatedVars = (Dictionary<string, object?>)EnvInterpolator.InterpolateTree(rawVars, env, relativePath, errors)!;
-        vars = interpolatedVars;
+        // Already interpolated (and, for a whole-value plain scalar, retyped) by the LoadFile call above.
+        vars = GetDict(yaml, "vars");
 
         if (PresentButNot<Dictionary<string, object?>>(yaml, "engine"))
         {
