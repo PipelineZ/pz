@@ -818,6 +818,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     (`FAILED_PRECONDITION`, "connector is already configured") instead of
     silently re-pointing the connector at a different config, mirroring the
     C# SDK's guard.
+  - A new `--pz-manifest` mode prints the connector's `pz.connector.json`
+    manifest (the same JSON shape and byte-stable ordering as the C# SDK's
+    `ManifestWriter`, generated from the same `ConnectorDecl` `Handshake`
+    answers from) to stdout and exits, so a hand-written manifest can no
+    longer drift from what the connector actually declares at the
+    handshake. Unlike the C# SDK's `--pz-manifest --out <file>` (which also
+    takes `--entrypoint`/`--project-directory-anchor`), this crate has no
+    RID-based packaging pipeline yet, so it always prints to stdout with an
+    empty `entrypoints` map; a packaging step fills that in itself.
 
 ## [0.6.1] - 2026-09-10
 

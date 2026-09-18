@@ -423,24 +423,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             }
         }
 
-        Ok(Response::new(pb::Hello {
-            info: Some(pb::ConnectorInfoMsg {
-                name: self.decl.name.to_string(),
-                version: self.decl.version.to_string(),
-                protocol_major: PROTOCOL_MAJOR,
-            }),
-            capabilities: self.decl.capabilities as i64,
-            connection_config_schema: self.decl.connection_config_schema.to_string(),
-            dataset_config_schema: self.decl.dataset_config_schema.to_string(),
-            output_config_schema: self.decl.output_config_schema.to_string(),
-            transports: vec![TRANSPORT_PIPE.to_string()],
-            // This crate's own name/version (env!, baked in at compile time from Cargo.toml) --
-            // distinct from ConnectorInfoMsg's name/version, which is the CONNECTOR's own identity.
-            sdk: Some(pb::SdkInfoMsg {
-                name: env!("CARGO_PKG_NAME").to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            }),
-        }))
+        Ok(Response::new(hello_for(&self.decl)))
     }
 
     async fn configure(
@@ -756,6 +739,118 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
     }
 }
 
+/// What `Handshake` answers, and independently what `--pz-manifest` prints (see [`render_manifest`]):
+/// the same [`ConnectorDecl`] feeds both, so the two can never disagree about name, capabilities, or
+/// which SDK built this connector.
+fn hello_for(decl: &ConnectorDecl) -> pb::Hello {
+    pb::Hello {
+        info: Some(pb::ConnectorInfoMsg {
+            name: decl.name.to_string(),
+            version: decl.version.to_string(),
+            protocol_major: PROTOCOL_MAJOR,
+        }),
+        capabilities: decl.capabilities as i64,
+        connection_config_schema: decl.connection_config_schema.to_string(),
+        dataset_config_schema: decl.dataset_config_schema.to_string(),
+        output_config_schema: decl.output_config_schema.to_string(),
+        transports: vec![TRANSPORT_PIPE.to_string()],
+        // This crate's own name/version (env!, baked in at compile time from Cargo.toml) --
+        // distinct from ConnectorInfoMsg's name/version, which is the CONNECTOR's own identity.
+        sdk: Some(pb::SdkInfoMsg {
+            name: env!("CARGO_PKG_NAME").to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }),
+    }
+}
+
+/// Every `ConnectorCapabilities` bit this build's `Pz.Connectors.Abstractions` enum defines, mirrored
+/// by value and name (`ConnectorCapabilities.cs`), in ascending bit order -- the same order the C#
+/// SDK's `ManifestWriter.CapabilityNames` yields, since that is what a flags enum's own `ToString`
+/// produces. A bit set on `ConnectorDecl.capabilities` that is not in this table (impossible for a
+/// build of this crate against its own pinned ABI version, but a manifest may be read by a different
+/// pz build) is silently excluded, mirroring `ManifestWriter`'s own `KnownCapabilities` masking.
+const CAPABILITY_NAMES: &[(u64, &str)] = &[
+    (1, "ColumnPruning"),
+    (2, "PredicatePushdown"),
+    (4, "PartitionedRead"),
+    (8, "NativeScan"),
+    (16, "NativeCopy"),
+    (32, "Merge"),
+    (64, "Transactional"),
+    (128, "BoundedWindow"),
+    (256, "PathTemplating"),
+    (512, "StreamingPartitions"),
+    (1024, "InclusiveWatermarkBound"),
+    (2048, "SyncState"),
+    (4096, "GatedOperations"),
+    (8192, "StablePartitionIds"),
+    (16384, "CheckpointableReads"),
+    (32768, "ReplaceWrites"),
+    (65536, "CheckpointableWrites"),
+    (131_072, "ChangeCapture"),
+    (262_144, "ApplyDeletes"),
+    (524_288, "TextLengthStats"),
+    (1_048_576, "ColumnPartitionedWrites"),
+    (2_097_152, "NativeOnlyRead"),
+];
+
+fn capability_names(capabilities: u64) -> Vec<String> {
+    CAPABILITY_NAMES
+        .iter()
+        .filter(|(bit, _)| capabilities & bit != 0)
+        .map(|(_, name)| (*name).to_string())
+        .collect()
+}
+
+/// Renders the same document shape, field order and formatting as the C# SDK's `ManifestWriter`: two-
+/// space indent, LF line endings, a final newline, `name`/`protocolMajorMin`/`protocolMajorMax`/
+/// `capabilities`/`runtime`/`entrypoints`/`sdk` in that order. `entrypoints` is always empty -- this
+/// crate ships no RID-based packaging pipeline yet (unlike the C# SDK's `--entrypoint` flag), so a
+/// packaging step that adds one must fill this map itself; `projectDirectoryAnchor` is omitted
+/// entirely (this SDK's `ConnectorDecl` has no such field to report, the same as a manifest that says
+/// nothing about the anchor on the C# side).
+fn render_manifest(decl: &ConnectorDecl) -> String {
+    let mut doc = serde_json::Map::new();
+    doc.insert(
+        "name".to_string(),
+        serde_json::Value::String(decl.name.to_string()),
+    );
+    doc.insert(
+        "protocolMajorMin".to_string(),
+        serde_json::Value::from(PROTOCOL_MAJOR),
+    );
+    doc.insert(
+        "protocolMajorMax".to_string(),
+        serde_json::Value::from(PROTOCOL_MAJOR),
+    );
+    doc.insert(
+        "capabilities".to_string(),
+        serde_json::Value::from(capability_names(decl.capabilities)),
+    );
+    doc.insert(
+        "runtime".to_string(),
+        serde_json::Value::String("process".to_string()),
+    );
+    doc.insert(
+        "entrypoints".to_string(),
+        serde_json::Value::Object(serde_json::Map::new()),
+    );
+    let mut sdk = serde_json::Map::new();
+    sdk.insert(
+        "name".to_string(),
+        serde_json::Value::String(env!("CARGO_PKG_NAME").to_string()),
+    );
+    sdk.insert(
+        "version".to_string(),
+        serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
+    );
+    doc.insert("sdk".to_string(), serde_json::Value::Object(sdk));
+
+    serde_json::to_string_pretty(&serde_json::Value::Object(doc))
+        .expect("a Map<String, Value> built entirely from strings/arrays/objects always serializes")
+        + "\n"
+}
+
 fn source_unimplemented() -> Status {
     Status::unimplemented(
         "this connector does not implement the source direction (the pz-connector Rust SDK is sink-first in v1)",
@@ -1066,8 +1161,17 @@ async fn serve_sink_inner<C: SinkConnector>(
     decl: ConnectorDecl,
     connector: C,
 ) -> Result<String, anyhow::Error> {
-    let socket_path = parse_socket_arg(std::env::args().skip(1))
-        .map_err(|msg| anyhow::Error::new(ServeExit::UsageError(msg)))?;
+    let socket_path = match parse_host_command(std::env::args().skip(1))
+        .map_err(|msg| anyhow::Error::new(ServeExit::UsageError(msg)))?
+    {
+        HostCommand::Manifest => {
+            println!("{}", render_manifest(&decl));
+            return Ok(
+                "printed the manifest (--pz-manifest) and exited without serving".to_string(),
+            );
+        }
+        HostCommand::Serve(path) => path,
+    };
 
     if let Some(parent) = socket_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -1163,6 +1267,31 @@ async fn serve_sink_inner<C: SinkConnector>(
 
     serve_result.map_err(|e| anyhow::anyhow!("control-plane server failed: {e}"))?;
     Ok("received the Shutdown RPC (or the control-plane listener otherwise stopped)".to_string())
+}
+
+/// The two modes argv selects between: serve over PCP (`--pz-socket <path>`), or print the manifest
+/// [`render_manifest`] builds from the same [`ConnectorDecl`] `Handshake` answers from
+/// (`--pz-manifest`) and exit without ever binding a socket.
+#[derive(Debug)]
+enum HostCommand {
+    Serve(PathBuf),
+    Manifest,
+}
+
+/// `--pz-manifest` and `--pz-socket` are mutually exclusive; everything else this iterator does not
+/// recognize is ignored, matching [`parse_socket_arg`]'s existing leniency (connector configuration
+/// never travels on argv, so an unrecognized flag here is not this parser's business to police).
+fn parse_host_command(args: impl Iterator<Item = String>) -> Result<HostCommand, String> {
+    let args: Vec<String> = args.collect();
+    let wants_manifest = args.iter().any(|a| a == "--pz-manifest");
+    let wants_socket = args.iter().any(|a| a == "--pz-socket");
+    if wants_manifest && wants_socket {
+        return Err("--pz-socket and --pz-manifest are separate modes".to_string());
+    }
+    if wants_manifest {
+        return Ok(HostCommand::Manifest);
+    }
+    parse_socket_arg(args.into_iter()).map(HostCommand::Serve)
 }
 
 fn parse_socket_arg(mut args: impl Iterator<Item = String>) -> Result<PathBuf, String> {
@@ -1553,13 +1682,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn pz_manifest_is_a_separate_mode_from_pz_socket() {
+        let args = [
+            "--pz-socket".to_string(),
+            "/tmp/x.sock".to_string(),
+            "--pz-manifest".to_string(),
+        ];
+        assert!(parse_host_command(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn pz_manifest_alone_selects_the_manifest_command() {
+        let args = ["--pz-manifest".to_string()];
+        assert!(matches!(
+            parse_host_command(args.into_iter()),
+            Ok(HostCommand::Manifest)
+        ));
+    }
+
+    #[test]
+    fn pz_socket_alone_still_selects_serve() {
+        let args = ["--pz-socket".to_string(), "/tmp/x.sock".to_string()];
+        match parse_host_command(args.into_iter()) {
+            Ok(HostCommand::Serve(path)) => assert_eq!(path, Path::new("/tmp/x.sock")),
+            other => panic!("expected HostCommand::Serve, got {other:?}"),
+        }
+    }
+
     // ---- ConnectorDecl fixtures and a minimal SinkConnector for exercising the RPC handlers below --
 
     fn fixture_decl() -> ConnectorDecl {
         ConnectorDecl {
             name: "acme-sink",
             version: "9.9.9",
-            capabilities: 0,
+            // Merge (32) | Transactional (64) | an unrecognized future bit (1 << 40), to prove
+            // render_manifest/capability_names mask exactly the way ManifestWriter does.
+            capabilities: 32 | 64 | (1u64 << 40),
             connection_config_schema: "",
             dataset_config_schema: "",
             output_config_schema: "",
@@ -1768,5 +1927,56 @@ mod tests {
 
         assert_eq!(err.code(), tonic::Code::FailedPrecondition);
         assert_eq!(err.message(), "connector is already configured");
+    }
+
+    #[test]
+    fn capability_names_masks_unknown_bits_and_stays_in_ascending_order() {
+        let names = capability_names(fixture_decl().capabilities);
+        // The unrecognized `1u64 << 40` bit fixture_decl() also sets must not appear -- mirrors
+        // ManifestWriter's KnownCapabilities masking.
+        assert_eq!(
+            names,
+            vec!["Merge".to_string(), "Transactional".to_string()]
+        );
+    }
+
+    #[test]
+    fn manifest_and_hello_agree_on_name_capabilities_and_sdk() {
+        let decl = fixture_decl();
+        let hello = hello_for(&decl);
+        let manifest: serde_json::Value = serde_json::from_str(&render_manifest(&decl))
+            .expect("render_manifest emits valid JSON");
+
+        let info = hello.info.expect("Hello always carries ConnectorInfoMsg");
+        assert_eq!(manifest["name"], decl.name);
+        assert_eq!(manifest["protocolMajorMin"], info.protocol_major);
+        assert_eq!(manifest["protocolMajorMax"], info.protocol_major);
+
+        let hello_sdk = hello.sdk.expect("Hello always carries SdkInfoMsg");
+        assert_eq!(manifest["sdk"]["name"], hello_sdk.name);
+        assert_eq!(manifest["sdk"]["version"], hello_sdk.version);
+
+        let manifest_caps: Vec<String> =
+            serde_json::from_value(manifest["capabilities"].clone()).unwrap();
+        assert_eq!(manifest_caps, capability_names(hello.capabilities as u64));
+    }
+
+    #[test]
+    fn manifest_rendering_is_byte_stable() {
+        let decl = ConnectorDecl {
+            name: "acme-sink",
+            version: "1.0.0",
+            capabilities: 0,
+            connection_config_schema: "",
+            dataset_config_schema: "",
+            output_config_schema: "",
+        };
+
+        let expected = format!(
+            "{{\n  \"name\": \"acme-sink\",\n  \"protocolMajorMin\": 1,\n  \"protocolMajorMax\": 1,\n  \"capabilities\": [],\n  \"runtime\": \"process\",\n  \"entrypoints\": {{}},\n  \"sdk\": {{\n    \"name\": \"{}\",\n    \"version\": \"{}\"\n  }}\n}}\n",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        assert_eq!(render_manifest(&decl), expected);
     }
 }
