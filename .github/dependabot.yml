@@ -1,0 +1,86 @@
+# Weekly, grouped dependency updates. No auto-merge: every PR here still goes through the normal
+# review + green-CI path before it lands.
+#
+# Grouping puts every minor/patch bump for an ecosystem into one PR per week; a major bump never
+# joins a group (its update-types don't match "minor"/"patch"), so it always arrives as its own PR
+# for deliberate review -- exactly the "grouped for minor/patch, majors separate" split this repo
+# wants. A dependency is placed in the FIRST group whose pattern matches it, so the pairs below are
+# listed ahead of each ecosystem's catch-all group.
+version: 2
+updates:
+  # No Directory.Packages.props -- every csproj under src/, connectors/, and tests/ pins its own
+  # PackageReference versions directly. Pointing `directory` at the repo root works because
+  # Dependabot's NuGet fetcher finds Pz.slnx there (a top-level *.slnx is one of its recognized
+  # entry-point extensions) and expands it into every project the solution references, which is
+  # every packable and test project in the tree -- so this one entry reaches every csproj without
+  # needing one `directory:` per project.
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      # Grpc.Net.Client, Grpc.AspNetCore, and Grpc.Tools are all pinned to 2.83.0, and Google.Protobuf
+      # to 3.36.0, across Pz.Connectors.Protocol, Pz.Connectors.Sdk, Pz.PackageManagement, and their
+      # test projects. Pz.PackageManagement.csproj spells out why they move together: "PcpClient opens
+      # the control-plane GrpcChannel directly; flows transitively from Pz.Connectors.Protocol's
+      # ProjectReference too, but pinned explicitly here since this assembly calls into it, not just
+      # references generated types." A gRPC/protobuf version pair that drifts apart across these
+      # projects risks a wire-incompatible PCP control plane.
+      grpc-protobuf:
+        patterns:
+          - "Grpc.*"
+          - "Google.Protobuf"
+        update-types: ["minor", "patch"]
+      # Apache.Arrow is pinned to 23.0.0 in Pz.Connectors.Abstractions (the ABI's fixed reference
+      # allowlist -- CLAUDE.md: "The Abstractions reference allowlist (Apache.Arrow only) is fixed"),
+      # Pz.DuckDb, and Pz.PackageManagement. The latter's comment: "DataPlane speaks Arrow IPC directly
+      # over the raw data-plane socket; flows transitively from Pz.Connectors.Abstractions's
+      # ProjectReference too, but pinned explicitly here for the same reason as Grpc.Net.Client above."
+      # Arrow's RecordBatch is the one canonical in-memory format crossing every connector boundary;
+      # an Arrow version mismatch between the ABI and the engine is exactly the kind of drift a single
+      # grouped bump prevents.
+      arrow-abi:
+        patterns:
+          - "Apache.Arrow"
+        update-types: ["minor", "patch"]
+      # JsonSchema.Net is pinned to 9.2.2 in both Pz.Engine and Pz.Connectors.TestKit.
+      # Pz.Connectors.TestKit.csproj: "SinkConnectorAcceptanceTests' IOutputConfigSchema fact parses
+      # and evaluates a JSON Schema string, the same library (and version) Pz.Engine's tier 3
+      # validates output options with, so a sink's own acceptance suite proves its schema is
+      # well-formed before tier 3 ever sees it." That proof is only true if the two stay on one
+      # version.
+      jsonschema-net:
+        patterns:
+          - "JsonSchema.Net"
+        update-types: ["minor", "patch"]
+      # Everything else: one grouped PR per week for every other package's minor/patch bump.
+      # DuckDB.NET.Data.Full lands here too -- it has no second in-repo package pinned to the same
+      # native DuckDB engine version to keep in sync with, so there is nothing to group it against,
+      # but it bundles that native engine and deserves the same reviewer attention as any other
+      # dependency bump here (no auto-merge, so every bump in this group is read before it merges).
+      nuget-minor-patch:
+        patterns:
+          - "*"
+        update-types: ["minor", "patch"]
+
+  # Dependabot finds .github/workflows regardless of `directory`; "/" is the documented value.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-minor-patch:
+        patterns:
+          - "*"
+        update-types: ["minor", "patch"]
+
+  # The Rust workspace lives under rust/ (rust/Cargo.toml), not the repo root.
+  - package-ecosystem: "cargo"
+    directory: "/rust"
+    schedule:
+      interval: "weekly"
+    groups:
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types: ["minor", "patch"]
