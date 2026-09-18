@@ -43,8 +43,17 @@ public static class CliApp
         try
         {
             // System.CommandLine's own handler would print the stack and return 1, which the exit-code
-            // contract reserves for node failures.
-            return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
+            // contract reserves for node failures. Its own termination handling is switched off too:
+            // left on, it answers SIGINT/SIGTERM by cancelling the verb's token and then force-exiting
+            // two seconds later, whatever the verb is doing — which cuts a run off between a sink's
+            // commit and the watermark that records it, leaves run_results.json at "running", and
+            // orphans connector processes. A run owns its stop signals instead (StopSignals), and winds
+            // down for as long as that takes.
+            return root.Parse(args).Invoke(new InvocationConfiguration
+            {
+                EnableDefaultExceptionHandler = false,
+                ProcessTerminationTimeout = null,
+            });
         }
         catch (Exception ex)
         {
