@@ -293,6 +293,39 @@ public class ExecutionToolsTests
         Assert.Contains(notices.EnumerateArray(), n => n.GetString()!.Contains("changed since the failed run"));
     }
 
+    // Fix round 2, #104: the envelope used to be built by re-reading `stores.Artifacts.ReadLatest()`
+    // AFTER the run finished, with nothing tying the result to the run the tool actually just executed.
+    // Seed a run dir whose id sorts newest (run ids are zero-padded UTC timestamps, ordinal-sortable --
+    // see RunResultsReader's own doc comment) BEFORE calling pz_run, simulating another run's artifacts
+    // already sitting in .pz/runs/ with a "newer" id than whatever pz_run is about to produce. The old
+    // ReadLatest()-after-the-fact code would report that seeded run's id and its one fake node instead
+    // of the real run this call just performed.
+    [Fact]
+    public async Task Run_reports_the_run_it_just_executed_not_whatever_run_is_newest_on_disk()
+    {
+        using var p = new TempProject();
+        var services = RealServices();
+        var project = ProjectPhases.Load(p.Dir);
+        var stores = services.CreateStateStores(project, p.Dir);
+        const string seededFutureRunId = "99999999T999999999Z-ffff";
+        stores.Artifacts.WriteSnapshot(seededFutureRunId, "9999-99-99T99:99:99.999Z",
+            [new Pz.Engine.Execution.NodeResult(
+                new Pz.Core.Dag.NodeId("fake_node"), Pz.Core.Dag.NodeKind.SourceLoad, "fake_node",
+                Pz.Engine.Execution.NodeStatus.Success, 0, TimeSpan.Zero, null)],
+            "success");
+
+        var doc = JsonDocument.Parse(await ExecutionTools.RunAsync(
+            p.Dir, ["orders_out"], false, false, services, CancellationToken.None));
+
+        Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
+        var runId = doc.RootElement.GetProperty("result").GetProperty("run_id").GetString();
+        Assert.NotEqual(seededFutureRunId, runId);
+        var nodeNames = doc.RootElement.GetProperty("result").GetProperty("nodes")
+            .EnumerateArray().Select(n => n.GetProperty("name").GetString()).ToList();
+        Assert.DoesNotContain("fake_node", nodeNames);
+        Assert.Contains("orders_out", nodeNames);
+    }
+
     [Fact]
     public async Task RunResults_with_no_id_reads_the_latest_run()
     {

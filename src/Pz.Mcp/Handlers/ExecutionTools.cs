@@ -77,15 +77,10 @@ internal static class ExecutionTools
         return Render(outcome, projectDir, services);
     }
 
-    /// <summary>pz_run_results(run_id?): <c>ReadLatest()</c> when <paramref name="runId"/> is null/absent
-    /// -- the common case, and the same read the RunAsync/RetryAsync envelope above already performs.
-    /// <see cref="IRunArtifactStore"/> has no by-id read (only <c>ReadLatest</c>/<c>ReadAllNewestFirst</c>),
-    /// so an explicit id against the LOCAL store walks <see cref="RunResultsReader.ReadAllNewestFirst"/>
-    /// (the same reader `pz state show`'s rollback menu uses) looking for a match -- still one run's
-    /// worth of parsing in the common case (the requested id is recent), degrading to a full scan only
-    /// for a very old run id. A remote store has no equivalent
-    /// walk-every-run API in v1 -- an explicit id there returns the latest run anyway, with
-    /// <c>note</c> saying so plainly rather than silently substituting a different run.</summary>
+    /// <summary>pz_run_results(run_id?): the latest run when <paramref name="runId"/> is null/absent --
+    /// the common case, and the same read the RunAsync/RetryAsync envelope above already performs. See
+    /// <see cref="ReadRun"/> for how an explicit id is resolved on both a local and a remote state
+    /// backend.</summary>
     internal static string RunResults(string projectDir, string? runId, CliServices services)
     {
         try
@@ -93,26 +88,7 @@ internal static class ExecutionTools
             var project = ProjectPhases.Load(projectDir);
             var stores = services.CreateStateStores(project, projectDir);
 
-            string? note = null;
-            PriorRun? run;
-            if (runId is null)
-            {
-                run = stores.Artifacts.ReadLatest();
-            }
-            else if (stores.Artifacts is LocalRunArtifactStore)
-            {
-                run = RunResultsReader.ReadAllNewestFirst(projectDir)
-                    .FirstOrDefault(r => string.Equals(r.RunId, runId, StringComparison.Ordinal));
-            }
-            else
-            {
-                run = stores.Artifacts.ReadLatest();
-                if (run is not null && !string.Equals(run.RunId, runId, StringComparison.Ordinal))
-                {
-                    note = "this project's state backend only supports reading the latest run -- " +
-                        $"returning run '{run.RunId}' instead of the requested '{runId}'";
-                }
-            }
+            var (run, note) = ReadRun(stores, projectDir, runId, mismatchVerb: "requested");
 
             if (run is null)
             {
@@ -154,7 +130,12 @@ internal static class ExecutionTools
         {
             var project = ProjectPhases.Load(projectDir);
             var stores = services.CreateStateStores(project, projectDir);
-            var run = stores.Artifacts.ReadLatest();
+            // outcome.RunId is null exactly for pz_retry's "nothing to retry" outcome (no run
+            // happened) -- ReadRun's null-id branch then reads whatever is latest, matching the prior
+            // behavior that case still needs. Every other outcome reaching here DID just execute a
+            // run, so its own id -- not whatever ReadLatest() happens to return -- is the one this
+            // envelope must report.
+            var (run, readNote) = ReadRun(stores, projectDir, outcome.RunId, mismatchVerb: "just-executed");
 
             return ToolEnvelope.Ok(json =>
             {
@@ -167,9 +148,14 @@ internal static class ExecutionTools
                 json.WriteNumber("exit_code", outcome.ExitCode);
                 WriteStringArray(json, "notices", outcome.Notices ?? []);
                 WriteWarnings(json, outcome.Warnings ?? []);
-                if (outcome.Note is not null)
+                // outcome.Note ("nothing to retry") and readNote (remote-backend id mismatch) never
+                // both apply to the same outcome: readNote only fires when outcome.RunId is non-null,
+                // and outcome.Note ("nothing to retry") is only ever set on an outcome whose RunId is
+                // null. outcome.Note wins the tiebreak on principle -- it explains why no run
+                // happened at all, which outranks a note about which run's artifacts got read.
+                if ((outcome.Note ?? readNote) is { } note)
                 {
-                    json.WriteString("note", outcome.Note);
+                    json.WriteString("note", note);
                 }
 
                 json.WriteEndObject();
@@ -183,6 +169,38 @@ internal static class ExecutionTools
         {
             return ToolEnvelope.Errors([ex.Error]);
         }
+    }
+
+    /// <summary>Shared by <see cref="RunResults"/> and <see cref="Render"/>: reads one run by id, or
+    /// the latest when <paramref name="runId"/> is null. <see cref="IRunArtifactStore"/> has no by-id
+    /// read (only <c>ReadLatest</c>/<c>ReadAllNewestFirst</c>), so an explicit id against the LOCAL
+    /// store walks <see cref="RunResultsReader.ReadAllNewestFirst"/> (the same reader `pz state show`'s
+    /// rollback menu uses) looking for a match -- still one run's worth of parsing in the common case
+    /// (the requested id is recent), degrading to a full scan only for a very old run id. A remote
+    /// store has no equivalent walk-every-run API in v1 -- an explicit id there returns the latest run
+    /// anyway, with the returned note saying so plainly (naming <paramref name="mismatchVerb"/>'s id)
+    /// rather than silently substituting a different run.</summary>
+    private static (PriorRun? Run, string? Note) ReadRun(
+        McpStateStores stores, string projectDir, string? runId, string mismatchVerb)
+    {
+        if (runId is null)
+        {
+            return (stores.Artifacts.ReadLatest(), null);
+        }
+
+        if (stores.Artifacts is LocalRunArtifactStore)
+        {
+            var run = RunResultsReader.ReadAllNewestFirst(projectDir)
+                .FirstOrDefault(r => string.Equals(r.RunId, runId, StringComparison.Ordinal));
+            return (run, null);
+        }
+
+        var latest = stores.Artifacts.ReadLatest();
+        var note = latest is not null && !string.Equals(latest.RunId, runId, StringComparison.Ordinal)
+            ? "this project's state backend only supports reading the latest run -- " +
+                $"returning run '{latest.RunId}' instead of the {mismatchVerb} '{runId}'"
+            : null;
+        return (latest, note);
     }
 
     private static void WriteStringArray(Utf8JsonWriter json, string propertyName, IReadOnlyList<string> values)

@@ -78,6 +78,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- `pz_run`/`pz_retry` now report the run they just executed instead of
+  whatever run happens to read back as "latest" — a stale/foreign run could
+  win that race (another run's artifacts sorting newer by the time the MCP
+  envelope was built). `McpRunOutcome` gains an additive `RunId`, populated
+  the instant the run begins, and `pz_run`/`pz_retry`'s result envelope reads
+  that run by id instead of re-reading whatever `ReadLatest()` returns
+  afterward.
 - An unhandled exception inside a C# SDK connector handler — a connector
   defect the SDK never anticipated, not an operational failure the connector
   reported on purpose — now reaches the engine as a non-transient connector

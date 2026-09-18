@@ -199,7 +199,7 @@ internal static class RunCommand
         bool noLockCheck, string logFormat, CancellationToken ct,
         TimeSpan? drainTimeout = null, Func<IEventRenderer>? rendererFactory = null, Uri? otelEndpoint = null,
         bool fullRefresh = false, ReuseManifest? reuse = null, IReadOnlyList<NodeResult>? carriedForward = null,
-        ICollection<string>? runtimeNotices = null)
+        ICollection<string>? runtimeNotices = null, Action<string>? onRunId = null)
     {
         // Stop signals are owned here, for the whole of the run and not only while nodes execute. Setup
         // already spawns connector processes, and an unhandled SIGTERM there would kill pz and orphan
@@ -212,7 +212,7 @@ internal static class RunCommand
         {
             return await ExecuteRunCore(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, stop.Token, drainTimeout,
-                rendererFactory, otelEndpoint, fullRefresh, reuse, carriedForward, runtimeNotices);
+                rendererFactory, otelEndpoint, fullRefresh, reuse, carriedForward, runtimeNotices, onRunId);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -227,11 +227,16 @@ internal static class RunCommand
         bool noLockCheck, string logFormat, CancellationToken ct,
         TimeSpan? drainTimeout, Func<IEventRenderer>? rendererFactory, Uri? otelEndpoint,
         bool fullRefresh, ReuseManifest? reuse, IReadOnlyList<NodeResult>? carriedForward,
-        ICollection<string>? runtimeNotices)
+        ICollection<string>? runtimeNotices, Action<string>? onRunId = null)
     {
         // Sortable, unique-enough-for-a-local-tool run identity. Runtime identity, not
         // compile output — golden/determinism rules do not apply here.
         var runId = $"{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfff}Z-{Random.Shared.Next(0, 0x10000):x4}";
+        // `pz mcp`'s RunAsync/RetryAsync adapters have no other way to learn which run this call
+        // actually performed -- the id is generated here, inside the run's own lifetime, and nowhere
+        // else. Invoked once, before anything can fail, so a caller that wants it always gets it even
+        // if the run itself then fails partway through.
+        onRunId?.Invoke(runId);
         var startedAt = DateTimeOffset.UtcNow;
         var paths = new RunPaths(projectDir, runId);
         Directory.CreateDirectory(paths.RunDir);

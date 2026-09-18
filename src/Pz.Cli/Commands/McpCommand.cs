@@ -367,12 +367,13 @@ internal static class McpCommand
             // whatever the run raised.
             var runWarnings = new RunWarningCapture();
             var runtimeNotices = new List<string>();
+            string? runId = null;
             var exitCode = await RunCommand.ExecuteRun(
                 project, fullDag, projectDir, selection, failFast: false, noLockCheck: false, logFormat: "json", ct,
                 rendererFactory: () => new CompositeEventRenderer(new JsonRenderer(), runWarnings),
-                fullRefresh: request.FullRefresh, runtimeNotices: runtimeNotices);
+                fullRefresh: request.FullRefresh, runtimeNotices: runtimeNotices, onRunId: id => runId = id);
             return new McpRunOutcome(exitCode, [], Notices: [.. compileNotices, .. runtimeNotices],
-                Warnings: [.. fullDag.Warnings, .. runWarnings.Snapshot()]);
+                Warnings: [.. fullDag.Warnings, .. runWarnings.Snapshot()], RunId: runId);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -448,13 +449,14 @@ internal static class McpCommand
             // appends after them,
             // keeping the envelope's ordering identical to the CLI's console output.
             var runWarnings = new RunWarningCapture();
+            string? runId = null;
             var exitCode = await RunCommand.ExecuteRun(
                 project, fullDag, projectDir, plan!.Selection, failFast: false, noLockCheck: false, logFormat: "json", ct,
                 rendererFactory: () => new CompositeEventRenderer(new JsonRenderer(), runWarnings),
                 fullRefresh: fullRefresh, reuse: plan.Reuse, carriedForward: plan.CarriedForward,
-                runtimeNotices: notices);
+                runtimeNotices: notices, onRunId: id => runId = id);
             return new McpRunOutcome(exitCode, [], Notices: notices,
-                Warnings: [.. fullDag.Warnings, .. runWarnings.Snapshot()]);
+                Warnings: [.. fullDag.Warnings, .. runWarnings.Snapshot()], RunId: runId);
         }
         catch (PzConfigException ex)
         {

@@ -73,13 +73,24 @@ public sealed record McpRunRequest(string ProjectDir, string[] FlowNames, bool A
 /// pz_compile result respectively) must ride the envelope rather than being dropped by the Pz.Cli
 /// adapters. Null on every
 /// construction site that never reaches a successful compile (a lock/selection/dry-compile/config
-/// refusal); <see cref="ExecutionTools"/> treats null as empty when rendering.</summary>
+/// refusal); <see cref="ExecutionTools"/> treats null as empty when rendering.
+///
+/// <see cref="RunId"/> is a third additive field: the id of the run the Pz.Cli adapter actually just
+/// performed, captured off its <c>onRunId</c> callback the instant the run begins -- before this field
+/// existed, <see cref="ExecutionTools"/> re-read whatever
+/// <see cref="McpStateStores.Artifacts"/>'s <c>ReadLatest()</c> happened to return afterward, which is
+/// only ever the SAME run in the common single-caller case but silently reports a DIFFERENT one
+/// whenever another run's artifacts sort newer by the time the envelope is built. Null on every
+/// construction site that never actually executed a run (lock/selection/dry-compile/config refusal, or
+/// `pz_retry`'s "nothing to retry" outcome) -- <see cref="ExecutionTools"/> falls back to
+/// <c>ReadLatest()</c> in exactly those cases, matching the pre-existing behavior they still need.</summary>
 public sealed record McpRunOutcome(
     int ExitCode,
     IReadOnlyList<PzError> Errors,
     string? Note = null,
     IReadOnlyList<string>? Notices = null,
-    IReadOnlyList<PzWarning>? Warnings = null);
+    IReadOnlyList<PzWarning>? Warnings = null,
+    string? RunId = null);
 
 /// <summary>The state seams pz_state (and pz_run/pz_retry) need — a same-shaped
 /// projection of Pz.Cli's internal <c>StateBackends</c> record, stripped of the fields only the CLI's
