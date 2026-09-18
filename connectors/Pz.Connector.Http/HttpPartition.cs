@@ -243,7 +243,11 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
             // seeding `uri`), so max_pages bounds each attempt's fetch count, not the partition's
             // lifetime total across retries.
             var stopsAfterThisPage = (records.Count == 0 && (stopsOnEmptyPage || next is null))
-                || (config.MaxPages is { } cap && page >= cap);
+                || (config.MaxPages is { } cap && page >= cap)
+                // Opt-in: some APIs clamp an out-of-range page number to the last real page instead
+                // of serving an empty array, so the feed never actually ends on its own -- a page
+                // whose row count falls short of the requested size is the only signal left.
+                || (config.StopOnShortPage && config.PageSize is { } size && records.Count < size);
 
             var boundaryEnqueued = false;
             if (!stopsAfterThisPage && next is not null && next != uri)
@@ -750,10 +754,11 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
 
     private static string StripUrlQueries(string text) =>
         UrlWithQuery.Replace(text, m =>
-        {
-            var uri = new Uri(m.Value);
-            return RedactQuery(uri);
-        });
+            // The match is regex-shaped, not RFC 3986-valid -- an upstream API's own error body can
+            // embed "scheme://...?..." text (an example, a malformed hint) that the Uri constructor
+            // refuses (e.g. an out-of-range port). This runs inside error-message formatting itself,
+            // so it must never throw; a match Uri can't parse is masked wholesale instead.
+            Uri.TryCreate(m.Value, UriKind.Absolute, out var uri) ? RedactQuery(uri) : "<redacted>");
 
     /// <summary>Redacts a URI before it is surfaced in an exception message. For a sync-mode
     /// dataset the query IS the sync token — its param name is server-defined/opaque (e.g. Graph's

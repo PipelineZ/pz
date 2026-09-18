@@ -55,7 +55,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector
                 "strategy": { "enum": ["page", "link_header", "cursor"] },
                 "param": { "type": "string" }, "start": { "type": "integer" },
                 "size_param": { "type": "string" }, "size": { "type": "integer" },
-                "pointer": { "type": "string" } },
+                "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" } },
                 "required": ["strategy"], "additionalProperties": false },
             "items": { "type": "string" },
             "columns": { "type": "object", "minProperties": 1, "additionalProperties": {
@@ -77,6 +77,10 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector
             : new ValidationResult(errors));
     }
 
+    // Mirrors HttpPartition.MaxRedirects: the client itself never auto-follows (AllowAutoRedirect is
+    // off, see HttpSource.CreateClient), so a bound here stops a redirect loop from hanging the check.
+    private const int MaxCheckRedirects = 5;
+
     public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
     {
         var errors = new List<string>();
@@ -95,12 +99,48 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector
             var target = connection.CheckPath is { } checkPath
                 ? new Uri(connection.BaseUrl, checkPath.TrimStart('/'))
                 : connection.BaseUrl;
-            using var request = new HttpRequestMessage(HttpMethod.Get, target);
-            connection.Authenticator?.Apply(request);
-            using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
-            return response.IsSuccessStatusCode
-                ? new ConnectionCheck(true)
-                : new ConnectionCheck(false, $"GET {target} returned HTTP {(int)response.StatusCode}");
+
+            // A real read follows a 3xx by hand (HttpPartition.SendFollowingRedirectsAsync) rather
+            // than treating it as failure -- the check must accept the same shape of response a read
+            // against this exact path would.
+            for (var hop = 0; ; hop++)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, target);
+                connection.Authenticator?.Apply(request);
+                using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return new ConnectionCheck(true);
+                }
+
+                var status = (int)response.StatusCode;
+                if (status is not (301 or 302 or 303 or 307 or 308))
+                {
+                    return new ConnectionCheck(false, $"GET {target} returned HTTP {status}");
+                }
+
+                if (response.Headers.Location is not { } location)
+                {
+                    return new ConnectionCheck(false,
+                        $"GET {target} returned HTTP {status} with no Location header");
+                }
+
+                if (hop >= MaxCheckRedirects)
+                {
+                    return new ConnectionCheck(false,
+                        $"more than {MaxCheckRedirects} redirects starting at {target}");
+                }
+
+                target = new Uri(target, location);
+                if (!connection.IsAllowedTarget(target))
+                {
+                    return new ConnectionCheck(false,
+                        $"the redirect points at '{target.GetLeftPart(UriPartial.Authority)}', which is " +
+                        $"not this connection's host '{connection.BaseUrl.GetLeftPart(UriPartial.Authority)}' " +
+                        "(add it to 'allow_hosts' if this really is part of the same API)");
+                }
+            }
         }
         catch (HttpRequestException ex)
         {

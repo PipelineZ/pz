@@ -32,6 +32,16 @@ public class HttpConnectorTests
     }
 
     [Fact]
+    public void Dataset_schema_accepts_stop_on_short_page()
+    {
+        var schema = JsonSchema.FromText(new HttpConnector().DatasetConfigSchema);
+
+        var valid = JsonSerializer.Deserialize<JsonElement>(
+            """{"path":"/items","pagination":{"strategy":"page","size":50,"stop_on_short_page":true}}""");
+        Assert.True(schema.Evaluate(valid).IsValid);
+    }
+
+    [Fact]
     public async Task Validate_aggregates_all_errors()
     {
         var connector = new HttpConnector();
@@ -161,5 +171,45 @@ public class HttpConnectorTests
         Assert.True(result.Ok);
         Assert.Single(server.Requests);
         Assert.Equal("/api/v2/health", server.Requests[0].Url.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task CheckConnection_follows_a_redirect_on_check_path()
+    {
+        // Reads follow a 3xx by hand (HttpPartition.SendFollowingRedirectsAsync); the check used to
+        // treat the SAME redirect as a failed check instead, even though the endpoint is reachable
+        // and the read path would have succeeded.
+        await using var server = new StubHttpServer();
+        server.Map("/health", _ => new StubResponse(302, "", new Dictionary<string, string> { ["Location"] = "/health2" }));
+        server.Map("/health2", _ => new StubResponse(200, "{}"));
+
+        var config = new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = server.BaseUrl.ToString(),
+            ["check_path"] = "/health",
+        });
+
+        var result = await new HttpConnector().CheckConnectionAsync(config, CancellationToken.None);
+
+        Assert.True(result.Ok);
+    }
+
+    [Fact]
+    public async Task CheckConnection_refuses_a_redirect_off_the_allowed_host()
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/health", _ => new StubResponse(302, "",
+            new Dictionary<string, string> { ["Location"] = "https://evil.example.com/health" }));
+
+        var config = new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = server.BaseUrl.ToString(),
+            ["check_path"] = "/health",
+        });
+
+        var result = await new HttpConnector().CheckConnectionAsync(config, CancellationToken.None);
+
+        Assert.False(result.Ok);
+        Assert.NotNull(result.Message);
     }
 }

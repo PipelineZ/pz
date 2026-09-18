@@ -140,4 +140,25 @@ public sealed class HttpDeltaLinkTests
         Assert.DoesNotContain("--full-refresh", ex.Message);
         Assert.DoesNotContain("expired", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task Malformed_url_like_text_in_the_error_body_does_not_crash_the_error_path()
+    {
+        // StripUrlQueries (sync mode's error-body redaction) matches ANY "scheme://...?..." text in
+        // the body, then hands each match to the Uri constructor -- text an upstream API embeds as a
+        // hint/example (not a real, resolvable URL) can match the regex while still being invalid
+        // per RFC 3986 (an out-of-range port here), and Uri's constructor throws for that instead of
+        // failing gracefully. The classification path must not itself throw.
+        await using var server = new StubHttpServer();
+        server.Map("/feed", _ => new StubResponse(403,
+            """{"error":"Forbidden","hint":"see https://host:99999999999999999999/?x=1 for details"}"""));
+
+        var spec = new DatasetSpec("stub", "feed", Options("/feed"));
+        var partition = await OpenPartitionAsync(server, spec);
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => DrainAsync(partition));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("403", ex.Message);
+    }
 }

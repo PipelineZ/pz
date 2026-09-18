@@ -114,9 +114,13 @@ public sealed class HttpSinkTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Permanent_status_throws_non_transient_without_echoing_the_body()
+    public async Task Permanent_status_includes_a_bounded_response_body_snippet_and_a_status_hint()
     {
-        _server.Map("/ingest", _ => new StubResponse(422, """{"secret":"do-not-echo"}"""));
+        // A sink 4xx used to carry no body at all and a one-size-fits-all "check path and auth"
+        // hint, regardless of status. The endpoint's own diagnostic (its response body) is the
+        // most useful thing pz can surface here, bounded so a large/hostile body can't blow up the
+        // message.
+        _server.Map("/ingest", _ => new StubResponse(422, """{"error":"validation failed: name too long"}"""));
         await using var session = await OpenSessionAsync(AppendOutput());
 
         using var batch = Rows(0, 1);
@@ -125,7 +129,53 @@ public sealed class HttpSinkTests : IAsyncLifetime
 
         Assert.False(ex.IsTransient);
         Assert.Contains("422", ex.Message);
-        Assert.DoesNotContain("do-not-echo", ex.Message);
+        Assert.Contains("validation failed: name too long", ex.Message);
+        Assert.Contains("request body", ex.Message);
+    }
+
+    [Fact]
+    public async Task Permanent_status_body_snippet_is_truncated_and_flattened()
+    {
+        var longBody = new string('a', 500);
+        _server.Map("/ingest", _ => new StubResponse(400, longBody));
+        await using var session = await OpenSessionAsync(AppendOutput());
+
+        using var batch = Rows(0, 1);
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await session.WriteBatchAsync(batch, CancellationToken.None));
+
+        Assert.False(ex.IsTransient);
+        Assert.True(ex.Message.Length < longBody.Length);
+    }
+
+    [Theory]
+    [InlineData(401)]
+    [InlineData(403)]
+    public async Task Auth_status_hint_names_auth_and_not_the_path(int status)
+    {
+        _server.Map("/ingest", _ => new StubResponse(status, "{}"));
+        await using var session = await OpenSessionAsync(AppendOutput());
+
+        using var batch = Rows(0, 1);
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await session.WriteBatchAsync(batch, CancellationToken.None));
+
+        Assert.Contains("auth", ex.Message);
+        Assert.DoesNotContain("path", ex.Message);
+    }
+
+    [Fact]
+    public async Task Not_found_status_hint_names_the_path_and_not_auth()
+    {
+        _server.Map("/ingest", _ => new StubResponse(404, "{}"));
+        await using var session = await OpenSessionAsync(AppendOutput());
+
+        using var batch = Rows(0, 1);
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await session.WriteBatchAsync(batch, CancellationToken.None));
+
+        Assert.Contains("path", ex.Message);
+        Assert.DoesNotContain("auth", ex.Message);
     }
 
     [Fact]

@@ -8,7 +8,8 @@ namespace Pz.Connector.Http;
 internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string, string> Query,
     Func<IPageStrategy>? PageStrategyFactory, string ItemsPointer,
     IReadOnlyDictionary<string, string>? Columns, string? Cursor, string? CursorType,
-    string CursorPointer, string? CursorOrder, int? MaxPages, string? DeltaLinkPointer)
+    string CursorPointer, string? CursorOrder, int? MaxPages, string? DeltaLinkPointer,
+    bool StopOnShortPage = false, int? PageSize = null)
 {
     private static readonly HashSet<string> ContractTypes =
         ["int", "bigint", "double", "decimal", "varchar", "boolean", "date", "timestamp"];
@@ -43,7 +44,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
 
-        var factory = ParsePagination(options, errors);
+        var factory = ParsePagination(options, errors, out var stopOnShortPage, out var pageSize);
         var items = ValidatePointer(Get(options, "items") ?? "", "items", errors);
         var columns = options.TryGetValue("columns", out var c)
             ? c as IReadOnlyDictionary<string, string>
@@ -139,7 +140,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         return new HttpDatasetConfig(path!, query, factory, items, columns, cursor, cursorType,
-            cursorPointer ?? (cursor is null ? "" : "/" + cursor), cursorOrder, maxPages, deltaPointer);
+            cursorPointer ?? (cursor is null ? "" : "/" + cursor), cursorOrder, maxPages, deltaPointer,
+            stopOnShortPage, pageSize);
     }
 
     private static string? Get(IReadOnlyDictionary<string, object?> options, string key)
@@ -188,8 +190,12 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     }
 
     private static Func<IPageStrategy>? ParsePagination(
-        IReadOnlyDictionary<string, object?> options, List<string> errors)
+        IReadOnlyDictionary<string, object?> options, List<string> errors,
+        out bool stopOnShortPage, out int? pageSize)
     {
+        stopOnShortPage = false;
+        pageSize = null;
+
         if (!options.TryGetValue("pagination", out var p) || p is null)
         {
             return null;
@@ -202,7 +208,26 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         string? Get(string key) => block.TryGetValue(key, out var v) ? YamlScalarText.Of(v) : null;
-        switch (Get("strategy"))
+        var strategy = Get("strategy");
+
+        if (block.TryGetValue("stop_on_short_page", out var stopRaw) && stopRaw is not null)
+        {
+            if (strategy != "page")
+            {
+                errors.Add("pagination 'stop_on_short_page' is only valid with strategy 'page' " +
+                    $"(a numbered page can fall short of the requested size; got strategy '{strategy}')");
+            }
+            else if (stopRaw is not bool)
+            {
+                errors.Add($"pagination 'stop_on_short_page' must be a boolean, got '{stopRaw}'");
+            }
+            else
+            {
+                stopOnShortPage = (bool)stopRaw;
+            }
+        }
+
+        switch (strategy)
         {
             case "link_header":
                 return () => new LinkHeaderStrategy();
@@ -234,6 +259,13 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                     }
                 }
 
+                if (stopOnShortPage && size is null)
+                {
+                    errors.Add("pagination 'stop_on_short_page' requires 'size' -- 'short' is relative " +
+                        "to the requested page size, and there is none declared to compare against");
+                }
+
+                pageSize = size;
                 return () => new PageParamsStrategy(param, start, Get("size_param"), size);
             case "cursor" when Get("pointer") is { } pointer && Get("param") is { } cursorParam:
                 ValidatePointer(pointer, "pagination.pointer", errors);

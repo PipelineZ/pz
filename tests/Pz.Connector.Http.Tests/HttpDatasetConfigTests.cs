@@ -164,6 +164,56 @@ public class HttpDatasetConfigTests
     }
 
     [Fact]
+    public void Pagination_accepts_stop_on_short_page_with_a_size()
+    {
+        var config = HttpDatasetConfig.Parse(Spec(new()
+        {
+            ["path"] = "/items",
+            ["pagination"] = new Dictionary<string, object?>
+            {
+                ["strategy"] = "page", ["size"] = 50L, ["stop_on_short_page"] = true,
+            },
+        }));
+        Assert.NotNull(config.PageStrategyFactory);
+    }
+
+    [Fact]
+    public void Pagination_rejects_stop_on_short_page_without_a_size()
+    {
+        // "short" is relative to the requested page size -- with no size declared there is
+        // nothing to compare a page's row count against.
+        var ex = Assert.Throws<PzConnectorException>(() => HttpDatasetConfig.Parse(Spec(new()
+        {
+            ["path"] = "/items",
+            ["pagination"] = new Dictionary<string, object?>
+            {
+                ["strategy"] = "page", ["stop_on_short_page"] = true,
+            },
+        })));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("stop_on_short_page", ex.Message);
+        Assert.Contains("size", ex.Message);
+    }
+
+    [Fact]
+    public void Pagination_rejects_stop_on_short_page_on_a_non_page_strategy()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => HttpDatasetConfig.Parse(Spec(new()
+        {
+            ["path"] = "/items",
+            ["pagination"] = new Dictionary<string, object?>
+            {
+                ["strategy"] = "link_header", ["stop_on_short_page"] = true,
+            },
+        })));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("stop_on_short_page", ex.Message);
+        Assert.Contains("page", ex.Message);
+    }
+
+    [Fact]
     public void Parses_cursor_order_on_a_raw_cursor_dataset()
     {
         var config = HttpDatasetConfig.Parse(Spec(new()
