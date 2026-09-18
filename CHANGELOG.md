@@ -185,6 +185,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   exactly one trailing semicolon (plus surrounding whitespace) the way
   custom_sql checks already did; a `;` anywhere else in the SQL — a genuine
   second statement — is left alone and still fails loudly.
+- Ephemeral-CTE inlining no longer emits invalid SQL for a consumer pipeline
+  that opens with a comment before its `WITH`, a consumer using
+  `WITH RECURSIVE`, or an ephemeral pipeline whose body ends in its own
+  trailing `;`. Assembly now prefers reading and re-emitting the parsed AST
+  (DuckDB's own parser, via the existing `ISqlAstReader` seam) over sniffing
+  consumer text for a `with` keyword; a textual splice remains the fallback
+  when no AST reader is wired or either side fails to parse.
 
 ## [0.6.1] - 2026-09-10
 

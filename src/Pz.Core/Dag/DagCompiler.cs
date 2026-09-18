@@ -825,7 +825,7 @@ public static class DagCompiler
         var assembledSql = new Dictionary<string, string>();
         foreach (var pipeline in project.Pipelines.Where(p => p.Materialization != "ephemeral"))
         {
-            assembledSql[pipeline.Name] = NormalizeSql(BuildInlinedSql(pipeline, rendered, pipelinesByName));
+            assembledSql[pipeline.Name] = NormalizeSql(BuildInlinedSql(pipeline, rendered, pipelinesByName, sqlAst));
         }
 
         var watermarkSynthesized = new Dictionary<(string Source, string Dataset), IncrementalDef>();
@@ -1598,15 +1598,24 @@ public static class DagCompiler
     /// <summary>
     /// "Consumer SQL becomes `with __pz_cte__&lt;name&gt; as (&lt;ephemeral sql&gt;)` + consumer
     /// body; multiple ephemeral deps join their CTEs with `, ` sorted by name; if the consumer's
-    /// own SQL already starts with `with` (case-insensitive), strip that keyword and join
-    /// its CTE list with `, `." The CTE alias is prefixed with <c>__pz_cte__</c> so it matches
-    /// what <see cref="TemplateRenderer"/> renders for <c>ref()</c> calls to ephemeral pipelines
-    /// (which render <c>__pz_cte__&lt;name&gt;</c>, not <c>staging.&lt;name&gt;</c>) — otherwise
-    /// the inlined CTE and the consumer body's reference to it would not match.
+    /// own SQL already carries a WITH clause, the ephemeral CTEs become its leading entries." The
+    /// CTE alias is prefixed with <c>__pz_cte__</c> so it matches what <see cref="TemplateRenderer"/>
+    /// renders for <c>ref()</c> calls to ephemeral pipelines (which render <c>__pz_cte__&lt;name&gt;</c>,
+    /// not <c>staging.&lt;name&gt;</c>) — otherwise the inlined CTE and the consumer body's reference to
+    /// it would not match.
+    /// <para>Assembly prefers <see cref="ISqlAstReader.PrependCtes"/>: reading the consumer's own
+    /// <c>cte_map</c> off DuckDB's own parser is what gets a consumer that opens with a comment before
+    /// WITH, or is itself WITH RECURSIVE, right without this stage sniffing consumer text for a "with"
+    /// keyword. <paramref name="sqlAst"/> is null in tests that construct a project with no incremental
+    /// SQL at all (every production caller supplies <c>DuckDbSqlAstReader</c>) — and
+    /// <see cref="ISqlAstReader.PrependCtes"/> itself returns null if either side fails to parse — so a
+    /// textual splice (the ORIGINAL, simpler shape) is still the fallback: it handles the common case
+    /// exactly as before, and downstream tier-4 EXPLAIN/PREPARE reports a genuinely malformed pipeline
+    /// with full context regardless of which route assembled it.</para>
     /// </summary>
     private static string BuildInlinedSql(
         PipelineDef pipeline, IReadOnlyDictionary<string, RenderResult> rendered,
-        IReadOnlyDictionary<string, PipelineDef> pipelinesByName)
+        IReadOnlyDictionary<string, PipelineDef> pipelinesByName, ISqlAstReader? sqlAst)
     {
         var sql = rendered[pipeline.Name].Sql;
         var ephemeralNames = rendered[pipeline.Name].Dependencies
@@ -1622,8 +1631,19 @@ public static class DagCompiler
             return sql;
         }
 
-        var cteList = string.Join(", ",
-            ephemeralNames.Select(name => $"__pz_cte__{name} as ({rendered[name].Sql})"));
+        // NormalizeSql here as well as at the assembled-SQL call site: an ephemeral body ending in its
+        // own trailing `;` must not land inside `( ... ; )`, which DuckDB refuses as a second (empty)
+        // statement nested in a parenthesized expression.
+        var ctes = ephemeralNames
+            .Select(name => (Alias: $"__pz_cte__{name}", Sql: NormalizeSql(rendered[name].Sql)))
+            .ToList();
+
+        if (sqlAst?.PrependCtes(sql, ctes) is { } merged)
+        {
+            return merged;
+        }
+
+        var cteList = string.Join(", ", ctes.Select(c => $"{c.Alias} as ({c.Sql})"));
         var trimmed = sql.TrimStart();
 
         if (trimmed.StartsWith("with", StringComparison.OrdinalIgnoreCase))
