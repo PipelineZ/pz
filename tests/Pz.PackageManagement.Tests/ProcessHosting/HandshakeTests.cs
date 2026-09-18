@@ -86,6 +86,46 @@ public sealed class HandshakeTests : IDisposable
     }
 
     [SkippableFact]
+    public async Task Handshake_failure_names_the_childs_exit_code_once_it_has_exited()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        // --die-immediately exits 1 before the socket is ever served, so by the time the connect
+        // retry loop below gives up (ShortHandshakeTimeout), the child has certainly already exited.
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--die-immediately"]);
+
+        var ex = await Assert.ThrowsAsync<ConnectorHostException>(() => PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", ConnectorConfig.Empty, ShortHandshakeTimeout,
+            CancellationToken.None));
+
+        Assert.Equal("PZ0356", ex.Code);
+        Assert.Contains("exited with code 1", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task MapRpcException_names_exit_code_and_signal_once_the_child_has_exited()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        // Kills the child directly (not through the client's own shutdown ladder), via .NET's
+        // Process.Kill (SIGKILL on Unix) -- deterministically the same 137 exit code an OOM-kill
+        // leaves behind, so the RPC failure below maps against an already-exited process.
+        await process.DisposeAsync();
+
+        var mapped = client.MapRpcException(new RpcException(new Status(StatusCode.Unavailable, "channel closed")));
+
+        var hostEx = Assert.IsType<ConnectorHostException>(mapped);
+        Assert.Equal("PZ0358", hostEx.Code);
+        Assert.Contains("exited with code 137 (signal SIGKILL)", hostEx.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task Unknown_capability_bit_from_a_newer_sdk_does_not_fail_the_handshake()
     {
         Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");

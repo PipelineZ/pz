@@ -69,6 +69,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- PZ0356 (handshake failed), PZ0358 (connector died mid-operation), and a
+  connector-reported error the host maps once the connector's process has
+  also exited now name the child's exit code — `exited with code 137 (signal
+  SIGKILL)` for an OOM-kill, `exited with code 139 (signal SIGSEGV)` for a
+  segfault — instead of leaving PZ0358's own hint ("check the connector's
+  exit code") with nothing to check.
 - A connector reporting a capability bit or manifest capability name this pz
   build does not define — the sanctioned way an out-of-process connector's SDK
   grows the ABI — no longer fails the handshake with PZ0356 "capabilities

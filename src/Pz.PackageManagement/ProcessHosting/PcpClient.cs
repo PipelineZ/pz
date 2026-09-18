@@ -322,7 +322,12 @@ public sealed class PcpClient : IAsyncDisposable
     {
         TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
         Volatile.Write(ref _lastErrorTransient, detail.IsTransient ? 1 : 2);
-        return new PzConnectorException(detail.Message, detail.IsTransient, retryAfter);
+        // The connector reported this itself, over the trailer -- but if it has also exited by the
+        // time the host gets here (reported, then died), the exit code is worth knowing too.
+        var message = _process.HasExited && _process.ExitDescription is { } exitDescription
+            ? $"{detail.Message} ({exitDescription})"
+            : detail.Message;
+        return new PzConnectorException(message, detail.IsTransient, retryAfter);
     }
 
     public Exception MapRpcException(RpcException ex, CancellationToken ct = default)
@@ -341,15 +346,19 @@ public sealed class PcpClient : IAsyncDisposable
 
         var stderr = _process.StderrTail;
         var suffix = stderr.Length > 0 ? $"\nstderr:\n{stderr}" : string.Empty;
-        return _process.HasExited
-            ? new ConnectorHostException(
-                "PZ0358",
-                $"connector process exited mid-operation: {ex.Status.Detail}{suffix}",
-                "check the connector's exit code and stderr logs, and confirm connector stability under the dataset being processed")
-            : new ConnectorHostException(
+        if (!_process.HasExited)
+        {
+            return new ConnectorHostException(
                 "PZ0357",
                 $"connector protocol violation: {ex.Status.Detail}{suffix}",
                 "check connector logs and confirm the connector and host ABI versions are compatible");
+        }
+
+        var exitNote = _process.ExitDescription is { } exitDescription ? $" ({exitDescription})" : string.Empty;
+        return new ConnectorHostException(
+            "PZ0358",
+            $"connector process exited mid-operation: {ex.Status.Detail}{exitNote}{suffix}",
+            "check the connector's exit code and stderr logs, and confirm connector stability under the dataset being processed");
     }
 
     /// <summary>Arms the cancellation ladder for one in-flight operation: when <paramref name="ct"/>
@@ -487,6 +496,11 @@ public sealed class PcpClient : IAsyncDisposable
 
     private static ConnectorHostException HandshakeFailed(ConnectorProcess process, string reason)
     {
+        if (process.ExitDescription is { } exitDescription)
+        {
+            reason = $"{reason} ({exitDescription})";
+        }
+
         var stderr = process.StderrTail;
         var message = stderr.Length > 0
             ? $"connector handshake failed: {reason}\nstderr:\n{stderr}"
