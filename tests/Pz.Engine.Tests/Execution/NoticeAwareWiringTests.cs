@@ -47,11 +47,11 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         return new RunContext(_duck, reg, new RunPaths(_dir, "test-run"), NullRunEvents.Instance, Notice: notice);
     }
 
-    private static DagNode SourceNode(string entity = "numbers")
+    private static DagNode SourceNode(string entity = "numbers", string connection = "mem")
     {
-        var source = new ConnectionDef("mem", "noticestub", new Dictionary<string, object?>(),
+        var source = new ConnectionDef(connection, "noticestub", new Dictionary<string, object?>(),
             [new DatasetDef(entity, new Dictionary<string, object?>(), null)], "sources/mem.yml");
-        return new DagNode(new NodeId("eeeeeeeeeeeeeeee"), NodeKind.SourceLoad, $"src_mem__{entity}",
+        return new DagNode(new NodeId("eeeeeeeeeeeeeeee"), NodeKind.SourceLoad, $"src_{connection}__{entity}",
             [], null, new SourceDatasetDef(source, source.Datasets[0]));
     }
 
@@ -75,7 +75,7 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         Assert.Equal(NodeStatus.Success, result.Status);
         Assert.Equal(1, source.UseNoticeCalls);
         source.FireNotice("unpinned host key");
-        Assert.Equal(["unpinned host key"], received);
+        Assert.Equal(["mem: unpinned host key"], received);
     }
 
     // Every node opens its own source, so a connection read by ten entities is opened ten times in one
@@ -83,8 +83,8 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
     [Fact]
     public async Task The_same_connector_notice_from_two_nodes_of_one_run_is_delivered_once()
     {
-        var first = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
-        var second = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
+        var first = new NoticeAwareFakeSource { NoticeOnUse = "accepting any SSH host key" };
+        var second = new NoticeAwareFakeSource { NoticeOnUse = "accepting any SSH host key" };
         var received = new List<string>();
         var ctx = SourceContext(new NoticeStubConnector(first), received.Add);
         var reg = new ConnectorRegistry();
@@ -95,7 +95,7 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
 
         Assert.Equal(1, first.UseNoticeCalls);
         Assert.Equal(1, second.UseNoticeCalls);
-        Assert.Equal(["sftp host 'h': accepting any SSH host key"], received);
+        Assert.Equal(["mem: accepting any SSH host key"], received);
     }
 
     /// <summary>A connector notice reaches BOTH channels: the existing console "note:" callback and a
@@ -104,8 +104,8 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
     [Fact]
     public async Task The_same_connector_notice_from_two_nodes_also_reaches_connector_log_once()
     {
-        var first = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
-        var second = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
+        var first = new NoticeAwareFakeSource { NoticeOnUse = "accepting any SSH host key" };
+        var second = new NoticeAwareFakeSource { NoticeOnUse = "accepting any SSH host key" };
         var received = new List<string>();
         var bus = new Pz.Diagnostics.Events.RunEventBus();
         var publisher = new Pz.Engine.Events.RunEventPublisher(bus, "run-1", TimeProvider.System);
@@ -125,13 +125,30 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
             events.Add(evt);
         }
 
-        // Unredacted, same as the plain "note:" line: a notice's text is pz's own in-tree connector
-        // code, not arbitrary third-party output, so an identifier it deliberately quotes (a host name,
-        // an option name) stays actionable.
+        // The event names the connection in its own field, so the text does not repeat it.
         var log = Assert.Single(events.OfType<Pz.Diagnostics.Events.ConnectorLogEvent>());
         Assert.Equal("warn", log.Level);
         Assert.Equal("mem", log.Connection);
-        Assert.Equal("sftp host 'h': accepting any SSH host key", log.Message);
+        Assert.Equal("accepting any SSH host key", log.Message);
+    }
+
+    // The text alone says nothing about which connection it is about, so two connections saying the
+    // same thing are two notices, each led by its connection's name.
+    [Fact]
+    public async Task The_same_notice_text_from_two_connections_is_delivered_for_each()
+    {
+        var received = new List<string>();
+        var reg = new ConnectorRegistry();
+        reg.AddSource("noticestub", new NoticeStubConnector(
+            new NoticeAwareFakeSource { NoticeOnUse = "accepting any SSH host key" }));
+        var ctx = SourceContext(new NoticeStubConnector(
+            new NoticeAwareFakeSource { NoticeOnUse = "accepting any SSH host key" }), received.Add);
+
+        await new SourceLoadExecutor().ExecuteAsync(SourceNode(), ctx, default);
+        await new SourceLoadExecutor().ExecuteAsync(
+            SourceNode("letters", connection: "other"), ctx with { Connectors = reg }, default);
+
+        Assert.Equal(["mem: accepting any SSH host key", "other: accepting any SSH host key"], received);
     }
 
     [Fact]
@@ -158,7 +175,7 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         Assert.Equal(NodeStatus.Success, result.Status);
         Assert.Equal(1, sink.UseNoticeCalls);
         sink.FireNotice("unpinned host key");
-        Assert.Equal(["unpinned host key"], received);
+        Assert.Equal(["api: unpinned host key"], received);
     }
 
     /// <summary>A source/sink that does not implement <see cref="INoticeAware"/> at all is untouched --

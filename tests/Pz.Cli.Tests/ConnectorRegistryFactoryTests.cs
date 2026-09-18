@@ -179,7 +179,7 @@ public sealed class ConnectorRegistryFactoryTests(CliLocalFeedFixture feed) : ID
         return stderr.ToString();
     }
 
-    // ---- connector_log transform helpers (#82): level naming, exception-message folding ---------
+    // ---- connector_log transform helpers: level naming, exception-message folding ----------------
 
     [Theory]
     [InlineData(0, "trace")]

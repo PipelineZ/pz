@@ -259,37 +259,19 @@ public class ConsoleRendererTests
         new RunCompletedEvent(At, "run-1", "success", 1, 0, 0, 10),
     };
 
-    /// <summary>The console must not drown a normal run in per-batch connector chatter: only
-    /// warn-and-above reaches it. NDJSON has no such filter -- see
-    /// <see cref="JsonRendererTests.ConnectorLog_serializes_every_level"/>.</summary>
+    // What a connector logs reaches a person as a `note:` line, written by the run itself. Printing the
+    // event here as well would say everything twice.
     [Theory]
-    [InlineData("trace")]
-    [InlineData("debug")]
     [InlineData("info")]
-    public void ConnectorLog_below_warn_prints_nothing(string level)
-    {
-        var writer = new StringWriter();
-        var renderer = new ConsoleRenderer(writer);
-
-        renderer.Render(new ConnectorLogEvent(At, "run-1", level, "pg_prod", "connected"));
-
-        Assert.Equal(string.Empty, writer.ToString());
-    }
-
-    [Theory]
     [InlineData("warn")]
     [InlineData("error")]
-    [InlineData("critical")]
-    [InlineData("unknown")]
-    public void ConnectorLog_at_warn_or_above_prints_the_line(string level)
+    public void ConnectorLog_is_not_printed_by_the_renderer(string level)
     {
         var writer = new StringWriter();
         var renderer = new ConsoleRenderer(writer);
 
         renderer.Render(new ConnectorLogEvent(At, "run-1", level, "pg_prod", "retrying after a transient error"));
 
-        Assert.Equal(
-            $"connector [{level}] pg_prod: retrying after a transient error{Environment.NewLine}",
-            writer.ToString());
+        Assert.Equal(string.Empty, writer.ToString());
     }
 }

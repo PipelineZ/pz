@@ -55,29 +55,20 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _connectorNotices =
         new(StringComparer.Ordinal);
 
-    /// <summary>What a notice-aware source or sink is handed: <see cref="Notice"/>, delivering each
-    /// distinct text once per run — both as the existing console "note:" line and as a
-    /// <c>connector_log</c> run event tagged <paramref name="connection"/> at <c>"warn"</c> (a
-    /// connector opts into <c>INoticeAware</c> specifically to say something about its CONNECTION
-    /// identity, e.g. sftp's unpinned host key — that is a stronger signal than an arbitrary log line,
-    /// so "warn" is the fixed level for all of them). Unlike the arbitrary-text <c>ILogger</c> path a
-    /// process-hosted connector's own log lines travel (<c>ConnectorRegistryFactory</c>'s logSink,
-    /// redacted there), a notice's text is written by pz's own in-tree connector code — the same trust
-    /// class <see cref="MessageRedaction"/> already carries PzConnectorException/PzConfigException
-    /// messages through unredacted, so an operator-facing identifier it deliberately quotes (sftp's
-    /// notice names both the missing option and the command to run next) stays actionable rather than
-    /// being masked to <c>'***'</c> alongside genuinely sensitive data. Every node opens its own source
-    /// or sink, so what a connector has to say about its CONNECTION would otherwise repeat once per
-    /// entity read through it; the one dedup gate below covers both deliveries atomically, so a
-    /// connection opened by ten nodes reports it once through each channel, not ten times. Null when the
-    /// run has no notice sink. `with`-clones share the set, which is right: it is per-run state.</summary>
+    /// <summary>What a notice-aware source or sink is handed. Each distinct text is delivered once per
+    /// run and per connection, twice over: to <see cref="Notice"/>, led by the connection's name, and as
+    /// a <c>connector_log</c> run event at <c>"warn"</c> that names the connection in its own field.
+    /// Every node opens its own source or sink, so what a connector has to say about its CONNECTION
+    /// would otherwise repeat once per entity read through it. The text is not redacted here, so a
+    /// connector must not put a configured value in it. Null when the run has no notice sink.
+    /// `with`-clones share the set, which is right: it is per-run state.</summary>
     public Action<string>? ConnectorNoticeFor(string connection) => Notice is not { } deliver
         ? null
         : message =>
         {
-            if (_connectorNotices.TryAdd(message, 0))
+            if (_connectorNotices.TryAdd($"{connection}\n{message}", 0))
             {
-                deliver(message);
+                deliver($"{connection}: {message}");
                 Events.SafeConnectorLog(connection, "warn", message);
             }
         };

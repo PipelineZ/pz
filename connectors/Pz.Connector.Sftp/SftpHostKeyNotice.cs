@@ -5,8 +5,10 @@ namespace Pz.Connector.Sftp;
 /// shared so the two connectors' phrasing cannot drift apart.</summary>
 internal static class SftpHostKeyNotice
 {
-    internal static string Unpinned(string host) =>
-        $"sftp host '{host}': accepting any SSH host key because 'host_key_fingerprint' is not set -- " +
+    /// <summary>Carries no host or any other configured value: the engine leads the line with the
+    /// connection's name, and the same text is recorded as a run event.</summary>
+    internal const string Unpinned =
+        "accepting any SSH host key because 'host_key_fingerprint' is not set -- " +
         "no protection against a man-in-the-middle; run 'pz validate --connect' to see the fingerprint " +
         "the server presents, then pin it";
 }

@@ -30,7 +30,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     {
         if (settings.HostKeyFingerprint is null)
         {
-            notice(SftpHostKeyNotice.Unpinned(settings.Host));
+            notice(SftpHostKeyNotice.Unpinned);
         }
     }
 

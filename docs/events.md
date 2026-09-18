@@ -314,18 +314,17 @@ configured never publishes it at all.
 ## `connector_log`
 
 A connector's own log output. Like `breaker_state_changed`, this is **not** part of any single node's
-`node_started` → ... → `node_completed` sequence: a process-hosted connector spawns one process per
-node open, so its log lines are inherently per-node already and never deduplicated; an in-process
-connector's own connection-identity notice (e.g. sftp's unpinned host key) is instead delivered at most
-once per run per distinct text, regardless of how many nodes open that connection — the same
-per-run de-duplication a repeated `note:` console line already gets. A project that opens no
-process-hosted connector and triggers no in-process connector notice never publishes this event at all.
+`node_started` → ... → `node_completed` sequence, and it names a connection rather than a node. A
+process-hosted connector is started once per node, so a line it logs about its connection arrives once
+per entity read through it, and every one is published. An in-process connector's notice about its
+connection (e.g. sftp's unpinned host key) is published once per run for each connection and distinct
+text. A run whose connectors log nothing never publishes this event.
 
 | Field | Type | Description |
 |---|---|---|
 | `level` | string | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `critical` \| `unknown`. An in-process connector's connection notice is always `warn`. |
 | `connection` | string | The connection this log line belongs to. |
-| `message` | string | The connector's own text. A process-hosted connector's message has passed through the engine's redaction helper (never connection config, never SQL text); an in-process connector's notice text is pz's own in-tree code and is not redacted, the same as the console `note:` line it accompanies. |
+| `message` | string | The connector's own text. A process-hosted connector's message, with the message of any exception logged beside it, has passed through the engine's redaction helper. An in-process connector's notice is written without any configured value in it. |
 
 ## `retention_swept`
 

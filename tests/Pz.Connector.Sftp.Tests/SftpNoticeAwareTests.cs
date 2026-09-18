@@ -26,7 +26,7 @@ public sealed class SftpNoticeAwareTests
 
         Assert.NotNull(message);
         Assert.Contains("host_key_fingerprint", message, StringComparison.Ordinal);
-        Assert.Contains("sftp.example", message, StringComparison.Ordinal);
+        Assert.DoesNotContain("sftp.example", message, StringComparison.Ordinal);
     }
 
     [Fact]
