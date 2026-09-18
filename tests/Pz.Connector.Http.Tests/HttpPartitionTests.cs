@@ -494,4 +494,19 @@ public class HttpPartitionTests
         Assert.DoesNotContain("TOPSECRET", ex.Message);
         Assert.Contains("api_key=***", ex.Message);
     }
+
+    [Fact]
+    public async Task Response_over_max_response_mb_is_a_permanent_error_naming_the_option()
+    {
+        await using var server = new StubHttpServer();
+        var big = new string('x', 2 * 1024 * 1024); // 2 MiB of filler, over a 1 MiB cap
+        server.Map("/items", _ => new StubResponse(200, $$"""[{"id":"{{big}}"}]"""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadAllAsync(server,
+            new() { ["path"] = "/items" },
+            new() { ["max_response_mb"] = 1L }));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("max_response_mb", ex.Message);
+    }
 }

@@ -655,6 +655,18 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
             {
                 response = await client.SendAsync(request, ct).ConfigureAwait(false);
             }
+            catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.ConfigurationLimitExceeded)
+            {
+                // HttpClient buffers the whole response before SendAsync returns (default
+                // HttpCompletionOption.ResponseContentRead) and refuses to grow the buffer past
+                // MaxResponseContentBufferSize -- the runtime's own message never mentions the pz
+                // option that set the limit, so callers see a bare "configured maximum buffer size"
+                // with nothing to act on.
+                throw new PzConnectorException(
+                    $"{Label}: response from {Redact(sendUri)} exceeds 'max_response_mb' " +
+                    $"({connection.MaxResponseBytes / (1024 * 1024)} MiB)", isTransient: false,
+                    innerException: ex);
+            }
             catch (HttpRequestException ex)
             {
                 throw new PzConnectorException($"{Label}: request to {Redact(sendUri)} failed: {ex.Message}",

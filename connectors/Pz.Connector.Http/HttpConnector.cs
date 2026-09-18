@@ -42,7 +42,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector
                 "required": ["type"], "additionalProperties": false },
             "headers": { "type": "object", "additionalProperties": { "type": "string" } },
             "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 3600 },
-            "max_response_mb": { "type": "integer", "minimum": 1, "maximum": 4096 },
+            "max_response_mb": { "type": "integer", "minimum": 1, "maximum": 2047 },
             "allow_hosts": { "type": "array", "items": { "type": "string" } } },
           "additionalProperties": false }
         """;

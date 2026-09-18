@@ -105,6 +105,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   actually defines are compared; an unrecognized name or bit is reported once
   as a warning instead, the same way an out-of-process host already reports a
   declared-but-unimplemented capability.
+- The HTTP connector's `max_response_mb` is capped at 2047 (2048 MiB, once
+  converted to bytes, overflows `HttpClient.MaxResponseContentBufferSize`'s own
+  int.MaxValue ceiling): the cap is now enforced in both `base_url` connection
+  validation and the connection JSON Schema, instead of passing validation and
+  crashing the read with a raw `ArgumentOutOfRangeException`. A response that
+  actually exceeds the configured cap at read time is now a permanent
+  `PzConnectorException` naming `max_response_mb`, instead of a bare runtime
+  "configured maximum buffer size" message.
 - Cancelling a run now interrupts a statement already running inside DuckDB.
   Ctrl-C (and the new node timeout) used to wait for the statement to finish on
   its own, however long that took.

@@ -19,6 +19,11 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// response the endpoint chooses the size of. 256 MiB is far above any real page of JSON.</summary>
     public const long DefaultMaxResponseBytes = 256L * 1024 * 1024;
 
+    /// <summary>Highest legal 'max_response_mb'. HttpClient.MaxResponseContentBufferSize refuses any
+    /// value above int.MaxValue bytes (2147483647); 2048 MiB (2147483648 bytes) already overflows
+    /// that ceiling, so 2047 is the largest whole-MiB value that stays under it.</summary>
+    public const long MaxResponseMbCap = 2047;
+
     /// <summary>True when <paramref name="candidate"/> may be requested with this connection's
     /// credentials attached: the base URL's own origin (scheme + host + port), or a host the author
     /// explicitly listed in 'allow_hosts'. Pagination links, redirect targets and stored resume
@@ -114,13 +119,14 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         if (config.Values.TryGetValue("max_response_mb", out var m) && m is not null)
         {
             if (long.TryParse(m.ToString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var mb)
-                && mb > 0 && mb <= 4096)
+                && mb > 0 && mb <= MaxResponseMbCap)
             {
                 maxResponseBytes = mb * 1024 * 1024;
             }
             else
             {
-                errors.Add($"'max_response_mb' must be a positive whole number of MiB up to 4096, got '{m}'");
+                errors.Add($"'max_response_mb' must be a positive whole number of MiB up to " +
+                    $"{MaxResponseMbCap}, got '{m}'");
             }
         }
 

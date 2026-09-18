@@ -54,6 +54,57 @@ public class HttpConnectorTests
     }
 
     [Fact]
+    public async Task Validate_accepts_max_response_mb_up_to_the_cap()
+    {
+        var result = await new HttpConnector().ValidateAsync(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = "https://api.example.com",
+            ["max_response_mb"] = 2047,
+        }), CancellationToken.None);
+
+        Assert.True(result.IsValid);
+
+        var errors = new List<string>();
+        var config = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = "https://api.example.com",
+            ["max_response_mb"] = 100,
+        }), errors);
+
+        Assert.Empty(errors);
+        Assert.Equal(100L * 1024 * 1024, config!.MaxResponseBytes);
+    }
+
+    [Fact]
+    public async Task Validate_refuses_max_response_mb_over_the_cap()
+    {
+        // 2048 MiB, once converted to bytes, exceeds int.MaxValue and overflows
+        // HttpClient.MaxResponseContentBufferSize's own limit -- caught here, not at read time.
+        var result = await new HttpConnector().ValidateAsync(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = "https://api.example.com",
+            ["max_response_mb"] = 2048,
+        }), CancellationToken.None);
+
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("max_response_mb") && e.Contains("2047"));
+    }
+
+    [Fact]
+    public void Schema_caps_max_response_mb_at_2047()
+    {
+        var schema = JsonSchema.FromText(new HttpConnector().ConnectionConfigSchema);
+
+        var valid = JsonSerializer.Deserialize<JsonElement>(
+            """{"base_url":"https://api.example.com","max_response_mb":2047}""");
+        Assert.True(schema.Evaluate(valid).IsValid);
+
+        var invalid = JsonSerializer.Deserialize<JsonElement>(
+            """{"base_url":"https://api.example.com","max_response_mb":2048}""");
+        Assert.False(schema.Evaluate(invalid).IsValid);
+    }
+
+    [Fact]
     public async Task CheckConnection_reports_ok_and_failure_without_throwing()
     {
         await using var server = new StubHttpServer();
