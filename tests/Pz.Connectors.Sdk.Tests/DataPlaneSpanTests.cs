@@ -27,7 +27,7 @@ public sealed class DataPlaneSpanTests
         }
 
         var partition = new SyncPartition(3, prior: "0+3");
-        var ticket = new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, new SyncStateCapture(), parent);
+        var ticket = new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, new SyncStateCapture(), new StreamFailureCapture(), parent);
         using var stream = new MemoryStream();
 
         await DataPlaneListener.ServeReadAsync(stream, ticket, source, CancellationToken.None);

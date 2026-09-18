@@ -191,6 +191,11 @@ internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IO
     /// interfaces the planned object implements.</summary>
     private IDatasetPartition Stage(IDatasetPartition partition, DatasetSpec spec, string stableId)
     {
+        if (options.FailReadMidstreamTransient)
+        {
+            partition = new FailingMidstreamReadPartition(partition);
+        }
+
         if (options.EndlessRead)
         {
             partition = new EndlessReadPartition(partition);
@@ -231,8 +236,11 @@ internal sealed class StagedSink(ISink inner, FixtureOptions options) : ISink
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy) =>
         inner.TryGetNativeCopy(spec, out copy);
 
-    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
-        inner.BeginWriteAsync(spec, schema, ct);
+    public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
+    {
+        var session = await inner.BeginWriteAsync(spec, schema, ct).ConfigureAwait(false);
+        return options.FailWriteMidstreamTransient ? new FailingMidstreamWriteSession(session) : session;
+    }
 
     // Without the switch the wrapped sink's own declaration crosses verbatim; --report-abort-semantics-none
     // proves the field genuinely crosses the wire rather than the host echoing its own default back.

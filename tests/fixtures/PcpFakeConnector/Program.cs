@@ -67,7 +67,11 @@ internal static class Program
 /// gives every partition the id <c>&lt;dataset&gt;:&lt;ordinal&gt;</c>.
 /// <c>--prune-columns</c> declares <c>ColumnPruning</c> and projects every batch to the hinted
 /// columns, in the hint's order, so a host-side test can prove the hint reaches the connector and
-/// the pruned shape comes back over the data plane.</para></summary>
+/// the pruned shape comes back over the data plane.
+/// <c>--fail-read-midstream-transient</c> / <c>--fail-write-midstream-transient</c> raise a transient
+/// <see cref="Pz.Connectors.Abstractions.PzConnectorException"/> with a retry-after from inside a
+/// partition's read (after its first batch) or a sink session's first write — the rate-limit shape,
+/// raised where only the data plane is listening.</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -84,7 +88,9 @@ internal sealed record FixtureOptions(
     bool SyncState,
     bool DeclareSyncStateOnly,
     bool StableIds,
-    bool PruneColumns)
+    bool PruneColumns,
+    bool FailReadMidstreamTransient,
+    bool FailWriteMidstreamTransient)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -96,6 +102,7 @@ internal sealed record FixtureOptions(
         bool hangHandshake = false, dieImmediately = false, wrongProtocolMajor = false;
         bool misreportCapabilities = false, misreportName = false;
         bool failCheckTransient = false, reportAbortSemanticsNone = false;
+        bool failReadMidstreamTransient = false, failWriteMidstreamTransient = false;
         bool useGate = false, endlessRead = false, ignoreCancel = false, ignoreShutdown = false;
         bool declareCheckpointableReads = false;
         bool syncState = false, declareSyncStateOnly = false, stableIds = false;
@@ -175,6 +182,12 @@ internal sealed record FixtureOptions(
                 case "--prune-columns":
                     pruneColumns = true;
                     break;
+                case "--fail-read-midstream-transient":
+                    failReadMidstreamTransient = true;
+                    break;
+                case "--fail-write-midstream-transient":
+                    failWriteMidstreamTransient = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -188,6 +201,7 @@ internal sealed record FixtureOptions(
         return (new FixtureOptions(
             hangHandshake, dieImmediately, wrongProtocolMajor, misreportCapabilities, misreportName,
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
-            declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns), passthrough.ToArray());
+            declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
+            failReadMidstreamTransient, failWriteMidstreamTransient), passthrough.ToArray());
     }
 }

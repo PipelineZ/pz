@@ -50,12 +50,10 @@ impl std::fmt::Display for PzError {
 
 impl std::error::Error for PzError {}
 
-/// Builds the `RpcException` shape the host's `PcpClient.MapRpcException` expects: a gRPC status
-/// (`Unavailable` for a transient failure, `FailedPrecondition` otherwise -- chosen only for readable
-/// logs, since the host decides by trailer presence, not status code) carrying the prost-encoded
-/// `PzErrorDetail` under the `pz-error-bin` binary trailer key.
-pub(crate) fn to_status(err: &PzError) -> Status {
-    let detail = PzErrorDetail {
+/// The wire shape of a connector failure, whichever RPC carries it: the `pz-error-bin` trailer of a
+/// failed call, or the body of a `GetStreamFailure` answer.
+pub(crate) fn to_error_detail(err: &PzError) -> PzErrorDetail {
+    PzErrorDetail {
         code: err.code.clone().unwrap_or_default(),
         message: err.message.clone(),
         is_transient: err.is_transient,
@@ -63,7 +61,15 @@ pub(crate) fn to_status(err: &PzError) -> Status {
         // ABI's own contract for this field, not a distinction this crate's wire shape can carry.
         retry_after_ms: err.retry_after_ms.unwrap_or(0),
         hint: err.hint.clone().unwrap_or_default(),
-    };
+    }
+}
+
+/// Builds the `RpcException` shape the host's `PcpClient.MapRpcException` expects: a gRPC status
+/// (`Unavailable` for a transient failure, `FailedPrecondition` otherwise -- chosen only for readable
+/// logs, since the host decides by trailer presence, not status code) carrying the prost-encoded
+/// `PzErrorDetail` under the `pz-error-bin` binary trailer key.
+pub(crate) fn to_status(err: &PzError) -> Status {
+    let detail = to_error_detail(err);
 
     let code = if err.is_transient {
         Code::Unavailable

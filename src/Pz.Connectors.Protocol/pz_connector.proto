@@ -30,6 +30,17 @@ service PzConnector {
   // candidate" loses the token: the engine persists nothing and the feed replays next run.
   rpc GetReadState(ReadStateRequest) returns (ReadStateResponse);
 
+  // Why a data-plane stream failed. The data plane carries Arrow bytes and nothing else, so a connector
+  // that fails mid-stream can only truncate a read or hang up on a write: that tells the host THAT the
+  // stream failed, never why. A rate limit raised from a partition's read, or a transient failure raised
+  // from a sink's write, reached the engine as a permanent failure with no retry-after. The host asks
+  // here once a stream has torn while the process is still alive. The connector must record the failure
+  // BEFORE it truncates or closes the data connection, so the answer exists by the time the host can
+  // ask. Absent = the connector knows of no failure on that stream. Side-effect free: it never commits,
+  // aborts or frees anything, and may be asked more than once. A connector built before this RPC answers
+  // UNIMPLEMENTED, which the host treats exactly like absent.
+  rpc GetStreamFailure(StreamFailureRequest) returns (StreamFailureResponse);
+
   // sink
   rpc TryNativeCopy(NativeCopyRequest) returns (NativeCopyResponse);
   rpc BeginWrite(BeginWriteRequest) returns (WriteSessionTicket);
@@ -154,6 +165,20 @@ message ReadStateRequest { string op_id = 1; string partition_id = 2; }
 message ReadStateResponse {
   // Absent = no candidate (ISyncStatePartition.TryGetSyncStateCandidate returned false).
   optional string token = 1;
+}
+
+// Names the stream the way the call that opened it did: a read by its op and partition (exactly as
+// OpenReadRequest/ReadStateRequest resolve them), a write by its session. An unknown op, partition or
+// session is "no failure known", not an error: by the time a stream has failed the connector may
+// already have let go of it.
+message StreamFailureRequest {
+  oneof stream {
+    ReadStateRequest read = 1;
+    SessionRef write = 2;
+  }
+}
+message StreamFailureResponse {
+  optional PzErrorDetail failure = 1;
 }
 
 message NativeCopyRequest { string op_id = 1; OutputSpecMsg spec = 2; }

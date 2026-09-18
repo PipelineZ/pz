@@ -52,6 +52,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   Ctrl-C (and the new node timeout) used to wait for the statement to finish on
   its own, however long that took.
 
+- A transient failure an out-of-process connector raises mid-stream (a rate
+  limit thrown from a partition's read after its first batch, or from a sink's
+  write) now reaches the engine with its transience and retry-after intact and
+  is retried, instead of surfacing as a permanent "stream truncated" or
+  "connection closed" failure. The data plane carries bytes and no diagnosis,
+  so PCP gains a side-effect-free `GetStreamFailure` RPC: the host asks a
+  still-alive connector why a stream tore, and both SDKs (C# and Rust) record
+  the failure before closing the stream so the answer exists by the time the
+  host asks. A connector built before this RPC answers UNIMPLEMENTED, which
+  the host treats as "no failure known" and falls back to its previous
+  diagnosis, so no connector needs rebuilding.
 - The shape guards on the Connectors SDK data plane and on the engine's Arrow
   ingest now compare Arrow types structurally: nested child types, decimal
   precision and scale, timestamp unit and timezone, fixed-size widths,
