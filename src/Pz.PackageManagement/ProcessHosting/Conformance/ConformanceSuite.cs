@@ -77,6 +77,12 @@ public static class ConformanceSuite
     private const long ControlPlaneSizeCapBytes = 1024 * 1024;
     private const int ProbeRowCount = 5;
 
+    /// <summary>Mirrors the TestKit's own <c>SkipIfNativeOnly</c> reason text -- "connector is
+    /// INativeOnlySource: it has no universal read path for this fact to read through" -- for the wire
+    /// case where the marker interface itself is unobservable and NativeOnlyRead is the substitute.</summary>
+    private const string NativeOnlyReadSkipReason =
+        "connector declares NativeOnlyRead: it has no universal read path for this vector to probe";
+
     public static async Task<ConformanceReport> RunAsync(
         ConformanceRequest request, string socketRootDir, CancellationToken ct)
     {
@@ -114,9 +120,17 @@ public static class ConformanceSuite
             // answer it -- SimpleGate applies no pacing/retry of its own, it only unblocks the exchange.
             pump = HostChannelPump.Start(client, process, new SimpleGate());
 
+            // A connector declaring NativeOnlyRead has no universal read path at all -- PlanRead always
+            // refuses (the wire mirror of INativeOnlySource; see the capability's own doc comment). Every
+            // vector below that needs PlanRead to succeed has nothing left to probe against such a
+            // connector and reports Skip instead of running straight into that refusal as a Fail.
+            var nativeOnlyRead = (client.Hello.Capabilities & (long)ConnectorCapabilities.NativeOnlyRead) != 0;
+
             await AddVectorAsync(vectors, "schema-batch-equality", request.ReadProbe is null
                 ? SkippedAsync("no read: probe supplied in --config")
-                : SchemaBatchEqualityAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
+                : nativeOnlyRead
+                    ? SkippedAsync(NativeOnlyReadSkipReason)
+                    : SchemaBatchEqualityAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
 
             await AddVectorAsync(vectors, "commit-abort-session-rules", request.WriteProbe is null
                 ? SkippedAsync("no write: probe supplied in --config")
@@ -124,7 +138,9 @@ public static class ConformanceSuite
 
             await AddVectorAsync(vectors, "cancellation", request.ReadProbe is null
                 ? SkippedAsync("no read: probe supplied in --config")
-                : CancellationAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
+                : nativeOnlyRead
+                    ? SkippedAsync(NativeOnlyReadSkipReason)
+                    : CancellationAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
 
             await AddVectorAsync(vectors, "transient-error-shape",
                 TransientErrorShapeAsync(client, request.ReadProbe, request.WriteProbe, ct));
@@ -141,7 +157,9 @@ public static class ConformanceSuite
 
             await AddVectorAsync(vectors, "ticket-handling", request.ReadProbe is null
                 ? SkippedAsync("ticket-handling requires a read: probe in --config")
-                : TicketHandlingAsync(client, process, request.ReadProbe, ct));
+                : nativeOnlyRead
+                    ? SkippedAsync(NativeOnlyReadSkipReason)
+                    : TicketHandlingAsync(client, process, request.ReadProbe, ct));
 
             await AddVectorAsync(vectors, "control-plane-message-size",
                 ControlPlaneMessageSizeAsync(client, request.ReadProbe, request.WriteProbe, ct));

@@ -165,6 +165,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   strict about timestamp unit and timezone spelling: a connector whose
   declared schema says `+00:00` and whose batches say `UTC` is refused with
   both shapes named.
+- `pz connector test`'s read vectors (schema/batch equality, cancellation,
+  ticket handling) now report Skip, not Fail, against a connector declaring
+  the new `NativeOnlyRead` capability — the wire signal for a source with no
+  universal read path at all (`PlanRead` always refuses), mirroring the
+  TestKit's own `SkipIfNativeOnly`. Until now these vectors called `PlanRead`
+  unconditionally and reported the refusal as a protocol failure.
 - An exception no verb anticipated now ends as `error PZ0500: internal error …`
   with exit code 3 and a request to report it, instead of a raw stack trace
   with exit code 1 (which the exit-code contract reserves for node failures).
