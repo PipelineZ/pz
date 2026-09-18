@@ -105,6 +105,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   actually defines are compared; an unrecognized name or bit is reported once
   as a warning instead, the same way an out-of-process host already reports a
   declared-but-unimplemented capability.
+- `ContractProjector.ProjectRow` (shared by the HTTP and SFTP connectors' `columns:`
+  contract mode) now throws a permanent "record is not an object (check 'items')"
+  error naming the dataset when a record isn't a JSON object, instead of silently
+  projecting a row of all NULLs. An `items` pointer that resolves one level off
+  used to land N all-NULL rows on a green node whose watermark still advanced
+  past data that was never actually read.
 - The HTTP connector's `max_response_mb` is capped at 2047 (2048 MiB, once
   converted to bytes, overflows `HttpClient.MaxResponseContentBufferSize`'s own
   int.MaxValue ceiling): the cap is now enforced in both `base_url` connection

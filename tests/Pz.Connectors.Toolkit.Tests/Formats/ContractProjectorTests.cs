@@ -47,10 +47,17 @@ public class ContractProjectorTests
     }
 
     [Fact]
-    public void Non_object_record_projects_all_nulls()
+    public void Non_object_record_is_a_permanent_error_naming_the_entity_and_items()
     {
-        var row = ContractProjector.ProjectRow(JsonNode.Parse("[1,2]"), Columns, "ctx");
-        Assert.All(row, Assert.Null);
+        // A record that isn't a JSON object (e.g. 'items' points one level off, resolving to an
+        // array of scalars instead of an array of row objects) used to project a row of all NULLs:
+        // a green node whose watermark never advances and whose staged data is silently empty.
+        var ex = Assert.Throws<PzConnectorException>(
+            () => ContractProjector.ProjectRow(JsonNode.Parse("[1,2]"), Columns, "dataset 'issues'"));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("dataset 'issues'", ex.Message);
+        Assert.Contains("record is not an object", ex.Message);
+        Assert.Contains("'items'", ex.Message);
     }
 
     [Fact]
