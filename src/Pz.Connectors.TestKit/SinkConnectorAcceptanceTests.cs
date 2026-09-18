@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using Json.Schema;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
 using Xunit;
@@ -77,6 +79,32 @@ public abstract class SinkConnectorAcceptanceTests
     /// meaningful when the connector declares CheckpointableWrites. Null default: no-op.</summary>
     protected virtual OutputSpec? CheckpointOutput => null;
 
+    /// <summary>An output spec for <see cref="Commit_round_trips_the_full_type_matrix"/> — null (the
+    /// default) makes that fact a Skip-free no-op, mirroring <see cref="MergeOutput"/>. A connector that
+    /// opts in must also override <see cref="ReadTypeMatrixCommittedAsync"/>: the fixed id/name
+    /// <see cref="ReadCommittedAsync"/> has no column to read decimal/timestamp/date/bool back through.</summary>
+    protected virtual OutputSpec? TypeMatrixOutput => null;
+
+    /// <summary>Reads back what <see cref="Commit_round_trips_the_full_type_matrix"/> committed, using
+    /// <see cref="TypeMatrixSchema"/>'s column set. No-op (empty) by default, matching the
+    /// <see cref="TypeMatrixOutput"/> null-hook precedent — a subclass that has not opted in never has
+    /// this called for real (the fact returns before reaching it).</summary>
+    protected virtual ValueTask<IReadOnlyList<RecordBatch>> ReadTypeMatrixCommittedAsync(
+        ISinkConnector connector, OutputSpec spec) =>
+        new(System.Array.Empty<RecordBatch>());
+
+    /// <summary>id/amount/ts/d/active — one column per type in <c>ArrowBatchBuilder</c>'s v0 matrix that
+    /// <see cref="FixedSchema"/> does not already cover (decimal128(38,9), timestamp-µs-UTC, date32,
+    /// bool); every non-id column nullable, so the same schema also carries the fact's null row.</summary>
+    private static readonly Schema TypeMatrixSchema = new(
+    [
+        new Field("id", Int64Type.Default, nullable: false),
+        new Field("amount", new Decimal128Type(38, 9), nullable: true),
+        new Field("ts", new TimestampType(TimeUnit.Microsecond, "UTC"), nullable: true),
+        new Field("d", Date32Type.Default, nullable: true),
+        new Field("active", BooleanType.Default, nullable: true),
+    ], null);
+
     [SkippableFact]
     public async Task Commit_persists_all_written_batches()
     {
@@ -123,12 +151,16 @@ public abstract class SinkConnectorAcceptanceTests
         }
 
         var committed = await ReadCommittedAsync(connector, SmallOutput);
-        // Emptiness is exactly the DiscardsAll contract. A BestEffort/None
-        // sink's abort is still required to succeed (asserted above by not throwing), but what
-        // remains visible is the destination's truth, not the TestKit's to assert generically.
+        // Zero VISIBLE ROWS is exactly the DiscardsAll contract -- not an empty collection: a
+        // replace-mode destination that truncates-then-stages may legitimately still exist as a
+        // zero-row table/file even though nothing this session wrote survived (SmallOutput is shared
+        // with every other fact in this suite, so "the destination never existed" is not something this
+        // fact may assume). A BestEffort/None sink's abort is still required to succeed (asserted above
+        // by not throwing), but what remains visible is the destination's truth, not the TestKit's to
+        // assert generically.
         if (sink.AbortSemantics == AbortSemantics.DiscardsAll)
         {
-            Assert.Empty(committed);
+            Assert.Equal(0, committed.Sum(b => (long)b.Length));
         }
     }
 
@@ -526,6 +558,205 @@ public abstract class SinkConnectorAcceptanceTests
             Assert.DoesNotContain("?", label);
             Assert.DoesNotContain(" ", label);
         }
+    }
+
+    [SkippableFact]
+    public async Task Commit_with_zero_batches_writes_nothing()
+    {
+        Gate();
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
+
+        var result = await session.CommitAsync(CancellationToken.None);
+        Assert.Equal(0, result.RowsWritten);
+
+        var committed = await ReadCommittedAsync(connector, SmallOutput);
+        Assert.Equal(0, committed.Sum(b => (long)b.Length));
+    }
+
+    [SkippableFact]
+    public async Task Commit_persists_a_large_batch()
+    {
+        Gate();
+        const int rowCount = 20_000;
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
+
+        // Four batches, not one: exercises the same multi-WriteBatchAsync-call path every other fact
+        // here does, just at a size that would show a per-row or O(n^2) cost a 50-row fixture cannot.
+        foreach (var batch in BuildBatches(batchCount: 4, rowsPerBatch: rowCount / 4))
+        {
+            await session.WriteBatchAsync(batch, CancellationToken.None);
+            batch.Dispose();
+        }
+
+        var result = await session.CommitAsync(CancellationToken.None);
+        Assert.Equal(rowCount, result.RowsWritten);
+
+        var committed = await ReadCommittedAsync(connector, SmallOutput);
+        Assert.Equal(rowCount, committed.Sum(b => (long)b.Length));
+    }
+
+    /// <summary>A batch handed to <see cref="ISinkWriteSession.WriteBatchAsync"/> with an
+    /// ALREADY-cancelled token must fail as a cancellation, not silently succeed or surface some other
+    /// exception type -- the engine's own retry/abort logic branches on
+    /// <see cref="OperationCanceledException"/> specifically. The session is aborted afterward
+    /// regardless of the fact's own outcome, so a connector that DID accept the write leaves nothing
+    /// behind for the next fact to trip over.</summary>
+    [SkippableFact]
+    public async Task WriteBatchAsync_honors_an_already_cancelled_token()
+    {
+        Gate();
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
+
+        var batch = BuildBatches(batchCount: 1, rowsPerBatch: 5)[0];
+        try
+        {
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => session.WriteBatchAsync(batch, new CancellationToken(canceled: true)).AsTask());
+        }
+        finally
+        {
+            batch.Dispose();
+            await session.AbortAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>Every field the engine hands a sink arrives nullable regardless of what the source
+    /// column declared (see <see cref="ISink.BeginWriteAsync"/>'s NULLABILITY note) -- a sink that only
+    /// ever saw the fixture's own non-null values could still be silently mishandling a real null.</summary>
+    [SkippableFact]
+    public async Task Commit_persists_null_values()
+    {
+        Gate();
+        var nullableSchema = new Schema(
+        [
+            new Field("id", Int64Type.Default, nullable: false),
+            new Field("name", StringType.Default, nullable: true),
+        ], null);
+
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        await using (var session = await sink.BeginWriteAsync(SmallOutput, nullableSchema, CancellationToken.None))
+        {
+            var builder = new ArrowBatchBuilder(nullableSchema);
+            builder.AppendRow([0L, "zero"]);
+            builder.AppendRow([1L, null]);
+            builder.AppendRow([2L, "two"]);
+            using var batch = builder.Flush()!;
+            await session.WriteBatchAsync(batch, CancellationToken.None);
+            await session.CommitAsync(CancellationToken.None);
+        }
+
+        var committed = await ReadCommittedAsync(connector, SmallOutput);
+        Assert.Equal(3, committed.Sum(b => (long)b.Length));
+
+        var names = new Dictionary<long, bool>(); // id -> is-null
+        foreach (var batch in committed)
+        {
+            var ids = (Int64Array)batch.Column(0);
+            var nameColumn = (StringArray)batch.Column(1);
+            for (var i = 0; i < batch.Length; i++)
+            {
+                names[ids.GetValue(i)!.Value] = nameColumn.IsNull(i);
+            }
+        }
+
+        Assert.False(names[0]);
+        Assert.True(names[1]);
+        Assert.False(names[2]);
+    }
+
+    /// <summary>Opt-in (see <see cref="TypeMatrixOutput"/>): round-trips decimal128/timestamp/date/bool
+    /// -- the part of <c>ArrowBatchBuilder</c>'s v0 type matrix the id/name fixture never exercises --
+    /// plus a null in every nullable column, alongside a fully-populated row.</summary>
+    [SkippableFact]
+    public async Task Commit_round_trips_the_full_type_matrix()
+    {
+        Gate();
+        if (TypeMatrixOutput is not { } output)
+        {
+            Assert.True(true);
+            return;
+        }
+
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        var amount = 1234.567891234m;
+        var ts = new DateTimeOffset(2024, 3, 14, 15, 9, 26, TimeSpan.Zero);
+        var d = new DateOnly(2024, 3, 14);
+        await using (var session = await sink.BeginWriteAsync(output, TypeMatrixSchema, CancellationToken.None))
+        {
+            var builder = new ArrowBatchBuilder(TypeMatrixSchema);
+            builder.AppendRow([1L, amount, ts, d, true]);
+            builder.AppendRow([2L, null, null, null, null]);
+            using var batch = builder.Flush()!;
+            await session.WriteBatchAsync(batch, CancellationToken.None);
+            await session.CommitAsync(CancellationToken.None);
+        }
+
+        var committed = await ReadTypeMatrixCommittedAsync(connector, output);
+        Assert.Equal(2, committed.Sum(b => (long)b.Length));
+
+        var rows = new Dictionary<long, (decimal? Amount, DateTimeOffset? Ts, DateOnly? D, bool? Active)>();
+        foreach (var batch in committed)
+        {
+            var ids = (Int64Array)batch.Column(0);
+            var amounts = (Decimal128Array)batch.Column(1);
+            var timestamps = (TimestampArray)batch.Column(2);
+            var dates = (Date32Array)batch.Column(3);
+            var actives = (BooleanArray)batch.Column(4);
+            for (var i = 0; i < batch.Length; i++)
+            {
+                var id = ids.GetValue(i)!.Value;
+                rows[id] = (
+                    amounts.IsNull(i) ? null : amounts.GetValue(i),
+                    timestamps.IsNull(i) ? null : timestamps.GetTimestamp(i),
+                    dates.IsNull(i) ? null : dates.GetDateOnly(i),
+                    actives.IsNull(i) ? null : actives.GetValue(i));
+            }
+        }
+
+        Assert.Equal(amount, rows[1].Amount);
+        Assert.Equal(ts, rows[1].Ts);
+        Assert.Equal(d, rows[1].D);
+        Assert.True(rows[1].Active);
+
+        Assert.Null(rows[2].Amount);
+        Assert.Null(rows[2].Ts);
+        Assert.Null(rows[2].D);
+        Assert.Null(rows[2].Active);
+    }
+
+    /// <summary>The #112 capability contract: a sink that offers <see cref="IOutputConfigSchema"/> must
+    /// offer valid JSON Schema, and that schema must refuse a key it does not declare -- otherwise tier
+    /// 3's whole point (catching a typo'd write option) is lost. Self-detecting rather than a new
+    /// null-hook: a connector that has not implemented the capability has nothing to prove here, so the
+    /// fact is a no-op for it, exactly like <see cref="MergeOutput"/>'s null case.</summary>
+    [SkippableFact]
+    public async Task Output_schema_when_offered_is_valid_and_refuses_an_unknown_key()
+    {
+        Gate();
+        var connector = CreateSink();
+        if (connector is not IOutputConfigSchema declared)
+        {
+            Assert.True(true);
+            return;
+        }
+
+        var schemaText = declared.OutputConfigSchema;
+        Assert.False(string.IsNullOrWhiteSpace(schemaText));
+
+        var schema = JsonSchema.FromText(schemaText);
+        using var unknownKey = JsonDocument.Parse("""{"__pz_testkit_unrecognized_option__": true}""");
+        // The two-argument overload, matching Pz.Engine's ConnectorConfigValidator.ValidateSchema --
+        // the single-argument form resolves against JsonNode, not JsonElement, in this library version.
+        var result = schema.Evaluate(unknownKey.RootElement, new EvaluationOptions());
+        Assert.False(result.IsValid, "a sink's OutputConfigSchema must refuse an unrecognized key");
     }
 
     /// <summary>Writes a single row as its own batch into an already-open session -- used to construct

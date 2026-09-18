@@ -456,8 +456,24 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
             _deleteImporter = null;
         }
 
-        await _tx.RollbackAsync(ct).ConfigureAwait(false);
+        await RollbackTolerantlyAsync(ct).ConfigureAwait(false);
         _state = PgSinkSessionState.Aborted;
+    }
+
+    /// <summary>A write cancelled mid-<c>BeginBinaryImportAsync</c> can leave Npgsql's own transaction
+    /// object already disposed -- a fatal I/O failure during COPY setup tears down the connection's
+    /// session state as a side effect, before this session ever touches the transaction itself. Nothing
+    /// is left to roll back in that case, so an already-disposed transaction is not a new failure here;
+    /// any other exception still propagates.</summary>
+    private async ValueTask RollbackTolerantlyAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _tx.RollbackAsync(ct).ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -496,12 +512,21 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
                     _deleteImporter = null;
                 }
 
-                await _tx.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                await RollbackTolerantlyAsync(CancellationToken.None).ConfigureAwait(false);
                 _state = PgSinkSessionState.Aborted;
             }
         }
 
-        await _tx.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await _tx.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Same already-torn-down-by-Npgsql case RollbackTolerantlyAsync guards -- disposing an
+            // already-disposed transaction is not a new failure.
+        }
+
         await _connection.DisposeAsync().ConfigureAwait(false);
     }
 

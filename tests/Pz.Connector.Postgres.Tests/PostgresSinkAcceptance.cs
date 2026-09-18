@@ -169,7 +169,15 @@ public sealed class PostgresSinkAcceptance(PostgresContainerFixture fixture) : S
         while (await reader.ReadAsync().ConfigureAwait(false))
         {
             idBuilder.Append(reader.GetInt64(0));
-            nameBuilder.Append(reader.GetString(1));
+            if (reader.IsDBNull(1))
+            {
+                nameBuilder.AppendNull();
+            }
+            else
+            {
+                nameBuilder.Append(reader.GetString(1));
+            }
+
             rowCount++;
         }
 

@@ -52,12 +52,15 @@ public sealed class HttpSinkAcceptance : SinkConnectorAcceptanceTests, IDisposab
         var batches = new List<RecordBatch>();
         if (spec.Mode == "merge")
         {
-            var lastByKey = new Dictionary<long, (long Id, string Name)>();
+            var lastByKey = new Dictionary<long, (long Id, string? Name)>();
             foreach (var request in _server.Requests.Where(r => r.Method == "PUT"))
             {
                 var row = JsonNode.Parse(request.Body)!;
                 var id = row["id"]!.GetValue<long>();
-                lastByKey[id] = (id, row["name"]!.GetValue<string>());
+                // row["name"] is the null reference itself (not a JsonValue wrapping null) when the
+                // server received a JSON null for that field -- indexing straight into GetValue<string>
+                // would NullReferenceException on exactly the row Commit_persists_null_values writes.
+                lastByKey[id] = (id, row["name"]?.GetValue<string>());
             }
 
             var builder = new ArrowBatchBuilder(schema);
@@ -84,7 +87,10 @@ public sealed class HttpSinkAcceptance : SinkConnectorAcceptanceTests, IDisposab
                 var builder = new ArrowBatchBuilder(schema);
                 foreach (var row in rows)
                 {
-                    builder.AppendRow([row!["id"]!.GetValue<long>(), row["name"]!.GetValue<string>()]);
+                    // Same null-vs-null-JsonValue gap as the merge branch above: row!["name"] is a bare
+                    // null reference, not a JsonValue, when the confirmed request body carried a JSON
+                    // null for that field.
+                    builder.AppendRow([row!["id"]!.GetValue<long>(), row["name"]?.GetValue<string>()]);
                 }
 
                 batches.Add(builder.Flush()!);

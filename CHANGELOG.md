@@ -78,6 +78,25 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   both SDKs (C# `Pz.Connectors.Sdk`, Rust `pz-connector`) and sanity-checked as valid JSON by
   `pz connector test`'s handshake vector; `pz_connector_reference` (MCP) surfaces it alongside the
   read-side schemas.
+- Connectors TestKit: `SinkConnectorAcceptanceTests` gains six facts the fixed 50-row `id
+  Int64, name String` fixture never exercised -- a zero-batch commit persists nothing; a large
+  batch (20,000 rows across several `WriteBatchAsync` calls) round-trips; an already-cancelled
+  token handed to `WriteBatchAsync` is honored (`OperationCanceledException`, not a silent
+  success); a null in a nullable column survives a commit; the full v0 type matrix
+  (decimal128/timestamp-µs/date32/bool, opt-in via new `TypeMatrixOutput`/
+  `ReadTypeMatrixCommittedAsync` hooks, mirroring `MergeOutput`'s null-hook precedent) round-trips;
+  and a sink offering `IOutputConfigSchema` offers valid JSON Schema that refuses an unknown key
+  (self-detecting -- a no-op for a sink that has not implemented the capability). Every new fact is
+  virtual/skippable; every existing subclass compiles and passes unchanged. Writing the
+  cancellation fact against real connectors found three that silently ignored an already-cancelled
+  token (localfiles, azureblob, and the TestKit's own in-memory reference sink), now fixed to check
+  it before starting a write, and one that left its Npgsql transaction already disposed by a
+  cancelled `BeginBinaryImportAsync` (postgres), whose abort/dispose path now tolerates that rather
+  than throwing `ObjectDisposedException` out of `AbortAsync`/`DisposeAsync`. The existing
+  `Abort_discards_everything` fact now asserts zero visible rows rather than an empty collection:
+  `SmallOutput` is shared with every fact in the suite, and a replace-mode destination that
+  truncates-then-stages may legitimately still exist as a zero-row table once another fact has
+  committed to it first.
 - Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
   the acceptance fact for the `ColumnPruning` capability. It plans a read with a
   non-prefix, reordered column hint and requires every batch to carry exactly

@@ -18,7 +18,18 @@ public class InMemorySinkAcceptance : SinkConnectorAcceptanceTests
     protected override OutputSpec? ReplaceOutput => new("memsink", "replace-out", "replace", "fail_on_change",
         new Dictionary<string, object?>());
 
-    protected override ValueTask<IReadOnlyList<RecordBatch>> ReadCommittedAsync(ISinkConnector connector, OutputSpec spec)
+    protected override OutputSpec? TypeMatrixOutput => new("memsink", "type-matrix-out", "replace", "fail_on_change",
+        new Dictionary<string, object?>());
+
+    protected override ValueTask<IReadOnlyList<RecordBatch>> ReadCommittedAsync(ISinkConnector connector, OutputSpec spec) =>
+        ReadByOutputAsync(connector, spec);
+
+    // InMemorySink stores whatever RecordBatch it is handed, whatever the schema -- the same filter
+    // ReadCommittedAsync uses answers the type-matrix fact too.
+    protected override ValueTask<IReadOnlyList<RecordBatch>> ReadTypeMatrixCommittedAsync(ISinkConnector connector, OutputSpec spec) =>
+        ReadByOutputAsync(connector, spec);
+
+    private static ValueTask<IReadOnlyList<RecordBatch>> ReadByOutputAsync(ISinkConnector connector, OutputSpec spec)
     {
         var memConnector = (InMemoryConnector)connector;
         IReadOnlyList<RecordBatch> result = memConnector.Committed

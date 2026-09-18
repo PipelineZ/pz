@@ -44,6 +44,9 @@ internal abstract class AzureWriteSession(
     public async ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
     {
         EnsureOpen("write to");
+        // The per-format writer buffers in memory and may never reach an awaitable I/O call small
+        // enough to observe an already-cancelled token on its own -- check here, once.
+        ct.ThrowIfCancellationRequested();
         await WriteBatchCoreAsync(batch, ct).ConfigureAwait(false);
         _rowsWritten += batch.Length;
         _batchesWritten++;
