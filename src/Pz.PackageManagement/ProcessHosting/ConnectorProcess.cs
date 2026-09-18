@@ -86,6 +86,20 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// otherwise leave nothing to diagnose from. Null before the child has exited.</summary>
     public string? ExitDescription => ExitCode is { } code ? DescribeExitCode(code) : null;
 
+    /// <summary><see cref="HasExited"/> reads true as soon as the OS says so, which can be before the
+    /// exit callback has drained stderr and read the exit code. A failure message built in that window
+    /// would name neither, so whoever is about to describe a dead child waits here first -- briefly,
+    /// and only when the child really is gone: a live child costs nothing.</summary>
+    internal void SettleExitDetails()
+    {
+        if (HasExited && !_exitSignal.Task.IsCompleted)
+        {
+            _exitSignal.Task.Wait(ExitDetailsGrace);
+        }
+    }
+
+    private static readonly TimeSpan ExitDetailsGrace = TimeSpan.FromSeconds(2);
+
     internal static string DescribeExitCode(int code)
     {
         if (OperatingSystem.IsWindows() || code is < 129 or > 192)

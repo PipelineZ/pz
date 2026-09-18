@@ -93,10 +93,12 @@ public sealed class HandshakeTests : IDisposable
     {
         Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
 
-        // --die-immediately exits 1 before the socket is ever served, so by the time the connect
-        // retry loop below gives up (ShortHandshakeTimeout), the child has certainly already exited.
+        // --die-immediately exits 1 before the socket is ever served. The handshake is only started
+        // once the child is known to be gone: on a busy machine a process can take longer to start
+        // and die than ShortHandshakeTimeout takes to give up on it.
         await using var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--die-immediately"]);
+        await process.ExitedForTests;
 
         var ex = await Assert.ThrowsAsync<ConnectorHostException>(() => PcpClient.ConnectAndConfigureAsync(
             process, LocalFilesManifest(), "test-instance", ConnectorConfig.Empty, ShortHandshakeTimeout,

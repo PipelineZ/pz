@@ -342,6 +342,7 @@ public sealed class PcpClient : IAsyncDisposable
         TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
         Volatile.Write(ref _lastErrorTransient, detail.IsTransient ? 1 : 2);
 
+        _process.SettleExitDetails();
         var message = detail.Message;
         // The connector reported this itself, over the trailer -- but if it has also exited by the
         // time the host gets here (reported, then died), the exit code is worth knowing too.
@@ -374,6 +375,7 @@ public sealed class PcpClient : IAsyncDisposable
             return ToPzConnectorException(PzErrorDetail.Parser.ParseFrom(trailer.ValueBytes));
         }
 
+        _process.SettleExitDetails();
         var stderr = _process.StderrTail;
         var suffix = stderr.Length > 0 ? $"\nstderr:\n{stderr}" : string.Empty;
         if (!_process.HasExited)
@@ -530,6 +532,7 @@ public sealed class PcpClient : IAsyncDisposable
     /// failure has none to name an SDK from.</summary>
     private static ConnectorHostException HandshakeFailed(ConnectorProcess process, string reason, Hello? hello = null)
     {
+        process.SettleExitDetails();
         if (hello?.Sdk is { Name.Length: > 0 } sdk)
         {
             reason = $"{reason} (sdk: {sdk.Name} {sdk.Version})";
