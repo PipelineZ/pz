@@ -539,6 +539,17 @@ internal static class RunCommand
         if (backends.EventSink is SqlEventRenderer sqlEventRenderer)
         {
             eventsDropped = sqlEventRenderer.Dropped;
+            if (eventsDropped > 0)
+            {
+                // SqlEventSink's own circuit breaker/dispose deadline are what keep a dead or slow
+                // store from hanging the run's shutdown -- the tradeoff is that some events may not
+                // have reached it, and that must be visible rather than silent.
+                Notice(
+                    $"{eventsDropped} run event(s) could not be persisted to the SQL state store " +
+                    $"({project.State.Schema}.run_events) before the run finished; run history there " +
+                    "may be incomplete for this run");
+            }
+
             snapshotEvents.TryWriteSnapshot(result.Nodes, "running", eventsDropped);
         }
 

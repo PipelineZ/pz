@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Data.SqlClient;
 using Pz.Diagnostics.Events;
 using Pz.State.SqlServer;
@@ -157,5 +158,66 @@ public sealed class SqlEventSinkDisposeFaultTests
         var sink = new SqlEventSink(connection, "run-1", new ThrowingTimeProvider());
 
         await sink.DisposeAsync(); // must not throw
+    }
+}
+
+/// <summary><see cref="SqlEventSink"/>'s defenses against a dead or unreachable event store hanging a
+/// run's shutdown -- the circuit breaker (<see cref="SqlEventSink.MaxConsecutiveFailures"/>) and
+/// <see cref="SqlEventSink.DisposeAsync"/>'s own deadline. No docker needed: an unreachable connection
+/// (mirrors <see cref="SqlEventSinkDisposeFaultTests"/>) exercises the real failure path, and a short
+/// <c>Connect Timeout</c> keeps every real attempt bounded.</summary>
+public sealed class SqlEventSinkResilienceTests
+{
+    /// <summary>Without the circuit breaker, N batches against a dead store would each pay their own
+    /// connect attempt in turn -- exactly what made <see cref="SqlEventSink.DisposeAsync"/> able to hang
+    /// for minutes with a full buffer. Asserted on the actual attempt count
+    /// (<see cref="SqlEventSink.ConnectAttemptsForTests"/>), not timing: how long an unreachable host
+    /// takes to fail is environment-dependent (DNS resolution can come back near-instantly), so a
+    /// stopwatch-only assertion could pass even if the breaker never tripped.</summary>
+    [Fact]
+    public async Task After_MaxConsecutiveFailures_the_circuit_opens_and_stops_retrying()
+    {
+        var connection = new SqlStateConnection("Server=unused;Database=unused;Connect Timeout=1;", "pz");
+        var sink = new SqlEventSink(connection, "run-1", TimeProvider.System);
+
+        const int batches = 18; // within MaxBuffered (10_000) at FlushEvents (500) each
+        var total = batches * SqlEventSink.FlushEvents;
+        for (var i = 0; i < total; i++)
+        {
+            sink.Write(new NodeProgressEvent(DateTimeOffset.UnixEpoch, "run-1", "n1", "src_a", i, 0, 0));
+        }
+
+        await sink.DisposeAsync();
+
+        Assert.Equal(total, sink.Dropped);
+        Assert.Equal(SqlEventSink.MaxConsecutiveFailures, sink.ConnectAttemptsForTests);
+    }
+
+    /// <summary>Gate-based, not timing-based: the drain task never even starts (the writer-gated seam),
+    /// so it can never win the <c>Task.WhenAny</c> race inside <see cref="SqlEventSink.DisposeAsync"/>
+    /// against the deadline -- the deadline firing is the only way this call can ever return. The
+    /// deadline itself still elapses in real time (no fake clock backs <c>Task.Delay(TimeSpan,
+    /// TimeProvider)</c> here), so the override keeps it a few hundred milliseconds instead of
+    /// <see cref="SqlEventSink.DisposeDeadlineMs"/>'s production value.</summary>
+    [Fact]
+    public async Task DisposeAsync_gives_up_at_its_deadline_and_counts_everything_still_buffered_as_dropped()
+    {
+        var connection = new SqlStateConnection("Server=unused;Database=unused;Connect Timeout=30;", "pz");
+        var sink = SqlEventSink.WithWriterGatedForTests(connection, "run-1", TimeProvider.System,
+            disposeDeadlineMsOverride: 200);
+
+        const int count = 10;
+        for (var i = 0; i < count; i++)
+        {
+            sink.Write(new NodeProgressEvent(DateTimeOffset.UnixEpoch, "run-1", "n1", "src_a", i, 0, 0));
+        }
+
+        var stopwatch = Stopwatch.StartNew();
+        await sink.DisposeAsync(); // the gate is never released -- must still return via the deadline
+        stopwatch.Stop();
+
+        Assert.Equal(count, sink.Dropped);
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+            $"DisposeAsync took {stopwatch.Elapsed} against a 200ms deadline");
     }
 }

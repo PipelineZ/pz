@@ -391,6 +391,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   trips (1+2+...+300 across 300 snapshots); it now makes 300. A node is only
   ever marked written after its snapshot's transaction actually commits, so a
   failed write still retries on the next snapshot.
+- `SqlEventSink` (the `state: {backend: sqlserver, events: true}` run-event
+  store) no longer lets a dead or unreachable store hang a run's shutdown --
+  Ctrl-C included -- for minutes. A one-way circuit breaker stops retrying
+  after 3 consecutive flush failures and counts every later batch dropped
+  without another connect attempt, instead of each remaining batch paying its
+  own fresh connect timeout in turn; `DisposeAsync` additionally bounds its
+  total wait at a 30s deadline (driven by the sink's own `TimeProvider`) as a
+  backstop against a store that is merely slow rather than outright down. When
+  any events were dropped, `pz run` now prints a notice naming the count and
+  the store instead of leaving it silent in a SQL column only. Separately, the
+  snapshot-write warning that always said "could not write run_results.json"
+  now names the store that actually failed -- "the SQL state store" under
+  `state.artifacts: true`, instead of misnaming it as the local JSON file.
 
 ## [0.6.1] - 2026-09-10
 
