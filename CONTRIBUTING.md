@@ -93,7 +93,29 @@ $ git push origin vX.Y.Z
 ```
 
 MinVer (`Directory.Build.props`, `MinVerTagPrefix=v`) computes every packable project's version from
-this tag; `release.yml` builds, tests (linux), packs, and pushes every package to nuget.org.
+this tag; `release.yml` builds, tests (linux), packs, and pushes every package to nuget.org. The same
+run also creates this repository's GitHub Release for the tag, attaching a zip of the standalone
+win-x64 Native AOT `pz.exe` (a `dotnet publish`, never entering `packages/` or any nupkg) plus its
+checksum -- that zip and its release URL are what the winget manifest installs from.
+
+### winget
+
+`pz` is submitted to [winget-pkgs](https://github.com/microsoft/winget-pkgs) as `PipelineZ.pz`,
+installing the win-x64 GitHub Release zip above (a zip-wrapped portable exe, not an installer).
+`.github/workflows/winget-releaser.yml` auto-opens the update PR on every `release: released` event,
+using [`vedantmgoyal9/winget-releaser`](https://github.com/vedantmgoyal9/winget-releaser) to bump an
+**existing** manifest's version/URL/hash -- it needs a repo secret `WINGET_TOKEN` (a classic PAT,
+`public_repo` scope, for the account that forks winget-pkgs and opens the PR; unrelated to the
+`GITHUB_TOKEN` `release.yml` uses to create the GitHub Release itself).
+
+That automation has nothing to update until a manifest exists. The **first** submission is a one-time
+manual step: `packaging/winget/manifests/p/PipelineZ/pz/0.7.0/` already has the 3 manifest files
+drafted (mirroring winget-pkgs' own directory layout, ready to copy in as-is) -- everything is filled
+in except `InstallerSha256`, a placeholder that can only be computed from the real v0.7.0 zip. Once
+that release exists, replace the placeholder with the hash from `release-assets/checksums.txt`
+(or `sha256sum pz-win-x64.zip`) and submit with `wingetcreate submit packaging/winget/manifests/p/PipelineZ/pz/0.7.0 --token <WINGET_TOKEN>`
+-- non-interactive, no prompts. After that PR merges, `winget-releaser.yml` keeps it current
+automatically on every future release.
 
 ### What publishes, and what deliberately does not
 

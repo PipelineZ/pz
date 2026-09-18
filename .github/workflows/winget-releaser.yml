@@ -1,0 +1,24 @@
+# Auto-submits a winget-pkgs PR for every new release, updating the existing PipelineZ.pz manifest
+# to the new version/URL/hash. This only works once a PipelineZ.pz manifest already exists in
+# microsoft/winget-pkgs -- the very first submission has no prior manifest to update from and must be
+# done by hand with `wingetcreate new` against a real release asset. After that one-time bootstrap,
+# this workflow keeps it current with no further manual PRs.
+#
+# Needs a repo secret WINGET_TOKEN: a GitHub PAT (classic, `public_repo` scope) for the account that
+# will fork microsoft/winget-pkgs and open the PR -- the default GITHUB_TOKEN cannot open PRs against
+# another repository. release.yml's `contents: write` GITHUB_TOKEN is unrelated and not reused here.
+name: winget-releaser
+
+on:
+  release:
+    types: [released] # excludes drafts/prereleases, matching this repo's plain v* release tags.
+
+jobs:
+  publish:
+    runs-on: windows-latest # vedantmgoyal9/winget-releaser shells out to wingetcreate.exe.
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: PipelineZ.pz
+          installers-regex: 'pz-win-x64\.zip$' # the only asset release.yml attaches; skips checksums.txt.
+          token: ${{ secrets.WINGET_TOKEN }}
