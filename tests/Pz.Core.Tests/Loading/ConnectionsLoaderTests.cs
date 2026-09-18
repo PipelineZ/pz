@@ -218,6 +218,23 @@ public class ConnectionsLoaderTests
     }
 
     [Fact]
+    public void An_unrecognized_schema_policy_is_refused_with_a_near_miss()
+    {
+        var error = Assert.Single(Errors("""
+            mart:
+              connector: postgres
+              host: h
+              entities:
+                mart.orders_current:
+                  write:
+                    schema_policy: aditive
+            """), e => e.Code == PzErrorCode.SyncModeInvalid);
+
+        Assert.Contains("fail_on_change, additive", error.Message, StringComparison.Ordinal);
+        Assert.Contains("did you mean 'additive'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Rate_limit_under_an_entity_read_is_refused_as_instance_level() =>
         Assert.Single(Errors("""
             warehouse:

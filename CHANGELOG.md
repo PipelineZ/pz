@@ -277,6 +277,22 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   by file, then position, for a deterministic report. Stages with a genuine
   dependency on an earlier one's success (sink-output binding, the one-reader
   rule, SQL-declared incremental inference, and later) are unchanged.
+- `schema_policy` is now validated against its enum (`fail_on_change`,
+  `additive`) on both surfaces — the `sink()` keyword argument and the YAML
+  `write:` block — instead of riding any string through to the connector,
+  which silently treated an unrecognized one as `fail_on_change`
+  (`schema_policy: aditive` used to reach postgres/sqlserver unchallenged). A
+  near-miss (`aditive` → `additive`) is suggested. Same pass: `max_concurrency`
+  is now refused on `sink()` the same way it already was on `source()` (it
+  used to ride through silently as a connector write option), both now under
+  the connection-level `max_concurrency:` code (PZ0122) instead of the
+  rate-limit one; the `sink()` `rate_limit` refusal's hint now correctly says
+  to declare it on the connection, not "on the sink"; and a boolean/integer
+  connector option that received a YAML string a plain, lowercase
+  `true`/`false` would have typed — `True`, `yes`, `null`, `~`, and similar
+  YAML 1.1 lookalikes the loader deliberately leaves as text — now says "write
+  true/false in lower case, unquoted" instead of the JSON Schema library's raw
+  `Value is "string" but should be "boolean"`.
 
 ## [0.6.1] - 2026-09-10
 

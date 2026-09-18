@@ -1,4 +1,5 @@
 using Pz.Core.Model;
+using Pz.Core.Templating;
 using Pz.Core.Validation;
 
 namespace Pz.Core.Loading;
@@ -14,6 +15,11 @@ namespace Pz.Core.Loading;
 internal static class WriteOptionsLoader
 {
     private static readonly string[] WriteStrategies = ["replace", "append", "merge"];
+
+    /// <summary>Mirrors <c>SinkFunction.SchemaPolicies</c> — the only values a connector's own
+    /// schema-drift handling recognizes (see <c>PgDdl</c>/<c>MsDdl</c>); any other string reaches the
+    /// connector, which treats an unrecognized one as <c>fail_on_change</c> silently.</summary>
+    private static readonly string[] SchemaPolicies = ["fail_on_change", "additive"];
 
     /// <summary>Parses one <c>entities: &lt;e&gt;: write:</c> block, or null when it is malformed --
     /// errors are aggregated, never thrown, so one load reports every bad block.</summary>
@@ -58,14 +64,17 @@ internal static class WriteOptionsLoader
         var schemaPolicy = "fail_on_change";
         if (write.TryGetValue("schema_policy", out var policyValue) && policyValue is not null)
         {
-            if (policyValue is string p)
+            if (policyValue is string p && SchemaPolicies.Contains(p, StringComparer.Ordinal))
             {
                 schemaPolicy = p;
             }
             else
             {
+                var nearMiss = policyValue is string bad ? ScriptKwargs.NearMiss(SchemaPolicies, bad) : null;
                 Error(errors, PzErrorCode.SyncModeInvalid, where,
-                    $"'schema_policy' must be a string (got '{policyValue}')", "schema_policy: fail_on_change");
+                    $"'schema_policy' must be one of: {string.Join(", ", SchemaPolicies)} (got '{policyValue}')" +
+                    (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'"),
+                    "schema_policy: fail_on_change");
                 valid = false;
             }
         }
