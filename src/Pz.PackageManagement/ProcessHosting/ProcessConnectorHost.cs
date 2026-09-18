@@ -50,14 +50,16 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
     ///
     /// <para><paramref name="socketRootDir"/> is the run-scoped directory each spawned process gets its
     /// own owner-only socket directory under. <paramref name="logSink"/> receives every connector
-    /// <c>LogEvent</c> (level, message, fields) off the reverse channel — wired to <c>Pz.Diagnostics</c>
-    /// by whoever constructs this host; null drops them. <paramref name="warn"/> reports declarations
-    /// this host accepts but will not act on. <paramref name="telemetry"/> is handed to every spawned
-    /// instance's handshake; null means <see cref="HostTelemetry.None"/>.</para></summary>
+    /// <c>LogEvent</c> (connection/instance id, level, message, fields) off the reverse channel — the
+    /// connection/instance id is the same one <see cref="SplitInstanceId"/> resolved for that spawn's
+    /// Configure call, so a log line is always attributable to the connection that produced it; wired to
+    /// <c>Pz.Diagnostics</c> by whoever constructs this host; null drops them. <paramref name="warn"/>
+    /// reports declarations this host accepts but will not act on. <paramref name="telemetry"/> is
+    /// handed to every spawned instance's handshake; null means <see cref="HostTelemetry.None"/>.</para></summary>
     public static ProcessConnectorHost LoadFromDirectory(
         string packagesRoot, IReadOnlyList<ConnectorPackageRef> required, string socketRootDir,
         Action<string>? warn = null,
-        Action<int, string, IReadOnlyDictionary<string, string>>? logSink = null,
+        Action<string, int, string, IReadOnlyDictionary<string, string>>? logSink = null,
         HostTelemetry? telemetry = null) =>
         LoadFromDirectory(
             packagesRoot, required, socketRootDir, warn, logSink,
@@ -69,7 +71,7 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
     internal static ProcessConnectorHost LoadFromDirectory(
         string packagesRoot, IReadOnlyList<ConnectorPackageRef> required, string socketRootDir,
         Action<string>? warn,
-        Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
+        Action<string, int, string, IReadOnlyDictionary<string, string>>? logSink,
         TimeSpan cancelGrace, TimeSpan shutdownGrace, HostTelemetry telemetry)
     {
         var connectorsByName = new Dictionary<string, LazyProcessConnector>(StringComparer.Ordinal);
@@ -222,7 +224,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     private readonly string _entrypoint;
     private readonly string _socketRootDir;
     private readonly Action<string>? _warn;
-    private readonly Action<int, string, IReadOnlyDictionary<string, string>>? _logSink;
+    private readonly Action<string, int, string, IReadOnlyDictionary<string, string>>? _logSink;
     private readonly TimeSpan _cancelGrace;
     private readonly TimeSpan _shutdownGrace;
     private readonly HostTelemetry _telemetry;
@@ -237,7 +239,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     public LazyProcessConnector(
         string name, ConnectorPackageRef packageRef, ConnectorManifest manifest, string entrypoint,
         string socketRootDir, Action<string>? warn,
-        Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
+        Action<string, int, string, IReadOnlyDictionary<string, string>>? logSink,
         TimeSpan cancelGrace, TimeSpan shutdownGrace, HostTelemetry telemetry)
     {
         _packageRef = packageRef;
@@ -361,8 +363,13 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
             // Opened once per instance, right after Configure and before the shim exists: the gate the
             // engine will hand that shim arrives later (IOperationGateAware, after OpenAsync returns),
             // which is what DeferredOperationGate bridges.
+            //
+            // instanceId is closed over here (not threaded into HostChannelPump itself) so the pump's
+            // own signature stays connection-agnostic -- every log line this specific spawn's connector
+            // reports is, by construction, about the connection this Configure call just resolved.
             instance.Pump = HostChannelPump.Start(
-                client, process, new DeferredOperationGate(() => instance.Shim?.Gate), _logSink);
+                client, process, new DeferredOperationGate(() => instance.Shim?.Gate),
+                _logSink is null ? null : (level, message, fields) => _logSink(instanceId, level, message, fields));
         }
         catch
         {

@@ -371,6 +371,7 @@ public sealed class NativePathTests : IAsyncLifetime
         public readonly List<(string Connection, string Entity, IReadOnlyList<string> Columns, string Format)> DateLints = [];
         public void NodeCompleted(NodeResult result) { }
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
+        public void ConnectorLog(string connection, string level, string message) { }
     }
 
     /// <summary>A schema-inferred native scan that

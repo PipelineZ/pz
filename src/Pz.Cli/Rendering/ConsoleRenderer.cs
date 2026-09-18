@@ -85,8 +85,23 @@ public sealed class ConsoleRenderer(TextWriter? writer = null) : IEventRenderer
                     "month-first source is misread on every row; normalize the source to ISO 8601, or " +
                     "declare the column varchar in a columns: contract and parse it explicitly in SQL");
                 break;
+
+            case ConnectorLogEvent e when IsAtLeastWarn(e.Level):
+                Writer.WriteLine($"connector [{e.Level}] {e.Connection}: {e.Message}");
+                break;
         }
     }
+
+    /// <summary>The console must not drown a normal run in per-batch connector chatter (trace/debug/
+    /// info), so only warn-and-above prints here -- NDJSON (<c>JsonRenderer</c>) carries every level,
+    /// unfiltered, since a machine consumer can filter for itself. An unrecognized level (a future
+    /// connector SDK level this build predates) fails OPEN: better to surface an unfamiliar line than
+    /// silently drop what might be the one that mattered.</summary>
+    private static bool IsAtLeastWarn(string level) => level switch
+    {
+        "trace" or "debug" or "info" => false,
+        _ => true,
+    };
 
     /// <summary>Prints the failed node's `PZ####` code and message directly under its line, so the
     /// human output carries the same diagnosis every other channel (run_results.json, the NDJSON stream,

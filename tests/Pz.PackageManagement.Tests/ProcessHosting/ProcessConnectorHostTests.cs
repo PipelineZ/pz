@@ -321,6 +321,38 @@ public sealed class ProcessConnectorHostTests : IDisposable
             s => Assert.Contains(s.Attributes, a => a.Key == "pz.instance" && a.Value.StringValue == "orders"));
     }
 
+    /// <summary>The connection identity a log line is tagged with is the same
+    /// <see cref="ProcessConnectorHost.InstanceIdKey"/> value <see cref="Instance_key_names_the_instance_and_never_reaches_the_connector"/>
+    /// proves names the span -- Configure always logs "connector configured" (see
+    /// <c>HostChannelTests.LogEvent_from_Configure_reaches_the_sink_with_fields_intact</c>), so this is
+    /// a deterministic signal rather than one the fixture has to be told to emit.</summary>
+    [SkippableFact]
+    public async Task LogSink_receives_the_connection_name_the_engine_threaded_in()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var logged = new TaskCompletionSource<(string Connection, int Level, string Message)>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir(),
+            warn: null,
+            logSink: (connection, level, message, _) => logged.TrySetResult((connection, level, message)));
+
+        var connector = (ISourceConnector)host.Get(ConnectorName);
+        var config = new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["root"] = NewTempDir(),
+            [ProcessConnectorHost.InstanceIdKey] = "orders",
+        });
+
+        await using var source = await connector.OpenAsync(config, CancellationToken.None);
+
+        var (connectionId, level, message) = await logged.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("orders", connectionId);
+        Assert.Equal(2, level);
+        Assert.Equal("connector configured", message);
+    }
+
     /// <summary>The exact shape a real <c>pz restore</c> leaves behind on Unix: a materialized package
     /// whose entrypoint carries no execute bit at all, because nothing in the NuGet extraction path
     /// sets one (see ManifestReader.ResolveEntrypoint's doc comment). Load AND a real spawn must both

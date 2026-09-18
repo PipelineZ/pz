@@ -98,6 +98,42 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         Assert.Equal(["sftp host 'h': accepting any SSH host key"], received);
     }
 
+    /// <summary>A connector notice reaches BOTH channels: the existing console "note:" callback and a
+    /// <c>connector_log</c> run event at "warn", tagged with the connection name -- and the one dedup
+    /// gate covers both, so a connection opened by two nodes reports it once through each, not twice.</summary>
+    [Fact]
+    public async Task The_same_connector_notice_from_two_nodes_also_reaches_connector_log_once()
+    {
+        var first = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
+        var second = new NoticeAwareFakeSource { NoticeOnUse = "sftp host 'h': accepting any SSH host key" };
+        var received = new List<string>();
+        var bus = new Pz.Diagnostics.Events.RunEventBus();
+        var publisher = new Pz.Engine.Events.RunEventPublisher(bus, "run-1", TimeProvider.System);
+        var reg = new ConnectorRegistry();
+        reg.AddSource("noticestub", new NoticeStubConnector(first));
+        var ctx = new RunContext(_duck, reg, new RunPaths(_dir, "test-run"), publisher, Notice: received.Add);
+        var reg2 = new ConnectorRegistry();
+        reg2.AddSource("noticestub", new NoticeStubConnector(second));
+
+        await new SourceLoadExecutor().ExecuteAsync(SourceNode(), ctx, default);
+        await new SourceLoadExecutor().ExecuteAsync(SourceNode("letters"), ctx with { Connectors = reg2 }, default);
+
+        bus.Complete();
+        var events = new List<Pz.Diagnostics.Events.RunEvent>();
+        await foreach (var evt in bus.ReadAllAsync())
+        {
+            events.Add(evt);
+        }
+
+        // Unredacted, same as the plain "note:" line: a notice's text is pz's own in-tree connector
+        // code, not arbitrary third-party output, so an identifier it deliberately quotes (a host name,
+        // an option name) stays actionable.
+        var log = Assert.Single(events.OfType<Pz.Diagnostics.Events.ConnectorLogEvent>());
+        Assert.Equal("warn", log.Level);
+        Assert.Equal("mem", log.Connection);
+        Assert.Equal("sftp host 'h': accepting any SSH host key", log.Message);
+    }
+
     [Fact]
     public async Task Source_with_no_run_level_notice_sink_is_never_asked_for_one()
     {

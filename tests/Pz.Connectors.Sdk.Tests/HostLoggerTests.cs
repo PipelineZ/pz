@@ -1,3 +1,4 @@
+using System.Globalization;
 using Grpc.Core;
 using Microsoft.Extensions.Logging;
 using Pz.Connectors.Protocol.V1;
@@ -7,6 +8,62 @@ namespace Pz.Connectors.Sdk.Tests;
 
 public sealed class HostLoggerTests
 {
+    /// <summary>A structured property's value must render the same regardless of the connector
+    /// process's current culture -- th-TH's default calendar is Buddhist and fi-FI uses '.' as its
+    /// decimal separator, either of which would otherwise corrupt a logged double/DateTime en route to
+    /// the host.</summary>
+    [Fact]
+    public async Task Structured_property_values_render_invariant_culture()
+    {
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("fi-FI");
+            var peer = new HostChannelPeer();
+            var logger = new HostLoggerProvider(peer).CreateLogger("x");
+            logger.LogInformation("amount {Amount}", 1234.5);
+
+            var writer = new AwaitableStreamWriter(expected: 1);
+            peer.Attach(writer);
+            await writer.Done.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal("1234.5", writer.Written[0].Log.Fields["Amount"]);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
+    /// <summary>An exception logged alongside a message must carry its own message onto the wire, not
+    /// just its type name -- the type name alone gives an operator nothing to act on.</summary>
+    [Fact]
+    public async Task Exception_message_and_stack_trace_reach_the_wire()
+    {
+        var peer = new HostChannelPeer();
+        var logger = new HostLoggerProvider(peer).CreateLogger("x");
+        Exception caught;
+        try
+        {
+            throw new InvalidOperationException("connection refused");
+        }
+        catch (Exception ex)
+        {
+            caught = ex;
+        }
+
+        logger.LogError(caught, "read failed");
+
+        var writer = new AwaitableStreamWriter(expected: 1);
+        peer.Attach(writer);
+        await writer.Done.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var fields = writer.Written[0].Log.Fields;
+        Assert.Equal("System.InvalidOperationException", fields["exception"]);
+        Assert.Equal("connection refused", fields["exceptionMessage"]);
+        Assert.Contains("Exception_message_and_stack_trace_reach_the_wire", fields["exceptionStackTrace"]);
+    }
+
     [Fact]
     public async Task Events_before_attach_are_held_in_order_and_flushed_on_attach()
     {

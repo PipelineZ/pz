@@ -351,6 +351,30 @@ public class JsonRendererTests
         Assert.DoesNotContain(".pz", line, StringComparison.Ordinal);
     }
 
+    /// <summary>Unlike <c>ConsoleRenderer</c> (warn-and-above only), NDJSON carries every
+    /// <c>connector_log</c> level unfiltered -- a machine consumer can filter for itself, and the
+    /// "everything in NDJSON" shape is what the events.md contract documents.</summary>
+    [Theory]
+    [InlineData("trace")]
+    [InlineData("debug")]
+    [InlineData("info")]
+    [InlineData("warn")]
+    [InlineData("error")]
+    [InlineData("critical")]
+    public void ConnectorLog_serializes_every_level(string level)
+    {
+        var evt = new ConnectorLogEvent(new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero), "run-1", level,
+            "pg_prod", "retrying after a transient error");
+
+        var actual = Encoding.UTF8.GetString(Render([evt]));
+        using var doc = System.Text.Json.JsonDocument.Parse(actual.TrimEnd('\n'));
+        var root = doc.RootElement;
+        Assert.Equal("connector_log", root.GetProperty("event").GetString());
+        Assert.Equal(level, root.GetProperty("level").GetString());
+        Assert.Equal("pg_prod", root.GetProperty("connection").GetString());
+        Assert.Equal("retrying after a transient error", root.GetProperty("message").GetString());
+    }
+
     [Fact]
     public void Output_is_LF_terminated_not_CRLF()
     {

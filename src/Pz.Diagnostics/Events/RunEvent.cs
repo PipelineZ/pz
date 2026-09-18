@@ -109,6 +109,20 @@ public sealed record LossyIntegerInferenceDetectedEvent(DateTimeOffset At, strin
 public sealed record AmbiguousDateInferenceDetectedEvent(DateTimeOffset At, string RunId, string NodeId,
     string Connection, string Entity, IReadOnlyList<string> Columns, string Format) : RunEvent(At, RunId);
 
+/// <summary>A connector's own log output, finally given somewhere to go: <c>Level</c> is
+/// <c>"trace"</c>/<c>"debug"</c>/<c>"info"</c>/<c>"warn"</c>/<c>"error"</c>/<c>"critical"</c>
+/// (<c>Microsoft.Extensions.Logging.LogLevel</c>, lowercased). <c>Connection</c> is the connection this
+/// log line belongs to -- not part of any single node's lifecycle, the same reason
+/// <see cref="BreakerStateChangedEvent"/> carries no <c>NodeId</c>: a process-hosted connector spawns
+/// one process per node open, so its logs are inherently per-node already, while an in-process
+/// connector's own connection-identity notice (<c>INoticeAware</c>) is delivered at most once per run
+/// per distinct text regardless of how many nodes open that connection. <c>Message</c> has already
+/// passed through the engine's redaction helper -- never connection config, never SQL text, but a
+/// connector's own wording is otherwise printed verbatim, which is why nothing here inspects it
+/// further.</summary>
+public sealed record ConnectorLogEvent(DateTimeOffset At, string RunId, string Level, string Connection,
+    string Message) : RunEvent(At, RunId);
+
 public sealed record NodeTimingsPayload(long ProducerStallMs, long ConsumerStallMs);
 
 /// <summary>BCL-only twin of <c>Pz.Engine.Resilience.OpStats</c> — Pz.Diagnostics

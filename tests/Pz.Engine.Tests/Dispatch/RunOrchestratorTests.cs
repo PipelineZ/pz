@@ -143,6 +143,7 @@ public sealed class RunOrchestratorTests
         public void AmbiguousDateInferenceDetected(DagNode node, string connection, string entity,
             IReadOnlyList<string> columns, string format) { }
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
+        public void ConnectorLog(string connection, string level, string message) { }
 
         public void NodeCompleted(NodeResult result)
         {
@@ -206,6 +207,7 @@ public sealed class RunOrchestratorTests
         public void AmbiguousDateInferenceDetected(DagNode node, string connection, string entity,
             IReadOnlyList<string> columns, string format) { }
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
+        public void ConnectorLog(string connection, string level, string message) { }
 
         public void NodeCompleted(NodeResult result)
         {

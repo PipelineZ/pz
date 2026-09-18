@@ -707,5 +707,6 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
 
         public void NodeCompleted(NodeResult result) { }
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
+        public void ConnectorLog(string connection, string level, string message) { }
     }
 }

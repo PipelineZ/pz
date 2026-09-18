@@ -321,12 +321,21 @@ internal static class RunCommand
         await using var duck = DuckSession.Open(paths.StagingDbPath, duckOptions);
         await duck.ExecuteAsync("create schema if not exists staging", ct);
 
+        // Captured, not passed directly: ConnectorRegistryFactory.CreateAsync spawns nothing itself
+        // (see its own doc), so nothing a process-hosted connector logs can arrive before `events`
+        // exists below -- but the delegate has to be handed to CreateAsync before that, so it reads
+        // this mutable slot rather than `events` itself. A log that somehow arrived before the slot is
+        // filled (there is no such call site today) would silently no-op rather than throw.
+        IRunEvents? liveEvents = null;
+        void ConnectorLog(string connection, string level, string message) =>
+            liveEvents?.SafeConnectorLog(connection, level, message);
+
         ConnectorRegistry registry;
         ConnectorHosts? host;
         try
         {
             (registry, host) = await ConnectorRegistryFactory.CreateAsync(
-                project, projectDir, noLockCheck, ct, runId, otelEndpoint);
+                project, projectDir, noLockCheck, ct, runId, otelEndpoint, ConnectorLog);
         }
         catch (PzValidationException ex)
         {
@@ -369,6 +378,7 @@ internal static class RunCommand
         var bus = new RunEventBus();
         var publisher = new RunEventPublisher(bus, runId, TimeProvider.System);
         var events = new CompositeRunEvents(snapshotEvents, publisher);
+        liveEvents = events;
 
         IEventRenderer baseRenderer = rendererFactory is not null
             ? rendererFactory()

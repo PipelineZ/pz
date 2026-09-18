@@ -231,6 +231,23 @@ public class RunEventPublisherTests
     }
 
     [Fact]
+    public async Task ConnectorLog_maps_all_fields()
+    {
+        var fixedNow = new DateTimeOffset(2026, 8, 11, 9, 0, 0, TimeSpan.Zero);
+        var bus = new RunEventBus();
+        var publisher = new RunEventPublisher(bus, "run-1", new FixedTimeProvider(fixedNow));
+
+        publisher.ConnectorLog("pg_prod", "warn", "retrying after a transient error");
+
+        var evt = Assert.IsType<ConnectorLogEvent>(await ReadOneAsync(bus));
+        Assert.Equal(fixedNow, evt.At);
+        Assert.Equal("run-1", evt.RunId);
+        Assert.Equal("warn", evt.Level);
+        Assert.Equal("pg_prod", evt.Connection);
+        Assert.Equal("retrying after a transient error", evt.Message);
+    }
+
+    [Fact]
     public async Task Events_are_stamped_with_injected_clock()
     {
         var fixedNow = new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero);

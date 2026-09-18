@@ -65,6 +65,10 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
     public void AmbiguousDateInferenceDetected(DagNode node, string connection, string entity,
         IReadOnlyList<string> columns, string format) { }
 
+    // No-op — same reasoning as above: run_results.json's schema carries no per-event log lines; the
+    // event only ever reaches the bus-backed renderer path via RunEventPublisher.
+    public void ConnectorLog(string connection, string level, string message) { }
+
     public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
 
     public void NodeCompleted(NodeResult result)

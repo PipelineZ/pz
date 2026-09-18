@@ -139,6 +139,25 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   pz build's own version on every handshake. Both fields are additive:
   absent on either side of an older SDK/manifest, never a mismatch. This gap
   made the 0.6.1 pruning incident hard to triage.
+- A connector's own log output is no longer dropped on `pz run`/`pz retry`: an
+  additive `connector_log` run event (`level`, `connection`, `message`) carries
+  both a process-hosted connector's `ILogger` output (the C# SDK already queued
+  it over the PCP reverse channel; the host wired `logSink: null` and nothing
+  read it) and an in-process connector's connection-identity notice (e.g.
+  sftp's unpinned host key, `INoticeAware`) onto the same event. `--log-format
+  json` carries every level unfiltered; the console prints warn-and-above only,
+  so a normal run is not drowned in per-batch chatter. A process-hosted log is
+  never deduplicated (a connector process is spawned once per node open, so
+  its lines are already per-node); an in-process notice keeps the existing
+  once-per-run-per-distinct-text delivery a repeated console `note:` line
+  already gets. Process-hosted messages pass through the engine's redaction
+  helper before reaching the event; an in-process notice's text is pz's own
+  in-tree code, printed as-is (same trust class as a `PzConnectorException`
+  message), so an identifier it deliberately quotes stays actionable. Also
+  fixes two `Pz.Connectors.Sdk` defects this surfaced: a structured log
+  property rendered through the connector process's current culture instead
+  of invariantly, and an exception logged alongside a message carried only its
+  type name onto the wire, never its own message.
 
 ### Fixed
 

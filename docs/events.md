@@ -311,6 +311,22 @@ configured never publishes it at all.
 | `trigger` | string | Short human-readable reason for the transition, e.g. `5 consecutive transient failures`, `cool-down elapsed`, `probe succeeded`, `probe failed`. |
 | `coolDownMs` | number | The cool-down duration, in milliseconds, for a transition INTO `open` — the greater of `engine.breaker.cool_down` and any `RetryAfter` floor reported by the failure that tripped it. `0` for every other transition (`open` → `half_open`, `half_open` → `closed`), which has no fresh wait to report. |
 
+## `connector_log`
+
+A connector's own log output. Like `breaker_state_changed`, this is **not** part of any single node's
+`node_started` → ... → `node_completed` sequence: a process-hosted connector spawns one process per
+node open, so its log lines are inherently per-node already and never deduplicated; an in-process
+connector's own connection-identity notice (e.g. sftp's unpinned host key) is instead delivered at most
+once per run per distinct text, regardless of how many nodes open that connection — the same
+per-run de-duplication a repeated `note:` console line already gets. A project that opens no
+process-hosted connector and triggers no in-process connector notice never publishes this event at all.
+
+| Field | Type | Description |
+|---|---|---|
+| `level` | string | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `critical` \| `unknown`. An in-process connector's connection notice is always `warn`. |
+| `connection` | string | The connection this log line belongs to. |
+| `message` | string | The connector's own text. A process-hosted connector's message has passed through the engine's redaction helper (never connection config, never SQL text); an in-process connector's notice text is pz's own in-tree code and is not redacted, the same as the console `note:` line it accompanies. |
+
 ## `retention_swept`
 
 Emitted once at the end of a run when automatic retention (`retention:` in `project.yml`) deleted at
