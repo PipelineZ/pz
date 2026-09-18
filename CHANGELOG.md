@@ -45,6 +45,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- `pz runs`: lists prior runs, newest first, over `IRunArtifactStore` (works
+  under `state: {backend: sqlserver}` too, not just local files) — run id,
+  status, started/finished time, duration, succeeded/failed/skipped node
+  counts, and a reused/carried_forward provenance summary. `--json` prints one
+  byte-stable JSON object per run (LF-terminated, invariant-culture numbers,
+  UTC ISO-8601 timestamps); `--limit N` caps it to the N most recent runs.
+  `run_results.json` gains an additive `finishedAt` field (stamped only on the
+  terminal snapshot, absent while a run is still "running"), and both backends'
+  `PriorRun`/`PriorNode` now round-trip `startedAt`/`finishedAt` and a node's
+  `provenance` for readers.
 - Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
   the acceptance fact for the `ColumnPruning` capability. It plans a read with a
   non-prefix, reordered column hint and requires every batch to carry exactly

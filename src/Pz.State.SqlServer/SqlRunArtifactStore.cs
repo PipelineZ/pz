@@ -384,29 +384,34 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         try
         {
             string status;
+            string startedAtIso;
+            string? finishedAtIso;
             using (var command = new SqlCommand(
-                "DECLARE @sql NVARCHAR(MAX) = N'SELECT status FROM ' + QUOTENAME(@schema) + " +
-                "N'.runs WHERE run_id = @run_id'; " +
+                "DECLARE @sql NVARCHAR(MAX) = N'SELECT status, started_at, finished_at FROM ' + " +
+                "QUOTENAME(@schema) + N'.runs WHERE run_id = @run_id'; " +
                 "EXEC sp_executesql @sql, N'@run_id NVARCHAR(64)', @run_id = @run_id;",
                 sqlConnection))
             {
                 command.Parameters.AddWithValue("@schema", connection.Schema);
                 command.Parameters.AddWithValue("@run_id", runId);
-                if (command.ExecuteScalar() is not string headerStatus)
+                using var reader = command.ExecuteReader();
+                if (!reader.Read())
                 {
                     // The header vanished between the id scan and this read (e.g. a concurrent
                     // Delete) -- treated the same as any other unreadable run rather than throwing.
                     throw new UnreadableRunException();
                 }
 
-                status = headerStatus;
+                status = reader.GetString(0);
+                startedAtIso = FormatIso(reader.GetDateTime(1));
+                finishedAtIso = reader.IsDBNull(2) ? null : FormatIso(reader.GetDateTime(2));
             }
 
             var nodes = new List<PriorNode>();
             using (var command = new SqlCommand(
                 "DECLARE @sql NVARCHAR(MAX) = N'SELECT node_id, name, status, kind, rows_moved, " +
-                "watermark_cursor, watermark_type, watermark_value, payload FROM ' + QUOTENAME(@schema) + " +
-                "N'.run_nodes WHERE run_id = @run_id'; " +
+                "watermark_cursor, watermark_type, watermark_value, payload, provenance FROM ' + " +
+                "QUOTENAME(@schema) + N'.run_nodes WHERE run_id = @run_id'; " +
                 "EXEC sp_executesql @sql, N'@run_id NVARCHAR(64)', @run_id = @run_id;",
                 sqlConnection))
             {
@@ -421,6 +426,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                     var cursor = reader.IsDBNull(5) ? null : reader.GetString(5);
                     var type = reader.IsDBNull(6) ? null : reader.GetString(6);
                     var value = reader.IsDBNull(7) ? null : reader.GetString(7);
+                    var provenance = reader.IsDBNull(9) ? null : reader.GetString(9);
 
                     nodes.Add(new PriorNode(
                         reader.GetString(0),
@@ -429,11 +435,13 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                         reader.GetString(3),
                         reader.GetInt64(4),
                         cursor is null || type is null || value is null ? null : new PriorWatermark(cursor, type, value),
-                        ParseObservedSchema(payload)));
+                        ParseObservedSchema(payload),
+                        Error: null,
+                        Provenance: provenance));
                 }
             }
 
-            return new PriorRun(runId, status, nodes);
+            return new PriorRun(runId, status, nodes, startedAtIso, finishedAtIso);
         }
         catch (UnreadableRunException)
         {
@@ -622,6 +630,12 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     private static DateTime ParseIso(string iso) =>
         DateTimeOffset.Parse(iso, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal).UtcDateTime;
+
+    /// <summary>Inverse of <see cref="ParseIso"/>, in the same shape <c>RunResultsWriter</c> writes to
+    /// <c>run_results.json</c>'s <c>startedAt</c>/<c>finishedAt</c> -- so `pz runs` renders identically
+    /// whether the backend is local or SQL Server.</summary>
+    private static string FormatIso(DateTime utc) =>
+        utc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
 
     /// <summary>Mirrors <c>RunResultsWriter.WriteSnapshot</c>'s contract: every status but "running" is
     /// terminal (RunResultsReader.cs's <see cref="PriorRun"/> doc lists "running" as the one

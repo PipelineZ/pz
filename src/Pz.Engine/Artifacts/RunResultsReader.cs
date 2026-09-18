@@ -20,10 +20,12 @@ public sealed record PriorError(string Code, string Message);
 /// additive (null when the prior node carried no <c>observed_schema</c>) — round-tripped for
 /// completeness/future consumers; `pz retry`'s own selection logic does not read it.
 /// <see cref="Error"/> is additive (null for a non-failed node), read by the MCP execution tools'
-/// result envelope.</summary>
+/// result envelope. <see cref="Provenance"/> is additive (null for a normally-executed node) —
+/// "reused" | "carried_forward" exactly as <c>RunResultsWriter</c> writes it, read by `pz runs`'s
+/// per-run provenance summary.</summary>
 public sealed record PriorNode(string Id, string Name, string Status,
     string Kind = "", long Rows = 0, PriorWatermark? Watermark = null, ObservedSchema? Observed = null,
-    PriorError? Error = null);
+    PriorError? Error = null, string? Provenance = null);
 
 /// <summary>The prior run <see cref="RunResultsReader.ReadLatest"/> found: <see cref="Status"/> is
 /// exactly as last written by <see cref="RunResultsWriter"/>. Usually a terminal status
@@ -32,8 +34,15 @@ public sealed record PriorNode(string Id, string Name, string Status,
 /// run's LAST snapshot is left holding, since nothing ever wrote a terminal status over it. `pz retry`
 /// treats "running" as non-retryable: the recorded nodes may all show "success"
 /// even though the run never finished, so selecting on node status alone would misreport "nothing to
-/// retry".</summary>
-public sealed record PriorRun(string RunId, string Status, IReadOnlyList<PriorNode> Nodes);
+/// retry".
+///
+/// <see cref="StartedAtIso"/> and <see cref="FinishedAtIso"/> are additive (both null for a
+/// `run_results.json` written before this pair existed): <see cref="FinishedAtIso"/> stays null while
+/// <see cref="Status"/> is "running" -- <see cref="RunResultsWriter.WriteSnapshot"/> only stamps it on
+/// the terminal write, mirroring <c>SqlRunArtifactStore</c>'s <c>finished_at</c> column, which is the
+/// same "null until terminal" shape. `pz runs` is their only reader.</summary>
+public sealed record PriorRun(string RunId, string Status, IReadOnlyList<PriorNode> Nodes,
+    string? StartedAtIso = null, string? FinishedAtIso = null);
 
 /// <summary>Reads the most recent parseable <c>run_results.json</c> under <c>.pz/runs/</c> for
 /// <c>pz retry</c>. Run ids sort lexicographically by design (<see cref="Pz.Cli"/>'s run id
@@ -85,6 +94,8 @@ public static class RunResultsReader
             using var document = JsonDocument.Parse(File.ReadAllBytes(path));
             var root = document.RootElement;
             var status = root.GetProperty("status").GetString()!;
+            var startedAtIso = root.TryGetProperty("startedAt", out var startedAtEl) ? startedAtEl.GetString() : null;
+            var finishedAtIso = root.TryGetProperty("finishedAt", out var finishedAtEl) ? finishedAtEl.GetString() : null;
 
             var nodes = new List<PriorNode>();
             foreach (var node in root.GetProperty("nodes").EnumerateArray())
@@ -135,16 +146,18 @@ public static class RunResultsReader
                     }
                 }
 
+                var provenance = node.TryGetProperty("provenance", out var provEl) ? provEl.GetString() : null;
+
                 nodes.Add(new PriorNode(
                     node.GetProperty("id").GetString()!,
                     node.GetProperty("name").GetString()!,
                     node.GetProperty("status").GetString()!,
                     node.TryGetProperty("kind", out var kind) ? kind.GetString() ?? "" : "",
                     node.TryGetProperty("rows", out var rows) && rows.TryGetInt64(out var rowCount) ? rowCount : 0,
-                    watermark, observed, error));
+                    watermark, observed, error, provenance));
             }
 
-            result = new PriorRun(runId, status, nodes);
+            result = new PriorRun(runId, status, nodes, startedAtIso, finishedAtIso);
             return true;
         }
         catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException or IOException)

@@ -150,6 +150,36 @@ public sealed class RunResultsReaderTests : IDisposable
         }
     }
 
+    /// <summary><c>startedAt</c>/<c>finishedAt</c> and a node's <c>provenance</c> round-trip through
+    /// <see cref="RunResultsWriter"/> → <see cref="RunResultsReader"/>, mirroring the watermark/observed
+    /// round-trips above -- `pz runs` is their reader.</summary>
+    [Fact]
+    public void ReadLatest_parses_started_and_finished_at_and_node_provenance()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new RunPaths(dir, "20260901T000000000Z-0001");
+            var writer = new RunResultsWriter(paths, "2026-09-01T00:00:00.000Z");
+            writer.WriteSnapshot([
+                new NodeResult(new NodeId("s1"), NodeKind.SourceLoad, "src_a", NodeStatus.Success, 7,
+                    TimeSpan.Zero, null, Provenance: NodeProvenance.Reused),
+            ], "success");
+
+            var prior = RunResultsReader.ReadLatest(dir);
+
+            Assert.NotNull(prior);
+            Assert.Equal("2026-09-01T00:00:00.000Z", prior!.StartedAtIso);
+            Assert.False(string.IsNullOrEmpty(prior.FinishedAtIso));
+            var node = Assert.Single(prior.Nodes);
+            Assert.Equal("reused", node.Provenance);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
+
     [Fact]
     public void ReadLatest_tolerates_nodes_without_new_fields()
     {
@@ -165,10 +195,13 @@ public sealed class RunResultsReaderTests : IDisposable
             var prior = RunResultsReader.ReadLatest(dir);
 
             Assert.NotNull(prior);
-            var node = Assert.Single(prior!.Nodes);
+            Assert.Equal("x", prior!.StartedAtIso);
+            Assert.Null(prior.FinishedAtIso);
+            var node = Assert.Single(prior.Nodes);
             Assert.Equal("SinkWrite", node.Kind);
             Assert.Equal(0, node.Rows);
             Assert.Null(node.Watermark);
+            Assert.Null(node.Provenance);
         }
         finally
         {

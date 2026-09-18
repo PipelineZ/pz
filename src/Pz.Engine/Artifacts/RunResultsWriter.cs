@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text.Json;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
@@ -40,6 +41,16 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso)
             writer.WriteString("runId", paths.RunId);
             writer.WriteString("status", status);
             writer.WriteString("startedAt", startedAtIso);
+
+            // Additive-optional, mirroring SqlRunArtifactStore's finished_at column: only the terminal
+            // write (status != "running") stamps it, so `pz runs` can tell "still running" (or a crashed
+            // run's last snapshot) apart from a completed one without needing anything beyond this file.
+            if (status != "running")
+            {
+                writer.WriteString("finishedAt",
+                    DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
+            }
+
             writer.WriteStartArray("nodes");
             foreach (var node in completed)
             {

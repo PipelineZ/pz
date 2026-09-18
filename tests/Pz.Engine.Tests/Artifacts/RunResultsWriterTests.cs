@@ -410,6 +410,33 @@ public sealed class RunResultsWriterTests : IDisposable
         Assert.DoesNotContain("observed_schema", json);
     }
 
+    /// <summary><c>finishedAt</c> is additive-optional, mirroring <c>SqlRunArtifactStore</c>'s
+    /// <c>finished_at</c> column: absent while the run is still "running" (the value a crashed run's
+    /// last snapshot is left holding), stamped only on the terminal write -- `pz runs` is the reader
+    /// that needs this to tell "still running" apart from "finished".</summary>
+    [Fact]
+    public void WriteSnapshot_omits_finishedAt_while_running_and_stamps_it_on_terminal_status()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+        var node = new NodeResult(new NodeId("aaaaaaaaaaaaaaaa"), NodeKind.SourceLoad, "src_files__orders",
+            NodeStatus.Success, 12, TimeSpan.FromMilliseconds(417), null);
+
+        writer.WriteSnapshot([node], "running");
+        using (var running = JsonDocument.Parse(File.ReadAllBytes(Paths.RunResultsPath)))
+        {
+            Assert.False(running.RootElement.TryGetProperty("finishedAt", out _),
+                "a \"running\" snapshot must have NO finishedAt key (additive-optional, never explicit null)");
+        }
+
+        writer.WriteSnapshot([node], "success");
+        using (var terminal = JsonDocument.Parse(File.ReadAllBytes(Paths.RunResultsPath)))
+        {
+            var finishedAt = terminal.RootElement.GetProperty("finishedAt").GetString();
+            Assert.False(string.IsNullOrEmpty(finishedAt));
+            Assert.True(DateTimeOffset.TryParse(finishedAt, out _), $"'{finishedAt}' must parse as an ISO timestamp");
+        }
+    }
+
     private void AssertValidSnapshot(int expectedNodeCount, string expectedStatus)
     {
         var path = Paths.RunResultsPath;
