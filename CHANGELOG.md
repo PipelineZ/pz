@@ -470,6 +470,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   warning the write side already had -- `SourceFunction`'s near-miss check
   existed but was never wired in, so e.g. `source(..., synk: {...})` rode
   through as a silent connector option.
+- `pz restore` now repairs a torn or stale `.pz/packages/<id>/<version>`
+  instead of trusting that it merely exists. The copy into it is no longer
+  done in place: it materializes into a temp sibling directory and one atomic
+  `Directory.Move` into place, so a crash mid-copy never leaves a reader
+  observing a half-written install, and a sibling a crash left behind is swept
+  on the next restore instead of accumulating. Separately, a lock written
+  before per-file hashes were kept could trust a directory's content just
+  because a file existed at the expected path, without ever checking that the
+  file itself was actually there — a partial install missing that file passed
+  as "no drift". Existence is now always checked, hash or no hash; only the
+  byte-for-byte comparison still needs a recorded hash to run.
 
 ## [0.6.1] - 2026-09-10
 

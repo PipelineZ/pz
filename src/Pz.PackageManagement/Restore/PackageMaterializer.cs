@@ -41,7 +41,16 @@ namespace Pz.PackageManagement.Restore;
 /// A root with zero transitive deps in the whole lock is instead materialized by directory symlink
 /// (falling back to copy if symlink creation fails — untrusted/unsupported filesystem, no permission,
 /// etc.). Library (non-root) packages are always symlink-with-copy-fallback, since nothing needs to be
-/// flattened into them.</para></summary>
+/// flattened into them.</para>
+///
+/// <para><b>The copy into <c>&lt;packagesDir&gt;/&lt;id&gt;/&lt;version&gt;</c> is atomic too</b>, the
+/// same temp+move shape as the cache entry: copied (and, for a flattened root, transitive assets added)
+/// into <c>&lt;versionDir&gt;.tmp-&lt;guid&gt;</c>, then one <see cref="Directory.Move(string, string)"/>
+/// into <c>versionDir</c>. A crash mid-copy leaves only the sibling; a reader never observes a
+/// half-written install, and the content check above still repairs it if the sibling's rename somehow
+/// won anyway. A sibling a crash left behind (the rename never ran, or the process died before its own
+/// cleanup) is swept at the start of the next materialize for that version so ".tmp-*" directories never
+/// accumulate.</para></summary>
 public static class PackageMaterializer
 {
     internal static readonly Func<string, string, bool> DefaultTrySymlink = TryCreateDirectorySymlink;
@@ -50,6 +59,13 @@ public static class PackageMaterializer
     /// delegate that always fails to exercise the copy fallback deterministically, regardless of what
     /// the current OS/filesystem actually supports. Reset to <see cref="DefaultTrySymlink"/> after use.</summary>
     internal static Func<string, string, bool> TrySymlink = DefaultTrySymlink;
+
+    internal static readonly Action<string, string> DefaultCopyFile = (source, destination) => File.Copy(source, destination, overwrite: true);
+
+    /// <summary>Test seam only: swap in a delegate that fails partway through a directory copy to prove
+    /// the temp-sibling-then-rename protocol leaves no partial versionDir behind, deterministically
+    /// rather than relying on an actual crash. Reset to <see cref="DefaultCopyFile"/> after use.</summary>
+    internal static Action<string, string> CopyFile = DefaultCopyFile;
 
     /// <summary>Extracts each resolved package into the content-addressed cache (idempotent; atomic
     /// temp+move population; corrupted entries re-extracted) and links/copies it to
@@ -345,15 +361,37 @@ public static class PackageMaterializer
             return;
         }
 
-        CopyDirectory(entryDir, versionDir);
-
-        if (flattened is null)
+        // The copy is never done in place: materialize into a temp sibling, then one atomic
+        // Directory.Move into versionDir -- a reader never observes a half-written install, and a crash
+        // mid-copy leaves only the sibling, not a torn versionDir. Mirrors the cache entry's own
+        // temp+move populate protocol. A sibling left behind by an EARLIER crash (the process died
+        // before its own rename, or even before its own cleanup below could run) is swept first so
+        // ".tmp-*" directories never accumulate across restores.
+        var siblingDir = Path.GetDirectoryName(versionDir)!;
+        var tmpPattern = Path.GetFileName(versionDir) + ".tmp-*";
+        foreach (var stale in Directory.GetDirectories(siblingDir, tmpPattern))
         {
-            return;
+            TryDelete(stale);
         }
 
-        CopyInto(flattened.Lib, Path.Combine(versionDir, "lib"));
-        CopyInto(flattened.Native, Path.Combine(versionDir, "native"));
+        var tmpDir = versionDir + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            CopyDirectory(entryDir, tmpDir);
+
+            if (flattened is not null)
+            {
+                CopyInto(flattened.Lib, Path.Combine(tmpDir, "lib"));
+                CopyInto(flattened.Native, Path.Combine(tmpDir, "native"));
+            }
+
+            Directory.Move(tmpDir, versionDir);
+        }
+        catch
+        {
+            TryDelete(tmpDir);
+            throw;
+        }
     }
 
     private static void RemoveInstall(string versionDir)
@@ -377,7 +415,7 @@ public static class PackageMaterializer
         Directory.CreateDirectory(destinationDir);
         foreach (var source in sources)
         {
-            File.Copy(source, Path.Combine(destinationDir, Path.GetFileName(source)), overwrite: true);
+            CopyFile(source, Path.Combine(destinationDir, Path.GetFileName(source)));
         }
     }
 
@@ -394,7 +432,7 @@ public static class PackageMaterializer
 
             var dest = Path.Combine(destDir, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-            File.Copy(file, dest, overwrite: true);
+            CopyFile(file, dest);
         }
     }
 

@@ -14,7 +14,10 @@ public class DriftCheckerTests
         var dir = Path.Combine(Path.GetTempPath(), "pz-tests", "packages-" + Guid.NewGuid().ToString("N"));
         foreach (var (id, version) in installed)
         {
-            Directory.CreateDirectory(Path.Combine(dir, id, version));
+            // Matches Locked()'s one declared lib asset, so a test that only cares about
+            // requirement/version/rid drift gets a "content matches" (not "file missing") verdict for it.
+            var lib = Directory.CreateDirectory(Path.Combine(dir, id, version, "lib")).FullName;
+            File.WriteAllText(Path.Combine(lib, $"{id}.dll"), "fixture");
         }
 
         return dir;
@@ -117,6 +120,25 @@ public class DriftCheckerTests
             [new ConnectorPackageRef("FakeSourceConnector", "1.2.3")], lockFile, packagesDir, "linux-x64");
 
         Assert.Empty(findings);
+    }
+
+    [Fact]
+    public void A_missing_asset_the_lock_records_no_hash_for_is_still_reported_missing()
+    {
+        // A partial directory from a crash mid-copy, under a lock written before per-file hashes were
+        // kept: the file itself is absent, not merely unverifiable. Existence must still be checked --
+        // a directory is not trusted purely because it exists. Built by hand (not PackagesDirWith,
+        // which pre-populates the lib file Locked() declares) so the dll is genuinely missing.
+        var packagesDir = Path.Combine(Path.GetTempPath(), "pz-tests", "packages-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path.Combine(packagesDir, "FakeSourceConnector", "1.2.3", "lib"));
+        var lockFile = new LockFile(LockFileWriter.CurrentVersion, "linux-x64", [Locked("FakeSourceConnector", "1.2.3")]);
+
+        var findings = DriftChecker.Verify(
+            [new ConnectorPackageRef("FakeSourceConnector", "1.2.3")], lockFile, packagesDir, "linux-x64");
+
+        var finding = Assert.Single(findings);
+        Assert.Equal("PZ0326", finding.Code);
+        Assert.Contains("missing under", finding.Message);
     }
 
     [Fact]
