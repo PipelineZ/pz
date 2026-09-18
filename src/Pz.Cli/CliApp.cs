@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Pz.Cli.Commands;
+using Pz.Core.Validation;
 
 namespace Pz.Cli;
 
@@ -29,5 +30,34 @@ public static class CliApp
         root.Subcommands.Add(McpCommand.Create());
 
         return root;
+    }
+
+    /// <summary>The process entry point's whole body. Every verb handles the failures it anticipates;
+    /// this is the net under them, so an exception nobody anticipated still ends as a coded fatal
+    /// (exit 3) naming a next step rather than a raw stack trace.</summary>
+    public static int Run(string[] args) =>
+        Run(Build(), args, Console.Error, Environment.GetEnvironmentVariable);
+
+    internal static int Run(RootCommand root, string[] args, TextWriter stderr, Func<string, string?> getEnv)
+    {
+        try
+        {
+            // System.CommandLine's own handler would print the stack and return 1, which the exit-code
+            // contract reserves for node failures.
+            return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
+        }
+        catch (Exception ex)
+        {
+            stderr.WriteLine(
+                $"error {PzErrorCode.UnexpectedEngineFailure}: internal error ({ex.GetType().Name}: {ex.Message}) — "
+                + "this is a bug in pz, not in your project; please report it at "
+                + "https://github.com/PipelineZ/pz/issues, re-running with PZ_DEBUG=1 to include the stack trace");
+            if (getEnv("PZ_DEBUG") is { Length: > 0 } debug && debug != "0")
+            {
+                stderr.WriteLine(ex.ToString());
+            }
+
+            return ExitCodes.Fatal;
+        }
     }
 }

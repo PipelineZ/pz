@@ -683,4 +683,29 @@ public class DagCompilerTests
         var dag = DagCompiler.Compile(p, Ctx(p));
         Assert.Equal("check_a_freshness_updated_at", dag.Nodes.Single(n => n.Kind == NodeKind.Check).Name);
     }
+
+    /// <summary>Distinct checks whose type+columns convention yields one name (two row_counts; or
+    /// `[a_b]` against `[a, b]`) get distinct node names, so `--select` stays unambiguous. The first
+    /// keeps the conventional name.</summary>
+    [Fact]
+    public void Checks_colliding_on_name_get_distinct_names()
+    {
+        var checks = new[]
+        {
+            new CheckDef("row_count", [], new Dictionary<string, object?> { ["min"] = 1L }),
+            new CheckDef("row_count", [], new Dictionary<string, object?> { ["max"] = 10L }),
+            new CheckDef("not_null", ["a_b"], new Dictionary<string, object?>()),
+            new CheckDef("not_null", ["a", "b"], new Dictionary<string, object?>()),
+        };
+        var p = Project([Pipe("a", "select 1 as id", checks: checks)]);
+        var byName = DagCompiler.Compile(p, Ctx(p)).Nodes.Where(n => n.Kind == NodeKind.Check)
+            .ToDictionary(n => n.Name, n => ((CheckNodeDef)n.Definition).Check);
+        Assert.Equal(
+            ["check_a_not_null_a_b", "check_a_not_null_a_b_2", "check_a_row_count", "check_a_row_count_2"],
+            byName.Keys.Order(StringComparer.Ordinal));
+        Assert.Same(checks[0], byName["check_a_row_count"]);
+        Assert.Same(checks[1], byName["check_a_row_count_2"]);
+        Assert.Same(checks[2], byName["check_a_not_null_a_b"]);
+        Assert.Same(checks[3], byName["check_a_not_null_a_b_2"]);
+    }
 }

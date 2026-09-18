@@ -1,3 +1,4 @@
+using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.Core.Validation;
 
@@ -1208,11 +1209,25 @@ public static class ProjectLoader
         List<PzError> errors, HashSet<int> columnShapeErrorIndices)
     {
         var customSqlNames = new HashSet<string>(StringComparer.Ordinal);
+        var identities = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < checks.Count; i++)
         {
             var check = checks[i];
             void Add(string message, string hint) => errors.Add(new PzError(PzErrorCode.InvalidCheck,
                 $"pipeline '{pipelineName}': {message}.", relativePath, null, hint));
+
+            // Identical checks compile to one node id, which the DAG cannot hold twice. custom_sql is
+            // excluded because its duplicate is reported by name below, and a check whose `column:`
+            // was already refused has lost the columns that would tell it apart — one root cause,
+            // one error.
+            if (check.Type != "custom_sql" && !columnShapeErrorIndices.Contains(i) &&
+                !identities.Add(CheckIdentity.Canonical(check)))
+            {
+                var target = check.Columns.Count > 0 ? $" on [{string.Join(", ", check.Columns)}]" : "";
+                Add($"duplicate {check.Type} check{target}",
+                    "remove the repeated entry — it is identical to an earlier check on this pipeline");
+                continue;
+            }
 
             switch (check.Type)
             {
