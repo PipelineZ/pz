@@ -67,6 +67,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   can never be a legitimate authored key component anyway (pz's entity-name grammar already forbids
   one everywhere else). `azureblob` is unaffected: it has no connection-level `root:` for a `path:`
   to escape -- container and path are both always author-declared directly on the dataset/output.
+- **The iceberg connector accepts an optional `storage_scope:` connection option**, which becomes
+  the `SCOPE` of the storage secret it creates. Without it, a catalog connection's storage secret
+  (S3 keys, the AWS credential chain, or an Azure auth method) is unscoped, since a catalog's data
+  location is not knowable up front -- and two catalog connections that both configure explicit
+  storage credentials therefore both create unscoped secrets, which DuckDB matches
+  non-deterministically among several of the same type. `storage_scope:` is validated as a
+  URL-shaped prefix (`s3://...`, `abfss://...`, `az://...`) and never logged (setup statements are
+  secrets). A `files` catalog's root already implies its own scope; `storage_scope:` overrides it
+  the same way. No automated cross-connection warning is added: detecting "two connections with
+  different storage credentials" without comparing the credential values themselves (which would
+  leak them) is not a reliable signal, so this is documented instead.
 
 ### Added
 

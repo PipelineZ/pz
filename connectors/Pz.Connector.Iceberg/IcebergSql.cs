@@ -218,6 +218,12 @@ internal static class IcebergSql
             statements.AddRange(["install aws", "load aws"]);
         }
 
+        // A `files` root already implies its own scope; `storage_scope:` overrides it, and is the
+        // ONLY scope a catalog connection (root is null here) gets by default -- without it, two
+        // catalog connections with different storage credentials both create UNSCOPED secrets, and
+        // DuckDB's matching among several unscoped secrets of the same type is non-deterministic.
+        var storageScope = config.GetString("storage_scope") is { Length: > 0 } explicitScope ? explicitScope : root;
+
         if (azure)
         {
             // Total, not a redundant nesting of the outer `if (azure)`: collapsing to
@@ -226,16 +232,16 @@ internal static class IcebergSql
             // credential-chain secret, which is wrong for every azure connection.
             if (hasStorageKeys)
             {
-                statements.Add(AzureStorageSecretSql(config, alias, scope: root));
+                statements.Add(AzureStorageSecretSql(config, alias, scope: storageScope));
             }
         }
         else if (hasStorageKeys && (root is null || IsUrl(root)))
         {
-            statements.Add(StorageSecretSql(config, alias, scope: root));
+            statements.Add(StorageSecretSql(config, alias, scope: storageScope));
         }
         else if (IcebergCatalog.IsAws(catalog))
         {
-            statements.Add(CredentialChainSecretSql(config, alias));
+            statements.Add(CredentialChainSecretSql(config, alias, scope: storageScope));
         }
 
         var nested = config.GetBool("nested_namespaces") ? ", support_nested_namespaces true" : "";
@@ -303,11 +309,15 @@ internal static class IcebergSql
         return $"create or replace secret {secretName} (type iceberg, {body})";
     }
 
-    /// <summary>S3-compatible storage credentials as a secret, SCOPED to the <c>files</c> root so they
-    /// apply to that root's tables and nothing else in the session. A catalog connection's data
-    /// location is not knowable up front (the catalog hands out each table's location), so its secret
-    /// is unscoped; DuckDB still prefers a longer-scoped secret (another connector's) for any path one
-    /// covers. Defaults match the s3 connector's.</summary>
+    /// <summary>S3-compatible storage credentials as a secret, SCOPED to the <c>files</c> root (or to
+    /// an explicit <c>storage_scope:</c>) so they apply to that root's tables and nothing else in the
+    /// session. A catalog connection's data location is not knowable up front (the catalog hands out
+    /// each table's location), so its secret is unscoped UNLESS <c>storage_scope:</c> is set — two
+    /// catalog connections with different storage credentials and no scope both create unscoped
+    /// secrets, and DuckDB's matching among several unscoped secrets of the same type is
+    /// non-deterministic; <c>storage_scope:</c> is the author's way out of that. DuckDB still prefers
+    /// a longer-scoped secret (another connector's) for any path one covers. Defaults match the s3
+    /// connector's.</summary>
     internal static string StorageSecretSql(ConnectorConfig config, string alias, string? scope)
     {
         var region = config.GetString("storage_region") ?? "us-east-1";
@@ -327,9 +337,10 @@ internal static class IcebergSql
     /// <c>storage_auth</c> method, field-for-field the azureblob connector's shapes: the two
     /// key-bearing methods funnel through a connection string (a custom <c>storage_endpoint</c>
     /// becomes its <c>BlobEndpoint=</c>), the two token-bearing ones name a provider and the
-    /// account. A <c>files</c> root is scoped WITH a trailing slash — the azure extension's scope
-    /// match is a plain prefix test on the slash-terminated form, so <c>az://c/wh</c> alone would
-    /// also cover <c>az://c/wh2</c>. A catalog connection's secret is unscoped, as for S3.</summary>
+    /// account. A <c>files</c> root (or an explicit <c>storage_scope:</c>) is scoped WITH a trailing
+    /// slash — the azure extension's scope match is a plain prefix test on the slash-terminated form,
+    /// so <c>az://c/wh</c> alone would also cover <c>az://c/wh2</c>. A catalog connection's secret is
+    /// unscoped, as for S3, unless <c>storage_scope:</c> is set.</summary>
     internal static string AzureStorageSecretSql(ConnectorConfig config, string alias, string? scope)
     {
         var auth = IcebergCatalog.StorageAuth(config);
@@ -363,11 +374,14 @@ internal static class IcebergSql
     }
 
     /// <summary>An AWS catalog with no explicit keys signs with the ambient AWS credential chain
-    /// (environment, profile, instance role) — the same chain the AWS CLI resolves.</summary>
-    internal static string CredentialChainSecretSql(ConnectorConfig config, string alias)
+    /// (environment, profile, instance role) — the same chain the AWS CLI resolves. Unscoped by
+    /// default, same as <see cref="StorageSecretSql"/> — the same <c>storage_scope:</c> override
+    /// applies here for the same reason.</summary>
+    internal static string CredentialChainSecretSql(ConnectorConfig config, string alias, string? scope)
     {
         var region = config.GetString("storage_region") ?? "us-east-1";
-        return $"create or replace secret {StorageSecretName(alias)} (type s3, provider credential_chain, region '{EscapeLiteral(region)}')";
+        return $"create or replace secret {StorageSecretName(alias)} (type s3, provider credential_chain, region '{EscapeLiteral(region)}'" +
+            (scope is null ? "" : $", scope '{EscapeLiteral(scope)}'") + ")";
     }
 
     /// <summary>The catalog scan fragment: a declared <c>columns:</c> contract prunes the read; the

@@ -159,6 +159,48 @@ public sealed class IcebergSqlGenTests
             statements);
     }
 
+    /// <summary>Without `storage_scope:`, two catalog connections with different storage keys both
+    /// create UNSCOPED secrets (pinned above by
+    /// <see cref="Rest_catalog_with_storage_keys_turns_vending_off_and_leaves_the_secret_unscoped"/>)
+    /// -- non-deterministic matching (CONN-5). `storage_scope:` is the author's way out.</summary>
+    [Fact]
+    public void Rest_catalog_with_storage_scope_produces_a_scoped_secret()
+    {
+        var statements = IcebergSql.SetupStatements(
+            Rest(("token", "tok"), ("storage_key_id", "AK"), ("storage_secret_key", "SK"), ("storage_scope", "s3://bucket/prefix")),
+            WhAlias);
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type s3, key_id 'AK', secret 'SK', region 'us-east-1', url_style 'vhost', use_ssl true, scope 's3://bucket/prefix')",
+            statements[4]);
+    }
+
+    /// <summary>The credential-chain shape (no explicit keys) has the exact same unscoped-by-default
+    /// problem, so `storage_scope:` applies there too -- see
+    /// <see cref="Glue_catalog_signs_with_the_credential_chain_by_default"/> for the unscoped baseline.</summary>
+    [Fact]
+    public void Glue_catalog_credential_chain_with_storage_scope_is_scoped()
+    {
+        var statements = IcebergSql.SetupStatements(
+            Config(("catalog", "glue"), ("storage_scope", "s3://bucket/glue-wh/")), WhAlias);
+        Assert.Equal(
+            $"create or replace secret {WhAlias}_storage (type s3, provider credential_chain, region 'us-east-1', scope 's3://bucket/glue-wh/')",
+            statements[^2]);
+    }
+
+    /// <summary>The azure shape: `storage_scope:` reaches <see cref="IcebergSql.AzureStorageSecretSql"/>
+    /// through the same trailing-slash normalization a `files` root already gets.</summary>
+    [Fact]
+    public void Rest_catalog_azure_storage_with_storage_scope_is_scoped()
+    {
+        var statements = IcebergSql.SetupStatements(
+            Rest(("token", "tok"), ("storage", "azure"), ("storage_auth", "credential_chain"), ("storage_account_name", "acct"),
+                ("storage_scope", "az://container/wh")),
+            WhAlias);
+        Assert.Contains(
+            $"create or replace secret {WhAlias}_storage (type azure, provider credential_chain, account_name 'acct', scope 'az://container/wh/')",
+            statements);
+    }
+
     [Fact]
     public void Nested_namespaces_flag_rides_the_attach()
     {

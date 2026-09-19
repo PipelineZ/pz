@@ -37,6 +37,7 @@ public sealed class IcebergConnector : ISourceConnector, ISinkConnector, INative
           "storage_key_id": { "type": "string" }, "storage_secret_key": { "type": "string" },
           "storage_region": { "type": "string" }, "storage_endpoint": { "type": "string" },
           "storage_url_style": { "enum": ["vhost", "path"] }, "storage_use_ssl": { "type": "boolean" },
+          "storage_scope": { "type": "string" },
           "storage": { "enum": ["s3", "azure"] },
           "storage_auth": { "enum": ["connection_string", "account_key", "service_principal", "credential_chain"] },
           "storage_connection_string": { "type": "string" }, "storage_account_name": { "type": "string" },
