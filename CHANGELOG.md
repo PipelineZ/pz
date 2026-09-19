@@ -66,6 +66,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   dumps and test sequence files) when they fail, and `scripts/rust-conformance.sh` runs its
   `Category=RustPcp` facts under `--blame-hang` with a five-minute ceiling. A rare hang used to be a
   silent job timeout with nothing left to read afterwards.
+- Contributors: the `Category=RustPcp` facts run with nothing else in their assembly beside them
+  (their telemetry rides on the connector's wall-clock-bounded shutdown flush, which a busy machine
+  can starve), and `CONTRIBUTING.md` says how to run them and what `-m:1` is for.
 - `release.yml` gates the publish on three checks that previously ran only in PR CI:
   `scripts/check-changelog-entry.sh` (new) fails the release before anything is packed unless
   `CHANGELOG.md` has a `## [X.Y.Z]` heading for the tag (a pre-release tag like `v0.7.0-rc.1` is
