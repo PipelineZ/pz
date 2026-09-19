@@ -58,7 +58,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
         // Called once per open, like UseOperationGate above. The callback itself delivers each distinct
         // text once per RUN: other nodes open the same connection and would say the same thing.
-        if (source is INoticeAware noticeAware && ctx.ConnectorNotice is { } connectorNotice)
+        if (source is INoticeAware noticeAware && ctx.ConnectorNoticeFor(def.Source.Name) is { } connectorNotice)
         {
             noticeAware.UseNotice(connectorNotice);
         }

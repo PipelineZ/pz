@@ -54,6 +54,14 @@ public interface IRunEvents
 
     void NodeCompleted(NodeResult result);
     void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration);
+
+    /// <summary>A connector's own log output. Not part of any single node's lifecycle, the same reason
+    /// <see cref="BreakerStateChanged"/> carries no node id — see <c>ConnectorLogEvent</c>'s doc for why
+    /// <paramref name="connection"/> alone is the right identity. <paramref name="level"/> is
+    /// <c>"trace"</c>/<c>"debug"</c>/<c>"info"</c>/<c>"warn"</c>/<c>"error"</c>/<c>"critical"</c>.
+    /// <paramref name="message"/> must already be redacted by the caller — this seam does not inspect
+    /// it.</summary>
+    void ConnectorLog(string connection, string level, string message);
 }
 
 public sealed class NullRunEvents : IRunEvents
@@ -74,6 +82,7 @@ public sealed class NullRunEvents : IRunEvents
         IReadOnlyList<string> columns, string format) { }
     public void NodeCompleted(NodeResult result) { }
     public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
+    public void ConnectorLog(string connection, string level, string message) { }
 }
 
 /// <summary>IRunEvents is a best-effort observation contract — a throwing
@@ -143,5 +152,10 @@ public static class RunEventsExtensions
     public static void SafeRunCompleted(this IRunEvents events, string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration)
     {
         try { events.RunCompleted(runId, status, succeeded, failed, skipped, duration); } catch { /* best-effort observation only */ }
+    }
+
+    public static void SafeConnectorLog(this IRunEvents events, string connection, string level, string message)
+    {
+        try { events.ConnectorLog(connection, level, message); } catch { /* best-effort observation only */ }
     }
 }

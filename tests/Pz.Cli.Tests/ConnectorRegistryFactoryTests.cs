@@ -178,4 +178,42 @@ public sealed class ConnectorRegistryFactoryTests(CliLocalFeedFixture feed) : ID
         finally { Console.SetError(original); }
         return stderr.ToString();
     }
+
+    // ---- connector_log transform helpers: level naming, exception-message folding ----------------
+
+    [Theory]
+    [InlineData(0, "trace")]
+    [InlineData(1, "debug")]
+    [InlineData(2, "info")]
+    [InlineData(3, "warn")]
+    [InlineData(4, "error")]
+    [InlineData(5, "critical")]
+    [InlineData(6, "unknown")]
+    [InlineData(-1, "unknown")]
+    public void LevelName_maps_the_Microsoft_Extensions_Logging_LogLevel_ordinals(int level, string expected) =>
+        Assert.Equal(expected, ConnectorRegistryFactory.LevelName(level));
+
+    [Fact]
+    public void FoldException_appends_the_exceptionMessage_field_when_present()
+    {
+        var fields = new Dictionary<string, string> { ["exceptionMessage"] = "connection refused" };
+
+        Assert.Equal("read failed: connection refused", ConnectorRegistryFactory.FoldException("read failed", fields));
+    }
+
+    [Fact]
+    public void FoldException_leaves_the_message_untouched_with_no_exceptionMessage_field()
+    {
+        var fields = new Dictionary<string, string> { ["category"] = "Kafka" };
+
+        Assert.Equal("read failed", ConnectorRegistryFactory.FoldException("read failed", fields));
+    }
+
+    [Fact]
+    public void FoldException_leaves_the_message_untouched_when_exceptionMessage_is_empty()
+    {
+        var fields = new Dictionary<string, string> { ["exceptionMessage"] = "" };
+
+        Assert.Equal("read failed", ConnectorRegistryFactory.FoldException("read failed", fields));
+    }
 }

@@ -117,6 +117,9 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
             failed, skipped, (long)duration.TotalMilliseconds));
     }
 
+    public void ConnectorLog(string connection, string level, string message) =>
+        bus.Publish(new ConnectorLogEvent(clock.GetUtcNow(), runId, level, connection, message));
+
     /// <summary>Maps <see cref="NodeResult.Provenance"/> onto the exact wire values
     /// <c>RunResultsWriter</c> writes to <c>run_results.json</c>, so the NDJSON stream and the persisted
     /// artifact agree.</summary>

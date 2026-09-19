@@ -139,6 +139,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   pz build's own version on every handshake. Both fields are additive:
   absent on either side of an older SDK/manifest, never a mismatch. This gap
   made the 0.6.1 pruning incident hard to triage.
+- A connector's own log output is no longer dropped on `pz run`/`pz retry`: an
+  additive `connector_log` run event (`level`, `connection`, `message`) carries
+  a process-hosted connector's `ILogger` output (the C# SDK already queued it
+  over the PCP reverse channel; the host wired `logSink: null` and nothing read
+  it) and an in-process connector's notice about its connection (e.g. sftp's
+  unpinned host key). Every line is in the event stream (`--log-format json`,
+  the SQL event store); warn and above is also said once per connection and
+  distinct text as a `note:` line, which is what `pz_run` returns too. A
+  process-hosted message, with the message of any exception logged beside it,
+  passes through the engine's redaction helper first. `pz validate`, `plan`,
+  `cdc`, `connectors` and `mcp` still drop connector logs.
+  A connector notice's `note:` line now leads with the connection's name
+  instead of a host, and the sftp unpinned-host-key notice no longer contains
+  the host: a run event must not carry connection config.
+  Also fixes two `Pz.Connectors.Sdk` defects this surfaced: a structured log
+  property rendered through the connector process's current culture instead
+  of invariantly, and an exception logged alongside a message carried only its
+  type name onto the wire, never its own message.
 
 ### Fixed
 
@@ -744,6 +762,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   them. The check compares the two connections' resolved tokens
   (after `${VAR}` interpolation) and names both connections without ever
   printing either token.
+- `pz run`'s minted run id (and therefore `.pz/runs/<id>`, the NDJSON `runId`
+  field, and every artifact keyed by it) and `run_results.json`'s `startedAt`
+  no longer pick up the process's current culture. Both were formatted with a
+  custom `yyyy-MM-dd`/`yyyyMMdd`-style pattern and no explicit
+  `CultureInfo.InvariantCulture`, so on a machine whose locale uses a
+  non-Gregorian calendar (Thai Buddhist, for example) the year rendered
+  543 years off and `RunRetention.TryParseRunTimestamp`'s age math silently
+  went wrong. `--log-format json`'s `at` field (`JsonRenderer`) had the same
+  bug and is fixed the same way.
 
 ## [0.6.1] - 2026-09-10
 

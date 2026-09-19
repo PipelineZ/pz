@@ -28,6 +28,7 @@ public static class RunEventFields
         MergeKeyDuplicatesDetectedEvent => "merge_key_duplicates_detected",
         LossyIntegerInferenceDetectedEvent => "lossy_integer_inference_detected",
         AmbiguousDateInferenceDetectedEvent => "ambiguous_date_inference_detected",
+        ConnectorLogEvent => "connector_log",
         _ => throw new ArgumentOutOfRangeException(nameof(evt), evt, "unknown RunEvent type"),
     };
 
@@ -222,6 +223,12 @@ public static class RunEventFields
                 }
                 json.WriteEndArray();
                 json.WriteString("format", e.Format);
+                break;
+
+            case ConnectorLogEvent e:
+                json.WriteString("level", e.Level);
+                json.WriteString("connection", e.Connection);
+                json.WriteString("message", e.Message);
                 break;
 
             default:

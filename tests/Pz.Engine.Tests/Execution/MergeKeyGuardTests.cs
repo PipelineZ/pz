@@ -65,6 +65,7 @@ public sealed class MergeKeyGuardTests : IAsyncLifetime
         public void NodeCompleted(NodeResult result) { }
         public void RunCompleted(string runId, Pz.Engine.Dispatch.RunStatus status, int succeeded, int failed,
             int skipped, TimeSpan duration) { }
+        public void ConnectorLog(string connection, string level, string message) { }
     }
 
     private static ConnectorRegistry Registry(ISinkConnector sink)

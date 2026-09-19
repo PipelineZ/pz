@@ -32,6 +32,8 @@ public class CompositeRunEventsTests
         public void NodeCompleted(NodeResult result) => throw new InvalidOperationException();
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped,
             TimeSpan duration) => throw new InvalidOperationException();
+        public void ConnectorLog(string connection, string level, string message) =>
+            throw new InvalidOperationException();
     }
 
     private sealed class RecordingEvents : IRunEvents
@@ -58,6 +60,9 @@ public class CompositeRunEventsTests
         public void NodeCompleted(NodeResult result) => NodeCompletedCount++;
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped,
             TimeSpan duration) { }
+        public readonly List<(string Connection, string Level, string Message)> ConnectorLogs = [];
+        public void ConnectorLog(string connection, string level, string message) =>
+            ConnectorLogs.Add((connection, level, message));
     }
 
     private static DagNode Node(string name) =>
@@ -91,10 +96,12 @@ public class CompositeRunEventsTests
         composite.AmbiguousDateInferenceDetected(Node("a"), "crm", "orders", ["when"], "%d/%m/%Y");
         composite.NodeCompleted(NodeResult.Skipped(Node("a")));
         composite.RunCompleted("run-1", RunStatus.Success, 1, 0, 0, TimeSpan.Zero);
+        composite.ConnectorLog("crm", "warn", "unpinned host key");
 
         Assert.Equal(1, recording.NodeCompletedCount);
         Assert.Equal(1, recording.MergeKeyDuplicatesCount);
         Assert.Equal(1, recording.LossyIntegerInferenceCount);
         Assert.Equal(1, recording.AmbiguousDateInferenceCount);
+        Assert.Equal([("crm", "warn", "unpinned host key")], recording.ConnectorLogs);
     }
 }

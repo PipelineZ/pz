@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text;
 using Pz.Cli.Rendering;
@@ -350,11 +351,58 @@ public class JsonRendererTests
         Assert.DoesNotContain(".pz", line, StringComparison.Ordinal);
     }
 
+    /// <summary>Unlike <c>ConsoleRenderer</c> (warn-and-above only), NDJSON carries every
+    /// <c>connector_log</c> level unfiltered -- a machine consumer can filter for itself, and the
+    /// "everything in NDJSON" shape is what the events.md contract documents.</summary>
+    [Theory]
+    [InlineData("trace")]
+    [InlineData("debug")]
+    [InlineData("info")]
+    [InlineData("warn")]
+    [InlineData("error")]
+    [InlineData("critical")]
+    public void ConnectorLog_serializes_every_level(string level)
+    {
+        var evt = new ConnectorLogEvent(new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero), "run-1", level,
+            "pg_prod", "retrying after a transient error");
+
+        var actual = Encoding.UTF8.GetString(Render([evt]));
+        using var doc = System.Text.Json.JsonDocument.Parse(actual.TrimEnd('\n'));
+        var root = doc.RootElement;
+        Assert.Equal("connector_log", root.GetProperty("event").GetString());
+        Assert.Equal(level, root.GetProperty("level").GetString());
+        Assert.Equal("pg_prod", root.GetProperty("connection").GetString());
+        Assert.Equal("retrying after a transient error", root.GetProperty("message").GetString());
+    }
+
     [Fact]
     public void Output_is_LF_terminated_not_CRLF()
     {
         var actual = Encoding.UTF8.GetString(Render(ScriptedSequence()));
         Assert.DoesNotContain("\r\n", actual);
         Assert.EndsWith("\n", actual);
+    }
+
+    /// <summary>`at` must be Gregorian-year, invariant-digit ISO-8601 regardless of the process
+    /// culture -- th-TH's default calendar is Buddhist (year 2026 renders as 2569), which would
+    /// silently break every consumer of the events.md contract on a Thai-locale machine.</summary>
+    [Fact]
+    public void At_is_invariant_culture_even_under_a_non_Gregorian_current_culture()
+    {
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("th-TH");
+            var evt = new RunStartedEvent(new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero),
+                "run-1", "hello_pz", 2);
+
+            var actual = Encoding.UTF8.GetString(Render([evt]));
+            using var doc = System.Text.Json.JsonDocument.Parse(actual.TrimEnd('\n'));
+            Assert.Equal("2026-07-04T10:00:00.000Z", doc.RootElement.GetProperty("at").GetString());
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = original;
+        }
     }
 }

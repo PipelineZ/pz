@@ -109,6 +109,15 @@ public sealed record LossyIntegerInferenceDetectedEvent(DateTimeOffset At, strin
 public sealed record AmbiguousDateInferenceDetectedEvent(DateTimeOffset At, string RunId, string NodeId,
     string Connection, string Entity, IReadOnlyList<string> Columns, string Format) : RunEvent(At, RunId);
 
+/// <summary>A connector's own log output. <c>Level</c> is <c>"trace"</c>/<c>"debug"</c>/<c>"info"</c>/
+/// <c>"warn"</c>/<c>"error"</c>/<c>"critical"</c>, or <c>"unknown"</c> for one this build cannot name.
+/// <c>Connection</c> is the connection the line is about; like <see cref="BreakerStateChangedEvent"/>
+/// it belongs to no single node's lifecycle and carries no <c>NodeId</c>. <c>Message</c> holds no
+/// connection config and no SQL text: a process-hosted connector's text is redacted before it gets
+/// here, and an in-process connector's notice is written without any configured value in it.</summary>
+public sealed record ConnectorLogEvent(DateTimeOffset At, string RunId, string Level, string Connection,
+    string Message) : RunEvent(At, RunId);
+
 public sealed record NodeTimingsPayload(long ProducerStallMs, long ConsumerStallMs);
 
 /// <summary>BCL-only twin of <c>Pz.Engine.Resilience.OpStats</c> — Pz.Diagnostics

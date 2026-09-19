@@ -34,7 +34,7 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     {
         if (settings.HostKeyFingerprint is null)
         {
-            notice(SftpHostKeyNotice.Unpinned(settings.Host));
+            notice(SftpHostKeyNotice.Unpinned);
         }
     }
 

@@ -103,4 +103,12 @@ public sealed class CompositeRunEvents(params IRunEvents[] targets) : IRunEvents
             target.SafeRunCompleted(runId, status, succeeded, failed, skipped, duration);
         }
     }
+
+    public void ConnectorLog(string connection, string level, string message)
+    {
+        foreach (var target in targets)
+        {
+            target.SafeConnectorLog(connection, level, message);
+        }
+    }
 }

@@ -24,10 +24,20 @@ internal static class ConnectorRegistryFactory
     ///
     /// <para><paramref name="otelEndpoint"/> is the same OTLP endpoint the engine exports to;
     /// out-of-process connectors receive it in their handshake and export their own spans there. Null
-    /// keeps every child telemetry-free.</para></summary>
+    /// keeps every child telemetry-free.</para>
+    ///
+    /// <para><paramref name="connectorLog"/> receives every process-hosted connector's <c>ILogger</c>
+    /// output as <c>(connection, level, message)</c> -- level already named
+    /// (<c>"trace"</c>/.../<c>"critical"</c>), message already redacted (<see cref="MessageRedaction"/>)
+    /// and, when the connector logged alongside an exception, folded with the exception's own message.
+    /// Null (the default) drops them, same as passing no logSink to <see cref="ProcessConnectorHost"/>
+    /// directly. The caller is expected to route this to <c>IRunEvents.SafeConnectorLog</c> once its own
+    /// event bus exists -- registry construction itself spawns nothing (see
+    /// <see cref="ProcessConnectorHost.LoadFromDirectory"/>'s own doc), so nothing this delegate reports
+    /// can fire before the caller is ready for it.</para></summary>
     public static async Task<(ConnectorRegistry Registry, ConnectorHosts? Hosts)> CreateAsync(
         PzProject project, string projectDir, bool noLockCheck, CancellationToken ct, string? runId = null,
-        Uri? otelEndpoint = null)
+        Uri? otelEndpoint = null, Action<string, string, string>? connectorLog = null)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -115,11 +125,10 @@ internal static class ConnectorRegistryFactory
             {
                 var (socketRoot, owned) = ProcessSocketRoot.Resolve(projectDir, runId);
                 ownedSocketRoot = owned ? socketRoot : null;
-                // logSink stays null: connector LogEvents have no run-event contract yet, so
-                // HostChannelPump drops them. Telemetry is different: the child exports its own spans
-                // straight to the collector, so all it needs from here is where and under which run.
                 processHost = ProcessConnectorHost.LoadFromDirectory(
                     packagesDir, outOfProcessRefs, socketRoot, warn: Warn,
+                    logSink: connectorLog is null ? null : (connection, level, message, fields) =>
+                        connectorLog(connection, LevelName(level), MessageRedaction.Redact(FoldException(message, fields))),
                     telemetry: new HostTelemetry(runId, otelEndpoint));
             }
         }
@@ -252,4 +261,31 @@ internal static class ConnectorRegistryFactory
             throw new PzValidationException([new PzError(ex.Code, ex.Message, null, null, ex.Hint)]);
         }
     }
+
+    /// <summary>The wire <c>LogEvent.level</c> int is <c>Microsoft.Extensions.Logging.LogLevel</c>'s own
+    /// ordinal (0 trace .. 5 critical -- see <c>pz_connector.proto</c>'s comment on the field); named
+    /// here rather than by referencing that package, which no other type in this project needs. An
+    /// out-of-range value (a future SDK level pz does not know about yet) names as "unknown" rather than
+    /// throwing -- a log line is best-effort observability, never worth failing a run over.</summary>
+    internal static string LevelName(int level) => level switch
+    {
+        0 => "trace",
+        1 => "debug",
+        2 => "info",
+        3 => "warn",
+        4 => "error",
+        5 => "critical",
+        _ => "unknown",
+    };
+
+    /// <summary>Closes the gap <see cref="Pz.Connectors.Sdk.HostLoggerProvider"/>'s wire fields open but
+    /// nothing downstream reads yet: an exception logged alongside a message carries its own
+    /// <c>Message</c> in the <c>exceptionMessage</c> field (the <c>formatter</c> callback that produced
+    /// the log's own <c>Message</c> does not include it unless the connector's own log template did).
+    /// Folded onto the end so the single <c>connector_log</c> event still carries the operator-actionable
+    /// half of an error a bare "unhandled InvalidOperationException" would otherwise discard.</summary>
+    internal static string FoldException(string message, IReadOnlyDictionary<string, string> fields) =>
+        fields.TryGetValue("exceptionMessage", out var exceptionMessage) && exceptionMessage.Length > 0
+            ? $"{message}: {exceptionMessage}"
+            : message;
 }

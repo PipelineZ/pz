@@ -75,6 +75,7 @@ public sealed class AmbiguousDateLintTests : IAsyncLifetime
 
         public void NodeCompleted(NodeResult result) { }
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
+        public void ConnectorLog(string connection, string level, string message) { }
     }
 
     private async Task<string> WriteCsvAsync(string name, string content)

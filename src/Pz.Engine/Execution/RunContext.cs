@@ -55,17 +55,21 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _connectorNotices =
         new(StringComparer.Ordinal);
 
-    /// <summary>What a notice-aware source or sink is handed: <see cref="Notice"/>, delivering each
-    /// distinct text once per run. Every node opens its own source or sink, so what a connector has to
-    /// say about its CONNECTION would otherwise repeat once per entity read through it. Null when the
-    /// run has no notice sink. `with`-clones share the set, which is right: it is per-run state.</summary>
-    public Action<string>? ConnectorNotice => Notice is not { } deliver
+    /// <summary>What a notice-aware source or sink is handed. Each distinct text is delivered once per
+    /// run and per connection, twice over: to <see cref="Notice"/>, led by the connection's name, and as
+    /// a <c>connector_log</c> run event at <c>"warn"</c> that names the connection in its own field.
+    /// Every node opens its own source or sink, so what a connector has to say about its CONNECTION
+    /// would otherwise repeat once per entity read through it. The text is not redacted here, so a
+    /// connector must not put a configured value in it. Null when the run has no notice sink.
+    /// `with`-clones share the set, which is right: it is per-run state.</summary>
+    public Action<string>? ConnectorNoticeFor(string connection) => Notice is not { } deliver
         ? null
         : message =>
         {
-            if (_connectorNotices.TryAdd(message, 0))
+            if (_connectorNotices.TryAdd($"{connection}\n{message}", 0))
             {
-                deliver(message);
+                deliver($"{connection}: {message}");
+                Events.SafeConnectorLog(connection, "warn", message);
             }
         };
 

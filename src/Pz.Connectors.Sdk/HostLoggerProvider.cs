@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using Pz.Connectors.Protocol.V1;
 
@@ -36,7 +37,12 @@ internal sealed class HostLoggerProvider(HostChannelPeer peer) : ILoggerProvider
                 {
                     if (key != "{OriginalFormat}")
                     {
-                        log.Fields[key] = value?.ToString() ?? string.Empty;
+                        // IFormattable, not a bare ToString(): a connector process's current culture is
+                        // whatever its host environment sets, and a non-invariant one would otherwise
+                        // corrupt a logged double/DateTime (decimal separator, calendar) on the wire.
+                        log.Fields[key] = value is IFormattable formattable
+                            ? formattable.ToString(null, CultureInfo.InvariantCulture)
+                            : value?.ToString() ?? string.Empty;
                     }
                 }
             }
@@ -44,6 +50,11 @@ internal sealed class HostLoggerProvider(HostChannelPeer peer) : ILoggerProvider
             if (exception is not null)
             {
                 log.Fields["exception"] = exception.GetType().FullName ?? exception.GetType().Name;
+                log.Fields["exceptionMessage"] = exception.Message;
+                if (exception.StackTrace is { } stackTrace)
+                {
+                    log.Fields["exceptionStackTrace"] = stackTrace;
+                }
             }
 
             peer.QueueLog(log);

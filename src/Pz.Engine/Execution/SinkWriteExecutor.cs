@@ -42,7 +42,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
 
         // Called once per open, like UseOperationGate above. The callback itself delivers each distinct
         // text once per RUN: other nodes open the same connection and would say the same thing.
-        if (sink is INoticeAware noticeAware && ctx.ConnectorNotice is { } connectorNotice)
+        if (sink is INoticeAware noticeAware && ctx.ConnectorNoticeFor(def.Sink.Name) is { } connectorNotice)
         {
             noticeAware.UseNotice(connectorNotice);
         }

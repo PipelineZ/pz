@@ -258,4 +258,20 @@ public class ConsoleRendererTests
         new NodeProgressEvent(At, "run-1", "node-a", "orders", 1, 2, 3),
         new RunCompletedEvent(At, "run-1", "success", 1, 0, 0, 10),
     };
+
+    // What a connector logs reaches a person as a `note:` line, written by the run itself. Printing the
+    // event here as well would say everything twice.
+    [Theory]
+    [InlineData("info")]
+    [InlineData("warn")]
+    [InlineData("error")]
+    public void ConnectorLog_is_not_printed_by_the_renderer(string level)
+    {
+        var writer = new StringWriter();
+        var renderer = new ConsoleRenderer(writer);
+
+        renderer.Render(new ConnectorLogEvent(At, "run-1", level, "pg_prod", "retrying after a transient error"));
+
+        Assert.Equal(string.Empty, writer.ToString());
+    }
 }

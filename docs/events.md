@@ -311,6 +311,21 @@ configured never publishes it at all.
 | `trigger` | string | Short human-readable reason for the transition, e.g. `5 consecutive transient failures`, `cool-down elapsed`, `probe succeeded`, `probe failed`. |
 | `coolDownMs` | number | The cool-down duration, in milliseconds, for a transition INTO `open` — the greater of `engine.breaker.cool_down` and any `RetryAfter` floor reported by the failure that tripped it. `0` for every other transition (`open` → `half_open`, `half_open` → `closed`), which has no fresh wait to report. |
 
+## `connector_log`
+
+A connector's own log output. Like `breaker_state_changed`, this is **not** part of any single node's
+`node_started` → ... → `node_completed` sequence, and it names a connection rather than a node. A
+process-hosted connector is started once per node, so a line it logs about its connection arrives once
+per entity read through it, and every one is published. An in-process connector's notice about its
+connection (e.g. sftp's unpinned host key) is published once per run for each connection and distinct
+text. A run whose connectors log nothing never publishes this event.
+
+| Field | Type | Description |
+|---|---|---|
+| `level` | string | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `critical` \| `unknown`. An in-process connector's connection notice is always `warn`. |
+| `connection` | string | The connection this log line belongs to. |
+| `message` | string | The connector's own text. A process-hosted connector's message, with the message of any exception logged beside it, has passed through the engine's redaction helper. An in-process connector's notice is written without any configured value in it. |
+
 ## `retention_swept`
 
 Emitted once at the end of a run when automatic retention (`retention:` in `project.yml`) deleted at

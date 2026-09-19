@@ -266,6 +266,7 @@ public sealed class NodeExecutorTests : IAsyncLifetime
             IReadOnlyList<string> columns, string format) { }
         public void NodeCompleted(NodeResult result) => Interlocked.Increment(ref _completedCount);
         public void RunCompleted(string runId, RunStatus status, int succeeded, int failed, int skipped, TimeSpan duration) { }
+        public void ConnectorLog(string connection, string level, string message) { }
     }
 
     /// <summary>RunOrchestrator is the ONLY publisher of NodeCompleted —
