@@ -41,13 +41,18 @@ public static class ConnectorConfigValidator
     /// <summary>Tier 3: every source/sink connection block against the connector's
     /// ConnectionConfigSchema, every source dataset's options against DatasetConfigSchema, then the
     /// connector's own ValidateAsync for cross-field rules. All errors aggregated; never throws for
-    /// validation failures. Config is validated as the user wrote it (pre-base_dir-injection).</summary>
+    /// validation failures. Config is validated as the user wrote it (pre-base_dir-injection).
+    /// <paramref name="warnings"/> is optional (additive parameter, default null) and, when given,
+    /// collects every connector's own non-blocking <see cref="ValidationResult.Warnings"/> -- a caller
+    /// that does not pass it simply does not see them, unchanged from before this parameter
+    /// existed.</summary>
     public static async Task<IReadOnlyList<PzError>> ValidateAsync(
-        PzProject project, ConnectorRegistry registry, CancellationToken ct)
+        PzProject project, ConnectorRegistry registry, CancellationToken ct, List<PzWarning>? warnings = null)
     {
         var errors = new List<PzError>();
         RefuseReservedProperties(project, registry, errors);
         RefuseUnknownConnectors(project, registry, errors);
+        WarnOnMotherDuckTokenMismatch(project, warnings);
 
         foreach (var source in project.Connections)
         {
@@ -79,7 +84,7 @@ public static class ConnectorConfigValidator
             }
 
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(source), "connection", source.Name, source.FilePath,
-                errors, requiredFlaggedKeys, ct).ConfigureAwait(false);
+                errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
         }
 
         // A connection whose connector also reads was config-validated in the loop above, so this one
@@ -100,7 +105,7 @@ public static class ConnectorConfigValidator
             // Sink OUTPUT options are NOT schema-validated in v0: they are already validated at
             // plan/probe time by the connectors themselves.
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(sink), "connection", sink.Name, sink.FilePath,
-                errors, requiredFlaggedKeys, ct).ConfigureAwait(false);
+                errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
         }
 
         return errors;
@@ -127,6 +132,56 @@ public static class ConnectorConfigValidator
                 connection.FilePath, null,
                 $"available connectors: {string.Join(", ", known)} -- fix the name, or add the " +
                 "providing package under project.yml connectors:"));
+        }
+    }
+
+    /// <summary>DuckDB's motherduck extension accepts <c>set motherduck_token</c> only before its FIRST
+    /// attach in a session, and the engine runs one DuckDB session per run. So a RUN that touches two
+    /// motherduck connections with different tokens fails at its second attach (PZ0311) -- but the
+    /// project itself is sound when every run selects only one of them, which is why this is a warning
+    /// under that same code and not a refusal. The tokens are compared, never printed. `motherduck` is a
+    /// well-known first-party connector name, not something read from the registry: this is a property
+    /// of DuckDB's extension, not of whichever package is installed under that name.</summary>
+    private static void WarnOnMotherDuckTokenMismatch(PzProject project, List<PzWarning>? warnings)
+    {
+        if (warnings is null)
+        {
+            return;
+        }
+
+        string? firstName = null;
+        string? firstToken = null;
+        foreach (var connection in project.Connections)
+        {
+            if (!string.Equals(connection.Connector, "motherduck", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // A missing token is the connector's own ValidateAsync's problem to report; this only
+            // compares tokens that are present.
+            var token = new ConnectorConfig(connection.Connection).GetString("token");
+            if (token is null)
+            {
+                continue;
+            }
+
+            if (firstToken is null)
+            {
+                firstName = connection.Name;
+                firstToken = token;
+                continue;
+            }
+
+            if (!string.Equals(firstToken, token, StringComparison.Ordinal))
+            {
+                warnings.Add(new PzWarning(PzErrorCode.NativeSetupFailed,
+                    $"motherduck connections '{firstName}' and '{connection.Name}' declare different " +
+                    "tokens -- DuckDB accepts 'set motherduck_token' only before the first attach in a " +
+                    "run, so a run that touches both fails at the second one.",
+                    connection.FilePath, null,
+                    "use one token for every motherduck connection, or keep the two in separate runs"));
+            }
         }
     }
 
@@ -527,9 +582,18 @@ public static class ConnectorConfigValidator
 
     private static async Task ValidateCrossFieldAsync(IConnector connector,
         ConnectorConfig config, string kind, string name, string filePath,
-        List<PzError> errors, HashSet<string> requiredFlaggedKeys, CancellationToken ct)
+        List<PzError> errors, HashSet<string> requiredFlaggedKeys, List<PzWarning>? warnings, CancellationToken ct)
     {
         var result = await connector.ValidateAsync(config, ct).ConfigureAwait(false);
+        if (warnings is not null)
+        {
+            foreach (var message in result.Warnings)
+            {
+                warnings.Add(new PzWarning(PzErrorCode.ConnectorConfigWarning,
+                    $"{kind} '{name}' connection: {message}", filePath, null, null));
+            }
+        }
+
         if (result.IsValid)
         {
             return;

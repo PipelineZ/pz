@@ -468,6 +468,12 @@ public static class PzErrorCode
     /// a connector with an arrow read path, or a full or cursor-incremental read of the dataset.</summary>
     public const string SyncStateNativeOnly = "PZ0363";
 
+    // A connector's own ValidateAsync reported a non-blocking cross-field warning (e.g. sftp's
+    // unpinned host_key_fingerprint) -- tier 3, offline, never fails `pz validate`. One generic code
+    // for every connector's own free-text warning message, mirroring ConnectorConfigInvalid's role for
+    // that same ValidateAsync call's Errors.
+    public const string ConnectorConfigWarning = "PZ0364";
+
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";

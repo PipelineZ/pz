@@ -12,7 +12,8 @@ internal static class DuckLakeProbe
     private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
 
     internal static async ValueTask<ConnectionCheck> CheckFileAsync(
-        string path, ReadOnlyMemory<byte> magic, int magicOffset, string kind, CancellationToken ct)
+        string path, ReadOnlyMemory<byte> magic, int magicOffset, string kind, bool acceptsEmptyFile,
+        CancellationToken ct)
     {
         if (!File.Exists(path))
         {
@@ -25,6 +26,17 @@ internal static class DuckLakeProbe
 
             return new ConnectionCheck(true,
                 $"'{path}' does not exist yet -- it will be created on first write; reads will fail until it exists");
+        }
+
+        // Only the sqlite catalog backend (acceptsEmptyFile) actually initializes an existing-but-empty
+        // file as a fresh catalog on first attach -- verified directly against the sqlite/ducklake DuckDB
+        // extensions. DuckDB's own native format does the opposite: `attach if not exists` refuses a
+        // zero-byte EXISTING file outright, so the duckdb-catalog caller must keep failing it below,
+        // matching what a real run would also fail on.
+        if (acceptsEmptyFile && new FileInfo(path).Length == 0)
+        {
+            return new ConnectionCheck(true,
+                $"'{path}' exists but is empty -- {kind} will initialize it as a new catalog on first write");
         }
 
         var header = new byte[magicOffset + magic.Length];

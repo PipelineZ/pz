@@ -40,6 +40,13 @@ public sealed class SinkWriteExecutor : INodeExecutor
             gateAware.UseOperationGate(gate);
         }
 
+        // Called once per open, like UseOperationGate above. The callback itself delivers each distinct
+        // text once per RUN: other nodes open the same connection and would say the same thing.
+        if (sink is INoticeAware noticeAware && ctx.ConnectorNotice is { } connectorNotice)
+        {
+            noticeAware.UseNotice(connectorNotice);
+        }
+
         var spec = SpecBuilder.ForSinkOutput(def);
 
         // A merge cannot match a NULL key: ON CONFLICT (pg) / MERGE ... ON (mssql) never join on NULL, so a

@@ -37,6 +37,11 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
 
         var (format, _, loc) = ResolveFinalLocation(spec);
         var context = $"output '{spec.Output}'";
+        // Native-COPY-specific: DuckDB's excel writer aborts the whole process on a remote IO/auth
+        // failure mid-write, so xlsx is refused HERE, never inside ResolveFinalLocation, which
+        // BeginWriteAsync's universal-tier path also calls and must not inherit this native-only check
+        // (see BeginWriteAsync's own ordering comment for the refusal that path needs instead).
+        FileFormatCatalog.EnsureRemoteWritable(format, "azureblob", context);
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Sink));
 
         copy = new NativeCopy(
@@ -154,13 +159,18 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
     /// <see cref="BeginWriteAsync"/>: "replace" is a stable name (<c>&lt;output&gt;.&lt;ext&gt;</c>);
     /// "append" lands under a run-unique guid-suffixed name instead so repeated runs accumulate blobs.
     /// Side-effect-free (computes only) -- called from <see cref="TryGetNativeCopy"/>, which planning
-    /// (ExecutionPlanner) also probes.</summary>
+    /// (ExecutionPlanner) also probes. Deliberately does NOT call
+    /// <see cref="FileFormatCatalog.EnsureRemoteWritable"/> -- that check is specific to the native COPY
+    /// mechanism (the excel writer crashing the process on a remote failure) and both callers need a
+    /// different refusal for a format with no remote write path at all: <see cref="TryGetNativeCopy"/>
+    /// calls it explicitly for itself, and <see cref="BeginWriteAsync"/> must reach its own
+    /// <see cref="FileFormatCatalog.EnsureUniversalTierSupported"/> call instead (xlsx has no universal
+    /// writer either, but for a different reason a user forcing the universal tier needs to hear).</summary>
     private static (FileFormat Format, string ObjectName, AzureLocation Location) ResolveFinalLocation(OutputSpec spec)
     {
         var context = $"output '{spec.Output}'";
         var format = FileFormatCatalog.Resolve(spec.Options, null, "azureblob", context);
         FileFormatCatalog.EnsureWritable(format, "azureblob", context);
-        FileFormatCatalog.EnsureRemoteWritable(format, "azureblob", context);
         var objectName = string.Equals(spec.Mode, "append", StringComparison.OrdinalIgnoreCase)
             ? $"{spec.Output}-{Guid.NewGuid():N}.{format.Extension}"
             : $"{spec.Output}.{format.Extension}";

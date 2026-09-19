@@ -52,6 +52,23 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     RateLimiterRegistry? RateLimiters = null, SchemaBaselineStore? SchemaBaselines = null,
     DriftPolicy OnSourceDrift = DriftPolicy.Ignore)
 {
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _connectorNotices =
+        new(StringComparer.Ordinal);
+
+    /// <summary>What a notice-aware source or sink is handed: <see cref="Notice"/>, delivering each
+    /// distinct text once per run. Every node opens its own source or sink, so what a connector has to
+    /// say about its CONNECTION would otherwise repeat once per entity read through it. Null when the
+    /// run has no notice sink. `with`-clones share the set, which is right: it is per-run state.</summary>
+    public Action<string>? ConnectorNotice => Notice is not { } deliver
+        ? null
+        : message =>
+        {
+            if (_connectorNotices.TryAdd(message, 0))
+            {
+                deliver(message);
+            }
+        };
+
     /// <summary>Side-band slot for the delivery stats of a sink attempt that
     /// FAILED — <see cref="SinkWriteExecutor"/> records here just before rethrowing (the thrown
     /// exception stays the retry vehicle), and <see cref="KindDispatchingExecutor"/> consumes

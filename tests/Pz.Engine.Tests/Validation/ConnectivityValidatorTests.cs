@@ -41,6 +41,30 @@ public sealed class ConnectivityValidatorTests
         Assert.Equal("sources/db.yml", error.File);
     }
 
+    /// <summary>A successful check's own <see cref="ConnectionCheck.Message"/> (e.g. sftp's
+    /// unpinned-host-key fingerprint) is not just discarded -- it surfaces as a connection-named note,
+    /// distinct from the error path <see cref="Failed_connection_check_is_PZ0330_naming_the_source"/>
+    /// covers.</summary>
+    [Fact]
+    public async Task Successful_connection_check_message_surfaces_as_a_note()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("informative", new FaultyConnector
+        {
+            CheckConnectionFunc = _ => new ValueTask<ConnectionCheck>(
+                new ConnectionCheck(true, "host_key_fingerprint is not pinned; the server presented SHA256:abc")),
+        });
+
+        var source = new ConnectionDef("db", "informative", new Dictionary<string, object?>(), [], "sources/db.yml");
+
+        var result = await ConnectivityValidator.RunAsync(Project([source]), registry, default);
+
+        Assert.Empty(result.Errors);
+        var note = Assert.Single(result.Notes);
+        Assert.Contains("db", note, StringComparison.Ordinal);
+        Assert.Contains("SHA256:abc", note, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Throwing_connection_check_is_PZ0330_not_a_crash()
     {

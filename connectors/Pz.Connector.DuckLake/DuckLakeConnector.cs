@@ -128,9 +128,11 @@ public sealed class DuckLakeConnector : ISourceConnector, ISinkConnector, INativ
         switch (DuckLakeCatalog.Of(config))
         {
             case DuckLakeCatalog.DuckDb:
-                return DuckLakeProbe.CheckFileAsync(DuckLakeSql.ResolveLocal(config, "path"), DuckDbMagic, 8, "DuckDB database", ct);
+                return DuckLakeProbe.CheckFileAsync(DuckLakeSql.ResolveLocal(config, "path"), DuckDbMagic, 8,
+                    "DuckDB database", acceptsEmptyFile: false, ct);
             case DuckLakeCatalog.Sqlite:
-                return DuckLakeProbe.CheckFileAsync(DuckLakeSql.ResolveLocal(config, "path"), SqliteMagic, 0, "SQLite database", ct);
+                return DuckLakeProbe.CheckFileAsync(DuckLakeSql.ResolveLocal(config, "path"), SqliteMagic, 0,
+                    "SQLite database", acceptsEmptyFile: true, ct);
             case DuckLakeCatalog.Postgres:
                 return DuckLakeProbe.TcpAsync(config.GetString("host")!, (int)(config.GetInt("port") ?? 5432), "postgres catalog", ct);
             case DuckLakeCatalog.Quack:

@@ -423,7 +423,10 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             Some(answer) => answer,
             None => self.connector.validate(&config).await,
         };
-        Ok(Response::new(pb::ValidationResultMsg { errors }))
+        Ok(Response::new(pb::ValidationResultMsg {
+            errors,
+            warnings: Vec::new(),
+        }))
     }
 
     async fn check_connection(

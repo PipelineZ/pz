@@ -108,7 +108,10 @@ message ConfigureRequest {
 message ConfigureResponse {}
 
 message ValidateRequest { google.protobuf.Struct config = 1; }
-message ValidationResultMsg { repeated string errors = 1; } // aggregate, never throw-per-error
+message ValidationResultMsg {
+  repeated string errors = 1; // aggregate, never throw-per-error
+  repeated string warnings = 2; // said about a config that is still valid; never fails validation
+}
 message CheckRequest { google.protobuf.Struct config = 1; }
 message ConnectionCheckMsg { bool ok = 1; optional string message = 2; }
 

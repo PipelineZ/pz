@@ -106,7 +106,9 @@ internal static class ValidateCommand
 
         // Tier 3: connector connection/dataset config schemas + cross-field ValidateAsync. Validated
         // as the user wrote it (pre-base_dir-injection) -- see ConnectorConfigValidator's doc comment.
-        var tier3Errors = await ConnectorConfigValidator.ValidateAsync(project, registry, ct);
+        var tier3Warnings = new List<PzWarning>();
+        var tier3Errors = await ConnectorConfigValidator.ValidateAsync(project, registry, ct, tier3Warnings);
+        SharedInputHelpers.WriteWarnings(tier3Warnings);
         if (tier3Errors.Count > 0)
         {
             foreach (var error in tier3Errors)
@@ -144,6 +146,11 @@ internal static class ValidateCommand
             var connectProject = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var connectivity = await ConnectivityValidator.RunAsync(connectProject, registry, ct);
             SchemaCacheWriter.Write(connectivity.FetchedSchemas, Path.Combine(projectDir, ".pz", "target"));
+
+            foreach (var note in connectivity.Notes)
+            {
+                Console.WriteLine($"note: {note}");
+            }
 
             if (connectivity.Errors.Count > 0)
             {

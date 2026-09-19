@@ -19,7 +19,12 @@ namespace Pz.Engine.Validation;
 public sealed record ConnectivityResult(
     IReadOnlyList<PzError> Errors,
     IReadOnlyDictionary<string, string> FetchedSchemas,
-    IReadOnlyDictionary<string, IReadOnlyList<string>>? ExtraColumnsByDataset = null);
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? ExtraColumnsByDataset = null)
+{
+    /// <summary>What a SUCCESSFUL connection check had to say (sftp's presented host-key fingerprint, a
+    /// connector stating that it has no offline probe), one line per connection that said anything.</summary>
+    public IReadOnlyList<string> Notes { get; init; } = [];
+}
 
 public static class ConnectivityValidator
 {
@@ -49,7 +54,7 @@ public static class ConnectivityValidator
         // One probe per connection, not one per direction. A connector
         // that implements both halves (postgres) would otherwise open the same database twice, and
         // report one unreachable host as two errors.
-        var connectionProbes = new List<Task<PzError?>>();
+        var connectionProbes = new List<Task<(PzError? Error, string? Note)>>();
         foreach (var connection in project.Connections)
         {
             IConnector? connector = registry.TryGetSource(connection.Connector, out var source) ? source
@@ -65,7 +70,8 @@ public static class ConnectivityValidator
         // All probes are already running (added to the list as Tasks, started by ProbeConnectionAsync's
         // first await) before WhenAll is reached -- this is what makes them concurrent, not sequential.
         var connectionResults = await Task.WhenAll(connectionProbes).ConfigureAwait(false);
-        errors.AddRange(connectionResults.Where(e => e is not null)!);
+        errors.AddRange(connectionResults.Select(r => r.Error).Where(e => e is not null)!);
+        var notes = connectionResults.Select(r => r.Note).Where(n => n is not null).Cast<string>().ToList();
 
         var fetchedSchemas = new Dictionary<string, string>(StringComparer.Ordinal);
         var extraColumns = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
@@ -80,10 +86,14 @@ public static class ConnectivityValidator
                 extraColumns, ct).ConfigureAwait(false);
         }
 
-        return new ConnectivityResult(errors, fetchedSchemas, extraColumns);
+        return new ConnectivityResult(errors, fetchedSchemas, extraColumns) { Notes = notes };
     }
 
-    private static async Task<PzError?> ProbeConnectionAsync(IConnector connector,
+    /// <summary>A successful check's own <see cref="ConnectionCheck.Message"/> is surfaced as an
+    /// informational note (e.g. sftp's unpinned-host-key fingerprint) -- distinct from a FAILED
+    /// check's message, which becomes the detail of a <see cref="PzErrorCode.ConnectionCheckFailed"/>
+    /// error below.</summary>
+    private static async Task<(PzError? Error, string? Note)> ProbeConnectionAsync(IConnector connector,
         ConnectorConfig config, string kind, string name, string filePath, CancellationToken ct)
     {
         try
@@ -92,16 +102,17 @@ public static class ConnectivityValidator
                 t => connector.CheckConnectionAsync(config, t), ct).ConfigureAwait(false);
             if (check.Ok)
             {
-                return null;
+                var note = string.IsNullOrEmpty(check.Message) ? null : $"{kind} '{name}': {check.Message}";
+                return (null, note);
             }
 
             var detail = string.IsNullOrEmpty(check.Message) ? "" : $": {check.Message}";
-            return new PzError(PzErrorCode.ConnectionCheckFailed,
-                $"{kind} '{name}' connection check failed{detail}", filePath, null, ConnectHint);
+            return (new PzError(PzErrorCode.ConnectionCheckFailed,
+                $"{kind} '{name}' connection check failed{detail}", filePath, null, ConnectHint), null);
         }
         catch (ProbeTimedOutException)
         {
-            return TimeoutError($"{kind} '{name}' connection", filePath);
+            return (TimeoutError($"{kind} '{name}' connection", filePath), null);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -109,8 +120,8 @@ public static class ConnectivityValidator
             // before it reaches this probe's PzError message. A Pz-family exception passes through
             // unredacted (see
             // MessageRedaction.Redact(Exception)'s trust boundary doc).
-            return new PzError(PzErrorCode.ConnectionCheckFailed,
-                $"{kind} '{name}' connection check threw: {MessageRedaction.Redact(ex)}", filePath, null, ConnectHint);
+            return (new PzError(PzErrorCode.ConnectionCheckFailed,
+                $"{kind} '{name}' connection check threw: {MessageRedaction.Redact(ex)}", filePath, null, ConnectHint), null);
         }
     }
 

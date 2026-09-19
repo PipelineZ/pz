@@ -621,6 +621,65 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   URL-shaped value passes through untouched. The shared resolver
   (`Pz.Connectors.Toolkit.ProjectRelativePath`) is available to any other
   first-party connector with the same shape of option.
+- The sftp connector's connect (both `pz validate --connect`'s probe and
+  every source/sink open) now honours cancellation and a new
+  `connect_timeout_seconds` connection option (integer, 1-3600; absent ->
+  SSH.NET's own 30s default, unchanged behaviour). `CheckConnectionAsync`
+  used to ignore its `CancellationToken` entirely and the underlying
+  connect ran SSH.NET's synchronous `Connect()`, so a hung/firewalled host
+  could not be cancelled and had no way to bound the wait. A cancelled
+  connect now surfaces as a plain `OperationCanceledException`, never
+  wrapped into a connector error.
+- The sftp connector no longer accepts an unpinned host key silently. With no
+  `host_key_fingerprint` declared, `pz validate` now warns naming the
+  option (a connector's own `ValidationResult.Warnings` is now collected
+  and rendered as a non-blocking PZ0364, a new generic code any connector
+  can use the same way -- `ValidationResult.Warnings` is an init-only
+  member, so the record's one-argument constructor that compiled connectors
+  bind to is untouched, and it crosses PCP as the additive
+  `ValidationResultMsg.warnings` field, which the C# SDK fills from the
+  connector's result), `pz run` says the same as a run notice, once per
+  run however many entities are read through the connection (a new additive
+  `INoticeAware` connector interface, wired the same way
+  `IOperationGateAware` already is; not yet forwarded over PCP, so it
+  reaches in-process connectors only), and `pz validate --connect` prints the fingerprint the server
+  presented in the exact `SHA256:<base64>` form the option accepts, so
+  pinning is copy-paste. The default (accept any host key when unpinned)
+  is unchanged. That fingerprint rides a successful connection check's
+  message, which `pz validate --connect` used to discard: it now prints as
+  a `note:` line for every connector, so the "not checked: … has no offline
+  probe" and "reachable over tcp; credentials are verified at run time"
+  messages several connectors already returned are finally visible.
+- A forced-universal (`engine.force_universal`) xlsx write to the azure
+  connector reported the native-COPY-only refusal ("xlsx write is
+  localfiles-only ... DuckDB's excel writer aborts the whole process")
+  instead of the universal-tier one ("format 'xlsx' is native-only ...
+  azureblob has no native tier here"), because `AzureSink.BeginWriteAsync`
+  resolved the final blob location -- which folds in the native-COPY
+  check -- before reaching its own universal-tier check. The native-COPY
+  check now runs only where it belongs, inside `TryGetNativeCopy`. gcs
+  and s3 do not share this bug: gcs's universal path never ran the
+  native-COPY check to begin with, and s3 has no universal write path at
+  all (`BeginWriteAsync` always refuses outright).
+- `pz validate --connect` no longer refuses a ducklake `catalog: sqlite`
+  connection whose catalog file exists but is empty: verified directly
+  against the sqlite/ducklake DuckDB extensions, that backend initializes
+  a zero-byte existing file as a fresh catalog on first attach, the same
+  way `pz run` already treats it -- the connect check was refusing it as
+  "not a SQLite database file", disagreeing with the run it is supposed
+  to predict. `catalog: duckdb` (and the plain `duckdb` connector) is
+  unaffected and deliberately unchanged: DuckDB's own native format does
+  the opposite -- `attach if not exists` refuses a zero-byte EXISTING
+  file outright -- so both already agreed there.
+- Two motherduck connections declaring different tokens in one project
+  now draw a warning from `pz validate` (PZ0311, the code the run-time
+  failure uses) instead of being discovered only at run time: DuckDB accepts
+  `set motherduck_token` only before the first attach in a session, so a
+  run that touches both fails at the second one. A warning and not a
+  refusal, because the project is sound when each run selects only one of
+  them. The check compares the two connections' resolved tokens
+  (after `${VAR}` interpolation) and names both connections without ever
+  printing either token.
 
 ## [0.6.1] - 2026-09-10
 

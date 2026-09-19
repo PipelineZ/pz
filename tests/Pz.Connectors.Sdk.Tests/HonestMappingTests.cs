@@ -185,6 +185,32 @@ public sealed class HonestMappingTests
         Assert.Contains("\"NativeOnlyRead\"", manifest, StringComparison.Ordinal);
     }
 
+    // A warning belongs to a config that is still valid, so it has to cross beside an empty error list.
+    [Fact]
+    public async Task Validate_carries_the_connectors_warnings_beside_its_errors()
+    {
+        var service = NewService(new WarningFakeSource());
+
+        var answer = await service.Validate(new ValidateRequest { Config = new Struct() }, Context());
+
+        Assert.Empty(answer.Errors);
+        Assert.Equal(["host key is not pinned"], answer.Warnings);
+    }
+
+    private sealed class WarningFakeSource : ISourceConnector
+    {
+        public ConnectorInfo Info => new("fake", "1.0.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(ValidationResult.Success with { Warnings = ["host key is not pinned"] });
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(new ConnectionCheck(true, null));
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class NativeOnlyFakeSource : ISourceConnector, INativeOnlySource
     {
         public ConnectorInfo Info => new("fake", "1.0.0", ProtocolVersion.Major);

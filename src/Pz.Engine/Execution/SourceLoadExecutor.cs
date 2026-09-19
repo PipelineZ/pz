@@ -56,6 +56,13 @@ public sealed class SourceLoadExecutor : INodeExecutor
             gateAware.UseOperationGate(gate);
         }
 
+        // Called once per open, like UseOperationGate above. The callback itself delivers each distinct
+        // text once per RUN: other nodes open the same connection and would say the same thing.
+        if (source is INoticeAware noticeAware && ctx.ConnectorNotice is { } connectorNotice)
+        {
+            noticeAware.UseNotice(connectorNotice);
+        }
+
         // Resolve the dataset's read shape once, up front -- every sync-state site below (prior-token
         // replay, the PZ0316 runtime guard, candidate capture, the partial-copy/done-skip exclusion)
         // keys on it.

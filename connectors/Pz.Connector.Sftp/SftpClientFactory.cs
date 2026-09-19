@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Pz.Connectors.Abstractions;
 using Renci.SshNet;
+using Renci.SshNet.Common;
 
 namespace Pz.Connector.Sftp;
 
@@ -10,7 +11,12 @@ namespace Pz.Connector.Sftp;
 /// fingerprints are public values, never key material.</summary>
 internal static class SftpClientFactory
 {
-    public static ISftpFileSystem Open(SftpConnectionSettings settings) => Connect(settings, BuildAuth(settings));
+    /// <summary>Synchronous convenience wrapper over <see cref="ConnectAsync"/> for call sites (test
+    /// fixture seeding, xunit constructors) that cannot await. Never used by the connector's own
+    /// probe -- <c>SftpConnector.CheckConnectionAsync</c> calls <see cref="ConnectAsync"/> directly so
+    /// it can honor cancellation and observe <c>connect_timeout_seconds</c> promptly.</summary>
+    public static ISftpFileSystem Open(SftpConnectionSettings settings) =>
+        ConnectAsync(settings, BuildAuth(settings), CancellationToken.None).GetAwaiter().GetResult();
 
     /// <summary>The connect-and-authenticate half of <see cref="Open"/>, split out so
     /// <c>CheckConnectionAsync</c> can call <see cref="BuildAuth"/> on its own first -- config-shape
@@ -18,22 +24,31 @@ internal static class SftpClientFactory
     /// network attempt and must propagate uncaught, while everything this method can throw is a
     /// genuine connect/auth outcome. <paramref name="auth"/> is disposed on every path out of this
     /// method that does not hand it to a live <see cref="SftpFileSystem"/> -- the caller no longer
-    /// owns it once this is called.</summary>
-    internal static ISftpFileSystem Connect(SftpConnectionSettings settings, SftpAuth auth)
+    /// owns it once this is called.
+    ///
+    /// Cancelling <paramref name="ct"/> propagates as a plain <see cref="OperationCanceledException"/>,
+    /// never wrapped into a <see cref="PzConnectorException"/> -- SSH.NET's own
+    /// <c>BaseClient.ConnectAsync</c> links <paramref name="ct"/> with a timeout derived from
+    /// <see cref="SftpConnectionSettings.ConnectTimeoutSeconds"/> (absent: SSH.NET's own 30s default,
+    /// <see cref="ConnectionInfo"/>'s own unchanged behavior) and only the TIMEOUT half turns into
+    /// <see cref="SshOperationTimeoutException"/>, which <see cref="SftpErrors"/> classifies as
+    /// transient like any other connectivity outcome.</summary>
+    internal static async Task<ISftpFileSystem> ConnectAsync(
+        SftpConnectionSettings settings, SftpAuth auth, CancellationToken ct, Action<string>? onHostKey = null)
     {
-        var info = new ConnectionInfo(settings.Host, settings.Port, settings.Username, auth.Method);
-        var client = new SftpClient(info);
+        var client = new SftpClient(BuildConnectionInfo(settings, auth.Method));
 
         string? mismatch = null;
         client.HostKeyReceived += (_, e) =>
         {
+            var presented = Convert.ToBase64String(SHA256.HashData(e.HostKey)).TrimEnd('=');
+            onHostKey?.Invoke(presented);
             if (settings.HostKeyFingerprint is null)
             {
                 e.CanTrust = true;
                 return;
             }
 
-            var presented = Convert.ToBase64String(SHA256.HashData(e.HostKey)).TrimEnd('=');
             if (presented == settings.HostKeyFingerprint)
             {
                 e.CanTrust = true;
@@ -47,7 +62,17 @@ internal static class SftpClientFactory
 
         try
         {
-            client.Connect();
+            await client.ConnectAsync(ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // The caller's ct, cancelled: BaseClient.ConnectAsync itself only turns its OWN internal
+            // connect-timeout window into SshOperationTimeoutException (a genuine connectivity outcome,
+            // handled by the classified-exception path below) -- an OperationCanceledException reaching
+            // here can only be the caller's own token, and must propagate unwrapped.
+            client.Dispose();
+            auth.Dispose();
+            throw;
         }
         catch (Exception ex)
         {
@@ -66,6 +91,21 @@ internal static class SftpClientFactory
         }
 
         return new SftpFileSystem(client, auth);
+    }
+
+    /// <summary>Pure, network-free: <paramref name="settings"/>.<see
+    /// cref="SftpConnectionSettings.ConnectTimeoutSeconds"/> absent leaves SSH.NET's own
+    /// <see cref="ConnectionInfo"/> default (30s) untouched -- unchanged behavior for a connection that
+    /// declares no override.</summary>
+    internal static ConnectionInfo BuildConnectionInfo(SftpConnectionSettings settings, AuthenticationMethod method)
+    {
+        var info = new ConnectionInfo(settings.Host, settings.Port, settings.Username, method);
+        if (settings.ConnectTimeoutSeconds is { } timeoutSeconds)
+        {
+            info.Timeout = TimeSpan.FromSeconds(timeoutSeconds);
+        }
+
+        return info;
     }
 
     /// <summary>Password auth needs nothing beyond the <see cref="PasswordAuthenticationMethod"/>
@@ -113,8 +153,8 @@ internal static class SftpClientFactory
 /// it wraps for key auth (null for password auth) so both get disposed together. Needed because
 /// <see cref="PrivateKeyAuthenticationMethod"/> does not dispose the key sources it was constructed
 /// with -- disposing only the auth method would leak the key file's decrypted material. Ownership
-/// passes to whichever of <see cref="SftpClientFactory.Connect"/>'s outcomes ends up responsible for
-/// it: the catch block on a failed connect, or the resulting <see cref="SftpFileSystem"/> on
+/// passes to whichever of <see cref="SftpClientFactory.ConnectAsync"/>'s outcomes ends up responsible
+/// for it: the catch block on a failed connect, or the resulting <see cref="SftpFileSystem"/> on
 /// success.</summary>
 internal sealed class SftpAuth(AuthenticationMethod method, IDisposable? key) : IDisposable
 {

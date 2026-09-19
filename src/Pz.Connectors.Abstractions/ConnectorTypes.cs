@@ -223,6 +223,11 @@ public sealed record FileMove(string TempPath, string FinalPath);
 /// <summary>Offline config validation outcome. Empty <see cref="Errors"/> means valid.</summary>
 public sealed record ValidationResult(IReadOnlyList<string> Errors)
 {
+    /// <summary>Non-blocking diagnostics the caller may surface (an unpinned sftp host key); they never
+    /// affect <see cref="IsValid"/>. An init-only member rather than a constructor parameter: a
+    /// connector compiled against the one-argument constructor must keep binding to it.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
     public static readonly ValidationResult Success = new([]);
     public static ValidationResult Failed(params string[] errors) => new(errors);
     public bool IsValid => Errors.Count == 0;

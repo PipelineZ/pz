@@ -290,10 +290,12 @@ public static class MessageMapping
     {
         var msg = new ValidationResultMsg();
         msg.Errors.AddRange(result.Errors);
+        msg.Warnings.AddRange(result.Warnings);
         return msg;
     }
 
-    public static ValidationResult ToValidationResult(ValidationResultMsg msg) => new(msg.Errors.ToArray());
+    public static ValidationResult ToValidationResult(ValidationResultMsg msg) =>
+        new(msg.Errors.ToArray()) { Warnings = msg.Warnings.ToArray() };
 
     // ---- ConnectionCheck -------------------------------------------------------------------------
 
