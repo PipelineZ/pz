@@ -72,6 +72,27 @@ public static class DagCompiler
             throw new PzValidationException(OrderErrors(renderErrors));
         }
 
+        // 1a. `run_id`/`run_started_at` land in RENDERED SQL, which `.pz/target` writes to disk and
+        //     which feeds this Pipeline node's NodeId (stage 8 below hashes the rendered text
+        //     verbatim, same as every other pipeline) -- so a pipeline that embeds either constant
+        //     gets a different NodeId on every run, and `pz retry` (which matches by NodeId against
+        //     the failed run's results) can never treat two runs of that pipeline as the same node.
+        //     A non-blocking WARNING, once per pipeline regardless of how many times the pipeline's
+        //     SQL references either constant (RenderResult.UsesRunIdentity is a single bool, not a
+        //     count).
+        var templateWarnings = new List<PzWarning>();
+        foreach (var pipeline in project.Pipelines.Where(p => rendered[p.Name].UsesRunIdentity)
+            .OrderBy(p => p.Name, StringComparer.Ordinal))
+        {
+            templateWarnings.Add(new PzWarning(PzErrorCode.RunIdentityInRenderedSql,
+                $"pipeline '{pipeline.Name}' renders run_id or run_started_at into its SQL -- this " +
+                "changes the pipeline's NodeId every run, so `pz retry` can never match this node " +
+                "against a prior run and will always re-run it",
+                pipeline.FilePath, null,
+                "remove run_id/run_started_at from the rendered SQL if this pipeline should be " +
+                "retry-matchable, or ignore this if always re-running it is intended"));
+        }
+
         // 1b. Extract the fixed `INSERT INTO {{ sink(...) }}` prefix from any pipeline carrying an
         //     inline sink() binding. PZ0208 covers every way a sink() call can
         //     be malformed: more than one call in a pipeline, a call on an ephemeral pipeline (which
@@ -1304,7 +1325,8 @@ public static class DagCompiler
         var ordered = TopologicalSortOrThrow(nodes);
         var compiled = new CompiledDag(ordered)
         {
-            Warnings = [.. project.Warnings, .. sourceWarnings, .. sinkWarnings], Connections = project.Connections,
+            Warnings = [.. project.Warnings, .. sourceWarnings, .. sinkWarnings, .. templateWarnings],
+            Connections = project.Connections,
         };
 
         // 12. Effectively-once advisory NOTICE -- non-fatal, same `notices`

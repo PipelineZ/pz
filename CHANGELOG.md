@@ -60,6 +60,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **A pipeline that renders `run_id`/`run_started_at` into its SQL now gets a compile-time warning
+  (PZ0232),** once per pipeline. Both constants change every run, so embedding either one in rendered
+  SQL changes that Pipeline's NodeId every run too, and `pz retry` (which matches nodes by id against
+  a prior run) can never treat two runs of that pipeline as the same node -- it always re-runs it.
+  The warning is advisory only; NodeId computation is unchanged.
 - **`watermark()` comparisons that name different cursor columns for one dataset are now refused
   (PZ0231)**, instead of silently taking whichever comparison the SQL AST reader returned first --
   e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` used to synthesize

@@ -30,7 +30,14 @@ public static class TemplateRenderer
         var dependencies = new HashSet<DepRef>();
         var inlineBindings = new List<InlineSinkBinding>();
         var watermarkRefs = new List<WatermarkRef>();
-        var globals = new SandboxGlobals($"staging.{pipeline.Name}");
+        var usesRunIdentity = false;
+        var globals = new SandboxGlobals($"staging.{pipeline.Name}", member =>
+        {
+            if (member is "run_id" or "run_started_at")
+            {
+                usesRunIdentity = true;
+            }
+        });
 
         // A custom function for the same reason sink() is one -- see ScriptKwargs. Its errors join
         // sink()'s in one post-render throw, so a single pass reports every malformed call on both
@@ -92,7 +99,10 @@ public static class TemplateRenderer
             throw new PzValidationException(callErrors);
         }
 
-        return new RenderResult(sql, dependencies) { InlineBindings = inlineBindings, WatermarkRefs = watermarkRefs };
+        return new RenderResult(sql, dependencies)
+        {
+            InlineBindings = inlineBindings, WatermarkRefs = watermarkRefs, UsesRunIdentity = usesRunIdentity,
+        };
     }
 
     private static readonly Regex UnknownVarPattern = new("^unknown var '(?<name>[^']+)'$", RegexOptions.Compiled);
@@ -237,13 +247,21 @@ public static class TemplateRenderer
     /// overriding <see cref="ToString"/> here is what makes <c>{{ this }}</c> render as
     /// <c>staging.&lt;pipeline&gt;</c> instead of a dump of the global object's members.
     /// All other member access (source/ref/var/env/run_id/run_started_at) is delegated to
-    /// an inner <see cref="ScriptObject"/>.
+    /// an inner <see cref="ScriptObject"/>, after notifying the optional <c>onMemberAccess</c>
+    /// callback -- <see cref="Render"/> uses it to detect a render that read <c>run_id</c>/
+    /// <c>run_started_at</c>, without adding a per-constant tracked ScalarFunction the way source()/
+    /// sink()/watermark() are tracked.
     /// </summary>
     private sealed class SandboxGlobals : IScriptObject
     {
         private readonly string _thisValue;
+        private readonly Action<string>? _onMemberAccess;
 
-        public SandboxGlobals(string thisValue) => _thisValue = thisValue;
+        public SandboxGlobals(string thisValue, Action<string>? onMemberAccess = null)
+        {
+            _thisValue = thisValue;
+            _onMemberAccess = onMemberAccess;
+        }
 
         public ScriptObject Inner { get; } = new();
 
@@ -261,8 +279,11 @@ public static class TemplateRenderer
 
         public bool Contains(string member) => Inner.Contains(member);
 
-        public bool TryGetValue(TemplateContext context, SourceSpan span, string member, out object? value) =>
-            Inner.TryGetValue(context, span, member, out value);
+        public bool TryGetValue(TemplateContext context, SourceSpan span, string member, out object? value)
+        {
+            _onMemberAccess?.Invoke(member);
+            return Inner.TryGetValue(context, span, member, out value);
+        }
 
         public bool CanWrite(string member) => Inner.CanWrite(member);
 

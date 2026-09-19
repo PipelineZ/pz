@@ -215,6 +215,10 @@ public static class PzErrorCode
     // silently taking whichever comparison the SQL AST reader happened to return first. Comparisons that
     // agree on the SAME column (a lower bound and a recognized ceiling, PZ0351) are unaffected.
     public const string WatermarkCursorDisagreement = "PZ0231";
+    // A pipeline's rendered SQL embeds `run_id`/`run_started_at` -- both change every run, so the
+    // Pipeline NodeId (a hash of the rendered SQL text) changes every run too, defeating `pz retry`'s
+    // node-id match against a prior run's results. Non-blocking WARNING, once per pipeline.
+    public const string RunIdentityInRenderedSql = "PZ0232";
     public const string ConnectorConfigInvalid = "PZ0301";
     public const string ConnectorPackageMissing = "PZ0304";
     public const string ConnectorNotInstalled = "PZ0305";

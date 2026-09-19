@@ -1,4 +1,5 @@
 using Pz.Core.Dag;
+using Pz.Core.Templating;
 using Pz.Core.Validation;
 using static Pz.Core.Tests.TestProjects;
 
@@ -144,5 +145,51 @@ public class CompileWarningsTests
             sinks: [Sink()]);
         var dag = DagCompiler.Compile(p, Ctx(p));
         Assert.Empty(dag.Warnings);
+    }
+
+    // -- run_id / run_started_at rendered into SQL (PZ0232) --------------------------------------
+
+    [Theory]
+    [InlineData("run_id")]
+    [InlineData("run_started_at")]
+    public void Pipeline_rendering_run_identity_into_its_sql_is_PZ0232_warning(string constant)
+    {
+        var p = Project([Pipe("a", $"select '{{{{ {constant} }}}}' as marker")]);
+        var dag = DagCompiler.Compile(p, Ctx(p));
+        var w = Assert.Single(dag.Warnings, x => x.Code == PzErrorCode.RunIdentityInRenderedSql);
+        Assert.Contains("'a'", w.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Pipeline_referencing_run_id_twice_still_gets_exactly_one_warning()
+    {
+        var p = Project([Pipe("a", "select '{{ run_id }}' as x, '{{ run_id }}' as y")]);
+        var dag = DagCompiler.Compile(p, Ctx(p));
+        Assert.Single(dag.Warnings, x => x.Code == PzErrorCode.RunIdentityInRenderedSql);
+    }
+
+    [Fact]
+    public void Node_id_is_unaffected_by_the_run_identity_warning_itself()
+    {
+        // The warning is advisory only -- DagCompiler must not special-case a run_id-using pipeline's
+        // NodeId computation. It still varies run to run (that IS the reported problem), but the hash
+        // stays the ordinary pure function of the rendered SQL text, no different from any other
+        // pipeline's -- pinned by rendering the SAME run_id twice and getting the SAME id back.
+        var p = Project([Pipe("a", "select '{{ run_id }}' as x")]);
+        var ctx1 = new RenderContext(p, "run-fixed", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var id1 = DagCompiler.Compile(p, ctx1).Nodes.Single().Id;
+        var id2 = DagCompiler.Compile(p, ctx1).Nodes.Single().Id;
+        Assert.Equal(id1, id2);
+    }
+
+    [Fact]
+    public void Plain_var_and_env_do_not_draw_the_run_identity_warning()
+    {
+        // env()/var() are documented, intentional interpolation -- only the two RUN-scoped constants
+        // (which change every run, unlike a var()/env() value) draw PZ0232.
+        var p = Project([Pipe("a", "select '{{ var('min_amount') }}' as x, '{{ env('DATA_DIR') }}' as y")]);
+        var ctx = Ctx(p) with { Env = new Dictionary<string, string> { ["DATA_DIR"] = "/tmp/pz-data" } };
+        var dag = DagCompiler.Compile(p, ctx);
+        Assert.DoesNotContain(dag.Warnings, x => x.Code == PzErrorCode.RunIdentityInRenderedSql);
     }
 }
