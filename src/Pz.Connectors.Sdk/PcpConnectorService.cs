@@ -102,10 +102,8 @@ internal sealed class PcpConnectorService(
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Handshake must precede Configure"));
         }
 
-        // The "already configured" check and the config write are one critical section, not two
-        // separate field reads: two Configure calls racing the check both used to see _config as null
-        // and both proceed. Serialized on the same gate OpenSourceAsync/OpenSinkAsync already use for
-        // their own check-then-act, rather than a second, differently-shaped guard.
+        // The "already configured" check and the config write are one critical section: left apart,
+        // two Configure calls racing the check both see _config as null and both proceed.
         await _configureGate.WaitAsync(context.CancellationToken).ConfigureAwait(false);
         try
         {
