@@ -20,10 +20,12 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing_subscriber::layer::SubscriberExt;
 
 use crate::config::Config;
 use crate::data_plane;
 use crate::error::{to_error_detail, to_status, PzError};
+use crate::hostlog;
 use crate::pb;
 use crate::pb::pz_connector_server::{PzConnector, PzConnectorServer};
 use crate::telemetry;
@@ -87,6 +89,32 @@ pub struct WriteResult {
     pub batches_written: i64,
 }
 
+/// What [`Sink::abort_semantics`] declares this sink's [`WriteSession::abort`] actually achieves.
+/// Mirrors `Pz.Connectors.Abstractions.AbortSemantics` by ordinal (`DiscardsAll`=0/`BestEffort`=1/
+/// `None`=2) -- the engine surfaces it in run artifacts on a non-`DiscardsAll` write failure, so a
+/// non-transactional sink never claims cleanup that did not happen.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AbortSemantics {
+    /// Abort removes every trace of the session's writes (temp-write + discard). The contract for an
+    /// owned destination, and this trait's default.
+    #[default]
+    DiscardsAll,
+    /// Abort attempts cleanup but cannot guarantee it; some written data may remain visible
+    /// downstream.
+    BestEffort,
+    /// Abort cleans up nothing: every delivered row is already visible downstream (destinations with
+    /// side effects -- you cannot un-POST).
+    None,
+}
+
+fn to_abort_semantics_msg(semantics: AbortSemantics) -> pb::AbortSemanticsMsg {
+    match semantics {
+        AbortSemantics::DiscardsAll => pb::AbortSemanticsMsg::AbortSemanticsDiscardsAll,
+        AbortSemantics::BestEffort => pb::AbortSemanticsMsg::AbortSemanticsBestEffort,
+        AbortSemantics::None => pb::AbortSemanticsMsg::AbortSemanticsNone,
+    }
+}
+
 /// One `(temp_path, final_path)` finalization the host performs after its own copy commits.
 pub type FileMove = (String, String);
 
@@ -103,10 +131,16 @@ pub trait SinkConnector: Send + Sync + 'static {
     /// Aggregate validation errors -- never a single throw-per-error; an empty result means the config
     /// is acceptable as far as this connector can tell offline.
     async fn validate(&self, config: &Config) -> Vec<String>;
-    /// Network-touching connectivity check. `Ok(())` is the only success shape this trait can express;
-    /// anything else reported here crosses the wire as an operational failure (`pz-error-bin` trailer),
-    /// never a soft `ok: false` result -- that distinction is not exposed to Rust connector authors in
-    /// v1.
+    /// Aggregate warnings about a config this connector still accepts -- never fails validation, only
+    /// said about it. Additive: a connector written before this method existed inherits the empty
+    /// default, exactly as the host treats an absent `ValidationResultMsg.warnings` list.
+    async fn validate_warnings(&self, _config: &Config) -> Vec<String> {
+        Vec::new()
+    }
+    /// Network-touching connectivity check. `Ok(())` reports `ConnectionCheckMsg { ok: true }`;
+    /// `Err(e)` reports `ConnectionCheckMsg { ok: false, message: Some(e.message) }` -- an ordinary
+    /// "no" for this probe, not a protocol-level error. Unlike a `PzError` from `open`/`begin_write`,
+    /// one from this method never crosses as a `pz-error-bin` trailer.
     async fn check(&self, config: &Config) -> Result<(), PzError>;
     async fn open(&self, config: Config) -> Result<Box<dyn Sink>, PzError>;
     /// Sink-level, before any session opens: lets DuckDB take over the write entirely instead of
@@ -124,6 +158,13 @@ pub trait Sink: Send + Sync {
         spec: OutputSpec,
         schema: SchemaRef,
     ) -> Result<Box<dyn WriteSession>, PzError>;
+
+    /// Abort semantics for sessions this sink opens. Mirrors `Pz.Connectors.Abstractions.
+    /// ISink.AbortSemantics`: additive (a defaulted trait method), so a sink written before this
+    /// method existed keeps declaring [`AbortSemantics::DiscardsAll`] without any source change.
+    fn abort_semantics(&self) -> AbortSemantics {
+        AbortSemantics::DiscardsAll
+    }
 }
 
 #[async_trait]
@@ -323,6 +364,9 @@ struct PzConnectorService<C: SinkConnector> {
     /// The configured connection's instance id, tagged onto every control-plane span. Shared with the
     /// tower layer that makes those spans, which runs before any handler and so cannot read `config`.
     instance: Arc<StdMutex<Option<String>>>,
+    /// The connector-process side of the reverse channel's log half -- see `hostlog`'s own doc.
+    /// `HostChannel` attaches/detaches it; a `tracing` layer this process installed queues into it.
+    log_peer: Arc<hostlog::HostLogPeer>,
 }
 
 impl<C: SinkConnector> PzConnectorService<C> {
@@ -390,24 +434,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             }
         }
 
-        Ok(Response::new(pb::Hello {
-            info: Some(pb::ConnectorInfoMsg {
-                name: self.decl.name.to_string(),
-                version: self.decl.version.to_string(),
-                protocol_major: PROTOCOL_MAJOR,
-            }),
-            capabilities: self.decl.capabilities as i64,
-            connection_config_schema: self.decl.connection_config_schema.to_string(),
-            dataset_config_schema: self.decl.dataset_config_schema.to_string(),
-            output_config_schema: self.decl.output_config_schema.to_string(),
-            transports: vec![TRANSPORT_PIPE.to_string()],
-            // This crate's own name/version (env!, baked in at compile time from Cargo.toml) --
-            // distinct from ConnectorInfoMsg's name/version, which is the CONNECTOR's own identity.
-            sdk: Some(pb::SdkInfoMsg {
-                name: env!("CARGO_PKG_NAME").to_string(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-            }),
-        }))
+        Ok(Response::new(hello_for(&self.decl)))
     }
 
     async fn configure(
@@ -415,8 +442,18 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::ConfigureRequest>,
     ) -> Result<Response<pb::ConfigureResponse>, Status> {
         let msg = request.into_inner();
+        let mut config = self.config.lock().unwrap();
+        if config.is_some() {
+            // Mirrors the C# SDK's `PcpConnectorService.Configure` guard: a connector process is
+            // configured exactly once (its `ConnectorConfig` never changes mid-process), so a second
+            // Configure is a protocol violation, not a silent re-point.
+            return Err(Status::failed_precondition(
+                "connector is already configured",
+            ));
+        }
+
         *self.instance.lock().unwrap() = Some(msg.instance_id.clone());
-        *self.config.lock().unwrap() = Some(Config::from_struct(msg.config.as_ref()));
+        *config = Some(Config::from_struct(msg.config.as_ref()));
         Ok(Response::new(pb::ConfigureResponse {}))
     }
 
@@ -425,14 +462,18 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::ValidateRequest>,
     ) -> Result<Response<pb::ValidationResultMsg>, Status> {
         let config = Config::from_struct(request.into_inner().config.as_ref());
-        let errors = match answer_numeric_probe(&config) {
-            Some(answer) => answer,
-            None => self.connector.validate(&config).await,
-        };
-        Ok(Response::new(pb::ValidationResultMsg {
-            errors,
-            warnings: Vec::new(),
-        }))
+        if let Some(errors) = answer_numeric_probe(&config) {
+            // Mirrors the C# SDK: the conformance probe never reaches the connector, so it never
+            // reaches `validate_warnings` either.
+            return Ok(Response::new(pb::ValidationResultMsg {
+                errors,
+                warnings: Vec::new(),
+            }));
+        }
+
+        let errors = self.connector.validate(&config).await;
+        let warnings = self.connector.validate_warnings(&config).await;
+        Ok(Response::new(pb::ValidationResultMsg { errors, warnings }))
     }
 
     async fn check_connection(
@@ -440,13 +481,21 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::CheckRequest>,
     ) -> Result<Response<pb::ConnectionCheckMsg>, Status> {
         let config = Config::from_struct(request.into_inner().config.as_ref());
-        match self.connector.check(&config).await {
-            Ok(()) => Ok(Response::new(pb::ConnectionCheckMsg {
+        // A connectivity failure is an ordinary "no" for this probe, not a protocol-level error --
+        // mirrors `PcpConnectorService.CheckConnection`, which never lets a failed `ConnectionCheck`
+        // escape as an RpcException. `message` carries exactly what the connector's own `check()`
+        // reported, verbatim: no extra wrapping that could add a socket path or endpoint the
+        // connector chose not to include itself.
+        Ok(Response::new(match self.connector.check(&config).await {
+            Ok(()) => pb::ConnectionCheckMsg {
                 ok: true,
                 message: None,
-            })),
-            Err(e) => Err(to_status(&e)),
-        }
+            },
+            Err(e) => pb::ConnectionCheckMsg {
+                ok: false,
+                message: Some(e.message),
+            },
+        }))
     }
 
     async fn get_schema(
@@ -562,10 +611,9 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         Ok(Response::new(pb::WriteSessionTicket {
             session_id,
             ticket: ticket_bytes.to_vec(),
-            // The trait surface this SDK exposes has no way for a connector author to declare anything
-            // else yet -- DiscardsAll is the ABI's own default, and every PCP sink looks like it until
-            // this is threaded through.
-            abort_semantics: pb::AbortSemanticsMsg::AbortSemanticsDiscardsAll as i32,
+            // Without this every PCP sink would look like DiscardsAll to the host, whatever it
+            // actually wraps -- the sink's own declaration crosses verbatim (Sink::abort_semantics).
+            abort_semantics: to_abort_semantics_msg(sink.abort_semantics()) as i32,
         }))
     }
 
@@ -674,7 +722,15 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
     ) -> Result<Response<Self::HostChannelStream>, Status> {
         let mut inbound = request.into_inner();
         let mut shutdown_rx = self.shutdown_rx.clone();
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<pb::HostChannelUp, Status>>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<pb::HostChannelUp, Status>>(
+            hostlog::HOST_CHANNEL_BUFFER,
+        );
+        // Attached before the pump task is even spawned: a log queued between this call starting and
+        // the task's first poll must not be able to slip past the backlog flush -- `attach` and
+        // `queue_log` share one lock, so there is no window where a log looks "queued after attach"
+        // but never gets flushed the outbound sender that now exists.
+        self.log_peer.attach(tx.clone());
+        let log_peer = self.log_peer.clone();
         tokio::spawn(async move {
             // GateGrant is the only HostChannelDown case; this SDK does not yet expose GateAcquire to
             // connector authors (no host service is consumed in v1), so there is nothing to act on --
@@ -698,12 +754,162 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
                     }
                 }
             }
+            // However this call ends (host closed it, deadline, this process shutting down): later
+            // logs fall back to the backlog until the next HostChannel call attaches, the same as
+            // before the first one ever arrived.
+            log_peer.detach();
             drop(tx);
         });
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
         )))
     }
+}
+
+/// Installs a `tracing` global-default subscriber composing [`hostlog::build_deferred_layer`] (so
+/// this process's own logging always reaches the host, see `hostlog`'s doc) and
+/// [`telemetry::build_deferred_layer`] (so OTel export keeps working exactly as it does today for a
+/// connector with no subscriber of its own) -- attempted once, unconditionally, before anything else
+/// this process does.
+///
+/// A connector author who installed their own subscriber before calling [`serve_sink`] (composing
+/// [`crate::layer`] and/or [`hostlog::log_layer`], the same shape `--own-subscriber` in
+/// `examples/memory_sink.rs` takes) has already claimed the process's one global-default slot by the
+/// time this runs, so the attempt below simply loses the race and is a no-op: their own composed
+/// layers keep working exactly as before this function existed. Only on a WIN does this register its
+/// own installers -- see `telemetry::build_deferred_layer`'s doc for why registering unconditionally,
+/// win or lose, would be wrong.
+fn install_base_subscriber(log_peer: &Arc<hostlog::HostLogPeer>) {
+    let (otel_layer, otel_installer) = telemetry::build_deferred_layer();
+    let (log_layer, log_installer) = hostlog::build_deferred_layer();
+    if tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(otel_layer)
+            .with(log_layer),
+    )
+    .is_ok()
+    {
+        telemetry::register_author_layer_if_empty(otel_installer);
+        hostlog::register_if_empty(log_installer);
+    }
+
+    // Resolves whichever installer ended up registered above (this call's own, having just won) or
+    // registered earlier by a connector author's explicit `hostlog::log_layer()` composition -- the
+    // peer itself exists only from this point on, so nothing could have filled either OnceLock before
+    // now regardless of which one is live.
+    hostlog::install(log_peer.clone());
+}
+
+/// What `Handshake` answers, and independently what `--pz-manifest` prints (see [`render_manifest`]):
+/// the same [`ConnectorDecl`] feeds both, so the two can never disagree about name, capabilities, or
+/// which SDK built this connector.
+fn hello_for(decl: &ConnectorDecl) -> pb::Hello {
+    pb::Hello {
+        info: Some(pb::ConnectorInfoMsg {
+            name: decl.name.to_string(),
+            version: decl.version.to_string(),
+            protocol_major: PROTOCOL_MAJOR,
+        }),
+        capabilities: decl.capabilities as i64,
+        connection_config_schema: decl.connection_config_schema.to_string(),
+        dataset_config_schema: decl.dataset_config_schema.to_string(),
+        output_config_schema: decl.output_config_schema.to_string(),
+        transports: vec![TRANSPORT_PIPE.to_string()],
+        // This crate's own name/version (env!, baked in at compile time from Cargo.toml) --
+        // distinct from ConnectorInfoMsg's name/version, which is the CONNECTOR's own identity.
+        sdk: Some(pb::SdkInfoMsg {
+            name: env!("CARGO_PKG_NAME").to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        }),
+    }
+}
+
+/// Every `ConnectorCapabilities` bit this build's `Pz.Connectors.Abstractions` enum defines, mirrored
+/// by value and name (`ConnectorCapabilities.cs`), in ascending bit order -- the same order the C#
+/// SDK's `ManifestWriter.CapabilityNames` yields, since that is what a flags enum's own `ToString`
+/// produces. A bit set on `ConnectorDecl.capabilities` that is not in this table (impossible for a
+/// build of this crate against its own pinned ABI version, but a manifest may be read by a different
+/// pz build) is silently excluded, mirroring `ManifestWriter`'s own `KnownCapabilities` masking.
+const CAPABILITY_NAMES: &[(u64, &str)] = &[
+    (1, "ColumnPruning"),
+    (2, "PredicatePushdown"),
+    (4, "PartitionedRead"),
+    (8, "NativeScan"),
+    (16, "NativeCopy"),
+    (32, "Merge"),
+    (64, "Transactional"),
+    (128, "BoundedWindow"),
+    (256, "PathTemplating"),
+    (512, "StreamingPartitions"),
+    (1024, "InclusiveWatermarkBound"),
+    (2048, "SyncState"),
+    (4096, "GatedOperations"),
+    (8192, "StablePartitionIds"),
+    (16384, "CheckpointableReads"),
+    (32768, "ReplaceWrites"),
+    (65536, "CheckpointableWrites"),
+    (131_072, "ChangeCapture"),
+    (262_144, "ApplyDeletes"),
+    (524_288, "TextLengthStats"),
+    (1_048_576, "ColumnPartitionedWrites"),
+    (2_097_152, "NativeOnlyRead"),
+];
+
+fn capability_names(capabilities: u64) -> Vec<String> {
+    CAPABILITY_NAMES
+        .iter()
+        .filter(|(bit, _)| capabilities & bit != 0)
+        .map(|(_, name)| (*name).to_string())
+        .collect()
+}
+
+/// Renders the same document shape, field order and formatting as the C# SDK's `ManifestWriter`: two-
+/// space indent, LF line endings, a final newline, `name`/`protocolMajorMin`/`protocolMajorMax`/
+/// `capabilities`/`runtime`/`entrypoints`/`sdk` in that order. `entrypoints` is always empty -- this
+/// crate ships no RID-based packaging pipeline yet (unlike the C# SDK's `--entrypoint` flag), so a
+/// packaging step that adds one must fill this map itself; `projectDirectoryAnchor` is omitted
+/// entirely (this SDK's `ConnectorDecl` has no such field to report, the same as a manifest that says
+/// nothing about the anchor on the C# side).
+fn render_manifest(decl: &ConnectorDecl) -> String {
+    let mut doc = serde_json::Map::new();
+    doc.insert(
+        "name".to_string(),
+        serde_json::Value::String(decl.name.to_string()),
+    );
+    doc.insert(
+        "protocolMajorMin".to_string(),
+        serde_json::Value::from(PROTOCOL_MAJOR),
+    );
+    doc.insert(
+        "protocolMajorMax".to_string(),
+        serde_json::Value::from(PROTOCOL_MAJOR),
+    );
+    doc.insert(
+        "capabilities".to_string(),
+        serde_json::Value::from(capability_names(decl.capabilities)),
+    );
+    doc.insert(
+        "runtime".to_string(),
+        serde_json::Value::String("process".to_string()),
+    );
+    doc.insert(
+        "entrypoints".to_string(),
+        serde_json::Value::Object(serde_json::Map::new()),
+    );
+    let mut sdk = serde_json::Map::new();
+    sdk.insert(
+        "name".to_string(),
+        serde_json::Value::String(env!("CARGO_PKG_NAME").to_string()),
+    );
+    sdk.insert(
+        "version".to_string(),
+        serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string()),
+    );
+    doc.insert("sdk".to_string(), serde_json::Value::Object(sdk));
+
+    serde_json::to_string_pretty(&serde_json::Value::Object(doc))
+        .expect("a Map<String, Value> built entirely from strings/arrays/objects always serializes")
+        + "\n"
 }
 
 fn source_unimplemented() -> Status {
@@ -1016,8 +1222,24 @@ async fn serve_sink_inner<C: SinkConnector>(
     decl: ConnectorDecl,
     connector: C,
 ) -> Result<String, anyhow::Error> {
-    let socket_path = parse_socket_arg(std::env::args().skip(1))
-        .map_err(|msg| anyhow::Error::new(ServeExit::UsageError(msg)))?;
+    let socket_path = match parse_host_command(std::env::args().skip(1))
+        .map_err(|msg| anyhow::Error::new(ServeExit::UsageError(msg)))?
+    {
+        HostCommand::Manifest => {
+            println!("{}", render_manifest(&decl));
+            return Ok(
+                "printed the manifest (--pz-manifest) and exited without serving".to_string(),
+            );
+        }
+        HostCommand::Serve(path) => path,
+    };
+
+    // Always attempted, before either socket binds: this is what lets a connector's own logging
+    // (`tracing::info!`/`warn!`/`error!`) reach the host as `connector_log` run events even when no
+    // OTel endpoint is ever configured for this run, and even for logging emitted before `Handshake`
+    // (e.g. from inside `Configure`). See `hostlog`'s own doc for the composition rules this respects.
+    let log_peer = Arc::new(hostlog::HostLogPeer::new());
+    install_base_subscriber(&log_peer);
 
     if let Some(parent) = socket_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| {
@@ -1065,6 +1287,7 @@ async fn serve_sink_inner<C: SinkConnector>(
         shutdown_tx: shutdown_tx.clone(),
         shutdown_rx: shutdown_rx.clone(),
         instance: instance.clone(),
+        log_peer: log_peer.clone(),
     };
 
     let data_plane_task =
@@ -1113,6 +1336,31 @@ async fn serve_sink_inner<C: SinkConnector>(
 
     serve_result.map_err(|e| anyhow::anyhow!("control-plane server failed: {e}"))?;
     Ok("received the Shutdown RPC (or the control-plane listener otherwise stopped)".to_string())
+}
+
+/// The two modes argv selects between: serve over PCP (`--pz-socket <path>`), or print the manifest
+/// [`render_manifest`] builds from the same [`ConnectorDecl`] `Handshake` answers from
+/// (`--pz-manifest`) and exit without ever binding a socket.
+#[derive(Debug)]
+enum HostCommand {
+    Serve(PathBuf),
+    Manifest,
+}
+
+/// `--pz-manifest` and `--pz-socket` are mutually exclusive; everything else this iterator does not
+/// recognize is ignored, matching [`parse_socket_arg`]'s existing leniency (connector configuration
+/// never travels on argv, so an unrecognized flag here is not this parser's business to police).
+fn parse_host_command(args: impl Iterator<Item = String>) -> Result<HostCommand, String> {
+    let args: Vec<String> = args.collect();
+    let wants_manifest = args.iter().any(|a| a == "--pz-manifest");
+    let wants_socket = args.iter().any(|a| a == "--pz-socket");
+    if wants_manifest && wants_socket {
+        return Err("--pz-socket and --pz-manifest are separate modes".to_string());
+    }
+    if wants_manifest {
+        return Ok(HostCommand::Manifest);
+    }
+    parse_socket_arg(args.into_iter()).map(HostCommand::Serve)
 }
 
 fn parse_socket_arg(mut args: impl Iterator<Item = String>) -> Result<PathBuf, String> {
@@ -1501,5 +1749,355 @@ mod tests {
             data_socket_path(Path::new("/tmp/run/control.sock")),
             PathBuf::from("/tmp/run/control.sock.data")
         );
+    }
+
+    #[test]
+    fn pz_manifest_is_a_separate_mode_from_pz_socket() {
+        let args = [
+            "--pz-socket".to_string(),
+            "/tmp/x.sock".to_string(),
+            "--pz-manifest".to_string(),
+        ];
+        assert!(parse_host_command(args.into_iter()).is_err());
+    }
+
+    #[test]
+    fn pz_manifest_alone_selects_the_manifest_command() {
+        let args = ["--pz-manifest".to_string()];
+        assert!(matches!(
+            parse_host_command(args.into_iter()),
+            Ok(HostCommand::Manifest)
+        ));
+    }
+
+    #[test]
+    fn pz_socket_alone_still_selects_serve() {
+        let args = ["--pz-socket".to_string(), "/tmp/x.sock".to_string()];
+        match parse_host_command(args.into_iter()) {
+            Ok(HostCommand::Serve(path)) => assert_eq!(path, Path::new("/tmp/x.sock")),
+            other => panic!("expected HostCommand::Serve, got {other:?}"),
+        }
+    }
+
+    // ---- ConnectorDecl fixtures and a minimal SinkConnector for exercising the RPC handlers below --
+
+    fn fixture_decl() -> ConnectorDecl {
+        ConnectorDecl {
+            name: "acme-sink",
+            version: "9.9.9",
+            // Merge (32) | Transactional (64) | an unrecognized future bit (1 << 40), to prove
+            // render_manifest/capability_names mask exactly the way ManifestWriter does.
+            capabilities: 32 | 64 | (1u64 << 40),
+            connection_config_schema: "",
+            dataset_config_schema: "",
+            output_config_schema: "",
+        }
+    }
+
+    struct FixtureConnector {
+        sink_abort_semantics: AbortSemantics,
+        check_result: Result<(), PzError>,
+        warnings: Vec<String>,
+    }
+
+    impl Default for FixtureConnector {
+        fn default() -> Self {
+            FixtureConnector {
+                sink_abort_semantics: AbortSemantics::DiscardsAll,
+                check_result: Ok(()),
+                warnings: Vec::new(),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl SinkConnector for FixtureConnector {
+        async fn validate(&self, _config: &Config) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn validate_warnings(&self, _config: &Config) -> Vec<String> {
+            self.warnings.clone()
+        }
+
+        async fn check(&self, _config: &Config) -> Result<(), PzError> {
+            self.check_result.clone()
+        }
+
+        async fn open(&self, _config: Config) -> Result<Box<dyn Sink>, PzError> {
+            Ok(Box::new(FixtureSink {
+                abort_semantics: self.sink_abort_semantics,
+            }))
+        }
+    }
+
+    struct FixtureSink {
+        abort_semantics: AbortSemantics,
+    }
+
+    #[async_trait]
+    impl Sink for FixtureSink {
+        async fn begin_write(
+            &self,
+            _spec: OutputSpec,
+            _schema: SchemaRef,
+        ) -> Result<Box<dyn WriteSession>, PzError> {
+            Ok(Box::new(FixtureWriteSession))
+        }
+
+        fn abort_semantics(&self) -> AbortSemantics {
+            self.abort_semantics
+        }
+    }
+
+    struct FixtureWriteSession;
+
+    #[async_trait]
+    impl WriteSession for FixtureWriteSession {
+        async fn write_batch(&mut self, _batch: RecordBatch) -> Result<(), PzError> {
+            Ok(())
+        }
+
+        async fn commit(&mut self) -> Result<WriteResult, PzError> {
+            Ok(WriteResult::default())
+        }
+
+        async fn abort(&mut self) -> Result<(), PzError> {
+            Ok(())
+        }
+    }
+
+    fn encode_schema_ipc(schema: &arrow::datatypes::Schema) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut writer = arrow::ipc::writer::StreamWriter::try_new(&mut buf, schema)
+                .expect("a two-column schema always encodes");
+            writer
+                .finish()
+                .expect("finishing an empty stream always succeeds");
+        }
+        buf
+    }
+
+    fn test_service(connector: FixtureConnector) -> PzConnectorService<FixtureConnector> {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        PzConnectorService {
+            decl: fixture_decl(),
+            connector,
+            config: StdMutex::new(None),
+            sink: AsyncMutex::new(None),
+            sessions: Arc::new(StdMutex::new(HashMap::new())),
+            tickets: Arc::new(TicketRegistry::default()),
+            shutdown_tx,
+            shutdown_rx,
+            instance: Arc::new(StdMutex::new(None)),
+            log_peer: Arc::new(hostlog::HostLogPeer::new()),
+        }
+    }
+
+    #[test]
+    fn abort_semantics_maps_to_proto_ordinals_matching_the_csharp_abi() {
+        assert_eq!(
+            to_abort_semantics_msg(AbortSemantics::DiscardsAll),
+            pb::AbortSemanticsMsg::AbortSemanticsDiscardsAll
+        );
+        assert_eq!(
+            to_abort_semantics_msg(AbortSemantics::BestEffort),
+            pb::AbortSemanticsMsg::AbortSemanticsBestEffort
+        );
+        assert_eq!(
+            to_abort_semantics_msg(AbortSemantics::None),
+            pb::AbortSemanticsMsg::AbortSemanticsNone
+        );
+    }
+
+    #[tokio::test]
+    async fn begin_write_reports_the_sinks_declared_abort_semantics() {
+        let service = test_service(FixtureConnector {
+            sink_abort_semantics: AbortSemantics::BestEffort,
+            ..Default::default()
+        });
+        service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "a".to_string(),
+                config: None,
+            }))
+            .await
+            .expect("Configure must succeed before BeginWrite can open a sink");
+
+        let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "value",
+            arrow::datatypes::DataType::Int64,
+            false,
+        )]);
+        let response = service
+            .begin_write(Request::new(pb::BeginWriteRequest {
+                op_id: "op1".to_string(),
+                spec: Some(pb::OutputSpecMsg::default()),
+                arrow_schema_ipc: encode_schema_ipc(&schema),
+            }))
+            .await
+            .expect("BeginWrite must succeed against the fixture sink")
+            .into_inner();
+
+        // Without Sink::abort_semantics being threaded through, this would always answer DiscardsAll
+        // -- see BeginWrite's own comment on why every PCP sink used to look transactional.
+        assert_eq!(
+            response.abort_semantics,
+            pb::AbortSemanticsMsg::AbortSemanticsBestEffort as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn check_connection_reports_a_connectors_failure_as_ok_false_not_a_status() {
+        let service = test_service(FixtureConnector {
+            check_result: Err(PzError::new("could not reach the destination")),
+            ..Default::default()
+        });
+
+        let response = service
+            .check_connection(Request::new(pb::CheckRequest { config: None }))
+            .await
+            .expect("a connector-reported check failure must not cross as an RpcException")
+            .into_inner();
+
+        assert!(!response.ok);
+        assert_eq!(
+            response.message.as_deref(),
+            Some("could not reach the destination")
+        );
+    }
+
+    #[tokio::test]
+    async fn check_connection_reports_success_with_no_message() {
+        let service = test_service(FixtureConnector::default());
+
+        let response = service
+            .check_connection(Request::new(pb::CheckRequest { config: None }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.ok);
+        assert_eq!(response.message, None);
+    }
+
+    #[tokio::test]
+    async fn a_second_configure_is_refused_as_already_configured() {
+        let service = test_service(FixtureConnector::default());
+        service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "a".to_string(),
+                config: None,
+            }))
+            .await
+            .expect("the first Configure must succeed");
+
+        let err = service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "b".to_string(),
+                config: None,
+            }))
+            .await
+            .expect_err("a second Configure on the same process must be refused");
+
+        assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+        assert_eq!(err.message(), "connector is already configured");
+    }
+
+    #[test]
+    fn capability_names_masks_unknown_bits_and_stays_in_ascending_order() {
+        let names = capability_names(fixture_decl().capabilities);
+        // The unrecognized `1u64 << 40` bit fixture_decl() also sets must not appear -- mirrors
+        // ManifestWriter's KnownCapabilities masking.
+        assert_eq!(
+            names,
+            vec!["Merge".to_string(), "Transactional".to_string()]
+        );
+    }
+
+    #[test]
+    fn manifest_and_hello_agree_on_name_capabilities_and_sdk() {
+        let decl = fixture_decl();
+        let hello = hello_for(&decl);
+        let manifest: serde_json::Value = serde_json::from_str(&render_manifest(&decl))
+            .expect("render_manifest emits valid JSON");
+
+        let info = hello.info.expect("Hello always carries ConnectorInfoMsg");
+        assert_eq!(manifest["name"], decl.name);
+        assert_eq!(manifest["protocolMajorMin"], info.protocol_major);
+        assert_eq!(manifest["protocolMajorMax"], info.protocol_major);
+
+        let hello_sdk = hello.sdk.expect("Hello always carries SdkInfoMsg");
+        assert_eq!(manifest["sdk"]["name"], hello_sdk.name);
+        assert_eq!(manifest["sdk"]["version"], hello_sdk.version);
+
+        let manifest_caps: Vec<String> =
+            serde_json::from_value(manifest["capabilities"].clone()).unwrap();
+        assert_eq!(manifest_caps, capability_names(hello.capabilities as u64));
+    }
+
+    #[test]
+    fn manifest_rendering_is_byte_stable() {
+        let decl = ConnectorDecl {
+            name: "acme-sink",
+            version: "1.0.0",
+            capabilities: 0,
+            connection_config_schema: "",
+            dataset_config_schema: "",
+            output_config_schema: "",
+        };
+
+        let expected = format!(
+            "{{\n  \"name\": \"acme-sink\",\n  \"protocolMajorMin\": 1,\n  \"protocolMajorMax\": 1,\n  \"capabilities\": [],\n  \"runtime\": \"process\",\n  \"entrypoints\": {{}},\n  \"sdk\": {{\n    \"name\": \"{}\",\n    \"version\": \"{}\"\n  }}\n}}\n",
+            env!("CARGO_PKG_NAME"),
+            env!("CARGO_PKG_VERSION"),
+        );
+        assert_eq!(render_manifest(&decl), expected);
+    }
+
+    #[tokio::test]
+    async fn validate_forwards_a_connectors_warnings() {
+        let service = test_service(FixtureConnector {
+            warnings: vec!["'legacy_option' is accepted but deprecated".to_string()],
+            ..Default::default()
+        });
+
+        let response = service
+            .validate(Request::new(pb::ValidateRequest { config: None }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.errors.is_empty());
+        assert_eq!(
+            response.warnings,
+            vec!["'legacy_option' is accepted but deprecated".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_numeric_conformance_probe_never_reaches_validate_warnings() {
+        let service = test_service(FixtureConnector {
+            warnings: vec!["should never be seen".to_string()],
+            ..Default::default()
+        });
+
+        let mut root = prost_types::Struct::default();
+        root.fields.insert(
+            NUMERIC_PROBE_KEY.to_string(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::NumberValue(1.0)),
+            },
+        );
+
+        let response = service
+            .validate(Request::new(pb::ValidateRequest { config: Some(root) }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.errors.is_empty());
+        assert!(response.warnings.is_empty());
     }
 }

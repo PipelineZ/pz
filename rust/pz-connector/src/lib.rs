@@ -16,11 +16,23 @@
 //! [`meter`] returns the meter to record instruments on.
 //!
 //! One constraint: exporting spans requires a `tracing` subscriber carrying this crate's layer. With
-//! none installed, [`serve_sink`] installs one as the global default at the handshake. A binary that
-//! installs its own subscriber first composes [`layer`] into it (inert until the handshake); one that
-//! installs its own WITHOUT that layer keeps it and NO spans are exported (the handshake reports that
-//! on stderr); meters are unaffected either way. Never put a configuration value in a span name, a
-//! span field, or a metric label -- what is emitted is what the operator sees.
+//! none installed, [`serve_sink`] installs one as the global default before serving (once, at process
+//! start -- not lazily at the handshake, so [`log_layer`] below can queue logs from the moment
+//! `Configure` runs). A binary that installs its own subscriber first composes [`layer`] into it
+//! (inert until the handshake); one that installs its own WITHOUT that layer keeps it and NO spans
+//! are exported (the handshake reports that on stderr); meters are unaffected either way. Never put a
+//! configuration value in a span name, a span field, or a metric label -- what is emitted is what the
+//! operator sees.
+//!
+//! # Log forwarding
+//!
+//! [`serve_sink`] also composes a bridge that forwards every `tracing` event (an ordinary
+//! `tracing::info!`/`warn!`/`error!` call) to the host as a `LogEvent` over the reverse channel, which
+//! the host turns into a `connector_log` run event -- mirroring the C# SDK's `HostLoggerProvider`. A
+//! connector with no subscriber of its own gets this automatically; one that installs its own
+//! subscriber before calling `serve_sink` must compose [`log_layer`] into it, the same shape it
+//! already composes [`layer`] into for OTel spans. See that module's own doc comment (`hostlog.rs`)
+//! for the secret-hygiene guarantee this bridge makes by construction.
 
 pub(crate) mod pb {
     #![allow(
@@ -34,14 +46,16 @@ pub(crate) mod pb {
 mod config;
 mod data_plane;
 mod error;
+mod hostlog;
 mod server;
 mod telemetry;
 mod ticket;
 
 pub use config::Config;
 pub use error::PzError;
+pub use hostlog::log_layer;
 pub use server::{
-    serve_sink, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink, SinkConnector,
-    WriteAttempt, WriteResult, WriteSession,
+    serve_sink, AbortSemantics, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink,
+    SinkConnector, WriteAttempt, WriteResult, WriteSession,
 };
 pub use telemetry::{layer, meter};

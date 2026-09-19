@@ -57,7 +57,7 @@ static PROVIDERS: OnceLock<Providers> = OnceLock::new();
 
 /// Loads the exporting layer into the subscriber a connector author composed [`layer`] into. Type-erased
 /// over the author's subscriber type, which is what lets one static hold it.
-type Installer = Box<dyn Fn(Tracer) -> Result<(), String> + Send + Sync>;
+pub(crate) type Installer = Box<dyn Fn(Tracer) -> Result<(), String> + Send + Sync>;
 
 /// The installer the first [`layer`] call left behind, taken by [`start`]. `None` when the author
 /// composed nothing (this crate then installs its own subscriber) or after `start` consumed it.
@@ -157,6 +157,22 @@ pub fn layer<S>() -> impl Layer<S>
 where
     S: Subscriber + for<'a> LookupSpan<'a> + Send + Sync + 'static,
 {
+    let (layer, installer) = build_deferred_layer();
+    register_author_layer_if_empty(installer);
+    layer
+}
+
+/// The same deferred layer [`layer`] builds, minus the eager `AUTHOR_LAYER` registration -- used only
+/// by [`crate::serve_sink`]'s own early self-install attempt (`server::install_base_subscriber`),
+/// which must not claim that slot until it actually knows its `set_global_default` call won the
+/// process's one global-default slot. Registering unconditionally, the way [`layer`] does for a
+/// connector author's own explicit call (always the FIRST such call, so it can never lose the race),
+/// would otherwise leave a dead installer behind on a failed self-install, and a later [`start`] would
+/// then wrongly report success filling a layer nothing ever composed into the live subscriber.
+pub(crate) fn build_deferred_layer<S>() -> (impl Layer<S>, Installer)
+where
+    S: Subscriber + for<'a> LookupSpan<'a> + Send + Sync + 'static,
+{
     let inner: Arc<OnceLock<ExportLayer<S>>> = Arc::new(OnceLock::new());
     let installer: Installer = {
         let inner = inner.clone();
@@ -166,11 +182,20 @@ where
                 .map_err(|_| "the deferred OpenTelemetry layer was already installed".to_string())
         })
     };
+    (
+        DeferredOtelLayer { inner }.with_filter(export_filter()),
+        installer,
+    )
+}
+
+/// Registers `installer` as the one [`start`] will call, unless a connector author's own [`layer`]
+/// call (or an earlier self-install) already claimed the slot -- first writer wins, exactly as
+/// [`layer`]'s own eager registration already behaves.
+pub(crate) fn register_author_layer_if_empty(installer: Installer) {
     let mut slot = AUTHOR_LAYER.lock().unwrap();
     if slot.is_none() {
         *slot = Some(installer);
     }
-    DeferredOtelLayer { inner }.with_filter(export_filter())
 }
 
 /// The transport crates are silenced because the OTLP exporter itself runs on them: exporting a span

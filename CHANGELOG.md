@@ -803,6 +803,55 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   543 years off and `RunRetention.TryParseRunTimestamp`'s age math silently
   went wrong. `--log-format json`'s `at` field (`JsonRenderer`) had the same
   bug and is fixed the same way.
+- Rust connector SDK (`pz-connector`) parity fixes against the C# SDK:
+  - A sink's `Sink::abort_semantics()` (new, defaulted to `DiscardsAll` --
+    additive, an existing sink keeps compiling unchanged) now crosses into
+    `WriteSessionTicket.abort_semantics` verbatim. Every out-of-process Rust
+    sink used to report `DiscardsAll` regardless of what it actually wrapped,
+    which the delivery-guarantee matrix takes at face value.
+  - `CheckConnection` now answers a connector's failed `check()` as
+    `ConnectionCheckMsg { ok: false, message }` instead of a gRPC status --
+    mirroring the C# SDK, which never lets `CheckConnectionAsync`'s
+    `ConnectionCheck(false, ...)` escape as an `RpcException`. `message` is
+    exactly what the connector's own `check()` reported, verbatim.
+  - A second `Configure` RPC on the same process is now refused
+    (`FAILED_PRECONDITION`, "connector is already configured") instead of
+    silently re-pointing the connector at a different config, mirroring the
+    C# SDK's guard.
+  - A new `--pz-manifest` mode prints the connector's `pz.connector.json`
+    manifest (the same JSON shape and byte-stable ordering as the C# SDK's
+    `ManifestWriter`, generated from the same `ConnectorDecl` `Handshake`
+    answers from) to stdout and exits, so a hand-written manifest can no
+    longer drift from what the connector actually declares at the
+    handshake. Unlike the C# SDK's `--pz-manifest --out <file>` (which also
+    takes `--entrypoint`/`--project-directory-anchor`), this crate has no
+    RID-based packaging pipeline yet, so it always prints to stdout with an
+    empty `entrypoints` map; a packaging step fills that in itself.
+  - Connector logging now reaches the host: every `tracing::info!`/`warn!`/
+    `error!` call forwards as a `LogEvent` over the reverse channel, the same
+    way the C# SDK's `HostLoggerProvider` forwards an injected `ILogger`, so
+    the host's `connector_log` run event now carries something for a Rust
+    sink too. A connector with no `tracing` subscriber of its own gets this
+    automatically (`serve_sink` composes it into a subscriber it installs at
+    process start, before either socket binds, so a log from inside
+    `Configure` is not lost either); one that installs its own subscriber
+    composes the new `pz_connector::log_layer()` into it, the same shape it
+    already composes `pz_connector::layer()` into for OTel spans. Levels use
+    the same ordinals as `Microsoft.Extensions.Logging.LogLevel`. Nothing in
+    the bridge ever reads a connector's `Config`, so a configured value can
+    only reach a log line if a connector author puts it there explicitly --
+    the same posture the C# SDK's own doc states.
+    The reverse channel's other half -- an operation gate a Rust connector
+    could use to rate-limit its own outbound calls through the host -- is
+    left unwired: it would need a new public trait surface for "a host
+    service this connector consumes," which this SDK does not have in v1
+    (the wire protocol already defines `GateAcquire`/`GateGrant`/
+    `GateComplete`/`GateBudget`; only this crate's trait surface does not
+    expose them to connector authors yet).
+  - A sink can now report validation warnings: `SinkConnector::validate_warnings()`
+    (new, defaulted to empty -- additive) crosses into
+    `ValidationResultMsg.warnings`, the write side of the parity `Validate`
+    already had (errors only) against the C# SDK's `ValidationResult`.
 
 ## [0.6.1] - 2026-09-10
 
