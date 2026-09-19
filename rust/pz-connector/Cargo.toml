@@ -16,7 +16,7 @@ tokio-stream = "0.1"
 # stop being the same nominal type as the ones a downstream connector crate produces. Any future
 # connector added to this workspace must pin the same arrow major to stay free of cross-version
 # Arrow FFI bridging code.
-arrow = { version = "58", default-features = false, features = ["ipc"] }
+arrow = { version = "60", default-features = false, features = ["ipc"] }
 async-trait = "0.1"
 serde_json = { version = "1", features = ["preserve_order"] }
 getrandom = "0.2"
