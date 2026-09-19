@@ -45,11 +45,31 @@ public static class DagCompiler
         var connectionsByName = project.Connections.ToDictionary(s => s.Name);
 
         // 1. Render every pipeline (ephemeral included — its SQL is needed for inlining and
-        //    its Dependencies are needed for both ref/source validation and inheritance).
+        //    its Dependencies are needed for both ref/source validation and inheritance). One
+        //    pipeline's template is independent of every other's, so a broken template in pipeline A
+        //    must not hide a broken template in pipeline B -- every pipeline gets a chance to render,
+        //    and every failure is collected before throwing once. Stopping here (rather than seeding
+        //    `rendered` with a placeholder for a failed pipeline and continuing into stage 1b) is the one
+        //    genuine dependency below: every later stage indexes `rendered[pipeline.Name]` unconditionally
+        //    for EVERY pipeline, so a project that fails to render cannot proceed to stages that assume
+        //    it did.
         var rendered = new Dictionary<string, RenderResult>();
+        var renderErrors = new List<PzError>();
         foreach (var pipeline in project.Pipelines)
         {
-            rendered[pipeline.Name] = TemplateRenderer.Render(pipeline, ctx);
+            try
+            {
+                rendered[pipeline.Name] = TemplateRenderer.Render(pipeline, ctx);
+            }
+            catch (PzValidationException ex)
+            {
+                renderErrors.AddRange(ex.Errors);
+            }
+        }
+
+        if (renderErrors.Count > 0)
+        {
+            throw new PzValidationException(OrderErrors(renderErrors));
         }
 
         // 1b. Extract the fixed `INSERT INTO {{ sink(...) }}` prefix from any pipeline carrying an
@@ -601,14 +621,11 @@ public static class DagCompiler
             }
         }
 
-        if (incrementalErrors.Count > 0)
-        {
-            throw new PzValidationException(incrementalErrors);
-        }
-
-        project = project with { Connections = rewrittenConnections };
-
-        // 2. Validate every ref()/source() resolves -> PZ0201 (all collected, then throw).
+        // 2. Validate every ref()/source() resolves -> PZ0201. Independent of stage 0 above: it reads
+        //    only `rendered`, `pipelinesByName` (fixed at the top of Compile) and `connectionsByName`
+        //    (fixed once, after stage 1c/1d's synthesis -- stage 0's rewrite below only canonicalizes
+        //    Incremental fields on datasets already in that map, never adds/removes a connection or
+        //    dataset name), so it neither needs nor is needed by stage 0's result.
         var refErrors = new List<PzError>();
         foreach (var pipeline in project.Pipelines)
         {
@@ -635,12 +652,8 @@ public static class DagCompiler
             }
         }
 
-        if (refErrors.Count > 0)
-        {
-            throw new PzValidationException(refErrors);
-        }
-
-        // 3. Ephemeral pipelines may not declare checks -> PZ0205 (all collected, then throw).
+        // 3. Ephemeral pipelines may not declare checks -> PZ0205. Independent of stages 0/2 above:
+        //    reads only pipeline Materialization/Checks, untouched by either.
         //    A check node depends on its pipeline's node, but ephemeral pipelines produce no
         //    node — so checks on an ephemeral pipeline would otherwise be silently dropped.
         var checksOnEphemeralErrors = new List<PzError>();
@@ -652,12 +665,8 @@ public static class DagCompiler
                 "materialize the pipeline as table/view, or remove its checks"));
         }
 
-        if (checksOnEphemeralErrors.Count > 0)
-        {
-            throw new PzValidationException(checksOnEphemeralErrors);
-        }
-
-        // 4. Ephemeral pipelines may not chain -> PZ0204 (all collected, then throw).
+        // 4. Ephemeral pipelines may not chain -> PZ0204. Independent of stages 0/2/3: reads only
+        //    `rendered` and `pipelinesByName`, neither touched by them.
         var chainErrors = new List<PzError>();
         foreach (var pipeline in project.Pipelines.Where(p => p.Materialization == "ephemeral"))
         {
@@ -672,10 +681,17 @@ public static class DagCompiler
             }
         }
 
-        if (chainErrors.Count > 0)
+        // Stages 0, 2, 3 and 4 above each stand alone -- none reads another's error list or a value
+        // another one computes -- so they report together in ONE throw instead of stopping at whichever
+        // happens to run first.
+        var independentStageErrors = incrementalErrors
+            .Concat(refErrors).Concat(checksOnEphemeralErrors).Concat(chainErrors).ToList();
+        if (independentStageErrors.Count > 0)
         {
-            throw new PzValidationException(chainErrors);
+            throw new PzValidationException(OrderErrors(independentStageErrors));
         }
+
+        project = project with { Connections = rewrittenConnections };
 
         // 5. Resolve every sink output's binding (inline `INSERT INTO {{ sink(...) }}` is the SOLE load
         //    path — there is no YAML `input:` binding). First collect every pipeline's
@@ -825,7 +841,7 @@ public static class DagCompiler
         var assembledSql = new Dictionary<string, string>();
         foreach (var pipeline in project.Pipelines.Where(p => p.Materialization != "ephemeral"))
         {
-            assembledSql[pipeline.Name] = NormalizeSql(BuildInlinedSql(pipeline, rendered, pipelinesByName));
+            assembledSql[pipeline.Name] = NormalizeSql(BuildInlinedSql(pipeline, rendered, pipelinesByName, sqlAst));
         }
 
         var watermarkSynthesized = new Dictionary<(string Source, string Dataset), IncrementalDef>();
@@ -1122,11 +1138,6 @@ public static class DagCompiler
             }
         }
 
-        if (deliveryErrors.Count > 0)
-        {
-            throw new PzValidationException(deliveryErrors);
-        }
-
         // 10b2. CDC pairing matrix: the cdc column of the same published (read x write) matrix as
         //       stage 10b above. cdc is always EXPLICITLY declared
         //       (never auto-resolved), so -- unlike the feed column, which needs ExecutionPlanner's
@@ -1203,9 +1214,11 @@ public static class DagCompiler
             }
         }
 
-        if (cdcErrors.Count > 0)
+        // Both pairing matrices read the finished node list and nothing of each other's, so an
+        // incremental violation on one output must not hide a cdc violation on another.
+        if (deliveryErrors.Count > 0 || cdcErrors.Count > 0)
         {
-            throw new PzValidationException(cdcErrors);
+            throw new PzValidationException(OrderErrors(deliveryErrors.Concat(cdcErrors)));
         }
 
         // 10c. Dead-leaf detection: a non-ephemeral pipeline consumed by no ref()
@@ -1275,6 +1288,21 @@ public static class DagCompiler
 
         return compiled;
     }
+
+    /// <summary>Deterministic order for an aggregated batch of errors from more than one independent
+    /// stage: by file (nulls first -- a project-level error with no single file), then by line/position
+    /// (unpositioned first), then by each error's original position in <paramref name="errors"/> as the
+    /// final tie-break -- which is itself deterministic, since every stage below builds its own list by
+    /// walking pipelines/connections in declaration or ordinal order before appending it here. This is
+    /// what lets two stages' errors merge into one throw without their relative order depending on
+    /// dictionary enumeration or anything else non-deterministic.</summary>
+    private static IReadOnlyList<PzError> OrderErrors(IEnumerable<PzError> errors) =>
+        [.. errors
+            .Select((error, index) => (Error: error, Index: index))
+            .OrderBy(e => e.Error.File, StringComparer.Ordinal)
+            .ThenBy(e => e.Error.Line)
+            .ThenBy(e => e.Index)
+            .Select(e => e.Error)];
 
     /// <summary>What this dataset's SINGLE reading pipeline lets pz push down. The one-reader rule
     /// (PZ0349, enforced in stage 6) is what makes this well-defined — with two readers there would be
@@ -1598,15 +1626,24 @@ public static class DagCompiler
     /// <summary>
     /// "Consumer SQL becomes `with __pz_cte__&lt;name&gt; as (&lt;ephemeral sql&gt;)` + consumer
     /// body; multiple ephemeral deps join their CTEs with `, ` sorted by name; if the consumer's
-    /// own SQL already starts with `with` (case-insensitive), strip that keyword and join
-    /// its CTE list with `, `." The CTE alias is prefixed with <c>__pz_cte__</c> so it matches
-    /// what <see cref="TemplateRenderer"/> renders for <c>ref()</c> calls to ephemeral pipelines
-    /// (which render <c>__pz_cte__&lt;name&gt;</c>, not <c>staging.&lt;name&gt;</c>) — otherwise
-    /// the inlined CTE and the consumer body's reference to it would not match.
+    /// own SQL already carries a WITH clause, the ephemeral CTEs become its leading entries." The
+    /// CTE alias is prefixed with <c>__pz_cte__</c> so it matches what <see cref="TemplateRenderer"/>
+    /// renders for <c>ref()</c> calls to ephemeral pipelines (which render <c>__pz_cte__&lt;name&gt;</c>,
+    /// not <c>staging.&lt;name&gt;</c>) — otherwise the inlined CTE and the consumer body's reference to
+    /// it would not match.
+    /// <para>Assembly prefers <see cref="ISqlAstReader.PrependCtes"/>: reading the consumer's own
+    /// <c>cte_map</c> off DuckDB's own parser is what gets a consumer that opens with a comment before
+    /// WITH, or is itself WITH RECURSIVE, right without this stage sniffing consumer text for a "with"
+    /// keyword. <paramref name="sqlAst"/> is null in tests that construct a project with no incremental
+    /// SQL at all (every production caller supplies <c>DuckDbSqlAstReader</c>) — and
+    /// <see cref="ISqlAstReader.PrependCtes"/> itself returns null if either side fails to parse — so a
+    /// textual splice (the ORIGINAL, simpler shape) is still the fallback: it handles the common case
+    /// exactly as before, and downstream tier-4 EXPLAIN/PREPARE reports a genuinely malformed pipeline
+    /// with full context regardless of which route assembled it.</para>
     /// </summary>
     private static string BuildInlinedSql(
         PipelineDef pipeline, IReadOnlyDictionary<string, RenderResult> rendered,
-        IReadOnlyDictionary<string, PipelineDef> pipelinesByName)
+        IReadOnlyDictionary<string, PipelineDef> pipelinesByName, ISqlAstReader? sqlAst)
     {
         var sql = rendered[pipeline.Name].Sql;
         var ephemeralNames = rendered[pipeline.Name].Dependencies
@@ -1622,8 +1659,19 @@ public static class DagCompiler
             return sql;
         }
 
-        var cteList = string.Join(", ",
-            ephemeralNames.Select(name => $"__pz_cte__{name} as ({rendered[name].Sql})"));
+        // NormalizeSql here as well as at the assembled-SQL call site: an ephemeral body ending in its
+        // own trailing `;` must not land inside `( ... ; )`, which DuckDB refuses as a second (empty)
+        // statement nested in a parenthesized expression.
+        var ctes = ephemeralNames
+            .Select(name => (Alias: $"__pz_cte__{name}", Sql: NormalizeSql(rendered[name].Sql)))
+            .ToList();
+
+        if (sqlAst?.PrependCtes(sql, ctes) is { } merged)
+        {
+            return merged;
+        }
+
+        var cteList = string.Join(", ", ctes.Select(c => $"{c.Alias} as ({c.Sql})"));
         var trimmed = sql.TrimStart();
 
         if (trimmed.StartsWith("with", StringComparison.OrdinalIgnoreCase))
@@ -1635,8 +1683,16 @@ public static class DagCompiler
         return $"with {cteList} {sql}";
     }
 
-    private static string NormalizeSql(string sql) =>
-        sql.Replace("\r\n", "\n").Replace('\r', '\n').TrimEnd();
+    /// <summary>LF-normalizes and trims trailing whitespace, then strips exactly one trailing
+    /// semicolon (plus any whitespace before it) -- mirroring CheckExecutor's custom_sql handling, so a
+    /// pipeline written the way most SQL tools format it (trailing `;`) is not a hard DuckDB parse
+    /// error. A `;` anywhere else in the text is left alone: a second statement stays a second
+    /// statement, and fails loudly rather than being silently truncated.</summary>
+    private static string NormalizeSql(string sql)
+    {
+        var normalized = sql.Replace("\r\n", "\n").Replace('\r', '\n').TrimEnd();
+        return normalized.EndsWith(';') ? normalized[..^1].TrimEnd() : normalized;
+    }
 
     /// <summary>How a sink output is fed. There is exactly one kind — an inline
     /// `sink()` claim by a pipeline — but the wrapper is retained so stage 5's resolution map and stage

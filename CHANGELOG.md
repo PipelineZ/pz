@@ -180,6 +180,31 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   processes — each with its gRPC channel and pump, each possibly holding a
   remote connection — over the course of one run. Live children now track the
   nodes in flight (bounded by `engine.threads`).
+- A pipeline ending in a trailing `;` (the way most SQL formatters write it) no
+  longer fails compile with a raw DuckDB parse error. `DagCompiler` now strips
+  exactly one trailing semicolon (plus surrounding whitespace) the way
+  custom_sql checks already did; a `;` anywhere else in the SQL — a genuine
+  second statement — is left alone and still fails loudly.
+- Ephemeral-CTE inlining no longer emits invalid SQL for a consumer pipeline
+  that opens with a comment before its `WITH`, a consumer using
+  `WITH RECURSIVE`, or an ephemeral pipeline whose body ends in its own
+  trailing `;`. Assembly now prefers reading and re-emitting the parsed AST
+  (DuckDB's own parser, via the existing `ISqlAstReader` seam) over sniffing
+  consumer text for a `with` keyword; a textual splice remains the fallback
+  when no AST reader is wired or either side fails to parse. A pipeline that
+  consumes an ephemeral pipeline therefore runs (and shows in `pz compile`
+  output) as DuckDB's own rendering of its SQL: comments are dropped and
+  keywords normalized, and its node id changes once on upgrade.
+- `pz compile`/`run`/`validate` now report every pipeline's broken template in
+  one compile instead of stopping at the first: rendering used to throw on
+  pipeline A and never attempt pipeline B, C, … at all. Four independent
+  validation stages (incremental/merge-keys, ref()/source() resolution,
+  checks-on-ephemeral, ephemeral-chain) that used to stop at whichever ran
+  first now also report together in one throw, and so do the incremental and
+  cdc pairing matrices. Aggregated errors are ordered
+  by file, then position, for a deterministic report. Stages with a genuine
+  dependency on an earlier one's success (sink-output binding, the one-reader
+  rule, SQL-declared incremental inference, and later) are unchanged.
 
 ## [0.6.1] - 2026-09-10
 

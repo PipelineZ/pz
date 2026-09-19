@@ -144,6 +144,76 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         return new ReadHintPlan(ExtractColumns(statement, from, scope), predicate);
     }
 
+    /// <summary>AST-based route for ephemeral-CTE inlining (see the interface doc): parse
+    /// <paramref name="consumerSql"/> and every CTE body, splice a new <c>cte_map</c> entry per CTE onto
+    /// the front of the consumer's own <c>cte_map.map</c> array (creating none of its structure by
+    /// hand -- an empty array is exactly what an AST with no WITH clause already carries), and
+    /// deserialize the mutated root back to SQL. The consumer's own entries -- comment, RECURSIVE
+    /// marker included -- ride along untouched; DuckDB's deserializer alone decides whether the merged
+    /// clause reads back as WITH or WITH RECURSIVE, from whether any entry's query (ours or the
+    /// consumer's own) is a RECURSIVE_CTE_NODE. Total-or-error: null on any parse failure, the shape
+    /// this interface member documents as its "AST route unavailable" signal.</summary>
+    public string? PrependCtes(string consumerSql, IReadOnlyList<(string Alias, string Sql)> ctes)
+    {
+        using var duck = DuckDbSync.OpenInMemory();
+        var consumerRoot = ParseSingleStatement(duck, consumerSql);
+        if (consumerRoot is null)
+        {
+            return null;
+        }
+
+        var consumerNode = consumerRoot["statements"]![0]!["node"];
+        if (consumerNode?["cte_map"]?["map"] is not JsonArray cteMap)
+        {
+            return null; // not a query-node shape this walk recognizes -- degrade to the textual splice
+        }
+
+        var newEntries = new JsonNode[ctes.Count];
+        for (var i = 0; i < ctes.Count; i++)
+        {
+            var cteRoot = ParseSingleStatement(duck, ctes[i].Sql);
+            if (cteRoot is null)
+            {
+                return null;
+            }
+
+            newEntries[i] = new JsonObject
+            {
+                ["key"] = ctes[i].Alias,
+                ["value"] = new JsonObject
+                {
+                    ["aliases"] = new JsonArray(),
+                    ["query"] = cteRoot["statements"]![0]!.DeepClone(),
+                    ["materialized"] = "CTE_MATERIALIZE_DEFAULT",
+                    ["key_targets"] = new JsonArray(),
+                },
+            };
+        }
+
+        // Insert back-to-front so the entries land at the front of cteMap in their own given order.
+        for (var i = newEntries.Length - 1; i >= 0; i--)
+        {
+            cteMap.Insert(0, newEntries[i]);
+        }
+
+        return Deserialize(duck, consumerRoot);
+    }
+
+    /// <summary>Parses <paramref name="sql"/> and returns the root node when it is exactly one
+    /// well-formed statement, null otherwise (parse error, or a trailing statement after a stray
+    /// mid-string semicolon -- never silently picking the first one).</summary>
+    private static JsonNode? ParseSingleStatement(DuckDbSync duck, string sql)
+    {
+        var serialized = duck.Scalar($"select json_serialize_sql('{Escape(sql)}')");
+        var root = JsonNode.Parse(serialized)!;
+        if (root["error"]?.GetValue<bool>() == true || root["statements"] is not JsonArray { Count: 1 })
+        {
+            return null;
+        }
+
+        return root;
+    }
+
     /// <summary>The name scope read hints resolve column references against: every outer-FROM base
     /// table alias, which of them are the target, whether the target is the FROM's only relation, and
     /// the select list's output aliases.</summary>

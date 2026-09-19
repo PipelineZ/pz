@@ -16,6 +16,18 @@ public interface ISqlAstReader
     /// <paramref name="cursorColumn"/>, when non-null, is excluded from predicates: comparisons on the
     /// cursor route to DatasetSpec's watermark bounds, which are load-bearing rather than best-effort.</summary>
     ReadHintPlan ExtractReadHints(string sql, string baseTable, string? cursorColumn);
+
+    /// <summary>Prepends <paramref name="ctes"/> as the leading common table expressions of
+    /// <paramref name="consumerSql"/>'s own WITH clause -- creating one if it has none -- by reading and
+    /// re-emitting the parsed AST (never sniffing consumer text for a "with" keyword), so it is correct
+    /// whether the consumer's own body opens with a comment before WITH or is itself WITH RECURSIVE
+    /// (DuckDB decides to emit RECURSIVE for the merged clause from the AST alone; this method never
+    /// inspects that). What DagCompiler.BuildInlinedSql needs to fold an ephemeral pipeline's SELECT
+    /// into a consumer. Returns null -- the default implementation, and also what an override returns
+    /// when <paramref name="consumerSql"/> or a CTE body fails to parse -- when the AST route cannot be
+    /// taken; the caller falls back to a textual splice, which still lets downstream tier-4
+    /// EXPLAIN/PREPARE report genuinely malformed SQL with full context.</summary>
+    string? PrependCtes(string consumerSql, IReadOnlyList<(string Alias, string Sql)> ctes) => null;
 }
 
 /// <summary>What a single reading pipeline lets pz ask the connector for. Null members mean "push
