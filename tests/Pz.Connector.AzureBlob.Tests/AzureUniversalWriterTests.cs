@@ -67,6 +67,34 @@ public sealed class AzureUniversalWriterTests
         Assert.Equal(["row-0", "row-1", "row-2", "row-100", "row-101", "row-102", "row-103", "row-104", "row-200", "row-201"], names);
     }
 
+    /// <summary>A value with a sub-millisecond fractional-second component must survive the managed
+    /// parquet write path unchanged -- DuckDB's own timestamps are microsecond-precision, and nothing
+    /// in <see cref="AzureBlobFormat.WriteParquetAsync"/> may round or truncate one.</summary>
+    [Fact]
+    public async Task Parquet_round_trips_sub_millisecond_timestamp_precision()
+    {
+        var schema = new Schema([new Field("ts", new TimestampType(TimeUnit.Microsecond, "UTC"), nullable: true)], null);
+        // .123456 -- six sub-second digits, exactly a whole number of microseconds so the value
+        // is representable losslessly at Micros precision with nothing left over to round away.
+        var stamp = new DateTimeOffset(2026, 3, 4, 5, 6, 7, TimeSpan.Zero).AddTicks(1_234_560);
+        var builder = new TimestampArray.Builder(new TimestampType(TimeUnit.Microsecond, "UTC"));
+        builder.Append(stamp);
+        using var batch = new RecordBatch(schema, [builder.Build()], 1);
+
+        using var ms = new MemoryStream();
+        await AzureBlobFormat.WriteParquetAsync(ms, schema, [batch], CancellationToken.None);
+
+        using var readable = new MemoryStream(ms.ToArray());
+        await using var reader = await ParquetReader.CreateAsync(readable);
+        var field = reader.Schema.DataFields.Single(f => f.Name == "ts");
+        using var rowGroup = reader.OpenRowGroupReader(0);
+        var values = new DateTime?[1];
+        await rowGroup.ReadAsync<DateTime>(field, values);
+
+        Assert.Equal(stamp.UtcDateTime, values[0]!.Value);
+        Assert.Equal(123_456, (values[0]!.Value.Ticks % TimeSpan.TicksPerSecond) / 10);
+    }
+
     [Fact]
     public async Task Csv_round_trips_all_batches()
     {

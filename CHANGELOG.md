@@ -270,6 +270,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   Byte output is unchanged (proven by the existing byte-stable/golden tests); a new test pins
   `SchemaCacheWriter`'s overlapping-writer behavior the way `PlanWriterTests` already pinned
   `PlanWriter`'s.
+- **The managed (Parquet.Net) parquet write path silently truncated timestamps to millisecond
+  precision** in the LocalFiles sink, and the AzureBlob and Gcs universal write tiers
+  (`ParquetSinkWriteSession`/`AzureBlobFormat`/`GcsFormat`). Each built its timestamp column with
+  `DateTimeFormat.DateAndTime` plus `unit: DateTimeTimeUnit.Micros`, but Parquet.Net's
+  `DateTimeDataField` constructor hardcodes `Unit = Millis` for `DateAndTime` regardless of the
+  `unit:` argument — it only honors a requested unit for the `*Micros`/`*Nanos` format constants.
+  Every value's sub-millisecond component (down to DuckDB's own microsecond resolution) was
+  dropped on write with no error. Fixed by requesting `DateTimeFormat.DateAndTimeMicros` instead.
+  The native COPY path (DuckDB's own `COPY ... TO parquet`) was never affected.
+
 - **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
   - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
     all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.

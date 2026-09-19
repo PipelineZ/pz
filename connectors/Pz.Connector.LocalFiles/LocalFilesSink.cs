@@ -256,8 +256,12 @@ internal sealed class ParquetSinkWriteSession : LocalFileWriteSessionBase
         BooleanType => new DataField(field.Name, typeof(bool), isNullable: true),
         StringType => new DataField(field.Name, typeof(string), isNullable: true),
         Date32Type => new DateTimeDataField(field.Name, DateTimeFormat.Date, isNullable: true),
-        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTime,
-            isAdjustedToUTC: true, unit: DateTimeTimeUnit.Micros, isNullable: true),
+        // DateAndTimeMicros, not DateAndTime -- Parquet.Net's DateTimeDataField constructor
+        // hardcodes Unit=Millis for DateAndTime regardless of the `unit:` argument (it only
+        // honors a requested unit for the *Micros/*Nanos format constants), so passing
+        // DateAndTime here would silently truncate every timestamp to millisecond precision.
+        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTimeMicros,
+            isAdjustedToUTC: true, isNullable: true),
         Decimal128Type => throw new PzConnectorException(
             $"column '{field.Name}': the universal parquet write path does not support decimal columns; " +
             "the native COPY path writes them", isTransient: false),
