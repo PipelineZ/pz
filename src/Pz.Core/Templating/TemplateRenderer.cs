@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.Core.Validation;
@@ -83,7 +84,7 @@ public static class TemplateRenderer
         }
         catch (ScriptRuntimeException ex)
         {
-            throw new PzValidationException([RuntimeErrorToPzError(pipeline, ex)]);
+            throw new PzValidationException([RuntimeErrorToPzError(pipeline, ex, ctx)]);
         }
 
         if (callErrors.Count > 0)
@@ -94,20 +95,138 @@ public static class TemplateRenderer
         return new RenderResult(sql, dependencies) { InlineBindings = inlineBindings, WatermarkRefs = watermarkRefs };
     }
 
+    private static readonly Regex UnknownVarPattern = new("^unknown var '(?<name>[^']+)'$", RegexOptions.Compiled);
+
+    private static readonly Regex UndeclaredEnvVarPattern =
+        new("^environment variable '(?<name>[^']+)' is not set$", RegexOptions.Compiled);
+
+    private const string SandboxHint =
+        "only source()/ref()/sink()/var()/env() and the this/run_id/run_started_at constants are " +
+        "reachable inside {{ }} -- check this expression for a typo or an unsupported function/variable";
+
+    /// <summary>A <c>source()</c>/<c>sink()</c> call is documented (<c>authoring-for-agents.md</c>) to
+    /// fit on one line -- Scriban's own statement grammar is what actually enforces that, so a call an
+    /// author split across lines fails as a raw, several-messages-deep parse error nobody unfamiliar
+    /// with Scriban's grammar can act on. Detected against the raw SQL text (parsing itself already
+    /// failed, so there is no parsed AST to inspect) rather than by pattern-matching the parse
+    /// messages, which vary with exactly where the line break falls.</summary>
     private static PzError ParseErrorsToPzError(PipelineDef pipeline, Template template)
     {
-        var message = string.Join("; ", template.Messages.Select(m => m.Message));
         var line = template.Messages.Count > 0 ? template.Messages[0].Span.Start.Line + 1 : (int?)null;
-        return new PzError(PzErrorCode.TemplateError, message, pipeline.FilePath, line, null);
+
+        if (FindMultilineCall(pipeline.RawSql) is { } call)
+        {
+            return new PzError(PzErrorCode.TemplateError,
+                $"pipeline '{pipeline.Name}' calls {call}() split across more than one line",
+                pipeline.FilePath, line,
+                $"put the whole {call}(...) call on one line -- whitespace/comments before it are fine, " +
+                "but the call itself must not span a line break");
+        }
+
+        var message = string.Join("; ", template.Messages.Select(m => m.Message));
+        return new PzError(PzErrorCode.TemplateError, message, pipeline.FilePath, line, SandboxHint);
     }
 
-    private static PzError RuntimeErrorToPzError(PipelineDef pipeline, ScriptRuntimeException ex)
+    /// <summary>The name of a <c>source</c>/<c>sink</c> call whose parenthesized argument list spans a
+    /// line break in <paramref name="sql"/>, or null when neither does. Scans by balancing parentheses
+    /// (skipping quoted string contents, so a literal containing '(' or a newline inside a string
+    /// argument is not mistaken for the call's own structure) rather than a single regex, since the
+    /// argument list itself is free-form.</summary>
+    private static string? FindMultilineCall(string sql)
+    {
+        foreach (var name in new[] { "source", "sink" })
+        {
+            var searchFrom = 0;
+            int start;
+            while ((start = sql.IndexOf(name + "(", searchFrom, StringComparison.Ordinal)) >= 0)
+            {
+                var precededByIdentifierChar = start > 0 &&
+                    (char.IsAsciiLetterOrDigit(sql[start - 1]) || sql[start - 1] == '_');
+                var open = start + name.Length;
+                if (!precededByIdentifierChar && InsideTemplateBlock(sql, start) &&
+                    TryFindMatchingParen(sql, open, out var close) &&
+                    sql.AsSpan(open, close - open).Contains('\n'))
+                {
+                    return name;
+                }
+
+                searchFrom = open + 1;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Whether <paramref name="index"/> sits inside an open <c>{{</c> block. Everything outside
+    /// one is SQL the template engine never parses, so a line break there cannot be what failed.</summary>
+    private static bool InsideTemplateBlock(string sql, int index)
+    {
+        var opened = sql.LastIndexOf("{{", index, StringComparison.Ordinal);
+        return opened >= 0 && sql.IndexOf("}}", opened, index - opened, StringComparison.Ordinal) < 0;
+    }
+
+    private static bool TryFindMatchingParen(string sql, int openIndex, out int closeIndex)
+    {
+        var depth = 0;
+        var inString = false;
+        var quote = '\0';
+        for (var i = openIndex; i < sql.Length; i++)
+        {
+            var c = sql[i];
+            if (inString)
+            {
+                if (c == quote) { inString = false; }
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'' or '"':
+                    inString = true;
+                    quote = c;
+                    break;
+                case '(':
+                    depth++;
+                    break;
+                case ')':
+                    depth--;
+                    if (depth == 0)
+                    {
+                        closeIndex = i;
+                        return true;
+                    }
+
+                    break;
+            }
+        }
+
+        closeIndex = -1;
+        return false;
+    }
+
+    private static PzError RuntimeErrorToPzError(PipelineDef pipeline, ScriptRuntimeException ex, RenderContext ctx)
     {
         var message = ex.OriginalMessage;
-        var isUndeclaredEnvVar = message.Contains("environment variable", StringComparison.Ordinal)
-            && message.Contains("is not set", StringComparison.Ordinal);
-        var code = isUndeclaredEnvVar ? PzErrorCode.UndeclaredEnvVar : PzErrorCode.TemplateError;
-        return new PzError(code, message, pipeline.FilePath, ex.Span.Start.Line + 1, null);
+        var line = ex.Span.Start.Line + 1;
+
+        if (UndeclaredEnvVarPattern.Match(message) is { Success: true } envMatch)
+        {
+            var name = envMatch.Groups["name"].Value;
+            return new PzError(PzErrorCode.UndeclaredEnvVar, message, pipeline.FilePath, line,
+                $"set the {name} environment variable before running pz, or remove env('{name}') from this pipeline");
+        }
+
+        if (UnknownVarPattern.Match(message) is { Success: true } varMatch)
+        {
+            var name = varMatch.Groups["name"].Value;
+            var nearMiss = ScriptKwargs.NearMiss(ctx.Project.Vars.Keys, name);
+            var hint = nearMiss is null
+                ? $"declare '{name}' under project.yml's vars:, or pass it with --vars"
+                : $"did you mean '{nearMiss}'?";
+            return new PzError(PzErrorCode.TemplateError, message, pipeline.FilePath, line, hint);
+        }
+
+        return new PzError(PzErrorCode.TemplateError, message, pipeline.FilePath, line, SandboxHint);
     }
 
     /// <summary>

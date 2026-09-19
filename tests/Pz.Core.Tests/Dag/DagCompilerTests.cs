@@ -67,7 +67,10 @@ public class DagCompilerTests
             Pipe("a", "select * from {{ ref('b') }}"),
             Pipe("b", "select * from {{ ref('a') }}")]);
         var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
-        Assert.Contains(ex.Errors, e => e.Code == PzErrorCode.Cycle);
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.Cycle);
+        // Names a file to open -- one of the two pipelines in the cycle -- instead of nothing at all.
+        Assert.True(error.File is "pipelines/a.sql" or "pipelines/b.sql", error.File);
+        Assert.NotNull(error.Hint);
     }
 
     [Fact]
@@ -77,6 +80,42 @@ public class DagCompilerTests
         var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
         var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.UnresolvedRef);
         Assert.Contains("nope", error.Message);
+    }
+
+    [Fact]
+    public void Unresolved_ref_near_a_real_pipeline_name_suggests_it()
+    {
+        var p = Project([
+            Pipe("stg_orders", "select 1 as id"),
+            Pipe("a", "select * from {{ ref('stg_order') }}"),
+        ]);
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.UnresolvedRef);
+        Assert.Contains("did you mean 'stg_orders'", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unresolved_source_connection_near_a_real_one_suggests_it()
+    {
+        var p = Project(
+            [Pipe("a", "select * from {{ source('crn', 'orders') }}")],
+            sources: [Crm("orders")]);
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.UnresolvedRef);
+        Assert.Contains("did you mean 'crm'", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Unresolved_sink_connection_names_it_as_a_connection_and_suggests_a_near_miss()
+    {
+        var p = Project(
+            [Pipe("a", Into("out", strategy: "replace", sink: "lak") + "select 1")],
+            sinks: [Sink("lake")]);
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.UnresolvedRef);
+        Assert.Contains("no connection named 'lak' exists", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("no sink named", error.Message, StringComparison.Ordinal);
+        Assert.Contains("did you mean 'lake'", error.Hint, StringComparison.Ordinal);
     }
 
     [Fact]

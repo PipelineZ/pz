@@ -1146,14 +1146,32 @@ public static class ProjectLoader
             .Where(f => !RelativePath(projectDir, f).Split('/').Contains("configs"))
             .OrderBy(f => f, StringComparer.Ordinal);
 
-        var byName = new Dictionary<string, PipelineDef>();
-        var firstFileByName = new Dictionary<string, string>();
+        // Case-insensitive: DuckDB folds an unquoted identifier's case, so `Orders.sql` and `orders.sql`
+        // would stage to the very same `staging.orders` relation on Linux (where both files coexist on
+        // disk) -- the first one that runs silently overwrites the other's result, node status green
+        // throughout. Comparing file stems case-insensitively here catches that pair as the SAME
+        // PZ0110 this dictionary already exists to report, rather than a mismatched row count nobody
+        // can explain.
+        var byName = new Dictionary<string, PipelineDef>(StringComparer.OrdinalIgnoreCase);
+        var firstFileByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var filePath in sqlFiles)
         {
             var relativePath = RelativePath(projectDir, filePath);
             var pipelineName = Path.GetFileNameWithoutExtension(filePath);
             var rawSql = File.ReadAllText(filePath);
+
+            // The file stem becomes staging.<name> verbatim (PipelineExecutor), a raw unquoted DuckDB
+            // identifier -- checked before the duplicate lookup below so an invalid name is reported
+            // once, on its own terms, rather than also tripping over whatever else happens to share its
+            // casing.
+            if (PzIdentifier.Problem(pipelineName) is { } problem)
+            {
+                errors.Add(new PzError(PzErrorCode.InvalidIdentifierName,
+                    $"pipeline file stem '{pipelineName}' {problem}.", relativePath, null,
+                    $"rename {relativePath} to pipelines/{PzIdentifier.Suggest(pipelineName)}.sql"));
+                continue;
+            }
 
             if (firstFileByName.TryGetValue(pipelineName, out var firstFile))
             {
@@ -1162,7 +1180,9 @@ public static class ProjectLoader
                     $"Duplicate pipeline name '{pipelineName}' defined in {firstFile} and {relativePath}.",
                     relativePath,
                     null,
-                    "rename one of the pipelines so names are unique within the project."));
+                    "rename one of the pipelines so names are unique within the project " +
+                    "-- pz's staging tables fold names case-insensitively, so names differing only by " +
+                    "case cannot be told apart either."));
                 continue;
             }
 

@@ -186,6 +186,11 @@ public static class DagCompiler
         //     EffectiveDependencies: a source() call declares its entity wherever it is written, and
         //     following ephemeral chains here would resolve ref()s that stage 2 has not validated yet.
         var readsByConnection = new Dictionary<string, Dictionary<string, DatasetDef>>(StringComparer.Ordinal);
+        // The read-side twin of stage 5's sink() near-miss warning below, sharing the same rationale
+        // (SourceFunction's doc comment) -- a kwarg one edit from a pz-owned name (`sync`/`retry`/
+        // `columns`/`partition_column`/`partitions`) rides through as a connector read option unchecked,
+        // silently, unless named here.
+        var sourceWarnings = new List<PzWarning>();
         foreach (var pipeline in project.Pipelines.OrderBy(p => p.Name, StringComparer.Ordinal))
         {
             foreach (var dep in rendered[pipeline.Name].Dependencies
@@ -195,6 +200,21 @@ public static class DagCompiler
                 if (!connectionsByName.TryGetValue(dep.SourceName, out var connection))
                 {
                     continue; // unknown connection: stage 2 reports it as PZ0201
+                }
+
+                foreach (var option in dep.Read.Options.Keys.OrderBy(k => k, StringComparer.Ordinal))
+                {
+                    var nearMiss = SourceFunction.NearMissKwarg(option);
+                    if (nearMiss is not null)
+                    {
+                        sourceWarnings.Add(new PzWarning(PzErrorCode.UnresolvedRef,
+                            $"pipeline '{pipeline.Name}' passes source('{dep.SourceName}', '{dep.Dataset}', " +
+                            $"{option}: ...), which pz does not recognize — it is being sent to the " +
+                            $"connector as a read option. Did you mean '{nearMiss}'?",
+                            pipeline.FilePath, null,
+                            $"rename it to '{nearMiss}', or ignore this if '{option}' really is an " +
+                            $"option of the '{connection.Connector}' connector"));
+                    }
                 }
 
                 var declaredInYaml = connection.Datasets.Any(d => d.Name == dep.Dataset);
@@ -494,7 +514,7 @@ public static class DagCompiler
                 catch (PzConnectorException ex)
                 {
                     incrementalErrors.Add(new PzError(PzErrorCode.TemplatedPathTokensInvalid, ex.Message,
-                        source.FilePath, null, null));
+                        source.FilePath, null, PathTokenHint));
                     // Fall through: still check the cursor/window below -- aggregate-all-errors rule.
                 }
 
@@ -616,7 +636,7 @@ public static class DagCompiler
                 catch (PzConnectorException ex)
                 {
                     incrementalErrors.Add(new PzError(PzErrorCode.TemplatedPathTokensInvalid, ex.Message,
-                        sink.FilePath, null, null));
+                        sink.FilePath, null, PathTokenHint));
                 }
             }
         }
@@ -636,7 +656,9 @@ public static class DagCompiler
                     case DepRef.Pipeline pipelineRef when !pipelinesByName.ContainsKey(pipelineRef.Name):
                         refErrors.Add(new PzError(PzErrorCode.UnresolvedRef,
                             $"pipeline '{pipeline.Name}' calls ref('{pipelineRef.Name}') but no pipeline named '{pipelineRef.Name}' exists",
-                            pipeline.FilePath, null, null));
+                            pipeline.FilePath, null,
+                            NearMissHint(pipelinesByName.Keys, pipelineRef.Name,
+                                "check pipelines/ for the pipeline's file stem -- that is its name")));
                         break;
                     // There is no ENTITY half to this check: an entity exists because something reads
                     // it, so stage 1d has already synthesized one for every referenced entity of a known
@@ -646,7 +668,8 @@ public static class DagCompiler
                         refErrors.Add(new PzError(PzErrorCode.UnresolvedRef,
                             $"pipeline '{pipeline.Name}' calls source('{sourceRef.SourceName}', '{sourceRef.Dataset}') but no connection named '{sourceRef.SourceName}' exists",
                             pipeline.FilePath, null,
-                            $"declare it in connections.yml:\n  {sourceRef.SourceName}:\n    connector: <connector>"));
+                            NearMissHint(connectionsByName.Keys, sourceRef.SourceName,
+                                $"declare it in connections.yml:\n  {sourceRef.SourceName}:\n    connector: <connector>")));
                         break;
                 }
             }
@@ -734,8 +757,10 @@ public static class DagCompiler
                 if (!connectionsByName.ContainsKey(binding.Sink))
                 {
                     sinkErrors.Add(new PzError(PzErrorCode.UnresolvedRef,
-                        $"pipeline '{pipeline.Name}' calls sink('{binding.Sink}', '{binding.Output}') but no sink named '{binding.Sink}' exists",
-                        pipeline.FilePath, null, null));
+                        $"pipeline '{pipeline.Name}' calls sink('{binding.Sink}', '{binding.Output}') but no connection named '{binding.Sink}' exists",
+                        pipeline.FilePath, null,
+                        NearMissHint(connectionsByName.Keys, binding.Sink,
+                            $"declare it in connections.yml:\n  {binding.Sink}:\n    connector: <connector>")));
                     continue;
                 }
 
@@ -918,10 +943,22 @@ public static class DagCompiler
         // Entity names may carry characters no SQL identifier can,
         // so StagingName folds them -- many-to-one. Two datasets of one source that fold together would
         // share a staging table and the second load would overwrite the first, so the pair is refused.
+        // Case-insensitive: DuckDB folds an unquoted identifier's case, so two datasets differing only
+        // by case land in the same relation exactly as a folded-together pair does.
         var stagingCollisions = new List<PzError>();
+        // A non-ephemeral pipeline's CREATE OR REPLACE TABLE/VIEW targets `staging.<pipeline name>`
+        // verbatim (PipelineExecutor) -- the identical relation a SourceLoad named
+        // `src_<connection>__<entity>` stages to. Checked case-insensitively for the same reason as
+        // the dataset-vs-dataset fold above.
+        var pipelineStagingNames = project.Pipelines
+            .Where(p => p.Materialization != "ephemeral")
+            .ToDictionary(p => p.Name, p => p, StringComparer.OrdinalIgnoreCase);
+        // One map for the whole project, not one per connection: the relation name is
+        // `src_<connection>__<folded entity>`, so two connections reach one name by case alone, or by an
+        // underscore that sits on either side of the separator (`a` + `_b`, `a_` + `b`).
+        var stagedRelations = new Dictionary<string, (string Connection, string Dataset)>(StringComparer.OrdinalIgnoreCase);
         foreach (var source in project.Connections)
         {
-            var staged = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var dataset in source.Datasets)
             {
                 if (!referencedSources.Contains((source.Name, dataset.Name)))
@@ -930,14 +967,28 @@ public static class DagCompiler
                 }
 
                 var stagingName = StagingName.ForSourceLoad(source.Name, dataset.Name);
-                if (!staged.TryAdd(stagingName, dataset.Name))
+                if (!stagedRelations.TryAdd(stagingName, (source.Name, dataset.Name)))
                 {
+                    var first = stagedRelations[stagingName];
                     stagingCollisions.Add(new PzError(PzErrorCode.DuplicateName,
-                        $"source '{source.Name}': datasets '{staged[stagingName]}' and '{dataset.Name}' " +
+                        (first.Connection == source.Name
+                            ? $"source '{source.Name}': datasets '{first.Dataset}' and '{dataset.Name}' "
+                            : $"sources '{first.Connection}.{first.Dataset}' and '{source.Name}.{dataset.Name}' ") +
                         "cannot be told apart in staging.",
                         source.FilePath, null,
-                        "rename one of them -- pz folds every character outside [A-Za-z0-9_] to '_' when " +
-                        "it stages a read, so these two names collide"));
+                        $"rename one of them -- both stage as '{stagingName}': pz folds every character " +
+                        "outside [A-Za-z0-9_] to '_' when it stages a read, and DuckDB itself folds identifier case"));
+                }
+
+                if (pipelineStagingNames.TryGetValue(stagingName, out var collidingPipeline))
+                {
+                    stagingCollisions.Add(new PzError(PzErrorCode.PipelineNameCollidesWithStaging,
+                        $"pipeline '{collidingPipeline.Name}' and source '{source.Name}.{dataset.Name}' " +
+                        $"both stage to 'staging.{stagingName}' -- the pipeline's CREATE OR REPLACE and " +
+                        "the source's landing would target the same DuckDB relation.",
+                        collidingPipeline.FilePath, null,
+                        $"rename the pipeline -- '{source.Name}.{dataset.Name}' always stages as " +
+                        $"'{stagingName}'"));
                 }
 
                 var effectiveDataset = watermarkSynthesized.TryGetValue((source.Name, dataset.Name), out var synthesized)
@@ -1244,7 +1295,7 @@ public static class DagCompiler
         var ordered = TopologicalSortOrThrow(nodes);
         var compiled = new CompiledDag(ordered)
         {
-            Warnings = [.. project.Warnings, .. sinkWarnings], Connections = project.Connections,
+            Warnings = [.. project.Warnings, .. sourceWarnings, .. sinkWarnings], Connections = project.Connections,
         };
 
         // 12. Effectively-once advisory NOTICE -- non-fatal, same `notices`
@@ -1290,6 +1341,15 @@ public static class DagCompiler
         }
 
         return compiled;
+    }
+
+    /// <summary>The next step for an unresolved ref()/source()/sink() name: a one-edit-or-case-only
+    /// near miss against every name actually declared, or <paramref name="fallback"/> (how to declare
+    /// one) when nothing is close enough to guess.</summary>
+    private static string NearMissHint(IEnumerable<string> known, string requested, string fallback)
+    {
+        var nearMiss = ScriptKwargs.NearMiss(known, requested);
+        return nearMiss is null ? fallback : $"did you mean '{nearMiss}'?";
     }
 
     /// <summary>Deterministic order for an aggregated batch of errors from more than one independent
@@ -1432,6 +1492,9 @@ public static class DagCompiler
 
     private const string InsertFormHint =
         "bind the sink inline as the pipeline's leading statement: INSERT INTO {{ sink('<sink>', '<output>') }} <query>";
+
+    private const string PathTokenHint =
+        "use a coarse→fine, contiguous run of {yyyy} {MM} {dd} {HH} {mm} (e.g. {yyyy}/{MM}/{dd})";
 
     /// <summary>
     /// Recognizes the INSERT-form prefix at the very start of <paramref name="sql"/>: any run
@@ -1816,6 +1879,11 @@ public static class DagCompiler
         var cycleStart = path.IndexOf(current);
         var cycleNames = path.Skip(cycleStart).Select(id => byId[id].Name).Append(byId[current].Name);
         var message = $"dependency cycle: {string.Join(" -> ", cycleNames)}";
-        return new PzError(PzErrorCode.Cycle, message, null, null, null);
+        // `start` is always a Pipeline node: SourceLoad nodes depend on nothing (never stuck in
+        // `remainder`), and a Check/SinkWrite's single dependency is a pipeline, so a genuine
+        // cycle -- the loop `next` walks above -- can only run through ref() edges between pipelines.
+        var file = start.Definition is PipelineDef pipeline ? pipeline.FilePath : null;
+        return new PzError(PzErrorCode.Cycle, message, file, null,
+            "remove or redirect one ref() in the chain above so the dependency graph has no cycle");
     }
 }

@@ -418,6 +418,58 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   version 3 adds a PRIMARY KEY to `schema_version`, first reducing it to one
   row (the race left two rows at the same version); migrates automatically,
   same as version 2.
+- A pipeline's file stem and a connection's name are validated at load time
+  as legal unquoted identifiers (`[A-Za-z_][A-Za-z0-9_]*`) instead of being
+  interpolated raw into `staging.<name>`/`src_<connection>__<entity>` and
+  left to fail as a raw DuckDB parse error: `01_load.sql`, `daily-orders.sql`
+  and a connection named `my-warehouse` are now PZ0136 at load, each naming
+  the file, the offending name, and a concrete rename (`01_load` ->
+  `load_01`, `daily-orders` -> `daily_orders`). A connection name containing
+  `__` is refused for the same reason (PZ0136): it is the literal separator
+  `src_<connection>__<entity>` splices in, so e.g. `erp__mart` could collide
+  with connection `erp` reading a `mart__<entity>` dataset. Two duplicate
+  checks are now case-insensitive, matching DuckDB's own unquoted-identifier
+  folding: two pipeline files (PZ0110) or two datasets of one connection
+  (PZ0110) differing only by case now collide at compile time instead of
+  silently sharing one staging relation on Linux (where both files coexist on
+  disk). The dataset check also spans connections now: `ERP.orders` and
+  `erp.orders`, or `a._b` and `a_.b`, stage to one relation and are PZ0110
+  naming both. A pipeline named exactly like a referenced SourceLoad's staging
+  relation (`src_<connection>__<entity>`) is the new PZ0230: both would
+  target the same `staging.<name>` table. The MCP `pz_write_pipeline`/
+  `pz_remove_pipeline` tools enforce the identical rule before ever writing a
+  file, off the same shared predicate (`Pz.Core.Model.PzIdentifier`), so an
+  agent-authored name cannot pass authoring only to fail at the next load.
+  DuckDB's reserved words themselves are unaffected -- `staging.order` parses
+  fine schema-qualified, so nothing here refuses on reservedness, only shape.
+  **Migration:** a project with a pipeline file or connection name outside
+  `[A-Za-z_][A-Za-z0-9_]*`, a connection name containing `__`, or file/dataset
+  names that were previously distinguishable only by letter case must rename
+  the offending file/connection/dataset; every template and sample under
+  `templates/`/`samples/` already conforms and needs no change.
+- Template/compile errors now carry a next step instead of `next_step: null`
+  on the MCP surface (or a bare code on the CLI): a `source()`/`sink()` call
+  split across more than one line -- documented as a single-line-only call,
+  but previously left to fail as several raw Scriban parser messages -- is
+  now named as exactly that, with a one-line hint, instead of surfacing
+  "Expecting an expression for argument function calls instead of this
+  token." verbatim; every other unrecognized `{{ }}` expression (PZ0104)
+  carries a hint naming the five reachable functions/constants. An unknown
+  `env()` reference (PZ0103) now names the variable to set in its hint, not
+  just its message. An unknown `var()` reference suggests a near miss among
+  the project's declared `vars:`, or points at declaring one. `ref()`,
+  `source()`, and `sink()` calls naming an unknown pipeline or connection
+  (PZ0201) now suggest a one-edit-or-case near miss the same way
+  `schema_policy`/materialization typos already did; the sink form's message
+  said "no sink named" for what is actually an unknown *connection* -- it now
+  matches the source form's wording. A dependency cycle (PZ0202) now names a
+  file (one of the pipelines in the cycle) instead of `file: null`, plus a
+  hint. A malformed date-templated path (PZ0218) now carries a hint. Read-side
+  kwargs one edit from a pz-owned `source()` option (`sync`/`retry`/
+  `columns`/`partition_column`/`partitions`) now draw the same near-miss
+  warning the write side already had -- `SourceFunction`'s near-miss check
+  existed but was never wired in, so e.g. `source(..., synk: {...})` rode
+  through as a silent connector option.
 
 ## [0.6.1] - 2026-09-10
 

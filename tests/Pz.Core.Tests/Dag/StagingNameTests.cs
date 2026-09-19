@@ -59,4 +59,63 @@ public class StagingNameTests
         Assert.Contains("dbo.orders", error.Message, StringComparison.Ordinal);
         Assert.Contains("dbo_orders", error.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Two_datasets_that_fold_together_only_by_case_are_PZ0110()
+    {
+        var p = Project(
+            [Pipe("a", "INSERT INTO {{ sink('lake', 'out', strategy: 'replace', format: 'parquet') }} " +
+                       "select 1 as x from {{ source('erp', 'Orders') }} " +
+                       "union all select 2 from {{ source('erp', 'orders') }}")],
+            sources: [Src("erp", "Orders", "orders")],
+            sinks: [Sink()]);
+
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.DuplicateName);
+        Assert.Contains("Orders", error.Message, StringComparison.Ordinal);
+    }
+
+    // The relation name is `src_<connection>__<fold(entity)>`, so two DIFFERENT connections can reach
+    // one name too: by case alone, or by an underscore sitting on either side of the separator.
+    [Theory]
+    [InlineData("ERP", "orders", "erp", "orders")]
+    [InlineData("a", "_b", "a_", "b")]
+    public void Two_connections_that_stage_to_one_relation_are_PZ0110(
+        string firstConnection, string firstEntity, string secondConnection, string secondEntity)
+    {
+        var p = Project(
+            [Pipe("p", "INSERT INTO {{ sink('lake', 'out', strategy: 'replace', format: 'parquet') }} " +
+                       $"select 1 as x from {{{{ source('{firstConnection}', '{firstEntity}') }}}} " +
+                       $"union all select 2 from {{{{ source('{secondConnection}', '{secondEntity}') }}}}")],
+            sources: [Src(firstConnection, firstEntity), Src(secondConnection, secondEntity)],
+            sinks: [Sink()]);
+
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.DuplicateName);
+        Assert.Contains($"{firstConnection}.{firstEntity}", error.Message, StringComparison.Ordinal);
+        Assert.Contains($"{secondConnection}.{secondEntity}", error.Message, StringComparison.Ordinal);
+    }
+
+    // A pipeline's CREATE OR REPLACE targets `staging.<pipeline name>` verbatim -- the identical
+    // relation a SourceLoad literally named `src_<connection>__<entity>` stages to.
+    [Fact]
+    public void A_pipeline_named_like_a_SourceLoad_staging_relation_is_PZ0230()
+    {
+        var p = Project(
+            [
+                Pipe("src_erp__orders",
+                    "INSERT INTO {{ sink('lake', 'out', strategy: 'replace', format: 'parquet') }} " +
+                    "select 1 as x from {{ source('erp', 'orders') }}"),
+            ],
+            sources: [Src("erp", "orders")],
+            sinks: [Sink()]);
+
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.PipelineNameCollidesWithStaging);
+        Assert.Contains("src_erp__orders", error.Message, StringComparison.Ordinal);
+        Assert.Contains("erp.orders", error.Message, StringComparison.Ordinal);
+    }
 }
