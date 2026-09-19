@@ -377,9 +377,10 @@ internal static class McpCommand
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Mirrors RunCommand.Execute's own outer catch: an unexpected exception must never surface
-            // as a raw stack trace/unhandled fault to the MCP client.
-            return new McpRunOutcome(ExitCodes.Fatal, [new PzError(PzErrorCode.UnexpectedEngineFailure,
-                $"unexpected engine failure — {ex.Message}", null, null, null)]);
+            // as a raw stack trace/unhandled fault to the MCP client, and the same three diagnosable
+            // local I/O shapes get fingerprinted.
+            return new McpRunOutcome(ExitCodes.Fatal, [EngineFailureMapper.TryMap(ex) ?? new PzError(
+                PzErrorCode.UnexpectedEngineFailure, $"unexpected engine failure — {ex.Message}", null, null, null)]);
         }
     }
 
@@ -463,8 +464,10 @@ internal static class McpCommand
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            return new McpRunOutcome(ExitCodes.Fatal, [new PzError(PzErrorCode.UnexpectedEngineFailure,
-                $"unexpected engine failure — {ex.Message}", null, null, null)]);
+            // Mirrors RunAsync's own catch above: the same three diagnosable local I/O shapes get
+            // fingerprinted.
+            return new McpRunOutcome(ExitCodes.Fatal, [EngineFailureMapper.TryMap(ex) ?? new PzError(
+                PzErrorCode.UnexpectedEngineFailure, $"unexpected engine failure — {ex.Message}", null, null, null)]);
         }
     }
 

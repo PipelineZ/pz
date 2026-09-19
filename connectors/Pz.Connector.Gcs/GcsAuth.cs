@@ -1,6 +1,7 @@
 using Google.Apis.Auth.OAuth2;
 using Google.Cloud.Storage.V1;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 
 namespace Pz.Connector.Gcs;
 
@@ -108,7 +109,10 @@ internal static class GcsAuth
 
     private static GoogleCredential ServiceAccountCredential(ConnectorConfig config)
     {
-        if (config.GetString("key_file") is { Length: > 0 } keyFile)
+        // A relative key_file resolves against the CLI-injected base_dir (the localfiles/sqlite
+        // precedent) rather than the process working directory; absolute/~ values pass through.
+        if (ProjectRelativePath.Resolve(config.GetString("key_file"), config.GetString("base_dir"))
+            is { Length: > 0 } keyFile)
         {
             try
             {

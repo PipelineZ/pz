@@ -604,6 +604,26 @@ public static class PzErrorCode
     /// loopback/VPN-only endpoint) this check cannot see.</summary>
     public const string HttpStateTokenOverInsecureUrl = "PZ0530";
 
+    /// <summary>An unhandled exception escaping `pz run`/`pz retry`/`pz test`/`pz connector test` execution
+    /// was a <see cref="UnauthorizedAccessException"/> -- the OS refused a read or write under the project
+    /// directory or <c>.pz</c>. Distinct from <see cref="UnexpectedEngineFailure"/> (PZ0500): the cause is
+    /// named (permission, not "a pz defect"), so the next step is fixing filesystem permissions, not filing
+    /// a bug. Raised by <see cref="Pz.Cli.Commands.EngineFailureMapper"/>.</summary>
+    public const string EngineAccessDenied = "PZ0531";
+
+    /// <summary>An unhandled exception escaping the same execution paths as <see cref="EngineAccessDenied"/>
+    /// (PZ0531) was an <see cref="IOException"/> carrying the OS's disk-full HResult (POSIX ENOSPC, or
+    /// Windows ERROR_DISK_FULL/ERROR_HANDLE_DISK_FULL) -- checked by HResult, never by message text, so an
+    /// unrelated IOException stays the generic PZ0500 instead of a guessed diagnosis. Raised by
+    /// <see cref="Pz.Cli.Commands.EngineFailureMapper"/>.</summary>
+    public const string EngineDiskFull = "PZ0532";
+
+    /// <summary>An unhandled exception escaping the same execution paths as <see cref="EngineAccessDenied"/>
+    /// (PZ0531) was an <see cref="IOException"/> carrying Windows' ERROR_SHARING_VIOLATION HResult -- another
+    /// process has the file open without sharing it. Raised by
+    /// <see cref="Pz.Cli.Commands.EngineFailureMapper"/>.</summary>
+    public const string EngineFileLocked = "PZ0533";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

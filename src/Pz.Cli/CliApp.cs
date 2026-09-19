@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.CommandLine.Invocation;
 using Pz.Cli.Commands;
 using Pz.Core.Validation;
 
@@ -49,11 +50,22 @@ public static class CliApp
             // commit and the watermark that records it, leaves run_results.json at "running", and
             // orphans connector processes. A run owns its stop signals instead (StopSignals), and winds
             // down for as long as that takes.
-            return root.Parse(args).Invoke(new InvocationConfiguration
+            var parseResult = root.Parse(args);
+            var config = new InvocationConfiguration
             {
                 EnableDefaultExceptionHandler = false,
                 ProcessTerminationTimeout = null,
-            });
+            };
+
+            // A usage error -- an unrecognized command/option, a missing required argument -- is a
+            // config problem the caller can fix, not a node failure: System.CommandLine's own
+            // ParseErrorAction hardcodes exit 1, the code this contract reserves for "one or more nodes
+            // failed", so a CI script cannot tell "pz bogus" from a real failed run. Still invoked
+            // normally (prints the same message + help it always has); only the exit code changes.
+            // --help/--version resolve to their own action types and are unaffected.
+            var isUsageError = parseResult.Action is ParseErrorAction;
+            var exitCode = parseResult.Invoke(config);
+            return isUsageError ? ExitCodes.ConfigError : exitCode;
         }
         catch (Exception ex)
         {

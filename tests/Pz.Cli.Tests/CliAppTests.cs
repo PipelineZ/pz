@@ -22,6 +22,46 @@ public class CliAppTests
         Assert.Equal(ExitCodes.ConfigError, result);
     }
 
+    /// <summary>An unrecognized command is a usage error, not a node failure -- a CI caller must be able
+    /// to tell "pz bogus" apart from a run that actually executed nodes and failed some of them.
+    /// System.CommandLine's own ParseErrorAction hardcodes exit 1 for this; CliApp.Run overrides it.
+    /// Goes through the internal <see cref="CliApp.Run(RootCommand,string[],TextWriter,Func{string,string?})"/>
+    /// overload -- unlike a bare <c>ParseResult.Invoke()</c>, that is the actual path Program.cs runs.</summary>
+    [Fact]
+    public void Unrecognized_command_is_config_error_not_node_failures()
+    {
+        var exit = CliApp.Run(CliApp.Build(), ["bogus"], new StringWriter(), _ => null);
+        Assert.Equal(ExitCodes.ConfigError, exit);
+    }
+
+    [Fact]
+    public void Unrecognized_option_is_config_error_not_node_failures()
+    {
+        var exit = CliApp.Run(CliApp.Build(), ["restore", "--this-flag-does-not-exist"], new StringWriter(), _ => null);
+        Assert.Equal(ExitCodes.ConfigError, exit);
+    }
+
+    [Fact]
+    public void Missing_required_argument_is_config_error_not_node_failures()
+    {
+        var exit = CliApp.Run(CliApp.Build(), ["connector", "test"], new StringWriter(), _ => null);
+        Assert.Equal(ExitCodes.ConfigError, exit);
+    }
+
+    [Fact]
+    public void Help_still_exits_ok()
+    {
+        var exit = CliApp.Run(CliApp.Build(), ["--help"], new StringWriter(), _ => null);
+        Assert.Equal(ExitCodes.Ok, exit);
+    }
+
+    [Fact]
+    public void Version_still_exits_ok()
+    {
+        var exit = CliApp.Run(CliApp.Build(), ["--version"], new StringWriter(), _ => null);
+        Assert.Equal(ExitCodes.Ok, exit);
+    }
+
     /// <summary>An exception no verb anticipated is a fatal (exit 3) with a PZ code and a next step —
     /// never a raw stack trace with exit 1.</summary>
     [Fact]

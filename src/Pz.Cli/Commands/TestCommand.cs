@@ -142,9 +142,10 @@ internal static class TestCommand
         {
             // Mirrors RunCommand.Execute's outer catch: an unexpected exception must never surface
             // as a raw stack trace, and PzValidationException from --select parsing above is already
-            // handled locally.
-            Console.Error.WriteLine(
-                $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
+            // handled locally. The same three diagnosable local I/O shapes get fingerprinted.
+            Console.Error.WriteLine(EngineFailureMapper.TryMap(ex) is { } mapped
+                ? $"error {mapped}"
+                : $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
             return ExitCodes.Fatal;
         }
     }

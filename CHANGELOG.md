@@ -559,6 +559,34 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   accepting the option and silently doing nothing with it would be exactly
   the deployment-knob-ignored failure this project's error philosophy
   forbids.
+- `pz run`/`pz retry`/`pz test`/`pz connector test` (and the `pz mcp` tools
+  that share the same execute path) no longer forward a raw OS exception as
+  the generic PZ0500 for three diagnosable local I/O failures: permission
+  denied writing under the project directory or `.pz` (new PZ0531), the
+  filesystem out of space (new PZ0532), and, on Windows, a file another
+  process has open without sharing it (new PZ0533). Each names the path and
+  a next step; anything else still stays PZ0500 with the underlying
+  exception's own message. Classified by exception type/HResult only, never
+  by message text.
+- A usage error -- an unrecognized command or option (`pz bogus`), or a
+  missing required argument -- now exits 2 (the config-error code), not 1
+  (which the exit-code contract reserves for "one or more nodes failed"):
+  System.CommandLine's own parse-error handling hardcodes exit 1, so a CI
+  caller could not tell a mistyped invocation from a run that actually
+  executed nodes and failed some of them. `--help`/`--version` are
+  unaffected. `ExitCodes` now documents every code, including what a
+  cancelled run returns today (unchanged): fatal (3) unless a node had
+  already failed before the cancellation was observed, in which case it
+  stays node-failures (1).
+- sftp's `private_key_path` and gcs's `key_file` now anchor against the
+  project directory the same way `localfiles`' `root` and `sqlite`'s `path`
+  already do: a relative value joins `base_dir` (the CLI-injected project
+  directory) instead of wherever `pz` happened to be invoked from, so
+  `pz run --project ../x` no longer breaks a relative credential-file path.
+  An absolute path, a `~`-prefixed home-directory shorthand, or a
+  URL-shaped value passes through untouched. The shared resolver
+  (`Pz.Connectors.Toolkit.ProjectRelativePath`) is available to any other
+  first-party connector with the same shape of option.
 
 ## [0.6.1] - 2026-09-10
 

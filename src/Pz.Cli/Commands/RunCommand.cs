@@ -172,10 +172,13 @@ internal static class RunCommand
         {
             // An unexpected exception escaping the execute phase (disk full, permission
             // errors, an orchestrator-level bug that still manages to throw, etc.) must never surface
-            // as a raw stack trace to the user — mint a fatal PZ0500 instead. PzValidationException
-            // from --select parsing below is handled locally within ExecuteRun and never reaches here.
-            Console.Error.WriteLine(
-                $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
+            // as a raw stack trace to the user. EngineFailureMapper fingerprints the three diagnosable
+            // local I/O shapes (PZ0531/PZ0532/PZ0533); anything else stays the generic PZ0500.
+            // PzValidationException from --select parsing below is handled locally within ExecuteRun and
+            // never reaches here.
+            Console.Error.WriteLine(EngineFailureMapper.TryMap(ex) is { } mapped
+                ? $"error {mapped}"
+                : $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
             return ExitCodes.Fatal;
         }
     }
