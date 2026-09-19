@@ -150,19 +150,24 @@ impl HostLogPeer {
         self.state.lock().unwrap().attached = None;
     }
 
-    /// Best-effort, in order: sent immediately when a channel is attached and has room, otherwise held
-    /// (bounded, newest wins) until the next [`Self::attach`] flushes it ahead of anything newer.
+    /// Best-effort, in order: sent when a channel is attached and has room, otherwise held (bounded,
+    /// newest wins). Whatever is already held goes first, here as well as on [`Self::attach`]: the
+    /// host attaches once per process, so an event that overflowed a full channel has no later attach
+    /// to wait for, and sending a newer event past it would reorder the stream.
     pub(crate) fn queue_log(&self, log: pb::LogEvent) {
         let mut state = self.state.lock().unwrap();
-        let rejected = match state.attached.as_ref() {
-            Some(tx) => tx.try_send(Ok(up(log.clone()))).is_err(),
-            None => true,
-        };
-        if rejected {
-            if state.backlog.len() == LOG_BACKLOG_CAPACITY {
-                state.backlog.pop_front();
+        let PeerState { attached, backlog } = &mut *state;
+        backlog.push_back(log);
+        if let Some(tx) = attached.as_ref() {
+            while let Some(next) = backlog.pop_front() {
+                if tx.try_send(Ok(up(next.clone()))).is_err() {
+                    backlog.push_front(next);
+                    break;
+                }
             }
-            state.backlog.push_back(log);
+        }
+        if backlog.len() > LOG_BACKLOG_CAPACITY {
+            backlog.pop_front();
         }
     }
 }
@@ -343,6 +348,30 @@ mod tests {
         peer.queue_log(log_event("live"));
 
         assert_eq!(extract(rx.recv().await.unwrap().unwrap()).message, "live");
+    }
+
+    // The host attaches once per process, so an event that overflowed the channel cannot wait for
+    // another attach: it has to go out as soon as there is room again, ahead of anything newer.
+    #[tokio::test]
+    async fn a_burst_larger_than_the_channel_is_delivered_in_order_once_the_host_catches_up() {
+        let peer = HostLogPeer::new();
+        let (tx, mut rx) = mpsc::channel(2);
+        peer.attach(tx);
+
+        for i in 0..4 {
+            peer.queue_log(log_event(&i.to_string()));
+        }
+        let mut received = vec![
+            extract(rx.recv().await.unwrap().unwrap()).message,
+            extract(rx.recv().await.unwrap().unwrap()).message,
+        ];
+        peer.queue_log(log_event("4"));
+        drop(peer);
+        while let Some(up) = rx.recv().await {
+            received.push(extract(up.unwrap()).message);
+        }
+
+        assert_eq!(received, ["0", "1", "2", "3"]);
     }
 
     #[test]
