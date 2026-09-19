@@ -25,7 +25,7 @@ pub(crate) struct TicketRegistry {
 impl TicketRegistry {
     /// 16 cryptographically random bytes, not yet registered anywhere. Split out from
     /// [`insert`](Self::insert) so a caller that needs the ticket value embedded in the entry it is
-    /// about to register (`SessionState` records its own ticket so `commit`/`abort` can revoke it) can
+    /// about to register (`SessionState` records its own ticket so an abort can revoke it) can
     /// generate it first and build that entry around it.
     pub(crate) fn generate() -> [u8; TICKET_LENGTH] {
         let mut ticket = [0u8; TICKET_LENGTH];
@@ -51,13 +51,15 @@ impl TicketRegistry {
         self.entries.lock().unwrap().remove(ticket)
     }
 
-    /// Removes a ticket whether or not it was ever presented -- the counterpart to a session finishing
-    /// (committed or aborted) through the control plane before its data connection ever burned the
-    /// ticket itself. Without this, a session that finishes control-plane-first (or whose data
-    /// connection never opens at all, e.g. the premature-commit case) leaves its ticket live forever:
-    /// a later connection presenting it would resolve the very `SessionState` that was already finalized
-    /// and taken apart. A no-op when the ticket was already burned (the common case, since the data
-    /// connection usually opens and finishes well before commit/abort runs).
+    /// Removes a ticket whether or not it was ever presented -- the counterpart to a session being
+    /// aborted through the control plane before its data connection burned the ticket itself. Without
+    /// this an aborted session whose data connection never opened leaves its ticket live forever: a
+    /// later connection presenting it would resolve the very `SessionState` that was already taken
+    /// apart. A no-op when the ticket was already burned.
+    ///
+    /// Only an abort may do this. A commit has to leave the ticket alone: the data connection it is
+    /// waiting for may not have been accepted yet, and turning that connection away leaves the commit
+    /// waiting for a drain nothing can signal any more.
     pub(crate) fn revoke(&self, ticket: &[u8; TICKET_LENGTH]) {
         self.entries.lock().unwrap().remove(ticket);
     }
@@ -109,9 +111,9 @@ mod tests {
         assert!(registry.burn(&[1, 2, 3]).is_none());
     }
 
-    /// The mechanism `commit_write`/`abort_write` use to close the "session finished, ticket never
-    /// presented" window: a ticket revoked before its data connection ever arrived must never resolve
-    /// afterward, exactly as if it had been burned.
+    /// The mechanism `abort_write` uses to close the "session aborted, ticket never presented" window:
+    /// a ticket revoked before its data connection ever arrived must never resolve afterward, exactly
+    /// as if it had been burned.
     #[test]
     fn a_revoked_ticket_is_refused_even_if_never_burned() {
         let registry = TicketRegistry::default();

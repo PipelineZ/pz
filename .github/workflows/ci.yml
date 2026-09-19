@@ -51,6 +51,16 @@ jobs:
         if: runner.os == 'Windows'
         env:
           PZ_TESTS_OFFLINE: '1'
+      # --blame-hang names the hung test in the log, but the thread stacks that say WHY it hung are in
+      # the dump and sequence files it writes under TestResults/, which die with the runner unless
+      # they are kept. A rare hang is only diagnosable from the one run that showed it.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: hang-blame-${{ matrix.os }}
+          path: '**/TestResults/**'
+          if-no-files-found: ignore
+          retention-days: 7
 
   # The packaging end-to-end proof (pack -> local-feed tool install -> offline `pz init` -> offline
   # `pz run`) runs here rather than only locally: it is the one gate on the install path a
@@ -159,3 +169,11 @@ jobs:
       - run: cargo audit
         working-directory: rust
       - run: scripts/rust-conformance.sh
+      # See build-test's identical step: what --blame-hang wrote is lost with the runner otherwise.
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: hang-blame-rust
+          path: '**/TestResults/**'
+          if-no-files-found: ignore
+          retention-days: 7
