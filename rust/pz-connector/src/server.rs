@@ -20,10 +20,12 @@ use tonic::transport::Server;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::Span;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
+use tracing_subscriber::layer::SubscriberExt;
 
 use crate::config::Config;
 use crate::data_plane;
 use crate::error::{to_error_detail, to_status, PzError};
+use crate::hostlog;
 use crate::pb;
 use crate::pb::pz_connector_server::{PzConnector, PzConnectorServer};
 use crate::telemetry;
@@ -356,6 +358,9 @@ struct PzConnectorService<C: SinkConnector> {
     /// The configured connection's instance id, tagged onto every control-plane span. Shared with the
     /// tower layer that makes those spans, which runs before any handler and so cannot read `config`.
     instance: Arc<StdMutex<Option<String>>>,
+    /// The connector-process side of the reverse channel's log half -- see `hostlog`'s own doc.
+    /// `HostChannel` attaches/detaches it; a `tracing` layer this process installed queues into it.
+    log_peer: Arc<hostlog::HostLogPeer>,
 }
 
 impl<C: SinkConnector> PzConnectorService<C> {
@@ -707,7 +712,15 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
     ) -> Result<Response<Self::HostChannelStream>, Status> {
         let mut inbound = request.into_inner();
         let mut shutdown_rx = self.shutdown_rx.clone();
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<pb::HostChannelUp, Status>>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<pb::HostChannelUp, Status>>(
+            hostlog::HOST_CHANNEL_BUFFER,
+        );
+        // Attached before the pump task is even spawned: a log queued between this call starting and
+        // the task's first poll must not be able to slip past the backlog flush -- `attach` and
+        // `queue_log` share one lock, so there is no window where a log looks "queued after attach"
+        // but never gets flushed the outbound sender that now exists.
+        self.log_peer.attach(tx.clone());
+        let log_peer = self.log_peer.clone();
         tokio::spawn(async move {
             // GateGrant is the only HostChannelDown case; this SDK does not yet expose GateAcquire to
             // connector authors (no host service is consumed in v1), so there is nothing to act on --
@@ -731,12 +744,50 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
                     }
                 }
             }
+            // However this call ends (host closed it, deadline, this process shutting down): later
+            // logs fall back to the backlog until the next HostChannel call attaches, the same as
+            // before the first one ever arrived.
+            log_peer.detach();
             drop(tx);
         });
         Ok(Response::new(Box::pin(
             tokio_stream::wrappers::ReceiverStream::new(rx),
         )))
     }
+}
+
+/// Installs a `tracing` global-default subscriber composing [`hostlog::build_deferred_layer`] (so
+/// this process's own logging always reaches the host, see `hostlog`'s doc) and
+/// [`telemetry::build_deferred_layer`] (so OTel export keeps working exactly as it does today for a
+/// connector with no subscriber of its own) -- attempted once, unconditionally, before anything else
+/// this process does.
+///
+/// A connector author who installed their own subscriber before calling [`serve_sink`] (composing
+/// [`crate::layer`] and/or [`hostlog::log_layer`], the same shape `--own-subscriber` in
+/// `examples/memory_sink.rs` takes) has already claimed the process's one global-default slot by the
+/// time this runs, so the attempt below simply loses the race and is a no-op: their own composed
+/// layers keep working exactly as before this function existed. Only on a WIN does this register its
+/// own installers -- see `telemetry::build_deferred_layer`'s doc for why registering unconditionally,
+/// win or lose, would be wrong.
+fn install_base_subscriber(log_peer: &Arc<hostlog::HostLogPeer>) {
+    let (otel_layer, otel_installer) = telemetry::build_deferred_layer();
+    let (log_layer, log_installer) = hostlog::build_deferred_layer();
+    if tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(otel_layer)
+            .with(log_layer),
+    )
+    .is_ok()
+    {
+        telemetry::register_author_layer_if_empty(otel_installer);
+        hostlog::register_if_empty(log_installer);
+    }
+
+    // Resolves whichever installer ended up registered above (this call's own, having just won) or
+    // registered earlier by a connector author's explicit `hostlog::log_layer()` composition -- the
+    // peer itself exists only from this point on, so nothing could have filled either OnceLock before
+    // now regardless of which one is live.
+    hostlog::install(log_peer.clone());
 }
 
 /// What `Handshake` answers, and independently what `--pz-manifest` prints (see [`render_manifest`]):
@@ -1173,6 +1224,13 @@ async fn serve_sink_inner<C: SinkConnector>(
         HostCommand::Serve(path) => path,
     };
 
+    // Always attempted, before either socket binds: this is what lets a connector's own logging
+    // (`tracing::info!`/`warn!`/`error!`) reach the host as `connector_log` run events even when no
+    // OTel endpoint is ever configured for this run, and even for logging emitted before `Handshake`
+    // (e.g. from inside `Configure`). See `hostlog`'s own doc for the composition rules this respects.
+    let log_peer = Arc::new(hostlog::HostLogPeer::new());
+    install_base_subscriber(&log_peer);
+
     if let Some(parent) = socket_path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| {
             anyhow::anyhow!(
@@ -1219,6 +1277,7 @@ async fn serve_sink_inner<C: SinkConnector>(
         shutdown_tx: shutdown_tx.clone(),
         shutdown_rx: shutdown_rx.clone(),
         instance: instance.clone(),
+        log_peer: log_peer.clone(),
     };
 
     let data_plane_task =
@@ -1816,6 +1875,7 @@ mod tests {
             shutdown_tx,
             shutdown_rx,
             instance: Arc::new(StdMutex::new(None)),
+            log_peer: Arc::new(hostlog::HostLogPeer::new()),
         }
     }
 
