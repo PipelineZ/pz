@@ -47,6 +47,18 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
                         "requires a non-null key on every row", isTransient: false);
                 }
 
+                if (keyValue is "." or "..")
+                {
+                    // new Uri(base, relative) removes dot segments per RFC 3986 5.2.4 before the
+                    // request is ever sent: a key of '.' collapses onto the parent path and '..'
+                    // onto the grandparent, so the PUT/PATCH lands on a resource the author never
+                    // named instead of failing loudly.
+                    throw new PzConnectorException(
+                        $"{Label}: merge key '{spec.Keys[0]}' is '{keyValue}' for a row -- this value " +
+                        "collapses the request path when substituted into 'path' and cannot be used " +
+                        "as a keyed delivery target", isTransient: false);
+                }
+
                 var uri = new Uri(connection.BaseUrl,
                     config.Path.TrimStart('/').Replace("{key}", Uri.EscapeDataString(keyValue), StringComparison.Ordinal));
                 _rowsDelivered += await SendAsync(config.Method, uri, line, "application/json", 1, ct)
@@ -128,8 +140,9 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
             Content = new StringContent(body, Encoding.UTF8, contentType),
         };
         connection.Authenticator?.Apply(request);
-        // Never echo request/response bodies or query strings (auth may live there): error
-        // messages carry the path-only URI.
+        // Never echo the REQUEST body, headers, or query string (auth may live there): error
+        // messages carry the path-only URI. The response body is the endpoint's own diagnostic, so a
+        // bounded snippet of it is surfaced below -- masked first, because it can echo the request URL.
         var safeUri = (request.RequestUri ?? uri).GetLeftPart(UriPartial.Path);
 
         HttpResponseMessage response;
@@ -165,10 +178,26 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
                     isTransient: true, retryAfter);
             }
 
+            var responseBody = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             throw new PzConnectorException(
-                $"{Label}: HTTP {status} from {safeUri} (check the endpoint path and auth config)",
+                $"{Label}: HTTP {status} from {safeUri}: {connection.RedactSecretParams(Snippet(responseBody))} ({Hint(status)})",
                 isTransient: false);
         }
+    }
+
+    /// <summary>A hint that fits the status instead of always naming both path and auth: a 404
+    /// almost never means the auth config is wrong, and a 401/403 almost never means the path is.</summary>
+    private static string Hint(int status) => status switch
+    {
+        401 or 403 => "check the connection's auth config",
+        404 => "check the output path",
+        _ => "check the request body against the endpoint's expectations",
+    };
+
+    private static string Snippet(string body)
+    {
+        var flat = body.ReplaceLineEndings(" ");
+        return flat.Length <= 160 ? flat : flat[..160] + "…";
     }
 
     public ValueTask<WriteResult> CommitAsync(CancellationToken ct)

@@ -243,7 +243,11 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
             // seeding `uri`), so max_pages bounds each attempt's fetch count, not the partition's
             // lifetime total across retries.
             var stopsAfterThisPage = (records.Count == 0 && (stopsOnEmptyPage || next is null))
-                || (config.MaxPages is { } cap && page >= cap);
+                || (config.MaxPages is { } cap && page >= cap)
+                // Opt-in: some APIs clamp an out-of-range page number to the last real page instead
+                // of serving an empty array, so the feed never actually ends on its own -- a page
+                // whose row count falls short of the requested size is the only signal left.
+                || (config.StopOnShortPage && config.PageSize is { } size && records.Count < size);
 
             var boundaryEnqueued = false;
             if (!stopsAfterThisPage && next is not null && next != uri)
@@ -655,6 +659,18 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
             {
                 response = await client.SendAsync(request, ct).ConfigureAwait(false);
             }
+            catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.ConfigurationLimitExceeded)
+            {
+                // HttpClient buffers the whole response before SendAsync returns (default
+                // HttpCompletionOption.ResponseContentRead) and refuses to grow the buffer past
+                // MaxResponseContentBufferSize -- the runtime's own message never mentions the pz
+                // option that set the limit, so callers see a bare "configured maximum buffer size"
+                // with nothing to act on.
+                throw new PzConnectorException(
+                    $"{Label}: response from {Redact(sendUri)} exceeds 'max_response_mb' " +
+                    $"({connection.MaxResponseBytes / (1024 * 1024)} MiB)", isTransient: false,
+                    innerException: ex);
+            }
             catch (HttpRequestException ex)
             {
                 throw new PzConnectorException($"{Label}: request to {Redact(sendUri)} failed: {ex.Message}",
@@ -738,10 +754,11 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
 
     private static string StripUrlQueries(string text) =>
         UrlWithQuery.Replace(text, m =>
-        {
-            var uri = new Uri(m.Value);
-            return RedactQuery(uri);
-        });
+            // The match is regex-shaped, not RFC 3986-valid -- an upstream API's own error body can
+            // embed "scheme://...?..." text (an example, a malformed hint) that the Uri constructor
+            // refuses (e.g. an out-of-range port). This runs inside error-message formatting itself,
+            // so it must never throw; a match Uri can't parse is masked wholesale instead.
+            Uri.TryCreate(m.Value, UriKind.Absolute, out var uri) ? RedactQuery(uri) : "<redacted>");
 
     /// <summary>Redacts a URI before it is surfaced in an exception message. For a sync-mode
     /// dataset the query IS the sync token — its param name is server-defined/opaque (e.g. Graph's
@@ -759,15 +776,5 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     /// <summary>Masks any authenticator secret-query-param value found in arbitrary text — the
     /// same rule applied to request URIs, reused here for 4xx response body snippets (a server
     /// echoing the request URL, e.g. in a 403 body, must not leak an api_key-in-query secret).</summary>
-    private string Redact(string text)
-    {
-        foreach (var param in connection.Authenticator?.SecretQueryParams ?? [])
-        {
-            text = System.Text.RegularExpressions.Regex.Replace(
-                text, $"(?<=[?&]){System.Text.RegularExpressions.Regex.Escape(param)}=[^&]*",
-                $"{param}=***");
-        }
-
-        return text;
-    }
+    private string Redact(string text) => connection.RedactSecretParams(text);
 }

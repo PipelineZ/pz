@@ -35,12 +35,17 @@ public static class ContractProjector
     public static object?[] ProjectRow(JsonNode? record, IReadOnlyDictionary<string, string> columns, string context)
     {
         ArgumentNullException.ThrowIfNull(columns);
-        var row = new object?[columns.Count];
         if (record is not JsonObject obj)
         {
-            return row;
+            // A record that isn't a JSON object means 'items' resolved one level off (e.g. an
+            // array of scalars/arrays rather than an array of row objects): projecting it would
+            // silently land a row of all NULLs -- a green node that read nothing real, and whose
+            // all-NULL cursor column means its watermark never advances.
+            throw new PzConnectorException($"{context}: record is not an object (check 'items')",
+                isTransient: false);
         }
 
+        var row = new object?[columns.Count];
         var i = 0;
         foreach (var (name, typeName) in columns)
         {

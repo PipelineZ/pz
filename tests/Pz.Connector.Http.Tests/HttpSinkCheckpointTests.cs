@@ -93,6 +93,30 @@ public sealed class HttpSinkCheckpointTests : IAsyncLifetime
         Assert.Contains("exactly one key", ex.Message);
     }
 
+    [Theory]
+    [InlineData(".")]
+    [InlineData("..")]
+    public async Task Merge_key_dot_segments_are_refused(string keyValue)
+    {
+        // new Uri(base, relative) removes dot segments per RFC 3986 5.2.4: a key of "." collapses
+        // the request onto the parent path, and ".." onto the grandparent -- the merge PUT/PATCH
+        // lands on a resource the author never named.
+        var spec = new OutputSpec("api", "out", "merge", "fail_on_change",
+            new Dictionary<string, object?> { ["path"] = "/items/{key}" }) { Keys = ["name"] };
+        await using var session = await OpenSessionAsync(spec);
+
+        var builder = new ArrowBatchBuilder(TestSchema);
+        builder.AppendRow([1L, keyValue]);
+        using var batch = builder.Flush()!;
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await session.WriteBatchAsync(batch, CancellationToken.None));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("merge key", ex.Message);
+        Assert.Empty(_server.Requests);
+    }
+
     [Fact]
     public async Task Acknowledgment_counts_only_confirmed_requests()
     {

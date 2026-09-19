@@ -494,4 +494,74 @@ public class HttpPartitionTests
         Assert.DoesNotContain("TOPSECRET", ex.Message);
         Assert.Contains("api_key=***", ex.Message);
     }
+
+    [Fact]
+    public async Task Response_over_max_response_mb_is_a_permanent_error_naming_the_option()
+    {
+        await using var server = new StubHttpServer();
+        var big = new string('x', 2 * 1024 * 1024); // 2 MiB of filler, over a 1 MiB cap
+        server.Map("/items", _ => new StubResponse(200, $$"""[{"id":"{{big}}"}]"""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadAllAsync(server,
+            new() { ["path"] = "/items" },
+            new() { ["max_response_mb"] = 1L }));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("max_response_mb", ex.Message);
+    }
+
+    [Fact]
+    public async Task Stop_on_short_page_ends_the_crawl_once_a_page_falls_short_of_size()
+    {
+        // An API that CLAMPS out-of-range page numbers (rather than serving an empty array) keeps
+        // returning its last real page forever: without an opt-in signal the page strategy never
+        // ends and the crawl runs to the unbounded-page ceiling.
+        await using var server = new StubHttpServer();
+        server.Map("/items", req =>
+        {
+            var q = req.Url.Query;
+            var page = q.Contains("page=") ? int.Parse(q.Split("page=")[1].Split('&')[0]) : 1;
+            return page switch
+            {
+                1 => new StubResponse(200, """[{"id":1},{"id":2}]"""),
+                2 => new StubResponse(200, """[{"id":3},{"id":4}]"""),
+                _ => new StubResponse(200, """[{"id":5}]"""), // short of size=2; clamped forever after
+            };
+        });
+
+        var (rows, _, srv) = await ReadAllAsync(server, new()
+        {
+            ["path"] = "/items",
+            ["pagination"] = new Dictionary<string, object?>
+            {
+                ["strategy"] = "page", ["size_param"] = "per_page", ["size"] = 2L,
+                ["stop_on_short_page"] = true,
+            },
+        });
+
+        Assert.Equal(5, rows);
+        Assert.Equal(3, srv.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Without_stop_on_short_page_a_short_page_does_not_end_the_crawl()
+    {
+        // Default behaviour is unchanged: a page short of the declared size is not, by itself, an
+        // end-of-crawl signal unless the author opts in.
+        await using var server = new StubHttpServer();
+        server.Map("/items", _ => new StubResponse(200, """[{"id":1}]""")); // always short of size=2
+
+        var (rows, _, srv) = await ReadAllAsync(server, new()
+        {
+            ["path"] = "/items",
+            ["pagination"] = new Dictionary<string, object?>
+            {
+                ["strategy"] = "page", ["size_param"] = "per_page", ["size"] = 2L,
+            },
+            ["max_pages"] = 3L,
+        });
+
+        Assert.Equal(3, rows);
+        Assert.Equal(3, srv.Requests.Count);
+    }
 }
