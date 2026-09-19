@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Parquet;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
@@ -82,7 +83,8 @@ internal sealed class ParquetSource(string baseDir) : ISource
 
     /// <summary>The entity names the file, and <c>path:</c> overrides that when the layout does not
     /// match the name. A source needs the extension its format implies; the sink writes a directory, so
-    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely.</summary>
+    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely — a RELATIVE one
+    /// that escapes <c>root:</c> (a <c>..</c> segment) is refused (PZ0365).</summary>
     private string ResolvePath(DatasetSpec spec)
     {
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", $"dataset '{spec.Dataset}'");
@@ -90,7 +92,9 @@ internal sealed class ParquetSource(string baseDir) : ISource
             ? p
             : $"{spec.Dataset}.{format.Extension}";
 
-        return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
+        return Path.IsPathRooted(relative)
+            ? relative
+            : RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'");
     }
 
     private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");

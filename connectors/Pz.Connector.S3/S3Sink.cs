@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.S3;
@@ -20,9 +21,20 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
             : rootBucket ?? throw new PzConnectorException(
                 $"output '{spec.Output}': s3 needs a 'root' on the connection or a 'bucket' option",
                 isTransient: false);
+        var pathOption = (spec.Options.TryGetValue("path", out var p) ? p?.ToString() : null)?.TrimEnd('/') ?? "";
+        if (pathOption.Length > 0)
+        {
+            // Object-store keys are opaque strings -- a bucket never actually "collapses" a `..`
+            // segment the way a filesystem does -- but `..` can never be a legitimate authored key
+            // component either (pz's own entity-name grammar already forbids one everywhere else --
+            // PZ0344), so this refuses the same mistake here regardless of how any downstream URL
+            // layer might, or might not, normalize it.
+            RootContainment.RefuseParentSegment(pathOption, spec.Sink, $"output '{spec.Output}'");
+        }
+
         var prefix = S3Sql.Join(
             rootBucket is null || (spec.Options.ContainsKey("bucket") && rootBucket != bucket) ? "" : rootPrefix,
-            (spec.Options.TryGetValue("path", out var p) ? p?.ToString() : null)?.TrimEnd('/') ?? "");
+            pathOption);
         var context = $"output '{spec.Output}'";
         var format = FileFormatCatalog.Resolve(spec.Options, null, "s3", context);
         FileFormatCatalog.EnsureWritable(format, "s3", context);

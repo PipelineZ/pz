@@ -63,6 +63,23 @@ public sealed class S3SourceSqlGenTests
         Assert.Equal("read_parquet('s3://other/in/x.parquet')", scan!.SqlFragment);
     }
 
+    /// <summary>An s3 key is an opaque slash-delimited string, not a filesystem path -- a bucket never
+    /// "collapses" a `..` segment the way a directory does -- but `..` can never be a legitimate
+    /// authored key component either (pz's own entity-name grammar already forbids one everywhere else
+    /// -- PZ0344), so a `path:` option carrying one is refused regardless of how any downstream URL
+    /// layer might, or might not, normalize it. See CONN-12.</summary>
+    [Fact]
+    public void Path_option_with_a_parent_segment_is_refused()
+    {
+        var ex = Assert.Throws<PzConnectorException>(
+            () => Source().TryGetNativeScan(Ds(path: "in/../../escape.parquet"), out _));
+
+        Assert.False(ex.IsTransient);
+        Assert.StartsWith("PZ0365: connection 'lake': dataset 'orders' resolves outside 'root:'", ex.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("escape", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void No_root_and_no_bucket_is_the_named_error()
     {

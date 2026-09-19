@@ -6,6 +6,7 @@ using Apache.Arrow.Types;
 using Parquet;
 using Parquet.Schema;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
@@ -95,14 +96,17 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
     public ValueTask DisposeAsync() => default;
 
     /// <summary>The entity names the directory this write lands in, and <c>path:</c> overrides that.
-    /// An absolute <c>path:</c> ignores the connection's location entirely.</summary>
+    /// An absolute <c>path:</c> ignores the connection's location entirely — a RELATIVE one that
+    /// escapes <c>root:</c> (a <c>..</c> segment) is refused (PZ0365).</summary>
     private string ResolveOutputDir(OutputSpec spec)
     {
         var relative = spec.Options.TryGetValue("path", out var value) && value?.ToString() is { Length: > 0 } p
             ? p
             : spec.Output;
 
-        return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
+        return Path.IsPathRooted(relative)
+            ? relative
+            : RootContainment.ResolveWithinRoot(baseDir, relative, spec.Sink, $"output '{spec.Output}'");
     }
 
     internal static FileFormat ResolveFormat(OutputSpec spec) =>

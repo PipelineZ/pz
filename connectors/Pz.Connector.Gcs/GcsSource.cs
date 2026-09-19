@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Gcs;
@@ -83,6 +84,16 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
         var path = spec.Options.TryGetValue("path", out var p) && p?.ToString() is { Length: > 0 } given
             ? given.Trim('/')
             : $"{spec.Dataset}.{GetFormat(spec)}";
+        if (spec.Options.ContainsKey("path"))
+        {
+            // Object-store keys are opaque strings -- a bucket never actually "collapses" a `..`
+            // segment the way a filesystem does -- but `..` can never be a legitimate authored key
+            // component either (pz's own entity-name grammar already forbids one everywhere else --
+            // PZ0344), so this refuses the same mistake here regardless of how any downstream URL
+            // layer might, or might not, normalize it.
+            RootContainment.RefuseParentSegment(path, spec.Source, $"dataset '{spec.Dataset}'");
+        }
+
         var prefix = rootBucket is null || (spec.Options.ContainsKey("bucket") && rootBucket != bucket)
             ? ""
             : rootPrefix;

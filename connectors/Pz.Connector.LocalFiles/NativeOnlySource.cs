@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
@@ -68,14 +69,17 @@ internal sealed class NativeOnlySource(string baseDir) : ISource
 
     /// <summary>The entity names the file, and <c>path:</c> overrides that when the layout does not
     /// match the name. A source needs the extension its format implies; the sink writes a directory, so
-    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely.</summary>
+    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely — a RELATIVE one
+    /// that escapes <c>root:</c> (a <c>..</c> segment) is refused (PZ0365).</summary>
     private string ResolvePath(DatasetSpec spec, FileFormat format)
     {
         var relative = spec.Options.TryGetValue("path", out var value) && value?.ToString() is { Length: > 0 } p
             ? p
             : $"{spec.Dataset}.{format.Extension}";
 
-        return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
+        return Path.IsPathRooted(relative)
+            ? relative
+            : RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'");
     }
 
     /// <summary>Same lookup pair as <see cref="CsvSource"/>'s: <see cref="ExtractColumns"/> tells

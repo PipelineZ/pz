@@ -227,6 +227,25 @@ public sealed class S3SinkTests
             ex.Message);
     }
 
+    /// <summary>An s3 key is an opaque slash-delimited string, not a filesystem path -- a bucket never
+    /// "collapses" a `..` segment the way a directory does -- but `..` can never be a legitimate
+    /// authored key component either (pz's own entity-name grammar already forbids one everywhere else
+    /// -- PZ0344), so a `path:` option carrying one is refused regardless of how any downstream URL
+    /// layer might, or might not, normalize it. See CONN-12.</summary>
+    [Fact]
+    public void Path_option_with_a_parent_segment_is_refused()
+    {
+        var sink = new S3Sink(Config());
+
+        var ex = Assert.Throws<PzConnectorException>(() =>
+            sink.TryGetNativeCopy(Spec(path: "raw/../../escape"), out _));
+
+        Assert.False(ex.IsTransient);
+        Assert.StartsWith("PZ0365: connection 'lake': output 'data' resolves outside 'root:'", ex.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("escape", ex.Message, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Avro_write_is_the_read_only_refusal()
     {

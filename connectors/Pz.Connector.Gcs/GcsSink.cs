@@ -4,6 +4,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Google.Cloud.Storage.V1;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Gcs;
@@ -178,9 +179,20 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
             : rootBucket ?? throw new PzConnectorException(
                 $"output '{spec.Output}': gcs needs a 'root' on the connection or a 'bucket' option",
                 isTransient: false);
+        var pathOption = (spec.Options.TryGetValue("path", out var p) ? p?.ToString() : null)?.Trim('/') ?? "";
+        if (pathOption.Length > 0)
+        {
+            // Object-store keys are opaque strings -- a bucket never actually "collapses" a `..`
+            // segment the way a filesystem does -- but `..` can never be a legitimate authored key
+            // component either (pz's own entity-name grammar already forbids one everywhere else --
+            // PZ0344), so this refuses the same mistake here regardless of how any downstream URL
+            // layer might, or might not, normalize it.
+            RootContainment.RefuseParentSegment(pathOption, spec.Sink, $"output '{spec.Output}'");
+        }
+
         var prefix = GcsSql.Join(
             rootBucket is null || (spec.Options.ContainsKey("bucket") && rootBucket != bucket) ? "" : rootPrefix,
-            (spec.Options.TryGetValue("path", out var p) ? p?.ToString() : null)?.Trim('/') ?? "");
+            pathOption);
         return (bucket, prefix);
     }
 }

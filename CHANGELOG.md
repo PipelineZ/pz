@@ -57,6 +57,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - The lock's `rid` is compared with the host's: a `.pz/packages` restored on
   one platform and run on another is PZ0321 naming both, instead of the
   "Exec format error" spawn failure it used to reach.
+- **A relative `path:`/entity-derived location that escapes a connection's `root:` is now refused
+  (PZ0365)** instead of silently reading or writing outside it. `localfiles` checks this with real
+  filesystem containment (`Path.GetFullPath`, so a `..` segment lands where it actually lands,
+  compared against the root with a trailing separator to avoid mistaking a same-prefix sibling
+  directory for "inside"); an absolute `path:` is unaffected, unchanged from before. `s3` and `gcs`
+  refuse a `..` segment in a `path:` option the same way, since their keys are opaque
+  slash-delimited strings with no real filesystem resolution to check containment against, and `..`
+  can never be a legitimate authored key component anyway (pz's entity-name grammar already forbids
+  one everywhere else). `azureblob` is unaffected: it has no connection-level `root:` for a `path:`
+  to escape -- container and path are both always author-declared directly on the dataset/output.
 
 ### Added
 
