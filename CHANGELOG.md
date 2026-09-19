@@ -848,6 +848,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     (the wire protocol already defines `GateAcquire`/`GateGrant`/
     `GateComplete`/`GateBudget`; only this crate's trait surface does not
     expose them to connector authors yet).
+  - A sink can now report validation warnings: `SinkConnector::validate_warnings()`
+    (new, defaulted to empty -- additive) crosses into
+    `ValidationResultMsg.warnings`, the write side of the parity `Validate`
+    already had (errors only) against the C# SDK's `ValidationResult`.
 
 ## [0.6.1] - 2026-09-10
 

@@ -131,10 +131,16 @@ pub trait SinkConnector: Send + Sync + 'static {
     /// Aggregate validation errors -- never a single throw-per-error; an empty result means the config
     /// is acceptable as far as this connector can tell offline.
     async fn validate(&self, config: &Config) -> Vec<String>;
-    /// Network-touching connectivity check. `Ok(())` is the only success shape this trait can express;
-    /// anything else reported here crosses the wire as an operational failure (`pz-error-bin` trailer),
-    /// never a soft `ok: false` result -- that distinction is not exposed to Rust connector authors in
-    /// v1.
+    /// Aggregate warnings about a config this connector still accepts -- never fails validation, only
+    /// said about it. Additive: a connector written before this method existed inherits the empty
+    /// default, exactly as the host treats an absent `ValidationResultMsg.warnings` list.
+    async fn validate_warnings(&self, _config: &Config) -> Vec<String> {
+        Vec::new()
+    }
+    /// Network-touching connectivity check. `Ok(())` reports `ConnectionCheckMsg { ok: true }`;
+    /// `Err(e)` reports `ConnectionCheckMsg { ok: false, message: Some(e.message) }` -- an ordinary
+    /// "no" for this probe, not a protocol-level error. Unlike a `PzError` from `open`/`begin_write`,
+    /// one from this method never crosses as a `pz-error-bin` trailer.
     async fn check(&self, config: &Config) -> Result<(), PzError>;
     async fn open(&self, config: Config) -> Result<Box<dyn Sink>, PzError>;
     /// Sink-level, before any session opens: lets DuckDB take over the write entirely instead of
@@ -456,14 +462,18 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         request: Request<pb::ValidateRequest>,
     ) -> Result<Response<pb::ValidationResultMsg>, Status> {
         let config = Config::from_struct(request.into_inner().config.as_ref());
-        let errors = match answer_numeric_probe(&config) {
-            Some(answer) => answer,
-            None => self.connector.validate(&config).await,
-        };
-        Ok(Response::new(pb::ValidationResultMsg {
-            errors,
-            warnings: Vec::new(),
-        }))
+        if let Some(errors) = answer_numeric_probe(&config) {
+            // Mirrors the C# SDK: the conformance probe never reaches the connector, so it never
+            // reaches `validate_warnings` either.
+            return Ok(Response::new(pb::ValidationResultMsg {
+                errors,
+                warnings: Vec::new(),
+            }));
+        }
+
+        let errors = self.connector.validate(&config).await;
+        let warnings = self.connector.validate_warnings(&config).await;
+        Ok(Response::new(pb::ValidationResultMsg { errors, warnings }))
     }
 
     async fn check_connection(
@@ -1787,6 +1797,7 @@ mod tests {
     struct FixtureConnector {
         sink_abort_semantics: AbortSemantics,
         check_result: Result<(), PzError>,
+        warnings: Vec<String>,
     }
 
     impl Default for FixtureConnector {
@@ -1794,6 +1805,7 @@ mod tests {
             FixtureConnector {
                 sink_abort_semantics: AbortSemantics::DiscardsAll,
                 check_result: Ok(()),
+                warnings: Vec::new(),
             }
         }
     }
@@ -1802,6 +1814,10 @@ mod tests {
     impl SinkConnector for FixtureConnector {
         async fn validate(&self, _config: &Config) -> Vec<String> {
             Vec::new()
+        }
+
+        async fn validate_warnings(&self, _config: &Config) -> Vec<String> {
+            self.warnings.clone()
         }
 
         async fn check(&self, _config: &Config) -> Result<(), PzError> {
@@ -2038,5 +2054,50 @@ mod tests {
             env!("CARGO_PKG_VERSION"),
         );
         assert_eq!(render_manifest(&decl), expected);
+    }
+
+    #[tokio::test]
+    async fn validate_forwards_a_connectors_warnings() {
+        let service = test_service(FixtureConnector {
+            warnings: vec!["'legacy_option' is accepted but deprecated".to_string()],
+            ..Default::default()
+        });
+
+        let response = service
+            .validate(Request::new(pb::ValidateRequest { config: None }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.errors.is_empty());
+        assert_eq!(
+            response.warnings,
+            vec!["'legacy_option' is accepted but deprecated".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_numeric_conformance_probe_never_reaches_validate_warnings() {
+        let service = test_service(FixtureConnector {
+            warnings: vec!["should never be seen".to_string()],
+            ..Default::default()
+        });
+
+        let mut root = prost_types::Struct::default();
+        root.fields.insert(
+            NUMERIC_PROBE_KEY.to_string(),
+            prost_types::Value {
+                kind: Some(prost_types::value::Kind::NumberValue(1.0)),
+            },
+        );
+
+        let response = service
+            .validate(Request::new(pb::ValidateRequest { config: Some(root) }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.errors.is_empty());
+        assert!(response.warnings.is_empty());
     }
 }
