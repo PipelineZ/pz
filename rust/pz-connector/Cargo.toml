@@ -6,7 +6,7 @@ license.workspace = true
 description = "SDK for writing PipelineZ (pz) out-of-process connectors (PCP) in Rust."
 
 [dependencies]
-tonic = "0.12"
+tonic = "0.14"
 prost = "0.13"
 prost-types = "0.13"
 tokio = { version = "1", features = ["full"] }
