@@ -192,6 +192,26 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   surfaced as intermittent CI hangs. The ticket now lives as long as the session: burned by the
   data connection the commit waits for, or revoked by `AbortWrite`. Connectors built on the Rust
   SDK pick the fix up by rebuilding against it; the C# SDK never had the early revoke.
+- `pz mcp` minors:
+  - `pz mcp init` refused an existing `.vscode/mcp.json` (and similar) that legally carries comments or
+    trailing commas (JSONC) as "not valid JSON" (PZ0605). It now recognizes JSONC via a tolerant
+    fallback parse, and -- since merging the `pz` entry in and serializing back through
+    `System.Text.Json` would silently delete every comment -- refuses to rewrite that file with a new,
+    distinct PZ0611 whose next step pastes in the exact entry to add by hand, rather than either
+    silently dropping the user's comments or refusing with the same code (and message) as genuinely
+    broken JSON.
+  - `pz_write_pipeline`'s self-verify-failure envelope dropped `result` even though the write had
+    already applied, leaving a caller with `applied:true` but no way to know which file pz actually
+    wrote. It now carries `result` on both the success and failure envelope, matching the connection/
+    entity authoring tools' existing convention. The pipeline/checks-sidecar files are now also written
+    via the same atomic temp+rename helper (`Pz.Core.Artifacts.AtomicFile`) other artifact writers use,
+    instead of `File.WriteAllText` in place.
+  - `PathGuard`'s project-containment check compared resolved paths with `StringComparison.Ordinal`
+    unconditionally, which could false-positive "escapes the project directory" (PZ0606) for a
+    legitimate path whose resolved casing merely differed from `projectDir`'s on a case-insensitive
+    filesystem. The comparison is now `OrdinalIgnoreCase` on Windows/macOS (whose default filesystems
+    are case-insensitive) and stays `Ordinal` on Linux, where a same-named-differently-cased sibling
+    directory is a real, different directory the guard must keep telling apart.
 - The SQL Server state backend stamped `updated_at`/`finished_at` from the ambient wall clock
   (`DateTime.UtcNow`) instead of the injected `TimeProvider` in `SqlKeyedStateStore`/
   `SqlRunArtifactStore` — untestable, and inconsistent with `LocalRunArtifactStore`/`RunResultsWriter`,

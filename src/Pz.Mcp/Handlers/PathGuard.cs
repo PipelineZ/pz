@@ -17,6 +17,22 @@ public static class PathGuard
 {
     private static readonly string[] PathKeys = ["path", "root", "base_dir", "data_path"];
 
+    /// <summary>Case sensitivity for the containment check in <see cref="Escapes"/>:
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> on the platforms whose default filesystem is
+    /// case-insensitive (Windows' NTFS, macOS's default APFS/HFS+), plain
+    /// <see cref="StringComparison.Ordinal"/> everywhere else (Linux's ext4 and most Linux filesystems
+    /// are case-sensitive). Ordinal-only used to false-positive "escapes the project" for a value whose
+    /// resolved casing differed from <c>projectDir</c>'s even though the two name the same directory on
+    /// disk. Going case-insensitive unconditionally would instead be a security regression on a
+    /// case-sensitive filesystem: a sibling <c>Project2</c> vs <c>project2</c> really are two different
+    /// directories there, and Ordinal is what tells them apart. On a genuinely case-insensitive
+    /// filesystem that ambiguity cannot arise -- the OS will not let both siblings exist -- so
+    /// OrdinalIgnoreCase there introduces no new risk.</summary>
+    private static readonly StringComparison PathComparison =
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+
     /// <summary>The connectors whose config carries project-relative file paths — the ones this guard
     /// walks. sqlite and duckdb count too: their connection `path:` is a database file exactly like a
     /// localfiles root. ducklake carries two path-shaped keys — `path:` (the catalog file, file-backed
@@ -106,7 +122,7 @@ public static class PathGuard
                 continue; // only data_path and iceberg's root may name an object store; ducklake's own path: never does
             }
 
-            if (Escapes(projectDir, value))
+            if (Escapes(projectDir, value, PathComparison))
             {
                 errors.Add(new PzError(PzErrorCode.McpPathEscapesProject,
                     $"{subject}: {connector} {key} '{value}' resolves outside the project directory",
@@ -117,7 +133,11 @@ public static class PathGuard
         }
     }
 
-    private static bool Escapes(string projectDir, string value)
+    /// <summary>Pure and side-effect-free (takes <paramref name="comparison"/> explicitly rather than
+    /// reading <see cref="PathComparison"/> itself) so a test can exercise both the case-sensitive and
+    /// case-insensitive branch deterministically on one CI machine, independent of the OS it actually
+    /// runs on -- see <see cref="EscapesForTests"/>.</summary>
+    private static bool Escapes(string projectDir, string value, StringComparison comparison)
     {
         try
         {
@@ -126,11 +146,17 @@ public static class PathGuard
             var rootWithSeparator = root.EndsWith(Path.DirectorySeparatorChar)
                 ? root
                 : root + Path.DirectorySeparatorChar;
-            return resolved != root && !resolved.StartsWith(rootWithSeparator, StringComparison.Ordinal);
+            return !string.Equals(resolved, root, comparison) && !resolved.StartsWith(rootWithSeparator, comparison);
         }
         catch (Exception ex) when (ex is ArgumentException or PathTooLongException or NotSupportedException)
         {
             return false; // unresolvable is not this guard's finding — the connector will refuse it itself
         }
     }
+
+    /// <summary>Test-only seam exposing <see cref="Escapes"/> with an explicit comparison, so
+    /// <c>PathGuardCaseSensitivityTests</c> can prove both platform behaviors without depending on (or
+    /// mutating) the real <see cref="PathComparison"/>.</summary>
+    internal static bool EscapesForTests(string projectDir, string value, StringComparison comparison) =>
+        Escapes(projectDir, value, comparison);
 }

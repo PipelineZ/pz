@@ -707,4 +707,12 @@ public static class PzErrorCode
     /// unbounded/misconfigured mirror as a connectivity problem. Never a silent truncation: a caller
     /// gets a real error naming the cap, not a corrupt partial document.</summary>
     public const string McpDocsResponseTooLarge = "PZ0610";
+
+    /// <summary>Under `pz mcp init`, an existing client config file (`.vscode/mcp.json` and similar)
+    /// parses only tolerantly -- it legally carries comments/trailing commas (JSONC) -- which
+    /// <see cref="PzErrorCode.McpClientConfigInvalid"/> (PZ0605) used to reject outright as "not valid
+    /// JSON". Distinct from PZ0605: the file is recognized, not broken, but merging the pz entry in and
+    /// serializing back through <c>System.Text.Json</c> would silently delete every comment, so pz
+    /// refuses to rewrite it and instead hands back the exact entry to paste in by hand.</summary>
+    public const string McpClientConfigHasComments = "PZ0611";
 }

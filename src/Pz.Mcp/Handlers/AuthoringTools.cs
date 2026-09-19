@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Pz.Core.Artifacts;
 using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.Engine.Execution;
@@ -303,7 +304,7 @@ internal static class AuthoringTools
         var pipelinesDir = Path.Combine(projectDir, PipelinesDirName);
         Directory.CreateDirectory(pipelinesDir);
         var relativeSqlPath = $"{PipelinesDirName}/{name}.sql";
-        File.WriteAllText(Path.Combine(pipelinesDir, name + ".sql"), NormalizeSql(sql));
+        AtomicFile.WriteAllText(Path.Combine(pipelinesDir, name + ".sql"), NormalizeSql(sql));
 
         string? relativeConfigPath = null;
         if (checksYaml is not null)
@@ -311,7 +312,7 @@ internal static class AuthoringTools
             var configsDir = Path.Combine(pipelinesDir, ConfigsDirName);
             Directory.CreateDirectory(configsDir);
             relativeConfigPath = $"{PipelinesDirName}/{ConfigsDirName}/{name}.yml";
-            File.WriteAllText(Path.Combine(configsDir, name + ".yml"), checksYaml);
+            AtomicFile.WriteAllText(Path.Combine(configsDir, name + ".yml"), checksYaml);
         }
 
         return await FinishWithSelfVerifyAsync(projectDir, services, ct, json =>
@@ -647,12 +648,15 @@ internal static class AuthoringTools
         string projectDir, CliServices services, CancellationToken ct, Action<Utf8JsonWriter> writeResult)
     {
         var verifyErrors = await VerifyProjectAsync(projectDir, services, ct).ConfigureAwait(false);
-        if (verifyErrors.Count > 0)
-        {
-            return ToolEnvelope.Errors(verifyErrors, applied: true);
-        }
 
-        return ToolEnvelope.Ok(writeResult, applied: true);
+        // The result rides BOTH envelopes, same as the connection/entity overload above: the mutation
+        // already applied by this point (the file(s) are written), so a self-verify failure has real
+        // facts to report about what it did -- e.g. which pipeline file now exists -- and those facts
+        // are often what explains the errors. Dropping it here used to leave a caller that just failed
+        // self-verify with no way to know what pz actually wrote.
+        return verifyErrors.Count > 0
+            ? ToolEnvelope.Errors(verifyErrors, applied: true, writeResult)
+            : ToolEnvelope.Ok(writeResult, applied: true);
     }
 
     /// <summary>The same compile + offline-validate-tiers composition <c>VerifyTools.ValidateAsync</c>

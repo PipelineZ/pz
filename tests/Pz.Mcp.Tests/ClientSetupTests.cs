@@ -136,6 +136,88 @@ public sealed class ClientSetupTests : IDisposable
         Assert.Equal(broken, File.ReadAllText(file));
     }
 
+    // Scenario 3b: a JSONC config (legal for .vscode/mcp.json -- comments and a trailing comma) is
+    // recognized as JSONC, not refused as broken JSON (PZ0605) -- but since merging in the entry and
+    // serializing back would silently delete the comments, pz refuses to rewrite it, with a distinct
+    // PZ0611 whose hint pastes in the exact entry to add by hand. The file must stay byte-untouched.
+    [Fact]
+    public void Jsonc_existing_config_is_recognized_and_refused_with_PZ0611_leaving_the_file_untouched()
+    {
+        var file = Path.Combine(_project, ".vscode", "mcp.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        const string jsonc = """
+            {
+              // a hand-written comment explaining this server
+              "servers": {
+                "other": { "command": "x", },
+              },
+            }
+            """;
+        File.WriteAllText(file, jsonc);
+
+        var ex = Assert.Throws<Pz.Core.Validation.PzConfigException>(() =>
+            ClientConfigWriter.Apply(file, "servers", "pz", entry =>
+            {
+                entry["type"] = "stdio";
+                entry["command"] = "pz";
+            }));
+
+        Assert.Equal(Pz.Core.Validation.PzErrorCode.McpClientConfigHasComments, ex.Error.Code);
+        Assert.NotEqual(Pz.Core.Validation.PzErrorCode.McpClientConfigInvalid, ex.Error.Code);
+        Assert.Contains(file, ex.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("\"pz\"", ex.Error.Hint, StringComparison.Ordinal);
+        Assert.Contains("\"command\": \"pz\"", ex.Error.Hint, StringComparison.Ordinal);
+        Assert.Equal(jsonc, File.ReadAllText(file));
+    }
+
+    // The CLI-driven twin of the test above: no exception escapes Init, stderr carries PZ0611 and the
+    // pasteable entry, exit code is ConfigError, and the file is left byte-untouched.
+    [Fact]
+    public void Init_on_a_jsonc_existing_config_does_not_throw_and_reports_PZ0611_with_the_entry_to_paste()
+    {
+        var file = Path.Combine(_project, ".vscode", "mcp.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        const string jsonc = "{\n  // comment\n  \"servers\": {},\n}";
+        File.WriteAllText(file, jsonc);
+
+        var stderr = new StringWriter();
+        var original = Console.Error;
+        Console.SetError(stderr);
+        int exit;
+        try
+        {
+            exit = RunInit(["vscode"]);
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        var message = stderr.ToString();
+        Assert.Contains("PZ0611", message, StringComparison.Ordinal);
+        Assert.Contains("\"pz\"", message, StringComparison.Ordinal);
+        Assert.Equal(jsonc, File.ReadAllText(file));
+    }
+
+    // A plain JSON file (no comments, no trailing commas) must keep taking the existing merge-and-write
+    // path -- the tolerant parse is only ever consulted after a strict parse fails.
+    [Fact]
+    public void Plain_json_without_comments_is_unaffected_by_the_tolerant_fallback()
+    {
+        var file = Path.Combine(_project, ".vscode", "mcp.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllText(file, """{"servers":{"other":{"command":"x"}}}""" + "\n");
+
+        var exit = RunInit(["vscode"]);
+        Assert.Equal(ExitCodes.Ok, exit);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(file));
+        var servers = doc.RootElement.GetProperty("servers");
+        Assert.Equal("x", servers.GetProperty("other").GetProperty("command").GetString());
+        Assert.Equal("pz", servers.GetProperty("pz").GetProperty("command").GetString());
+    }
+
     // Scenario 4: --allow-run puts the flag in args; without it, the flag is absent.
     [Fact]
     public void AllowRun_flag_is_only_present_when_requested()
