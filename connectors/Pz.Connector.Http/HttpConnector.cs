@@ -20,7 +20,7 @@ namespace Pz.Connector.Http;
 /// resume prefix so a retried delivery picks up strictly after the last acknowledged row. The sink
 /// side is an explicit interface implementation because <c>ISourceConnector.OpenAsync</c> and
 /// <c>ISinkConnector.OpenAsync</c> differ only by return type.</summary>
-public sealed class HttpConnector : ISourceConnector, ISinkConnector
+public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema
 {
     public ConnectorInfo Info { get; } = new("http", "0.1.0", ProtocolVersion.Major);
 
@@ -65,6 +65,19 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector
             "cursor_order": { "enum": ["asc", "desc"] },
             "delta_pointer": { "type": "string" },
             "max_pages": { "type": "integer", "minimum": 1 } },
+          "additionalProperties": false }
+        """;
+
+    // Mirrors what HttpSinkOutputConfig.Parse actually reads: path (required, its own leading-'/'
+    // check stays in Parse -- JSON Schema's "pattern" would duplicate that rule in a second syntax),
+    // method (post/put/patch), body_format/rows_per_request (append-only; Parse still owns the
+    // merge-vs-append cross-field refusal, which a property-level schema cannot express).
+    public string OutputConfigSchema => """
+        { "type": "object", "properties": {
+            "path": { "type": "string" },
+            "method": { "enum": ["post", "put", "patch"] },
+            "body_format": { "enum": ["json_array", "ndjson"] },
+            "rows_per_request": { "type": "integer", "minimum": 1 } },
           "additionalProperties": false }
         """;
 

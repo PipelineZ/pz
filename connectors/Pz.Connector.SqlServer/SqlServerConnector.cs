@@ -13,7 +13,7 @@ namespace Pz.Connector.SqlServer;
 /// logical name "sqlserver". Connection options: host/database required; port,
 /// user/password, authentication (SqlClient passthrough for Entra ID), encrypt,
 /// trust_server_certificate, connect_timeout_seconds, command_timeout_seconds optional.</summary>
-public sealed class SqlServerConnector : ISourceConnector, ISinkConnector
+public sealed class SqlServerConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("sqlserver", "0.1.0", ProtocolVersion.Major);
 
@@ -30,6 +30,12 @@ public sealed class SqlServerConnector : ISourceConnector, ISinkConnector
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "query": { "type": "string" }, "procedure": { "type": "string" }, "parameters": { "type": "object", "additionalProperties": { "type": ["string","number","boolean","null"] } }, "partition_column": { "type": "string" }, "partitions": { "type": "integer", "minimum": 1, "maximum": 16 }, "capture_instance": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false, "not": { "required": ["query","procedure"] } }""";
+
+    // The only connector-owned write option SqlServerSink actually reads (ParseTablock) -- every other
+    // write.* key (strategy, keys, duplicates, on_delete, schema_policy, retry) is engine-owned and
+    // never reaches Options.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": { "tablock": { "type": "boolean" } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(ValidationResult.Success);

@@ -22,7 +22,7 @@ namespace Pz.Connector.MySql;
 /// `connect_timeout_seconds`/`command_timeout_seconds` here and silently doing nothing with them would
 /// be exactly the deployment-knob-ignored failure this project's error philosophy forbids, so
 /// <see cref="ConnectionConfigSchema"/> continues to refuse them like any other unknown key.</summary>
-public sealed class MySqlConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class MySqlConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("mysql", "0.1.0", ProtocolVersion.Major);
 
@@ -36,6 +36,11 @@ public sealed class MySqlConnector : ISourceConnector, ISinkConnector, INativeOn
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "query": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+
+    // MySqlSink reads no connector-owned write option at all -- every write.* key beyond the
+    // engine-owned ones is unknown.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     /// <summary>No cross-field rules to enforce: every connection value
     /// rides the CREATE SECRET statement as an ordinary, '' -escaped single-quoted SQL literal (see

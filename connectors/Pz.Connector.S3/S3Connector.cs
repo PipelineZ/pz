@@ -14,7 +14,7 @@ namespace Pz.Connector.S3;
 /// schema fetch answers only from a declared `columns:` contract. Registered under the logical name
 /// "s3"; any S3-compatible store is reachable via the `endpoint` override, though GCS now has its
 /// own first-class connector (Pz.Connector.Gcs).</summary>
-public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     private static readonly string[] ValidUrlStyles = ["vhost", "path"];
 
@@ -34,11 +34,17 @@ public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlyS
     // (the connection `root:` and the `<entity>.<format>` default fill the gaps at probe time),
     // format (parquet default), the generic columns: contract. files_per_partition is deliberately
     // ACCEPTED (int-or-string) so the plan-time PZ0312 refusal on this native-only source keeps
-    // owning that case with its targeted message. Sink OUTPUT options stay plan/probe-validated by
-    // S3Sink — tier 3 never evaluates output options.
+    // owning that case with its targeted message.
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
         """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+
+    // Mirrors what S3Sink actually reads: bucket + path both optional (falls back to the connection's
+    // `root:`), the format-scoped options. No partition_by -- s3 is native-COPY-only in v0
+    // (BeginWriteAsync always throws), and a native COPY cannot fan rows out by value.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """ }, "additionalProperties": false }""";
 
     /// <summary>Offline cross-field validation: both credential fields must be present,
     /// and <c>url_style</c> — when given — must be one of DuckDB's two accepted values. Never touches

@@ -19,6 +19,10 @@
          [Fact] when nothing skips) plus a protected virtual GateFact() hook, so docker-backed connector
          subclasses can skip cleanly instead of failing when docker is absent. -->
     <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+    <!-- SinkConnectorAcceptanceTests' IOutputConfigSchema fact parses and evaluates a JSON Schema
+         string, the same library (and version) Pz.Engine's tier 3 validates output options with, so
+         a sink's own acceptance suite proves its schema is well-formed before tier 3 ever sees it. -->
+    <PackageReference Include="JsonSchema.Net" Version="9.2.2" />
   </ItemGroup>
 
   <ItemGroup>

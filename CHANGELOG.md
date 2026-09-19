@@ -19,6 +19,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   pz's own keys — `threads: "4"` is now refused with PZ0120 where it used to be
   read as `4`. Connector options are unaffected where the connector reads them
   through `ConnectorConfig.GetInt`/`GetBool`, which still accept `port: "5432"`.
+- **Unknown `write:`/`sink()` options on a builtin sink are refused.** They used to reach the
+  connector unchecked and were silently ignored; every builtin sink now publishes a schema for its
+  own write options and `pz validate` (tier 3) reports an option it does not read as PZ0301, with
+  the accepted options and a near-miss suggestion.
+  *Migration:* remove or correct the option the error names -- it never had an effect. Options the
+  engine owns (`strategy`, `keys`, `duplicates`, `on_delete`, `schema_policy`, `retry`) and
+  `partition_by` are unaffected, and so is any connector that publishes no such schema.
 - An unquoted decimal connector version (`version: 1.10`) is refused: YAML reads
   it as the number 1.1, a different package. Quote it.
 - `pz restore` now honours an existing `pz.lock.json` instead of re-resolving and
@@ -62,6 +69,46 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   nothing to offer (an option's value is usually a path) the shell's own file
   completion takes over. No network, no file writes; an unrecognized shell
   name is a config error (PZ0535).
+- A sink can now publish `IOutputConfigSchema`, an optional JSON Schema for its own
+  `write:`/`sink()` options -- the write-side twin of `DatasetConfigSchema`. Before this, a sink's
+  output options reached the connector completely unchecked (`ConnectorConfigValidator`'s own
+  comment said so): `tablok: true` on a sqlserver output did nothing, silently. `pz validate`
+  (tier 3) now schema-checks a sink output's connector-owned options -- against `entities: <e>:
+  write:` and `sink()` kwargs alike, since both resolve to the same effective `OutputDef` -- when
+  the sink offers the capability, with the same `additionalProperties: false` unknown-option
+  message the connection/dataset schemas already give, now also carrying a near-miss "did you
+  mean" hint (the edit-distance matcher moved to a shared `Pz.Core.Validation.NearMiss`, with
+  `ScriptKwargs.NearMiss` kept as a thin forwarder for its existing call sites). Every builtin sink
+  adopts it. `partition_by` is set aside before the check: whether a connector can honour it stays
+  the planner's capability question (PZ0314), whatever the sink's schema lists. A sink that does
+  not implement the interface is validated exactly as before --
+  additive-only, a new capability interface rather than a new `ISinkConnector` member. Forwarded
+  over PCP too: `Hello.output_config_schema` (`pz_connector.proto` field 7, additive), populated by
+  both SDKs (C# `Pz.Connectors.Sdk`, Rust `pz-connector`) and sanity-checked as valid JSON by
+  `pz connector test`'s handshake vector; `pz_connector_reference` (MCP) surfaces it alongside the
+  read-side schemas.
+- Connectors TestKit: `SinkConnectorAcceptanceTests` gains six facts the fixed 50-row `id
+  Int64, name String` fixture never exercised -- a zero-batch commit persists nothing; a large
+  batch (20,000 rows across several `WriteBatchAsync` calls) round-trips; an already-cancelled
+  token handed to `WriteBatchAsync` is honored (`OperationCanceledException`, not a silent
+  success); a null in a nullable column survives a commit; the full v0 type matrix
+  (decimal128/timestamp-µs/date32/bool, opt-in via new `TypeMatrixOutput`/
+  `ReadTypeMatrixCommittedAsync` hooks, mirroring `MergeOutput`'s null-hook precedent) round-trips;
+  and a sink offering `IOutputConfigSchema` offers valid JSON Schema that refuses an unknown key
+  (self-detecting -- a no-op for a sink that has not implemented the capability). Every existing
+  subclass compiles unchanged, but the new facts run against it: a sink that ignores an
+  already-cancelled token now fails the cancellation fact (three of pz's own did). Honour the
+  token, or exclude a fact a destination genuinely cannot satisfy through `ShouldRun`; a
+  destination that throttles writes can lower the large batch with `LargeBatchRows`. Writing the
+  cancellation fact against real connectors found three that silently ignored an already-cancelled
+  token (localfiles, azureblob, and the TestKit's own in-memory reference sink), now fixed to check
+  it before starting a write, and one that left its Npgsql transaction already disposed by a
+  cancelled `BeginBinaryImportAsync` (postgres), whose abort/dispose path now tolerates that rather
+  than throwing `ObjectDisposedException` out of `AbortAsync`/`DisposeAsync`. The existing
+  `Abort_discards_everything` fact now asserts zero visible rows rather than an empty collection:
+  `SmallOutput` is shared with every fact in the suite, and a replace-mode destination that
+  truncates-then-stages may legitimately still exist as a zero-row table once another fact has
+  committed to it first.
 - Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
   the acceptance fact for the `ColumnPruning` capability. It plans a read with a
   non-prefix, reordered column hint and requires every batch to carry exactly

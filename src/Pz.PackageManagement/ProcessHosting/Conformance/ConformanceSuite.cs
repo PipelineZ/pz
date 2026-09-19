@@ -209,7 +209,10 @@ public static class ConformanceSuite
         }
 
         foreach (var (label, schema) in new[]
-                 { ("connection", hello.ConnectionConfigSchema), ("dataset", hello.DatasetConfigSchema) })
+                 {
+                     ("connection", hello.ConnectionConfigSchema), ("dataset", hello.DatasetConfigSchema),
+                     ("output", hello.OutputConfigSchema),
+                 })
         {
             if (string.IsNullOrEmpty(schema))
             {

@@ -60,42 +60,8 @@ internal static class ScriptKwargs
     /// <summary>The name in <paramref name="known"/> that <paramref name="option"/> is one edit (or a
     /// case difference) away from, or null when it is plainly a connector option. pz cannot REFUSE an
     /// unrecognized kwarg — no connector publishes an option vocabulary to check against — but a name
-    /// one character from a pz-owned key is worth saying out loud.</summary>
+    /// one character from a pz-owned key is worth saying out loud. Thin forwarder: the match itself is
+    /// <see cref="Pz.Core.Validation.NearMiss"/>, shared with tier 3's unknown-output-option message.</summary>
     public static string? NearMiss(IEnumerable<string> known, string option) =>
-        known.FirstOrDefault(k =>
-            !string.Equals(option, k, StringComparison.Ordinal)
-            && (string.Equals(option, k, StringComparison.OrdinalIgnoreCase) || IsWithinOneEdit(option, k)));
-
-    /// <summary>True when one insertion, deletion, or substitution turns <paramref name="a"/> into
-    /// <paramref name="b"/>. Short-circuits on a length gap of 2+, so it never scans a long
-    /// connector-option name against a short keyword.</summary>
-    private static bool IsWithinOneEdit(string a, string b)
-    {
-        if (Math.Abs(a.Length - b.Length) > 1)
-        {
-            return false;
-        }
-
-        int i = 0, j = 0, edits = 0;
-        while (i < a.Length && j < b.Length)
-        {
-            if (a[i] == b[j])
-            {
-                i++;
-                j++;
-                continue;
-            }
-
-            if (++edits > 1)
-            {
-                return false;
-            }
-
-            if (a.Length > b.Length) { i++; }
-            else if (a.Length < b.Length) { j++; }
-            else { i++; j++; }
-        }
-
-        return edits + (a.Length - i) + (b.Length - j) <= 1;
-    }
+        Pz.Core.Validation.NearMiss.Find(known, option);
 }

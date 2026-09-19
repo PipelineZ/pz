@@ -95,6 +95,11 @@ internal static class IntrospectTools
                     json.WriteString("capabilities", connector.Capabilities.ToString());
                     WriteRawSchema(json, "dataset_schema", connector.DatasetConfigSchema);
                     WriteRawSchema(json, "connection_schema", connector.ConnectionConfigSchema);
+                    if (connector is IOutputConfigSchema outputSchema)
+                    {
+                        WriteRawSchema(json, "output_schema", outputSchema.OutputConfigSchema);
+                    }
+
                     json.WriteEndObject();
                 }
 

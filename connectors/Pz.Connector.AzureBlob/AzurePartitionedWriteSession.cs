@@ -46,6 +46,7 @@ internal sealed class AzurePartitionedWriteSession : ISinkWriteSession
     public async ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
     {
         EnsureOpen("write to");
+        ct.ThrowIfCancellationRequested();
 
         // 1. Group the incoming batch's row indices by destination folder. Determinism: the folder comes
         //    only from the row's partition value via PathTemplate.Render (invariant culture) -- never from

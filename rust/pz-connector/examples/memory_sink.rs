@@ -148,6 +148,7 @@ async fn main() {
         capabilities: 0,
         connection_config_schema: "",
         dataset_config_schema: "",
+        output_config_schema: "",
     };
 
     let err = pz_connector::serve_sink(decl, MemorySinkConnector).await;

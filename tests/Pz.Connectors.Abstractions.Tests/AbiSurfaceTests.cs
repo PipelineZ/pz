@@ -125,6 +125,16 @@ public class AbiSurfaceTests
     }
 
     [Fact]
+    public void IOutputConfigSchema_is_a_separate_capability_from_ISinkConnector()
+    {
+        // ISinkConnector does NOT gain a member (additive-only): a sink opts into a write-option
+        // schema by implementing a new interface, never by a new member on the base ABI.
+        Assert.NotNull(typeof(IOutputConfigSchema).GetProperty("OutputConfigSchema"));
+        Assert.Null(typeof(ISinkConnector).GetProperty("OutputConfigSchema"));
+        Assert.False(typeof(IOutputConfigSchema).IsAssignableFrom(typeof(ISinkConnector)));
+    }
+
+    [Fact]
     public void Stage4_capability_flags_have_reserved_values()
     {
         Assert.Equal(8192, (int)ConnectorCapabilities.StablePartitionIds);

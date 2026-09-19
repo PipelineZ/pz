@@ -14,7 +14,7 @@ namespace Pz.Connector.MotherDuck;
 /// the engine issues each distinct setup statement once per run — so two connections with the same
 /// database and token share one attach, while a second connection with a different token fails its
 /// SET as PZ0311: one MotherDuck token per run. Registered as "motherduck".</summary>
-public sealed class MotherDuckConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class MotherDuckConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("motherduck", "0.1.0", ProtocolVersion.Major);
 
@@ -28,6 +28,11 @@ public sealed class MotherDuckConnector : ISourceConnector, ISinkConnector, INat
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+
+    // MotherDuckSink reads no connector-owned write option at all -- every write.* key beyond the
+    // engine-owned ones is unknown.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     /// <summary>No cross-field rules: required-ness is the schema's; the token is only ever a ''-escaped
     /// literal in the SET statement, and the database is a ''-escaped literal in the attach string and a

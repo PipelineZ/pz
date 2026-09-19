@@ -215,7 +215,7 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
 /// <summary>One registered <c>runtime: "process"</c> connector, before (and after) anything is spawned.
 /// Implements both connector directions because which one a package is used as is the caller's
 /// question, exactly as it is for an in-process <c>IConnector</c>.</summary>
-internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, IAsyncDisposable
+internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema, IAsyncDisposable
 {
     private readonly ConnectorPackageRef _packageRef;
     private readonly ConnectorManifest _manifest;
@@ -231,6 +231,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
     private string _connectionConfigSchema = string.Empty;
     private string _datasetConfigSchema = string.Empty;
+    private string _outputConfigSchema = string.Empty;
     private int _opens;
 
     public LazyProcessConnector(
@@ -276,6 +277,13 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     public string ConnectionConfigSchema => Volatile.Read(ref _connectionConfigSchema);
 
     public string DatasetConfigSchema => Volatile.Read(ref _datasetConfigSchema);
+
+    /// <summary>Same lazy-until-spawned discipline as <see cref="DatasetConfigSchema"/> -- and the same
+    /// caveat: nothing here forces a spawn just to answer this, so a caller that needs it before an
+    /// open must go through <see cref="ValidateAsync"/> first. Empty (the pre-spawn default) reads
+    /// identically to "this connector does not implement IOutputConfigSchema" -- tier 3 treats both the
+    /// same way, so there is nothing to distinguish before the first spawn.</summary>
+    public string OutputConfigSchema => Volatile.Read(ref _outputConfigSchema);
 
     // Every call below forwards `instance.Config`, never the caller's `config`: the caller's may carry
     // ProcessConnectorHost.InstanceIdKey, and Validate/CheckConnection put the config they are given on the wire.
@@ -347,6 +355,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
             Volatile.Write(ref _connectionConfigSchema, client.Hello.ConnectionConfigSchema);
             Volatile.Write(ref _datasetConfigSchema, client.Hello.DatasetConfigSchema);
+            Volatile.Write(ref _outputConfigSchema, client.Hello.OutputConfigSchema);
 
             instance = new ProcessInstance(process, client, connectorConfig);
             // Opened once per instance, right after Configure and before the shim exists: the gate the

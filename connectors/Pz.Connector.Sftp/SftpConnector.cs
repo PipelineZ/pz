@@ -10,7 +10,7 @@ namespace Pz.Connector.Sftp;
 /// readers (source) and the shared toolkit codecs (sink). One partition per matched remote file;
 /// windowed datasets are honored row-level (see SftpWindowFilter) — which is what lets a connector
 /// with no native tier declare BoundedWindow. Registered under the logical name "sftp".</summary>
-public sealed class SftpConnector : ISourceConnector, ISinkConnector
+public sealed class SftpConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("sftp", "0.1.0", ProtocolVersion.Major);
 
@@ -30,6 +30,12 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
         """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+
+    // Mirrors what SftpSink actually reads: path (optional prefix under the connection root), the
+    // format-scoped options, and partition_by (write-only fan-out into per-folder remote files).
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
+        """, "partition_by": { "anyOf": [ { "type": "string" }, { "type": "array", "items": { "type": "string" } } ] } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {

@@ -14,7 +14,7 @@ namespace Pz.Connector.Iceberg;
 /// --connect` verifies a REST endpoint by TCP reachability only and a local root by its directory,
 /// and its schema fetch works only for datasets with a declared `columns:` contract. Registered
 /// under the logical name "iceberg".</summary>
-public sealed class IcebergConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class IcebergConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("iceberg", "0.1.0", ProtocolVersion.Major);
 
@@ -55,6 +55,12 @@ public sealed class IcebergConnector : ISourceConnector, ISinkConnector, INative
           "metadata_version": { "type": "string" }
         }, "additionalProperties": false }
         """;
+
+    // IcebergSink reads no connector-owned write option at all -- every write.* key beyond the
+    // engine-owned ones is unknown (writes always go through a catalog; the read-only `files` root
+    // has no write path to carry an output option anyway).
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     /// <summary>The root a RELATIVE <c>root</c> is normalized against when no <c>base_dir</c> is
     /// present. Config validation runs on the connection as the user wrote it, before the host

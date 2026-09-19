@@ -13,7 +13,7 @@ namespace Pz.Connector.DuckDb;
 /// --connect`'s schema fetch works only for datasets with a declared `columns:` contract.
 /// Registered under the logical name "duckdb". One writer per file: an external process writing
 /// the same file during a run fails with DuckDB's lock error.</summary>
-public sealed class DuckDbConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
+public sealed class DuckDbConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
     /// <summary>Every DuckDB database file carries "DUCK" at byte offset 8 (after the 8-byte checksum).</summary>
     private const int MagicOffset = 8;
@@ -34,6 +34,11 @@ public sealed class DuckDbConnector : ISourceConnector, ISinkConnector, INativeO
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+
+    // DuckDbSink reads no connector-owned write option at all -- every write.* key beyond the
+    // engine-owned ones is unknown.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     /// <summary>The root a RELATIVE <c>path</c> is normalized against when no <c>base_dir</c> is
     /// present. Config validation runs on the connection as the user wrote it, before the host injects

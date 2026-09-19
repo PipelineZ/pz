@@ -10,7 +10,9 @@ using Pz.Engine.Execution;
 namespace Pz.Engine.Validation;
 
 /// <summary>Tier 3 of `pz validate`: connector-published JSON Schema validation of every source/sink
-/// connection block and every source dataset's options, plus each resolved connector's own
+/// connection block, every source dataset's options, every sink output's <c>write:</c> options (when
+/// the sink offers <see cref="IOutputConfigSchema"/> -- optional, so a sink that does not is left
+/// unchecked exactly as before that capability existed), plus each resolved connector's own
 /// cross-field <see cref="IConnector.ValidateAsync"/>. Never throws for a config violation -- every
 /// finding becomes one aggregated <see cref="PzError"/> naming the yml file and the offending path.
 /// Two rules keep the aggregate readable: (1) when the connection schema flags a key as MISSING
@@ -102,8 +104,30 @@ public static class ConnectorConfigValidator
             ValidateSchema(connector.ConnectionConfigSchema, sink.Connection, "connection", sink.Name,
                 "connection", sink.FilePath, errors, connectionFlaggedKeys, requiredFlaggedKeys);
 
-            // Sink OUTPUT options are NOT schema-validated in v0: they are already validated at
-            // plan/probe time by the connectors themselves.
+            // Sink OUTPUT (write:) options are schema-validated only when the connector offers
+            // IOutputConfigSchema -- an optional capability (Abstractions' ABI is additive-only, so
+            // this could not be a new ISinkConnector member). A connector that does not implement it is
+            // validated exactly as before: its output options reach it unchecked. sink.Outputs is
+            // DagCompiler's EFFECTIVE, already-merged output list -- whichever of entities:write: /
+            // sink() kwargs declared an output, it lands here once (PZ0341 refuses declaring both).
+            if (connector is IOutputConfigSchema outputSchema)
+            {
+                foreach (var output in sink.Outputs)
+                {
+                    // partition_by is set aside first. It stays among an output's options because the
+                    // sinks that partition read it, but its shape is the compiler's to check and whether
+                    // this connector can honour it is the planner's, answered from its capabilities. A
+                    // schema that does not list it must not turn that answer into "unknown option".
+                    var options = output.Options.ContainsKey(PartitionColumns.OptionName)
+                        ? output.Options.Where(o => o.Key != PartitionColumns.OptionName)
+                            .ToDictionary(o => o.Key, o => o.Value, StringComparer.Ordinal)
+                        : output.Options;
+                    ValidateSchema(outputSchema.OutputConfigSchema, options, "connection", sink.Name,
+                        $"output '{output.Name}'", sink.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
+                        new HashSet<string>(StringComparer.Ordinal));
+                }
+            }
+
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(sink), "connection", sink.Name, sink.FilePath,
                 errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
         }
@@ -330,11 +354,13 @@ public static class ConnectorConfigValidator
             // which names neither the offending key nor what was allowed instead. Say both.
             if (TryDescribeUnknownOption(schemaText, detail, out var unknownOption, out var accepted))
             {
+                var nearMiss = NearMiss.Find(accepted, unknownOption);
                 errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
                     $"{kind} '{name}'{Where(blockLabel)}: {ContainerLocation(detail)}unknown option '{unknownOption}'",
                     filePath, null,
                     accepted.Count > 0
-                        ? $"remove or rename it -- accepted options: {string.Join(", ", accepted)}"
+                        ? $"remove or rename it -- accepted options: {string.Join(", ", accepted)}" +
+                          (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'")
                         : "remove it -- this block accepts no options"));
                 continue;
             }

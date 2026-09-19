@@ -532,4 +532,116 @@ public sealed class ConnectorConfigValidatorTests
         Assert.DoesNotContain(errors, e => e.Code == PzErrorCode.NativeSetupFailed);
         Assert.Empty(warnings);
     }
+
+    // A sink's write: options were never schema-validated at all before IOutputConfigSchema: a typo'd
+    // option reached the connector unchecked and was silently ignored. These pin both halves of the
+    // fix -- a connector that offers the capability gets its outputs checked, one that does not is
+    // untouched -- using sink.Outputs exactly as DagCompiler hands it to ValidateAsync (the EFFECTIVE,
+    // already-merged output list; see ValidateCommand's `project with { Connections = dag.Connections }`).
+    [Fact]
+    public async Task Valid_output_options_against_an_offered_schema_produce_no_errors()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub-output", new StubOutputSchemaConnector
+        {
+            OutputConfigSchema = """{"type":"object","properties":{"tablock":{"type":"boolean"}},"additionalProperties":false}""",
+        });
+
+        var sink = new ConnectionDef("out", "stub-output", new Dictionary<string, object?>(), [], "sinks/out.yml")
+        {
+            Outputs = [new OutputDef("orders", "", "append", "fail_on_change",
+                new Dictionary<string, object?> { ["tablock"] = true })],
+        };
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project(sinks: [sink]), registry, default);
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public async Task Unknown_output_option_is_refused_and_names_the_output()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub-output", new StubOutputSchemaConnector
+        {
+            OutputConfigSchema = """{"type":"object","properties":{"tablock":{"type":"boolean"}},"additionalProperties":false}""",
+        });
+
+        var sink = new ConnectionDef("out", "stub-output", new Dictionary<string, object?>(), [], "sinks/out.yml")
+        {
+            Outputs = [new OutputDef("orders", "", "append", "fail_on_change",
+                new Dictionary<string, object?> { ["tablok"] = true })],
+        };
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project(sinks: [sink]), registry, default);
+
+        var error = Assert.Single(errors);
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Equal("connection 'out' output 'orders': unknown option 'tablok'", error.Message);
+        // "tablok" is one deletion away from "tablock" -- proves the near-miss hint fires for an
+        // output-schema violation, not just the accepted-options list.
+        Assert.Contains("did you mean 'tablock'", error.Hint, StringComparison.Ordinal);
+    }
+
+    // partition_by stays among an output's options because partitioning sinks read it, but whether a
+    // connector can honour it is the planner's question, answered from its capabilities with a refusal
+    // that says which capability is missing. A sink's schema calling it an unknown option would
+    // replace that answer with a worse one.
+    [Fact]
+    public async Task Partition_by_is_left_to_the_planners_capability_gate()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub-output", new StubOutputSchemaConnector());
+
+        var sink = new ConnectionDef("out", "stub-output", new Dictionary<string, object?>(), [], "sinks/out.yml")
+        {
+            Outputs = [new OutputDef("orders", "", "append", "fail_on_change",
+                new Dictionary<string, object?> { ["partition_by"] = "order_date" })],
+        };
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project(sinks: [sink]), registry, default);
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public async Task A_sink_that_does_not_offer_IOutputConfigSchema_leaves_output_options_unchecked()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub", new StubConnector());
+
+        var sink = new ConnectionDef("out", "stub", new Dictionary<string, object?>(), [], "sinks/out.yml")
+        {
+            Outputs = [new OutputDef("orders", "", "append", "fail_on_change",
+                new Dictionary<string, object?> { ["whatever_typo"] = "x" })],
+        };
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project(sinks: [sink]), registry, default);
+
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public async Task Multiple_outputs_on_one_sink_are_each_validated_independently()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSink("stub-output", new StubOutputSchemaConnector
+        {
+            OutputConfigSchema = """{"type":"object","properties":{"tablock":{"type":"boolean"}},"additionalProperties":false}""",
+        });
+
+        var sink = new ConnectionDef("out", "stub-output", new Dictionary<string, object?>(), [], "sinks/out.yml")
+        {
+            Outputs =
+            [
+                new OutputDef("orders", "", "append", "fail_on_change", new Dictionary<string, object?> { ["tablock"] = true }),
+                new OutputDef("customers", "", "append", "fail_on_change", new Dictionary<string, object?> { ["bogus"] = 1 }),
+            ],
+        };
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project(sinks: [sink]), registry, default);
+
+        var error = Assert.Single(errors);
+        Assert.Equal("connection 'out' output 'customers': unknown option 'bogus'", error.Message);
+    }
 }

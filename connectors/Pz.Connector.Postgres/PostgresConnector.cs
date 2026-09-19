@@ -20,9 +20,10 @@ namespace Pz.Connector.Postgres;
 /// logical name "postgres".
 /// Connection options: <c>host</c> and <c>database</c> are required; <c>port</c> defaults to 5432;
 /// <c>user</c>, <c>password</c>, <c>ssl_mode</c>, <c>connect_timeout_seconds</c>,
-/// <c>command_timeout_seconds</c> are optional. Sink output options: <c>schema</c> (default
-/// <c>public</c>), <c>table</c> (default = the output's name).</summary>
-public sealed class PostgresConnector : ISourceConnector, ISinkConnector
+/// <c>command_timeout_seconds</c> are optional. Sink output options: none -- schema and table come
+/// from the entity name itself (<c>sink('pg', 'schema.table')</c>; a bare name defaults to
+/// <c>public</c>), never from a <c>schema</c>/<c>table</c> option (PZ0348 retires both as kwargs).</summary>
+public sealed class PostgresConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema
 {
     public ConnectorInfo Info => new("postgres", "0.1.0", ProtocolVersion.Major);
 
@@ -42,6 +43,11 @@ public sealed class PostgresConnector : ISourceConnector, ISinkConnector
     // of whether that connector consumes it -- so it is accepted here too, for forward compatibility.
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "query": { "type": "string" }, "partition_column": { "type": "string" }, "partitions": { "type": "integer", "minimum": 1, "maximum": 16 }, "publication": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+
+    // PostgresSink reads no connector-owned write option at all (schema/table come from the entity
+    // name; every other write.* key is engine-owned) -- so every key here is unknown.
+    public string OutputConfigSchema =>
+        """{ "type": "object", "properties": {}, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(ValidationResult.Success);

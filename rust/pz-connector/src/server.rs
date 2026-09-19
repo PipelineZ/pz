@@ -42,13 +42,18 @@ const DATA_SOCKET_SUFFIX: &str = ".data";
 // ---------------------------------------------------------------------------------------------
 
 /// What a connector declares in its `Hello`: identity, the `ConnectorCapabilities` flag bits (same
-/// values the host ABI defines), and the two JSON Schema strings the host surfaces to authoring tools.
+/// values the host ABI defines), and the JSON Schema strings the host surfaces to authoring tools.
 pub struct ConnectorDecl {
     pub name: &'static str,
     pub version: &'static str,
     pub capabilities: u64,
     pub connection_config_schema: &'static str,
     pub dataset_config_schema: &'static str,
+    /// JSON Schema for this sink's own write() options (`IOutputConfigSchema` on the C# ABI) -- empty
+    /// means tier 3 leaves this connector's output options unchecked, the same as a connector built
+    /// before this field existed. This crate is sink-first (see `PzConnector` impl below), so this is
+    /// the schema most Rust connectors actually want to fill in.
+    pub output_config_schema: &'static str,
 }
 
 /// One committed write's identity, mirroring `WriteAttemptMsg`: which node, which run, and which
@@ -394,6 +399,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             capabilities: self.decl.capabilities as i64,
             connection_config_schema: self.decl.connection_config_schema.to_string(),
             dataset_config_schema: self.decl.dataset_config_schema.to_string(),
+            output_config_schema: self.decl.output_config_schema.to_string(),
             transports: vec![TRANSPORT_PIPE.to_string()],
             // This crate's own name/version (env!, baked in at compile time from Cargo.toml) --
             // distinct from ConnectorInfoMsg's name/version, which is the CONNECTOR's own identity.

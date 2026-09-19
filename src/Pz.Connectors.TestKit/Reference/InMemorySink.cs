@@ -70,6 +70,7 @@ internal sealed class InMemorySinkWriteSession(InMemoryConnector connector, Outp
     public ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
     {
         EnsureOpen("write to");
+        ct.ThrowIfCancellationRequested();
 
         var ordinal = _batches.Count;
         if (FaultInjection.GetInt(spec.Options, "fail_write_at_batch") == ordinal)

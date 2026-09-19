@@ -142,6 +142,10 @@ internal abstract class LocalFileWriteSessionBase(string tempDir, string tempFil
     public async ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
     {
         EnsureOpen("write to");
+        // The per-format writers below buffer in memory and may never touch an awaitable I/O call
+        // small enough to observe an already-cancelled token on their own -- check here, once, so
+        // every format honors cancellation the same way.
+        ct.ThrowIfCancellationRequested();
         await WriteBatchCoreAsync(batch, ct).ConfigureAwait(false);
         _rowsWritten += batch.Length;
         _batchesWritten++;
