@@ -9,9 +9,11 @@ namespace Pz.Mcp.Handlers;
 ///
 /// These replaced the embedded doc resources. The documentation is published on the website, so
 /// serving it from there means an agent reads what is currently true rather than whatever shipped
-/// with the user's build of pz. The trade is that these three tools need network access; they are the
-/// only ones that do, and they say so with PZ0607 rather than returning an empty result that reads
-/// like "no such documentation".
+/// with the user's build of pz. The trade is that these three tools need network access -- they are
+/// the only ones that do -- unless <c>PZ_DOCS_URL</c> names a <c>file:</c> mirror (a local directory
+/// holding the site's own <c>llms.txt</c>/<c>llms-full.txt</c>, the documented air-gapped route; see
+/// <see cref="DocsCatalog"/>), and they say so with PZ0607 rather than returning an empty result that
+/// reads like "no such documentation".
 ///
 /// Project-independent by design: unlike every other tool here, none of these takes a projectDir.
 /// An agent can consult the documentation before a project exists, which is exactly when it is most
@@ -38,6 +40,10 @@ internal static class DocsTools
         catch (DocsUnavailableException ex)
         {
             return Unavailable(ex);
+        }
+        catch (DocsResponseTooLargeException ex)
+        {
+            return TooLarge(ex);
         }
     }
 
@@ -87,6 +93,10 @@ internal static class DocsTools
         {
             return Unavailable(ex);
         }
+        catch (DocsResponseTooLargeException ex)
+        {
+            return TooLarge(ex);
+        }
     }
 
     /// <summary>pz_docs_get: one page's full markdown by slug, as pz_docs_list and pz_docs_search
@@ -111,6 +121,10 @@ internal static class DocsTools
         catch (DocsUnavailableException ex)
         {
             return Unavailable(ex);
+        }
+        catch (DocsResponseTooLargeException ex)
+        {
+            return TooLarge(ex);
         }
     }
 
@@ -137,4 +151,13 @@ internal static class DocsTools
             Hint: "The documentation tools need network access; every other pz tool works offline. "
                 + $"Set {DocsCatalog.BaseUrlEnvironmentVariable} to a reachable mirror of the site if "
                 + "this machine cannot reach the public one.")]);
+
+    private static string TooLarge(DocsResponseTooLargeException ex) =>
+        ToolEnvelope.Errors([new PzError(
+            PzErrorCode.McpDocsResponseTooLarge,
+            ex.Message,
+            File: null,
+            Line: null,
+            Hint: $"pz refuses to read a documentation response over {ex.LimitBytes} bytes -- " +
+                $"point {DocsCatalog.BaseUrlEnvironmentVariable} at a smaller mirror, or trim the one it names")]);
 }

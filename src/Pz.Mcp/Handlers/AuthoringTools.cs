@@ -79,6 +79,7 @@ internal static class AuthoringTools
         {
             var enriched = ex.Error with
             {
+                File = ConnectionsFileName,
                 Hint = $"no connection named '{name}' exists -- check pz_project_overview for the " +
                     "declared connection names",
             };
@@ -145,6 +146,7 @@ internal static class AuthoringTools
         {
             var enriched = ex.Error with
             {
+                File = ConnectionsFileName,
                 Hint = $"no entity named '{entity}' under connection '{connection}' exists -- check " +
                     "pz_project_overview for the declared entity names",
             };
@@ -178,7 +180,7 @@ internal static class AuthoringTools
         // missing, so this check is Add-only.
         if (!isSet && !project.Connections.Any(c => c.Name == connection))
         {
-            return ToolEnvelope.Errors([UnknownConnectionForEntityError(connection, projectDir)], applied: false);
+            return ToolEnvelope.Errors([UnknownConnectionForEntityError(connection)], applied: false);
         }
 
         // A proposed path-scoped-connector path escaping the project is refused before anything is
@@ -214,6 +216,7 @@ internal static class AuthoringTools
         {
             var enriched = ex.Error with
             {
+                File = ConnectionsFileName,
                 Hint = isSet
                     ? $"no entity named '{entity}' under connection '{connection}' exists -- call " +
                         "pz_add_entity instead"
@@ -261,10 +264,10 @@ internal static class AuthoringTools
         return CanonicalYaml.MappingEntry(entity, value, indentLevels);
     }
 
-    private static PzError UnknownConnectionForEntityError(string connection, string projectDir) => new(
+    private static PzError UnknownConnectionForEntityError(string connection) => new(
         PzErrorCode.McpMutationTarget,
         $"no connection named '{connection}' exists",
-        Path.Combine(projectDir, ConnectionsFileName), null,
+        ConnectionsFileName, null,
         "call pz_add_connection first, or check pz_project_overview for the declared connection names");
 
     // --------------------------------------------------------------------------------------------
@@ -285,7 +288,7 @@ internal static class AuthoringTools
     {
         if (!IsSafeFileStem(name))
         {
-            return ToolEnvelope.Errors([InvalidPipelineNameError(name, projectDir)], applied: false);
+            return ToolEnvelope.Errors([InvalidPipelineNameError(name)], applied: false);
         }
 
         try
@@ -333,7 +336,7 @@ internal static class AuthoringTools
     {
         if (!IsSafeFileStem(name))
         {
-            return ToolEnvelope.Errors([InvalidPipelineNameError(name, projectDir)], applied: false);
+            return ToolEnvelope.Errors([InvalidPipelineNameError(name)], applied: false);
         }
 
         try
@@ -348,7 +351,7 @@ internal static class AuthoringTools
         var sqlPath = Path.Combine(projectDir, PipelinesDirName, name + ".sql");
         if (!File.Exists(sqlPath))
         {
-            return ToolEnvelope.Errors([MissingPipelineError(name, sqlPath)], applied: false);
+            return ToolEnvelope.Errors([MissingPipelineError(name)], applied: false);
         }
 
         File.Delete(sqlPath);
@@ -375,16 +378,16 @@ internal static class AuthoringTools
     /// a name the very next load refuses.</summary>
     private static bool IsSafeFileStem(string name) => PzIdentifier.IsValid(name);
 
-    private static PzError InvalidPipelineNameError(string name, string projectDir) => new(
+    private static PzError InvalidPipelineNameError(string name) => new(
         PzErrorCode.McpMutationTarget,
         $"pipeline name '{name}' {PzIdentifier.Problem(name)}",
-        Path.Combine(projectDir, PipelinesDirName), null,
+        PipelinesDirName, null,
         $"use a valid identifier, e.g. '{PzIdentifier.Suggest(name)}'; pz writes it to pipelines/<name>.sql directly");
 
-    private static PzError MissingPipelineError(string name, string filePath) => new(
+    private static PzError MissingPipelineError(string name) => new(
         PzErrorCode.McpMutationTarget,
         $"no pipeline named '{name}' exists",
-        filePath, null,
+        $"{PipelinesDirName}/{name}.sql", null,
         "check pz_project_overview for the declared pipeline names");
 
     /// <summary>Normalizes to LF line endings with exactly one trailing newline (the repo's byte-stable
@@ -554,6 +557,7 @@ internal static class AuthoringTools
         {
             var enriched = ex.Error with
             {
+                File = ConnectionsFileName,
                 Hint = isUpdate
                     ? $"no connection named '{name}' exists -- call pz_add_connection instead"
                     : $"a connection named '{name}' already exists -- call pz_update_connection instead",

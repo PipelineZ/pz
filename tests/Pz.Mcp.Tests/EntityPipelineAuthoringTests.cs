@@ -90,8 +90,11 @@ public class EntityPipelineAuthoringTests
         var doc = JsonDocument.Parse(await AuthoringTools.AddEntityAsync(
             p.Dir, "raw", "orders", read: new() { ["path"] = "x", ["format"] = "csv" }, write: null,
             RealServices(), CancellationToken.None));
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
-        Assert.Contains("pz_set_entity_options", doc.RootElement.GetProperty("errors")[0].GetProperty("next_step").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        Assert.Contains("pz_set_entity_options", error.GetProperty("next_step").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
     }
 
     [Fact]
@@ -107,8 +110,11 @@ public class EntityPipelineAuthoringTests
             write: null, RealServices(), CancellationToken.None));
         Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
         Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
-        Assert.Contains("pz_add_connection", doc.RootElement.GetProperty("errors")[0].GetProperty("next_step").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        Assert.Contains("pz_add_connection", error.GetProperty("next_step").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
         Assert.Equal(before, File.ReadAllText(Path.Combine(p.Dir, "connections.yml")));
     }
 
@@ -130,8 +136,11 @@ public class EntityPipelineAuthoringTests
         var doc = JsonDocument.Parse(await AuthoringTools.SetEntityOptionsAsync(
             p.Dir, "raw", "nope", read: new() { ["path"] = "x", ["format"] = "csv" }, write: null,
             RealServices(), CancellationToken.None));
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
-        Assert.Contains("pz_add_entity", doc.RootElement.GetProperty("errors")[0].GetProperty("next_step").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        Assert.Contains("pz_add_entity", error.GetProperty("next_step").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
     }
 
     [Fact]
@@ -157,7 +166,10 @@ public class EntityPipelineAuthoringTests
         var doc = JsonDocument.Parse(await AuthoringTools.RemoveEntityAsync(
             p.Dir, "raw", "nope", RealServices(), CancellationToken.None));
         Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("connections.yml", error.GetProperty("file").GetString());
     }
 
     // ----------------------------------------------------------------------------------------------
@@ -240,7 +252,10 @@ public class EntityPipelineAuthoringTests
             p.Dir, name, "select 1\n", null, RealServices(), CancellationToken.None));
         Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
         Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("pipelines", error.GetProperty("file").GetString());
     }
 
     [Fact]
@@ -283,7 +298,10 @@ public class EntityPipelineAuthoringTests
             p.Dir, "nope", RealServices(), CancellationToken.None));
         Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
         Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
-        Assert.Equal("PZ0602", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0602", error.GetProperty("code").GetString());
+        // Project-relative, like every other PzError -- never the machine's absolute temp path.
+        Assert.Equal("pipelines/nope.sql", error.GetProperty("file").GetString());
     }
 
     // ----------------------------------------------------------------------------------------------

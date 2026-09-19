@@ -305,4 +305,131 @@ public class DocsToolsTests
         Assert.NotNull(page);
         Assert.Contains("DuckDB is the hub", page.Body);
     }
+
+    // PZ_DOCS_URL=file://... is the documented air-gapped route: a directory holding the same two
+    // files (llms.txt/llms-full.txt) the site serves over http. The HttpClient handed to the catalog
+    // throws if touched at all -- a file:// catalog must never reach it.
+    [Fact]
+    public async Task File_url_reads_the_index_and_full_text_from_disk()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-docs-mirror-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "llms.txt"), Index);
+            File.WriteAllText(Path.Combine(dir, "llms-full.txt"), FullText);
+            var neverHttp = new HttpClient(new StubHandler(
+                _ => throw new InvalidOperationException("a file:// catalog must never use HttpClient")));
+            var catalog = new DocsCatalog(neverHttp, "file://" + dir);
+
+            var result = Parse(await DocsTools.GetAsync(catalog, "concepts/data-plane", CancellationToken.None));
+
+            Assert.True(result.GetProperty("ok").GetBoolean());
+            Assert.Contains(
+                "DuckDB is the hub", result.GetProperty("doc").GetProperty("markdown").GetString());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // A missing/misconfigured file:// mirror is exactly the same user-facing failure as an unreachable
+    // http one -- PZ0607, naming the path, never a bare NotSupportedException/PZ0609 "pz defect".
+    [Fact]
+    public async Task File_url_with_a_missing_mirror_directory_is_PZ0607_not_a_defect()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-docs-mirror-missing-" + Guid.NewGuid().ToString("N"));
+        var catalog = new DocsCatalog(new HttpClient(new StubHandler(_ => Text(""))), "file://" + dir);
+
+        var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        Assert.Equal("PZ0607", result.GetProperty("errors")[0].GetProperty("code").GetString());
+    }
+
+    // Cap enforcement, both transports -- a response over the limit is a coded refusal (PZ0610), never a
+    // silent truncation. The limit is a constructor argument so a test need not move tens of megabytes.
+    [Fact]
+    public async Task Oversized_http_response_is_PZ0610_not_silently_truncated()
+    {
+        var catalog = new DocsCatalog(
+            new HttpClient(new StubHandler(_ => Text(Index))), "https://pipelinez.dev", maxResponseBytes: 16);
+
+        var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+        Assert.False(result.GetProperty("ok").GetBoolean());
+        var error = result.GetProperty("errors")[0];
+        Assert.Equal("PZ0610", error.GetProperty("code").GetString());
+        Assert.Contains("pipelinez.dev", error.GetProperty("message").GetString()!, StringComparison.Ordinal);
+    }
+
+    // A response that declares no length must be refused while it is still arriving: reading all of it
+    // first to measure it is the unbounded read the limit exists to prevent.
+    [Fact]
+    public async Task An_oversized_response_with_no_declared_length_is_refused_before_it_is_all_read()
+    {
+        var body = new CountingStream(length: 1_000_000);
+        var catalog = new DocsCatalog(
+            new HttpClient(new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(body),
+            })),
+            "https://pipelinez.dev", maxResponseBytes: 1024);
+
+        var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+        Assert.Equal("PZ0610", result.GetProperty("errors")[0].GetProperty("code").GetString());
+        Assert.True(body.BytesRead < 100_000, $"read {body.BytesRead} bytes of a response capped at 1024");
+    }
+
+    [Fact]
+    public async Task Oversized_file_response_is_PZ0610_not_silently_truncated()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-docs-mirror-big-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "llms.txt"), Index);
+            var catalog = new DocsCatalog(
+                new HttpClient(new StubHandler(_ => Text(""))), "file://" + dir, maxResponseBytes: 16);
+
+            var result = Parse(await DocsTools.ListAsync(catalog, CancellationToken.None));
+
+            Assert.False(result.GetProperty("ok").GetBoolean());
+            Assert.Equal("PZ0610", result.GetProperty("errors")[0].GetProperty("code").GetString());
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>A non-seekable body of a fixed size that counts what was actually pulled from it.</summary>
+    private sealed class CountingStream(long length) : Stream
+    {
+        private long _remaining = length;
+
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var n = (int)Math.Min(count, _remaining);
+            Array.Fill(buffer, (byte)'a', offset, n);
+            _remaining -= n;
+            BytesRead += n;
+            return n;
+        }
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
 }

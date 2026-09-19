@@ -78,6 +78,40 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
+  tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
+  disk instead of handing it to `HttpClient`, which threw `NotSupportedException`
+  and surfaced as PZ0609 "this is a pz defect". A missing/unreadable mirror
+  now reports PZ0607, the same coded failure an unreachable http mirror
+  already gives. Every fetch, over either transport, is capped at 25 MB --
+  an oversized `llms.txt`/`llms-full.txt` is a coded refusal (new PZ0610)
+  rather than an unbounded read or a silent truncation, and a response that
+  declares no length is refused while it is still arriving, not after it has
+  all been buffered.
+- `pz_entity_schema` now works for an entity not yet declared under a
+  connection's `entities:` block -- an entity is just a name in that place,
+  matching the natural authoring order (look at the table, then write the
+  pipeline). Its new optional `read` argument supplies whatever options the
+  connector's schema discovery needs beyond the bare name (e.g.
+  `format: parquet`, since localfiles otherwise defaults an undeclared
+  entity to csv, which requires a `columns:` contract this call deliberately
+  doesn't have); for an entity that IS declared its own read applies, and
+  the result carries a `note` saying the passed options went unused. A
+  contract-bearing entity whose live schema has grown
+  beyond the declared contract now says so additively (`differs_from_contract`
+  plus `extra_columns`) instead of silently reporting only the stale
+  contract. Every `PzError.File` this tool and the connection/entity/pipeline
+  authoring tools emit is project-relative now (e.g. `connections.yml`,
+  `pipelines/<name>.sql`), never the machine's absolute temp/project path.
+- `pz_run`/`pz_retry` now report the run they just executed instead of
+  whatever run happens to read back as "latest" — a stale/foreign run could
+  win that race (another run's artifacts sorting newer by the time the MCP
+  envelope was built). `McpRunOutcome` gains an additive `RunId`, populated
+  the instant the run begins, and `pz_run`/`pz_retry`'s result envelope reads
+  that run by id instead of re-reading whatever `ReadLatest()` returns
+  afterward -- on every state backend: `pz_run_results(run_id)` likewise
+  finds the run by id on a SQL Server state store now, where it used to
+  return the latest run with a note saying it could not look one up.
 - An unhandled exception inside a C# SDK connector handler — a connector
   defect the SDK never anticipated, not an operational failure the connector
   reported on purpose — now reaches the engine as a non-transient connector

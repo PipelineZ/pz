@@ -16,6 +16,11 @@ namespace Pz.Mcp.Handlers;
 /// filled-in values.</summary>
 internal static class IntrospectTools
 {
+    // Bare relative filename, matching ConnectionDef.FilePath's own convention (ConnectionsLoader
+    // stamps every real connection with this same bare name, never an absolute path) -- a PzError.File
+    // is project-relative like every other one this project emits.
+    private const string ConnectionsFileName = "connections.yml";
+
     /// <summary>pz_project_overview: name, flows, connections (names/types/entities only — never
     /// config values), pipelines (refs/sources/sinks), and the compiled DAG's node list. On a compile
     /// failure, falls back to a bare <see cref="ProjectPhases.Load"/> so a broken pipeline doesn't hide
@@ -231,10 +236,17 @@ internal static class IntrospectTools
     /// Filters against <see cref="CompiledDag.Connections"/> (the effective connections, including any
     /// entity declared only at a <c>source()</c> call site with no YAML <c>entities:</c> block) — the
     /// same reason <see cref="Overview"/> uses <c>dag.Connections</c> rather than the loaded project's.
-    /// An unknown connection or entity (the filter matches nothing) is reported as a plain enveloped
+    /// An unknown CONNECTION (no match at all) is reported as a plain enveloped
     /// <see cref="PzErrorCode.ConnectionCheckFailed"/> (PZ0330, the closest existing connectivity code)
     /// rather than a new error code — <see cref="ConnectivityValidator"/> never gets a chance to report
-    /// it in its own vocabulary because there is nothing left to probe.
+    /// it in its own vocabulary because there is nothing left to probe. An ENTITY not declared under a
+    /// connection that DOES exist is not refused: an entity is just a name in that place (no ABI change
+    /// needed -- the connector only ever needs the connection config + entity name + optional read
+    /// options to discover a schema, exactly what `source()` already lets a pipeline call with no
+    /// `entities:` block at all), so this probes a synthesized dataset with no declared options/contract
+    /// -- the natural "look at the table, then write the pipeline" authoring order this tool exists for.
+    /// A truly nonexistent entity (no such table/file) still fails naturally, through
+    /// <see cref="ConnectivityValidator"/>'s own schema-fetch error.
     ///
     /// Result: {columns:[{name,type}], source}. <c>source</c> is <c>"fetched"</c> when the columns came
     /// from <see cref="ConnectivityResult.FetchedSchemas"/>'s live probe (a contract-less dataset — the
@@ -246,12 +258,20 @@ internal static class IntrospectTools
     /// shape), so falling back to the declared contract itself is the only way this handler avoids
     /// returning a misleading <c>ok:true</c> with an empty <c>columns</c> array — indistinguishable from
     /// "this entity genuinely has zero columns" — for the overwhelmingly common case of a dataset that
-    /// DOES declare a contract. If neither is available (should not happen when the validator ran clean
-    /// on a contract-less dataset, but guarded rather than assumed), this reports the same enveloped
-    /// <see cref="PzErrorCode.ConnectionCheckFailed"/> shape as the unknown-connection/entity case below,
-    /// rather than a misleading empty success.</summary>
+    /// DOES declare a contract. A clean connectivity result already means every declared column matches
+    /// the live schema (a mismatch is PZ0331/SchemaDrift, caught above), so the one way "declared_contract"
+    /// can still differ from the live shape is a connector whose fetch discovers MORE columns than the
+    /// contract declares (contracts prune on read, never widen) -- when
+    /// <see cref="ConnectivityResult.ExtraColumnsByDataset"/> names any, this is surfaced additively as
+    /// <c>differs_from_contract: true</c> plus <c>extra_columns: […]</c>, so an author with a stale
+    /// contract can see the table grew without switching this tool's answer out from under a caller that
+    /// only reads <c>columns</c>. If neither a fetched nor a declared schema is available (should not
+    /// happen when the validator ran clean on a contract-less dataset, but guarded rather than assumed),
+    /// this reports the same enveloped <see cref="PzErrorCode.ConnectionCheckFailed"/> shape as the
+    /// unknown-connection case above, rather than a misleading empty success.</summary>
     internal static async Task<string> EntitySchemaAsync(
-        string projectDir, string connection, string entity, CliServices services, CancellationToken ct)
+        string projectDir, string connection, string entity, Dictionary<string, object?>? read,
+        CliServices services, CancellationToken ct)
     {
         try
         {
@@ -259,15 +279,28 @@ internal static class IntrospectTools
 
             var matchedConnection = dag.Connections.FirstOrDefault(
                 c => string.Equals(c.Name, connection, StringComparison.Ordinal));
-            var matchedDataset = matchedConnection?.Datasets.FirstOrDefault(
-                d => string.Equals(d.Name, entity, StringComparison.Ordinal));
-            if (matchedConnection is null || matchedDataset is null)
+            if (matchedConnection is null)
             {
                 return ToolEnvelope.Errors([new PzError(PzErrorCode.ConnectionCheckFailed,
-                    $"no declared read for entity '{entity}' on connection '{connection}'",
-                    matchedConnection?.FilePath ?? projectDir, null,
-                    "check pz_project_overview for declared connections and entities")]);
+                    $"no connection named '{connection}' exists",
+                    ConnectionsFileName, null,
+                    "check pz_project_overview for the declared connection names")]);
             }
+
+            // An entity not already declared under this connection is a plain name to probe, not a
+            // refusal -- see the class doc above. `read` supplies whatever options the connector's
+            // schema discovery needs beyond the bare name (e.g. `format: parquet` -- localfiles
+            // defaults every undeclared entity to csv, which needs a columns: contract this call
+            // deliberately does not have). Once the entity IS declared its own read applies, and the
+            // result says the passed options went unused.
+            var declaredDataset = matchedConnection.Datasets.FirstOrDefault(
+                d => string.Equals(d.Name, entity, StringComparison.Ordinal));
+            var matchedDataset = declaredDataset
+                ?? new DatasetDef(entity, read ?? new Dictionary<string, object?>(), Columns: null);
+            var unusedReadNote = declaredDataset is not null && read is { Count: > 0 }
+                ? $"'{entity}' is already declared on connection '{connection}', so its declared read was " +
+                  "used and the `read` options passed here were not"
+                : null;
 
             var filteredProject = project with
             {
@@ -289,6 +322,7 @@ internal static class IntrospectTools
             var key = $"{connection}.{entity}";
             List<(string Name, string Type)> columns;
             string source;
+            IReadOnlyList<string>? extraColumns = null;
             if (connectivity.FetchedSchemas.TryGetValue(key, out var rendered))
             {
                 columns = ParseRenderedSchema(rendered);
@@ -299,6 +333,7 @@ internal static class IntrospectTools
                 columns = [.. contract.OrderBy(kv => kv.Key, StringComparer.Ordinal)
                     .Select(kv => (kv.Key, kv.Value))];
                 source = "declared_contract";
+                connectivity.ExtraColumnsByDataset?.TryGetValue(key, out extraColumns);
             }
             else
             {
@@ -323,6 +358,26 @@ internal static class IntrospectTools
 
                 json.WriteEndArray();
                 json.WriteString("source", source);
+                if (unusedReadNote is not null)
+                {
+                    json.WriteString("note", unusedReadNote);
+                }
+
+                if (source == "declared_contract")
+                {
+                    json.WriteBoolean("differs_from_contract", extraColumns is { Count: > 0 });
+                    if (extraColumns is { Count: > 0 })
+                    {
+                        json.WriteStartArray("extra_columns");
+                        foreach (var name in extraColumns)
+                        {
+                            json.WriteStringValue(name);
+                        }
+
+                        json.WriteEndArray();
+                    }
+                }
+
                 json.WriteEndObject();
             });
         }
