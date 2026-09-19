@@ -55,8 +55,12 @@ else
   exit 1
 fi
 
+# --blame-hang: these facts drive a real connector process, and a connector that never answers would
+# otherwise sit silent until whatever runs this script gives up, naming nothing. The whole filter
+# takes well under a minute, so five minutes only ever ends a run that was never going to finish.
 echo "running the Rust telemetry e2e (Category=RustPcp) against the memory_sink example..."
-if dotnet test "${ROOT_DIR}/tests/Pz.PackageManagement.Tests" -c Release --filter "Category=RustPcp"; then
+if dotnet test "${ROOT_DIR}/tests/Pz.PackageManagement.Tests" -c Release --filter "Category=RustPcp" \
+  --blame-hang --blame-hang-timeout 5m --blame-hang-dump-type mini; then
   echo "rust-telemetry: PASS"
 else
   status=$?
