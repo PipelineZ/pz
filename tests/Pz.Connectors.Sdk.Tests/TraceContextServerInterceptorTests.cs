@@ -135,6 +135,51 @@ public sealed class TraceContextServerInterceptorTests
         Assert.Null(Activity.Current);
     }
 
+    /// <summary>Pins the HasListeners short-circuit: with no listener, StartActivity was already a
+    /// no-op, but the traceparent/tracestate metadata lookup ahead of it was not -- this proves that
+    /// lookup itself is skipped now, by making it throw if touched, on every RPC (not just the one
+    /// with no listener) rather than only asserting the return value stayed null.</summary>
+    [Fact]
+    public void With_no_exporter_the_request_headers_are_never_inspected()
+    {
+        using var telemetry = new ConnectorTelemetry(new PzConnectorHostOptions());
+        var interceptor = new TraceContextServerInterceptor(telemetry);
+
+        Assert.Null(interceptor.Begin(new ThrowingHeadersServerCallContext(
+            "/pz.connector.v1.PzConnector/PlanRead")));
+    }
+
+    /// <summary>Control for the test above: with a real listener, Begin DOES need the headers, so the
+    /// same poisoned context must fail loudly instead of silently -- proving the throw above would
+    /// have caught a regression rather than the metadata lookup having moved somewhere else unseen.</summary>
+    [Fact]
+    public void With_an_exporter_the_request_headers_are_inspected()
+    {
+        using var telemetry = Exporting();
+        var interceptor = new TraceContextServerInterceptor(telemetry);
+
+        Assert.Throws<InvalidOperationException>(() => interceptor.Begin(
+            new ThrowingHeadersServerCallContext("/pz.connector.v1.PzConnector/PlanRead")));
+    }
+
+    private sealed class ThrowingHeadersServerCallContext(string method) : ServerCallContext
+    {
+        protected override string MethodCore => method;
+        protected override string HostCore => "localhost";
+        protected override string PeerCore => "unix";
+        protected override DateTime DeadlineCore => DateTime.MaxValue;
+        protected override Metadata RequestHeadersCore =>
+            throw new InvalidOperationException("request headers must not be read");
+        protected override CancellationToken CancellationTokenCore => CancellationToken.None;
+        protected override Metadata ResponseTrailersCore => [];
+        protected override Status StatusCore { get; set; }
+        protected override WriteOptions? WriteOptionsCore { get; set; }
+        protected override AuthContext AuthContextCore => new(null, new Dictionary<string, List<AuthProperty>>());
+        protected override ContextPropagationToken CreatePropagationTokenCore(ContextPropagationOptions? options) =>
+            throw new NotSupportedException();
+        protected override Task WriteResponseHeadersAsyncCore(Metadata responseHeaders) => Task.CompletedTask;
+    }
+
     [Fact]
     public async Task The_unary_handler_runs_inside_the_span_and_ends_it_afterwards()
     {

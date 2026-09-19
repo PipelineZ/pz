@@ -187,6 +187,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     against the project directory, `_PzFindStagedRids`'s raw `System.IO.Directory` call against the
     invoking process's own working directory. `Pz.Connectors.Sdk.targets` now anchors it to an
     absolute path once, before either target reads it.
+  - `TraceContextServerInterceptor.Begin` parsed the `traceparent`/`tracestate` metadata on every RPC
+    even with nothing exporting (`StartActivity` was already a no-op, but the parse ahead of it was
+    not); it now short-circuits on `ActivitySource.HasListeners()` first. `ConnectorTelemetry`'s
+    `InstanceId` (written once from Configure, read from every later RPC's own thread) is now backed
+    by a volatile field.
 - `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
   tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
   disk instead of handing it to `HttpClient`, which threw `NotSupportedException`
