@@ -65,13 +65,17 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// counting round trips across a sequence of growing snapshots, rather than trusting timing.</summary>
     internal long NodeUpsertCountForTests => Interlocked.Read(ref _nodeUpsertCount);
 
+    /// <summary>Retried by <see cref="SqlStateConnection.Execute{T}"/> on a transient failure -- safe
+    /// because a failure before <c>Commit()</c> rolls the whole transaction back (nothing applied), and a
+    /// failure after commit but before the acknowledgment reaches this caller just means the retry
+    /// upserts the same rows again: every statement here is `UPDATE ... IF @@ROWCOUNT = 0 INSERT`, so
+    /// replaying it produces the same end state, never a duplicate.</summary>
     public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed, string status,
         long? eventsDropped = null)
     {
         lock (LockFor(runId))
         {
-            using var sqlConnection = connection.Open();
-            try
+            connection.Execute<object?>(sqlConnection =>
             {
                 var lastWritten = LastWrittenFor(runId);
                 // Collected up front, committed to `lastWritten` only after the transaction actually
@@ -110,11 +114,9 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 {
                     lastWritten[nodeId] = fingerprint;
                 }
-            }
-            catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-            {
-                throw connection.Unavailable(ex);
-            }
+
+                return null;
+            });
         }
     }
 
@@ -123,7 +125,12 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// <summary>Lazily enumerated (RunResultsReader.cs's class doc, mirrored here): the id list is one
     /// cheap index-only scan of <c>runs</c>, but each run's header + nodes are only read as enumeration
     /// reaches them -- so <see cref="ReadLatest"/> (<c>FirstOrDefault</c>) costs one run's worth of
-    /// reading in the common case, never every stored run.</summary>
+    /// reading in the common case, never every stored run.
+    ///
+    /// Not retried: one connection is held open across the whole lazy enumeration (every <see
+    /// cref="ReadRun"/> call below reuses it), and a transient mid-enumeration failure would need a new
+    /// connection to recover from -- out of scope for a `pz retry`/`pz state show` read path that a
+    /// caller can simply invoke again.</summary>
     public IEnumerable<PriorRun> ReadAllNewestFirst()
     {
         using var sqlConnection = connection.Open();
@@ -146,7 +153,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         }
         catch (Exception ex) when (ex is SqlException or InvalidOperationException)
         {
-            throw connection.Unavailable(ex);
+            throw connection.QueryFailed(ex);
         }
 
         foreach (var runId in runIds)
@@ -167,10 +174,8 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         }
     }
 
-    public IReadOnlyList<RunCandidate> ListCandidates()
-    {
-        using var sqlConnection = connection.Open();
-        try
+    public IReadOnlyList<RunCandidate> ListCandidates() =>
+        connection.Execute(sqlConnection =>
         {
             using var command = new SqlCommand(
                 "DECLARE @sql NVARCHAR(MAX) = N'SELECT run_id FROM ' + QUOTENAME(@schema) + N'.runs'; " +
@@ -188,21 +193,17 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 candidates.Add(new RunCandidate(reader.GetString(0), HasStaging: false, StagingBytes: 0, TotalBytes: 0, IsLive: false));
             }
 
-            return candidates;
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            throw connection.Unavailable(ex);
-        }
-    }
+            return (IReadOnlyList<RunCandidate>)candidates;
+        });
 
     /// <summary>Idempotent: deleting an absent run is a no-op (each DELETE simply affects zero rows),
     /// never an error. Spans all three tables in one transaction -- the schema declares no foreign
-    /// keys, so nothing cascades on its own.</summary>
+    /// keys, so nothing cascades on its own. Safe to retry on a transient failure for the same reason:
+    /// a failure before commit rolls back, and DELETE is naturally idempotent if the commit itself
+    /// actually landed before a lost acknowledgment.</summary>
     public void Delete(string runId)
     {
-        using var sqlConnection = connection.Open();
-        try
+        connection.Execute<object?>(sqlConnection =>
         {
             using var transaction = sqlConnection.BeginTransaction();
             try
@@ -217,11 +218,9 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 transaction.Rollback();
                 throw;
             }
-        }
-        catch (Exception ex) when (ex is SqlException or InvalidOperationException)
-        {
-            throw connection.Unavailable(ex);
-        }
+
+            return null;
+        });
 
         // A deleted run's rows are gone, so a fingerprint recorded against this run id (however
         // unlikely a run id is ever reused) must not survive to wrongly skip a future WriteSnapshot's
@@ -442,7 +441,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         }
         catch (Exception ex) when (ex is SqlException or InvalidOperationException)
         {
-            throw connection.Unavailable(ex);
+            throw connection.QueryFailed(ex);
         }
     }
 

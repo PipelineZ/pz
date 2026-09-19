@@ -270,4 +270,140 @@ public sealed class StateConfigTests
 
         Assert.Contains(ex.Errors, e => e.Code == PzErrorCode.StateConnectionInvalid);
     }
+
+    [Fact]
+    public void Http_backend_reads_timeout_seconds_from_project_yml()
+    {
+        var yaml = Minimal + "state:\n  backend: http\n  url: https://p.example/state\n  timeout_seconds: 45\n";
+
+        var project = ProjectLoader.Load(WriteProject(yaml), new Dictionary<string, string>());
+
+        Assert.Equal(45, project.State.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void Http_backend_timeout_seconds_falls_back_to_the_environment()
+    {
+        var env = new Dictionary<string, string>
+        {
+            ["PZ_STATE_BACKEND"] = "http",
+            ["PZ_STATE_URL"] = "https://state.example/api/agents/runs/abc/state",
+            ["PZ_STATE_TIMEOUT_SECONDS"] = "20",
+        };
+
+        var project = ProjectLoader.Load(WriteProject(Minimal), env);
+
+        Assert.Equal(20, project.State.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void Absent_timeout_seconds_is_null()
+    {
+        var yaml = Minimal + "state:\n  backend: http\n  url: https://p.example/state\n";
+
+        var project = ProjectLoader.Load(WriteProject(yaml), new Dictionary<string, string>());
+
+        Assert.Null(project.State.TimeoutSeconds);
+    }
+
+    [Fact]
+    public void A_non_integer_timeout_seconds_is_PZ0124()
+    {
+        var yaml = Minimal + "state:\n  backend: http\n  url: https://p.example/state\n  timeout_seconds: soon\n";
+
+        var ex = Assert.Throws<PzValidationException>(
+            () => ProjectLoader.Load(WriteProject(yaml), new Dictionary<string, string>()));
+
+        Assert.Contains(ex.Errors, e =>
+            e.Code == PzErrorCode.StateBackendConfigInvalid && e.Message.Contains("timeout_seconds"));
+    }
+
+    [Fact]
+    public void An_out_of_bounds_timeout_seconds_is_PZ0124()
+    {
+        var yaml = Minimal + "state:\n  backend: http\n  url: https://p.example/state\n  timeout_seconds: 0\n";
+
+        var ex = Assert.Throws<PzValidationException>(
+            () => ProjectLoader.Load(WriteProject(yaml), new Dictionary<string, string>()));
+
+        Assert.Contains(ex.Errors, e =>
+            e.Code == PzErrorCode.StateBackendConfigInvalid && e.Message.Contains("timeout_seconds"));
+    }
+
+    [Fact]
+    public void Timeout_seconds_under_sqlserver_is_PZ0124()
+    {
+        var yaml = Minimal + "state:\n  backend: sqlserver\n  timeout_seconds: 30\n";
+
+        var ex = Assert.Throws<PzValidationException>(
+            () => ProjectLoader.Load(WriteProject(yaml), new Dictionary<string, string>()));
+
+        Assert.Contains(ex.Errors, e =>
+            e.Code == PzErrorCode.StateBackendConfigInvalid && e.Message.Contains("timeout_seconds"));
+    }
+
+    [Fact]
+    public void Http_url_with_a_bearer_token_and_plain_http_scheme_warns()
+    {
+        var env = new Dictionary<string, string>
+        {
+            ["PZ_STATE_BACKEND"] = "http",
+            ["PZ_STATE_URL"] = "http://state.example/api/agents/runs/abc/state",
+            ["PZ_STATE_TOKEN"] = "s3cret",
+        };
+
+        var project = ProjectLoader.Load(WriteProject(Minimal), env);
+
+        Assert.Contains(project.Warnings, w => w.Code == PzErrorCode.HttpStateTokenOverInsecureUrl);
+        // Secret hygiene: the token itself never lands in the warning text.
+        Assert.DoesNotContain(project.Warnings, w => w.Message.Contains("s3cret", StringComparison.Ordinal));
+    }
+
+    // Loopback traffic never leaves the host, so there is no network path to read the token off.
+    [Theory]
+    [InlineData("http://localhost:5080/api/agents/runs/abc/state")]
+    [InlineData("http://127.0.0.1:5080/api/agents/runs/abc/state")]
+    [InlineData("http://[::1]:5080/api/agents/runs/abc/state")]
+    public void Loopback_http_url_with_a_bearer_token_does_not_warn(string url)
+    {
+        var env = new Dictionary<string, string>
+        {
+            ["PZ_STATE_BACKEND"] = "http",
+            ["PZ_STATE_URL"] = url,
+            ["PZ_STATE_TOKEN"] = "s3cret",
+        };
+
+        var project = ProjectLoader.Load(WriteProject(Minimal), env);
+
+        Assert.DoesNotContain(project.Warnings, w => w.Code == PzErrorCode.HttpStateTokenOverInsecureUrl);
+    }
+
+    [Fact]
+    public void Https_url_with_a_bearer_token_does_not_warn()
+    {
+        var env = new Dictionary<string, string>
+        {
+            ["PZ_STATE_BACKEND"] = "http",
+            ["PZ_STATE_URL"] = "https://state.example/api/agents/runs/abc/state",
+            ["PZ_STATE_TOKEN"] = "s3cret",
+        };
+
+        var project = ProjectLoader.Load(WriteProject(Minimal), env);
+
+        Assert.DoesNotContain(project.Warnings, w => w.Code == PzErrorCode.HttpStateTokenOverInsecureUrl);
+    }
+
+    [Fact]
+    public void Http_url_with_no_token_does_not_warn()
+    {
+        var env = new Dictionary<string, string>
+        {
+            ["PZ_STATE_BACKEND"] = "http",
+            ["PZ_STATE_URL"] = "http://state.example/api/agents/runs/abc/state",
+        };
+
+        var project = ProjectLoader.Load(WriteProject(Minimal), env);
+
+        Assert.DoesNotContain(project.Warnings, w => w.Code == PzErrorCode.HttpStateTokenOverInsecureUrl);
+    }
 }

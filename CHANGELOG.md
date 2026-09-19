@@ -498,6 +498,67 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   *Not addressed*: feed credentials (a bearer token or basic auth for a
   private feed) remain out of scope -- `--feeds`/`PZ_FEEDS` still take only a
   URL or a local path.
+- The SQL Server connector and state store no longer forward
+  `SqlException.IsTransient` unchanged: Microsoft.Data.SqlClient's own signal
+  covers Azure SQL's connection-resiliency reconnect cases only, so a deadlock
+  victim (error 1205) or a client-side command timeout (error -2) both come
+  back `IsTransient == false` -- verified against a live SQL Server container
+  -- and every raise site treated them as permanent instead of retrying. A
+  shared `MsTransient` classifier (linked into both assemblies, mirroring
+  `AzureTransient`) now also recognizes the deadlock/timeout numbers plus the
+  documented pre-login-transport and Azure SQL throttling/failover numbers
+  (233, 64, 10053, 10054, 10060, 40613, 40197, 40501, 49918, 49919, 49920).
+- The SQL Server and HTTP state backends now split "never reached the store"
+  from "reached it, the request itself failed": every `SqlException` and every
+  HTTP 429/5xx used to land on PZ0518 ("cannot reach"), which the engine never
+  retries, even once a connection or an HTTP response had already come back --
+  and the message rendered only the exception's .NET type name, so a 18456
+  login failure, a 229 permission error and a 1205 deadlock were
+  indistinguishable. A query or request that fails after a successful
+  connect/response is now the new PZ0529, naming the SQL error number or HTTP
+  status (never the connection string or a bearer token); a SQL error number
+  or an HTTP 429/502/503/504 that `MsTransient`/a small closed status set
+  classifies transient is retried a bounded number of times first (delay
+  through `TimeProvider`, honouring a server's `Retry-After` up to a 30s cap)
+  before either succeeding or reporting PZ0529 (which then says how many
+  attempts were made and that the failure is usually temporary). A retry can
+  never write twice, and it does not mistake its own write for another
+  run's: when a SQL write applied and only its acknowledgement was lost, the
+  retry finds its own payload at the version it was writing and succeeds
+  instead of reporting PZ0520; over HTTP a versioned `PUT` is not replayed
+  after a 502/504, where the outcome is unknown, only after a 429/503. The
+  wait between attempts ends early when the run is cancelled.
+- `Pz.State.Http` (`backend: http`) is no longer stuck on a fixed 100s
+  `HttpClient` timeout with no way to cancel it mid-request: a new
+  `state.timeout_seconds` (or `PZ_STATE_TIMEOUT_SECONDS`) bounds every
+  request, and a run's own cancellation now aborts an in-flight state
+  request instead of only the 100s timeout being able to end it -- the
+  cancellation propagates uncaught, the same as anywhere else in a run,
+  never wrapped into a config-error exit. `Set`/`Remove` now accept `200`
+  as success (some servers answer with a body instead of `201`/`204`) and
+  `412` as the same version conflict as `409` (the RFC-native rejection
+  for a failed `If-Match`); a weak `ETag` (`W/"3"`, common once a reverse
+  proxy's gzip layer sits in front of the state server) is now accepted
+  for its version instead of reading as absent and downgrading the next
+  write to insert-if-absent -- which used to report a spurious PZ0520 on
+  every single run behind such a proxy. A `state.url` of `http://` with a
+  bearer token configured now warns (new PZ0530, never blocks a run): the
+  token would otherwise travel in cleartext with no signal at all. A
+  loopback URL is exempt. A request that outlasts the timeout says so
+  ("timed out after 30s") and names `state.timeout_seconds` as the knob.
+- The sqlserver and postgres connectors accept `connect_timeout_seconds`
+  and `command_timeout_seconds` on their connection config, applied to
+  every connection/command that does not already set its own (absent ->
+  each driver's own default, 15s connect / 30s command, unchanged
+  behaviour). A SQL Server command timeout already classifies transient
+  via the earlier `MsTransient` fix; a Postgres one already did (Npgsql's
+  own `IsTransient` reports true for a command timeout, unlike SqlClient's).
+  The mysql connector still refuses both keys: there is no driver here to
+  apply them to (DuckDB's own `mysql` extension is the entire data plane)
+  and its ATTACH/secret syntax accepts no timeout parameter at all --
+  accepting the option and silently doing nothing with it would be exactly
+  the deployment-knob-ignored failure this project's error philosophy
+  forbids.
 
 ## [0.6.1] - 2026-09-10
 

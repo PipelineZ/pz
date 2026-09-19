@@ -5,6 +5,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
+using Pz.Shared;
 
 namespace Pz.Connector.SqlServer;
 
@@ -234,7 +235,7 @@ internal sealed class SqlServerProcedurePartition(string connectionString, Datas
         }
         catch (SqlException ex)
         {
-            throw new PzConnectorException($"sqlserver read failed: {ex.Message}", ex.IsTransient, innerException: ex);
+            throw new PzConnectorException($"sqlserver read failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
 
         try
@@ -265,7 +266,7 @@ internal sealed class SqlServerProcedurePartition(string connectionString, Datas
                 catch (SqlException ex)
                 {
                     throw new PzConnectorException(
-                        $"sqlserver read failed mid-stream: {ex.Message}", ex.IsTransient, innerException: ex);
+                        $"sqlserver read failed mid-stream: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
                 }
 
                 if (!moved)

@@ -13,7 +13,15 @@ namespace Pz.Connector.MySql;
 /// (reachability + server version, not credentials), and `pz validate --connect`'s schema fetch works
 /// only for datasets with a declared `columns:` contract. Registered under the logical name
 /// "mysql". Connection options: host/database required; port (default 3306), user, password,
-/// ssl_mode optional. No merge writes (the DuckDB mysql catalog has no upsert) and no cdc.</summary>
+/// ssl_mode optional. No merge writes (the DuckDB mysql catalog has no upsert) and no cdc.
+///
+/// **No connect/command timeout option, unlike the sqlserver and postgres connectors.** There is no
+/// driver here to configure one on: DuckDB's own mysql extension accepts no timeout-related parameter
+/// in either its ATTACH connection string or its CREATE SECRET body (checked against its published
+/// parameter table), and DuckDB itself has no general per-statement execution timeout. Accepting
+/// `connect_timeout_seconds`/`command_timeout_seconds` here and silently doing nothing with them would
+/// be exactly the deployment-knob-ignored failure this project's error philosophy forbids, so
+/// <see cref="ConnectionConfigSchema"/> continues to refuse them like any other unknown key.</summary>
 public sealed class MySqlConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink
 {
     public ConnectorInfo Info => new("mysql", "0.1.0", ProtocolVersion.Major);

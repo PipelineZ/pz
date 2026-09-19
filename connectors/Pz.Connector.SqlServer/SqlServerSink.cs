@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
+using Pz.Shared;
 
 namespace Pz.Connector.SqlServer;
 
@@ -122,7 +123,7 @@ internal sealed class SqlServerSink(string connectionString) : ISink
         {
             await CleanupAsync(bulk, tx, connection).ConfigureAwait(false);
             throw new PzConnectorException(
-                $"output '{spec.Output}': sqlserver sink open failed: {ex.Message}", ex.IsTransient, innerException: ex);
+                $"output '{spec.Output}': sqlserver sink open failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
         catch
         {
@@ -266,7 +267,7 @@ internal sealed class SqlServerSinkWriteSession(
         catch (SqlException ex)
         {
             throw new PzConnectorException(
-                SqlServerSink.BuildBulkWriteMessage(ex.Number, ex.Message, spec.Output), ex.IsTransient, innerException: ex);
+                SqlServerSink.BuildBulkWriteMessage(ex.Number, ex.Message, spec.Output), MsTransient.IsTransient(ex), innerException: ex);
         }
         catch (InvalidOperationException ex) when (ex.GetType() == typeof(InvalidOperationException))
         {
@@ -326,7 +327,7 @@ internal sealed class SqlServerSinkWriteSession(
         catch (SqlException ex)
         {
             throw new PzConnectorException(
-                $"output '{spec.Output}': sqlserver delete-key apply failed: {ex.Message}", ex.IsTransient, innerException: ex);
+                $"output '{spec.Output}': sqlserver delete-key apply failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
     }
 
@@ -397,7 +398,7 @@ internal sealed class SqlServerSinkWriteSession(
         catch (SqlException ex)
         {
             throw new PzConnectorException(
-                $"output '{spec.Output}': sqlserver commit failed: {ex.Message}", ex.IsTransient, innerException: ex);
+                $"output '{spec.Output}': sqlserver commit failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
     }
 

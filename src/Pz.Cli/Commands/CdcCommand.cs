@@ -83,7 +83,7 @@ internal static class CdcCommand
         {
             project = ProjectLoader.Load(projectDir, SharedInputHelpers.SnapshotEnvironment());
             (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck: false, ct);
-            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System);
+            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System, ct: ct);
         }
         catch (PzValidationException ex)
         {
@@ -213,7 +213,7 @@ internal static class CdcCommand
         {
             project = ProjectLoader.Load(projectDir, SharedInputHelpers.SnapshotEnvironment());
             (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck: false, ct);
-            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System);
+            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System, ct: ct);
         }
         catch (PzValidationException ex)
         {

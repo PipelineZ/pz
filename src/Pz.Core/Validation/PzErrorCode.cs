@@ -589,6 +589,21 @@ public static class PzErrorCode
     /// rights".</summary>
     public const string StateSchemaMigrationLockTimedOut = "PZ0528";
 
+    /// <summary>A keyed-state or run-artifact operation reached the store (the connection opened, or the
+    /// HTTP transport got a response) but the operation itself failed -- a permanent SQL error, an
+    /// exhausted transient-error retry budget, or an HTTP status the wire contract does not expect.
+    /// Distinct from <see cref="StateStoreUnavailable"/> (PZ0518), which is "never got a response at
+    /// all": a login failure, a permission error, and a syntax error all reach the store fine, so telling
+    /// the operator to check connectivity would send them the wrong way. Names the SQL error number or
+    /// HTTP status, never the connection string, a bearer token, or SQL text.</summary>
+    public const string StateQueryFailed = "PZ0529";
+
+    /// <summary>A WARNING code, never a failure: <c>backend: http</c>'s <c>state.url</c> is plain
+    /// <c>http://</c> and a bearer token (<c>PZ_STATE_TOKEN</c>) is configured -- the token travels in
+    /// cleartext on the wire. Never blocks a run; an operator may have a deliberate reason (a
+    /// loopback/VPN-only endpoint) this check cannot see.</summary>
+    public const string HttpStateTokenOverInsecureUrl = "PZ0530";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

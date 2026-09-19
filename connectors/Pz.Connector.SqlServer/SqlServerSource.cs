@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
+using Pz.Shared;
 
 namespace Pz.Connector.SqlServer;
 
@@ -96,7 +97,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
             catch (SqlException ex)
             {
                 throw new PzConnectorException(
-                    $"dataset '{spec.Dataset}': schema probe failed: {ex.Message}", ex.IsTransient, innerException: ex);
+                    $"dataset '{spec.Dataset}': schema probe failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
             }
         }
 
@@ -122,7 +123,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
             catch (SqlException ex)
             {
                 throw new PzConnectorException(
-                    $"dataset '{spec.Dataset}': schema probe failed: {ex.Message}", ex.IsTransient, innerException: ex);
+                    $"dataset '{spec.Dataset}': schema probe failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
             }
         }
 
@@ -142,7 +143,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
         catch (SqlException ex)
         {
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': schema probe failed: {ex.Message}", ex.IsTransient, innerException: ex);
+                $"dataset '{spec.Dataset}': schema probe failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
     }
 
@@ -301,7 +302,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
         {
             throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': partition_column '{column}' probe failed: {ex.Message}",
-                ex.IsTransient, innerException: ex);
+                MsTransient.IsTransient(ex), innerException: ex);
         }
     }
 
@@ -345,7 +346,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
         catch (SqlException ex)
         {
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': cdc status query failed: {ex.Message}", ex.IsTransient, innerException: ex);
+                $"dataset '{spec.Dataset}': cdc status query failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
     }
 
@@ -378,7 +379,7 @@ internal sealed class SqlServerPartition(string connectionString, string selectS
         }
         catch (SqlException ex)
         {
-            throw new PzConnectorException($"sqlserver read failed: {ex.Message}", ex.IsTransient, innerException: ex);
+            throw new PzConnectorException($"sqlserver read failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
 
         var enumerator = SqlServerArrowReader.ReadBatchesAsync(reader, options, ct).GetAsyncEnumerator(ct);
@@ -394,7 +395,7 @@ internal sealed class SqlServerPartition(string connectionString, string selectS
                 catch (SqlException ex)
                 {
                     throw new PzConnectorException(
-                        $"sqlserver read failed mid-stream: {ex.Message}", ex.IsTransient, innerException: ex);
+                        $"sqlserver read failed mid-stream: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
                 }
 
                 if (!moved)

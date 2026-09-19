@@ -40,8 +40,9 @@ internal static class StateBackendFactory
     /// gets a real event sink when <c>state.events</c> is on; a caller with no run in progress --
     /// <c>pz state show</c> -- omits it, which suppresses the event sink regardless of
     /// <c>state.events</c>, since there is no run for it to attach events to.</summary>
-    public static StateBackends Create(PzProject project, string projectDir, TimeProvider time, string? runId = null) =>
-        Create(project.State, project.Name, project.Connections, projectDir, time, runId);
+    public static StateBackends Create(PzProject project, string projectDir, TimeProvider time, string? runId = null,
+        CancellationToken ct = default) =>
+        Create(project.State, project.Name, project.Connections, projectDir, time, runId, ct);
 
     /// <summary>The same composition from just the three things it actually needs, for callers that must
     /// NOT load a whole project to reach the state store -- `pz state` and `pz clean`, via
@@ -49,7 +50,8 @@ internal static class StateBackendFactory
     /// their documented no-project-load property, and would let a broken connections.yml block the very
     /// verbs you reach for when config is broken.</summary>
     public static StateBackends Create(StateConfig state, string projectName,
-        IReadOnlyList<ConnectionDef> connections, string projectDir, TimeProvider time, string? runId = null)
+        IReadOnlyList<ConnectionDef> connections, string projectDir, TimeProvider time, string? runId = null,
+        CancellationToken ct = default)
     {
         var description = Describe(state);
 
@@ -72,8 +74,11 @@ internal static class StateBackendFactory
             // the server, run artifacts stay local, and there is no
             // event sink (PZ0124 already refused `artifacts: true`/`events: true` at load time). The
             // endpoint is not disposed: it lives exactly as long as the process that built it, the same
-            // way SqlStateConnection holds its connection string for the run.
-            var endpoint = new HttpStateEndpoint(state.Url!, state.Token);
+            // way SqlStateConnection holds its connection string for the run. `ct` is this call's own
+            // token (a real run's cancellation for `pz run`, `default` for callers with none), captured
+            // once here because IKeyedStateStore's synchronous surface has no per-call token to carry it.
+            var timeout = state.TimeoutSeconds is { } seconds ? TimeSpan.FromSeconds(seconds) : (TimeSpan?)null;
+            var endpoint = new HttpStateEndpoint(state.Url!, state.Token, time, timeout: timeout, ct: ct);
 
             return new StateBackends(
                 new WatermarkStore(new HttpKeyedStateStore<Watermark>(

@@ -286,7 +286,7 @@ internal static class RunCommand
         StateBackends backends;
         try
         {
-            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System, runId);
+            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System, runId, ct);
             backends.EnsureSchema();
         }
         catch (PzConfigException ex)

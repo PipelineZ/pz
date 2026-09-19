@@ -55,18 +55,19 @@ public sealed class HttpKeyedStateStoreTests
     }
 
     [Fact]
-    public async Task A_404_is_PZ0518_not_absence()
+    public async Task A_404_is_PZ0529_not_absence()
     {
         // The trap this guards: swallowing "wrong run id in PZ_STATE_URL" as "no watermark stored"
-        // would silently re-extract from the beginning of every source.
+        // would silently re-extract from the beginning of every source. PZ0529, not PZ0518: the
+        // transport worked -- a response came back -- only the request itself failed.
         await using var server = new FakeStateServer();
         var store = server.Connect(url: server.UnknownRunUrl);
 
         var get = Assert.Throws<PzConfigException>(() => store.Get("orders"));
         var list = Assert.Throws<PzConfigException>(() => store.ListAll());
 
-        Assert.Equal(PzErrorCode.StateStoreUnavailable, get.Error.Code);
-        Assert.Equal(PzErrorCode.StateStoreUnavailable, list.Error.Code);
+        Assert.Equal(PzErrorCode.StateQueryFailed, get.Error.Code);
+        Assert.Equal(PzErrorCode.StateQueryFailed, list.Error.Code);
         Assert.Contains("PZ_STATE_URL", get.Error.Hint, StringComparison.Ordinal);
     }
 
