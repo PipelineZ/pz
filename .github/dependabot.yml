@@ -84,6 +84,22 @@ updates:
     schedule:
       interval: "weekly"
     groups:
+      # tonic, tonic-build, prost, and prost-types generate and serve the same PCP messages, and
+      # opentelemetry-otlp's "grpc-tonic" exporter links tonic too, so a tonic release only builds
+      # beside the prost and opentelemetry releases made for it; tracing-opentelemetry in turn pins
+      # one opentelemetry release. All of them are 0.x, where Dependabot counts a 0.N -> 0.N+1 bump
+      # as breaking and would open one PR per crate, none of which compiles alone. No update-types
+      # here: the set moves as one PR whatever the size of the bump.
+      grpc-otel:
+        patterns:
+          - "tonic"
+          - "tonic-*"
+          - "prost"
+          - "prost-*"
+          - "opentelemetry"
+          - "opentelemetry_sdk"
+          - "opentelemetry-*"
+          - "tracing-opentelemetry"
       cargo-minor-patch:
         patterns:
           - "*"

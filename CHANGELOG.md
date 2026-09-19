@@ -57,6 +57,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   (`rust/`). Packages that must move together (`Grpc.*`/`Google.Protobuf`, `Apache.Arrow`,
   `JsonSchema.Net`) are grouped explicitly so a bump lands in one PR across every project that pins
   them; major-version bumps are never grouped, so they always arrive as their own PR. No auto-merge.
+  The Rust workspace's `tonic`/`prost`/`opentelemetry` crates are one group for every bump size:
+  they are all 0.x and only compile as a matched set, so one PR per crate could never go green.
 - `ci.yml`'s `rust` job runs `cargo audit` (a version-pinned install, cached via `rust-cache`'s
   `~/.cargo/bin`) after `cargo test`, so a RUSTSEC advisory against a workspace dependency fails CI
   even between dependency bumps.
