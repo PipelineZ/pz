@@ -131,7 +131,7 @@ jobs:
       # ...and the CoreCLR `any` fallback sub-package, which serves every platform without an AOT
       # build. Cannot use --no-build: packing a RID is a publish.
       - run: dotnet pack src/Pz.Cli -c Release -r any -p:PublishAot=false -o packages
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v8
         with:
           pattern: pz-*
           path: packages
