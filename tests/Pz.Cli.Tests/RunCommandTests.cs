@@ -10,6 +10,7 @@ using Pz.Diagnostics.Events;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.Validation;
+using Pz.State.SqlServer;
 
 namespace Pz.Cli.Tests;
 
@@ -203,6 +204,38 @@ public class RunCommandTests : IDisposable
         var warningCount = CountOccurrences(stderrText, "could not write run_results.json");
         Assert.Equal(1, warningCount);
         Assert.Contains("resume/retry data may be stale", stderrText);
+    }
+
+    /// <summary>Under `state: {backend: sqlserver, artifacts: true}`, a snapshot-write failure must name
+    /// the SQL state store, not "run_results.json" -- the wrong store name a generic warning used to
+    /// print regardless of which backend actually failed. No docker needed: a connection to an
+    /// unreachable server fails fast (short Connect Timeout), the same seam
+    /// <c>SqlEventSinkDisposeFaultTests</c> uses.</summary>
+    [Fact]
+    public void Snapshot_write_failure_against_the_SQL_store_names_the_SQL_store()
+    {
+        var connection = new SqlStateConnection(
+            "Server=127.0.0.1,1;Database=pz;User Id=sa;Password=no;TrustServerCertificate=true;Connect Timeout=2",
+            "pz");
+        var artifacts = new SqlRunArtifactStore(connection, "test-project");
+        var events = new SnapshotRunEvents(artifacts, "fixed-run-id",
+            DateTimeOffset.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"));
+
+        var stderr = new StringWriter();
+        var originalErr = Console.Error;
+        Console.SetError(stderr);
+        try
+        {
+            events.NodeCompleted(MakeResult("load_a", NodeStatus.Success));
+        }
+        finally
+        {
+            Console.SetError(originalErr);
+        }
+
+        var stderrText = stderr.ToString();
+        Assert.Contains("could not write the SQL state store", stderrText);
+        Assert.DoesNotContain("run_results.json", stderrText);
     }
 
     /// <summary>A renderer whose <c>Render</c> never

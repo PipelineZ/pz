@@ -557,6 +557,14 @@ public static class PzErrorCode
     /// duplicate rows into append ones — so the notice names every dataset and why.</summary>
     public const string StateNotAdvanced = "PZ0527";
 
+    /// <summary>The exclusive, transaction-owned <c>sp_getapplock</c> that serializes concurrent
+    /// <c>SqlStateSchema.EnsureCurrent</c> callers against the same schema could not be acquired within
+    /// its timeout -- another process appears to be migrating (or is stuck holding the lock on) the same
+    /// schema. Distinct from <see cref="StateSchemaVersionMismatch"/> (PZ0519): the connection and the
+    /// schema shape are both fine here, so the actionable next step is "retry", not "check DDL
+    /// rights".</summary>
+    public const string StateSchemaMigrationLockTimedOut = "PZ0528";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

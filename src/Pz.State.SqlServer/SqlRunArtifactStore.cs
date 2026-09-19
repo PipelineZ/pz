@@ -46,6 +46,25 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
 
     private readonly Lock _runLocksGate = new();
 
+    /// <summary>The per-node fingerprint (see <see cref="NodeFingerprint"/>) this store last
+    /// successfully upserted, keyed by run id then node id -- what turns <see cref="SnapshotRunEvents"/>'s
+    /// cumulative node list (every node completed so far, re-sent whole on every call) back into a
+    /// delta. A 300-node run used to cost ~45k round trips (1+2+...+300 upserts across 300 snapshots);
+    /// a node's row is now upserted once when new, then again only if its content genuinely changes.
+    /// Guarded by <see cref="LockFor"/> the same as the rest of a run's state -- every read/write of an
+    /// entry happens inside that run's <c>lock</c> block in <see cref="WriteSnapshot"/>.</summary>
+    private readonly Dictionary<string, Dictionary<string, string>> _lastWritten = new(StringComparer.Ordinal);
+
+    private readonly Lock _lastWrittenGate = new();
+
+    private long _nodeUpsertCount;
+
+    /// <summary>Total number of <see cref="UpsertNode"/> calls this store instance has actually executed
+    /// -- i.e. excluding nodes skipped because their fingerprint was already current. Internal test-only
+    /// seam (mirrors <see cref="SqlEventSink"/>'s <c>ForTests</c> members): proves the delta behavior by
+    /// counting round trips across a sequence of growing snapshots, rather than trusting timing.</summary>
+    internal long NodeUpsertCountForTests => Interlocked.Read(ref _nodeUpsertCount);
+
     public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed, string status,
         long? eventsDropped = null)
     {
@@ -54,13 +73,29 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
             using var sqlConnection = connection.Open();
             try
             {
+                var lastWritten = LastWrittenFor(runId);
+                // Collected up front, committed to `lastWritten` only after the transaction actually
+                // commits (below) -- a rolled-back or otherwise failed write must leave every node's
+                // tracked fingerprint exactly as it was, so the NEXT snapshot retries it rather than
+                // wrongly believing it is already durable.
+                var newlyWritten = new List<(string NodeId, string Fingerprint)>();
+
                 using var transaction = sqlConnection.BeginTransaction();
                 try
                 {
                     UpsertRunHeader(sqlConnection, transaction, runId, startedAtIso, status, eventsDropped);
                     foreach (var node in completed)
                     {
+                        var fingerprint = NodeFingerprint(node);
+                        if (lastWritten.TryGetValue(node.Id.Value, out var priorFingerprint) &&
+                            priorFingerprint == fingerprint)
+                        {
+                            continue;
+                        }
+
                         UpsertNode(sqlConnection, transaction, runId, node);
+                        Interlocked.Increment(ref _nodeUpsertCount);
+                        newlyWritten.Add((node.Id.Value, fingerprint));
                     }
 
                     transaction.Commit();
@@ -69,6 +104,11 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 {
                     transaction.Rollback();
                     throw;
+                }
+
+                foreach (var (nodeId, fingerprint) in newlyWritten)
+                {
+                    lastWritten[nodeId] = fingerprint;
                 }
             }
             catch (Exception ex) when (ex is SqlException or InvalidOperationException)
@@ -182,6 +222,53 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         {
             throw connection.Unavailable(ex);
         }
+
+        // A deleted run's rows are gone, so a fingerprint recorded against this run id (however
+        // unlikely a run id is ever reused) must not survive to wrongly skip a future WriteSnapshot's
+        // upsert of the same node content.
+        lock (_lastWrittenGate)
+        {
+            _lastWritten.Remove(runId);
+        }
+    }
+
+    /// <summary>Gets (creating if absent) the per-node fingerprint map for one run. Only the dictionary
+    /// LOOKUP is guarded by <see cref="_lastWrittenGate"/> -- reads/writes of entries inside the returned
+    /// map are safe without it because every caller already holds <c>LockFor(runId)</c> for the whole
+    /// duration it touches them (<see cref="WriteSnapshot"/>'s one call site).</summary>
+    private Dictionary<string, string> LastWrittenFor(string runId)
+    {
+        lock (_lastWrittenGate)
+        {
+            if (!_lastWritten.TryGetValue(runId, out var perNode))
+            {
+                perNode = new Dictionary<string, string>(StringComparer.Ordinal);
+                _lastWritten[runId] = perNode;
+            }
+
+            return perNode;
+        }
+    }
+
+    /// <summary>A stable, order-independent fingerprint of exactly the columns <see cref="UpsertNode"/>
+    /// writes -- built from the same resolved (string/long) values rather than compared via
+    /// <see cref="NodeResult"/>'s own record equality, which would compare <see cref="NodeResult.Observed"/>'s
+    /// <c>Columns</c> list by reference, not value, and so could never recognize two calls with
+    /// equivalent-but-distinct column lists as unchanged. The unit separator cannot appear in any of
+    /// these fields (none of them are free-form except `error_message`/payload JSON, and U+001F is a
+    /// non-printable control character no legitimate error message or JSON text contains), so distinct
+    /// field tuples can never collide onto the same joined string.</summary>
+    private static string NodeFingerprint(NodeResult node)
+    {
+        var provenance = node.Provenance is { } p ? ProvenanceName(p) : "";
+        var payload = SerializePayload(node) ?? "";
+        return string.Join('\u001f',
+            node.Name, node.Kind.ToString(), NodeStatusName(node.Status),
+            node.RowsMoved.ToString(CultureInfo.InvariantCulture),
+            ((long)node.Duration.TotalMilliseconds).ToString(CultureInfo.InvariantCulture),
+            node.Error?.Code ?? "", node.Error?.Message ?? "", provenance,
+            node.WatermarkCandidate?.Cursor ?? "", node.WatermarkCandidate?.TypeName ?? "",
+            node.WatermarkCandidate?.Value ?? "", payload);
     }
 
     private Lock LockFor(string runId)

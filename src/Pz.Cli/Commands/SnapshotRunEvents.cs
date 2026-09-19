@@ -2,6 +2,7 @@ using Pz.Core.Dag;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.Dispatch;
+using Pz.State.SqlServer;
 
 namespace Pz.Cli.Commands;
 
@@ -100,8 +101,17 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
 
             if (shouldWarn)
             {
+                // Named by TYPE, not by StateBackends.Description: `state.artifacts: false` steers
+                // artifacts to the local store even under `state: {backend: sqlserver}`, so the backend
+                // description alone would misname which store actually failed.
+                var target = artifacts switch
+                {
+                    LocalRunArtifactStore => "run_results.json",
+                    SqlRunArtifactStore => "the SQL state store",
+                    _ => "the configured run-artifact store",
+                };
                 Console.Error.WriteLine(
-                    $"warning: could not write run_results.json ({ex.Message}) — resume/retry data may be stale");
+                    $"warning: could not write {target} ({ex.Message}) — resume/retry data may be stale");
             }
         }
     }

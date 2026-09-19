@@ -383,6 +383,41 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   All errors aggregate (a run reports every mistake in a file at once, not
   just the first) and carry the file and a next step, per this project's
   error-reporting rule.
+- `state: {backend: sqlserver, artifacts: true}` no longer costs O(N^2) round
+  trips per run: `SqlRunArtifactStore.WriteSnapshot` now upserts only the nodes
+  that are new or changed since the store's last successful write for that run,
+  instead of every node in the cumulative list `SnapshotRunEvents.NodeCompleted`
+  re-sends on every call. A 300-node run used to make roughly 45,000 round
+  trips (1+2+...+300 across 300 snapshots); it now makes 300. A node is only
+  ever marked written after its snapshot's transaction actually commits, so a
+  failed write still retries on the next snapshot.
+- `SqlEventSink` (the `state: {backend: sqlserver, events: true}` run-event
+  store) no longer lets a dead or unreachable store hang a run's shutdown --
+  Ctrl-C included -- for minutes. A one-way circuit breaker stops retrying
+  after 3 consecutive flush failures and counts every later batch dropped
+  without another connect attempt, instead of each remaining batch paying its
+  own fresh connect timeout in turn; `DisposeAsync` additionally bounds its
+  total wait at a 30s deadline (driven by the sink's own `TimeProvider`) as a
+  backstop against a store that is merely slow rather than outright down. When
+  any events were dropped, `pz run` now prints a notice naming the count and
+  the store instead of leaving it silent in a SQL column only. Separately, the
+  snapshot-write warning that always said "could not write run_results.json"
+  now names the store that actually failed -- "the SQL state store" under
+  `state.artifacts: true`, instead of misnaming it as the local JSON file.
+- `SqlStateSchema.EnsureCurrent` (the SQL Server state store's first-use/
+  migration path) is now safe against two processes racing the same schema:
+  a store that is behind is migrated under an exclusive, transaction-owned
+  `sp_getapplock`, with the version read again under the lock, instead of on
+  a version read before the transaction even began. A store that is already
+  current takes no lock and opens no transaction. A caller that loses the race and
+  wakes to find the schema already migrated now does nothing, instead of
+  racing a second migration attempt (previously an occasional raw `2714`
+  surfaced as PZ0519 with the wrong "check DDL rights" advice, or a duplicate
+  `schema_version` row, since that table had no key). A lock that cannot be
+  acquired within 30s is the new PZ0528 with a "retry" next step. Schema
+  version 3 adds a PRIMARY KEY to `schema_version`, first reducing it to one
+  row (the race left two rows at the same version); migrates automatically,
+  same as version 2.
 
 ## [0.6.1] - 2026-09-10
 

@@ -54,4 +54,19 @@ public sealed class SqlStateConnection(string connectionString, string schema)
             "grant DDL rights (CREATE SCHEMA/CREATE TABLE) on that database to the account in " +
             "state.connection / PZ_STATE_CONNECTION_STRING, then retry"));
     }
+
+    /// <summary>The connection and the schema shape are both fine here -- another process is either
+    /// actively migrating (or is stuck holding the lock on) this same schema, so PZ0528 gets its own
+    /// "retry" next step rather than PZ0519's "check DDL rights", which would send the operator the
+    /// wrong way.</summary>
+    public PzConfigException MigrationLockTimedOut(int lockTimeoutMs, int sqlGetAppLockResult)
+    {
+        var builder = new SqlConnectionStringBuilder(connectionString);
+        return new PzConfigException(new PzError(PzErrorCode.StateSchemaMigrationLockTimedOut,
+            $"could not acquire the schema-migration lock on server '{builder.DataSource}', database " +
+            $"'{builder.InitialCatalog}' within {lockTimeoutMs}ms (sp_getapplock returned {sqlGetAppLockResult}).",
+            "project.yml", null,
+            "another process appears to be migrating this schema; retry, and if this persists, check for " +
+            "a stuck or unusually long-running migration against the same state.connection"));
+    }
 }
