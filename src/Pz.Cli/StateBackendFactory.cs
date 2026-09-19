@@ -98,14 +98,14 @@ internal static class StateBackendFactory
         var connection = new SqlStateConnection(connectionString, state.Schema);
 
         var watermarks = new WatermarkStore(new SqlKeyedStateStore<Watermark>(
-            connection, "watermarks", WatermarkStore.ReadEntry, WatermarkStore.WriteEntry));
+            connection, "watermarks", WatermarkStore.ReadEntry, WatermarkStore.WriteEntry, time));
         var schemas = new SchemaBaselineStore(new SqlKeyedStateStore<SchemaBaseline>(
-            connection, "schemas", SchemaBaselineStore.ReadEntry, SchemaBaselineStore.WriteEntry));
+            connection, "schemas", SchemaBaselineStore.ReadEntry, SchemaBaselineStore.WriteEntry, time));
         var syncState = new SyncStateStore(new SqlKeyedStateStore<SyncState>(
-            connection, "sync-state", SyncStateStore.ReadEntry, SyncStateStore.WriteEntry));
+            connection, "sync-state", SyncStateStore.ReadEntry, SyncStateStore.WriteEntry, time));
 
         IRunArtifactStore artifacts = state.Artifacts
-            ? new SqlRunArtifactStore(connection, projectName)
+            ? new SqlRunArtifactStore(connection, projectName, time)
             : new LocalRunArtifactStore(projectDir, time);
 
         IEventRenderer? eventSink = state.Events && runId is not null

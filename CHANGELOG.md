@@ -192,6 +192,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   surfaced as intermittent CI hangs. The ticket now lives as long as the session: burned by the
   data connection the commit waits for, or revoked by `AbortWrite`. Connectors built on the Rust
   SDK pick the fix up by rebuilding against it; the C# SDK never had the early revoke.
+- The SQL Server state backend stamped `updated_at`/`finished_at` from the ambient wall clock
+  (`DateTime.UtcNow`) instead of the injected `TimeProvider` in `SqlKeyedStateStore`/
+  `SqlRunArtifactStore` — untestable, and inconsistent with `LocalRunArtifactStore`/`RunResultsWriter`,
+  which already thread one through. `RunCommand`'s own retention sweep had the same gap
+  (`DateTimeOffset.UtcNow` passed to `RunSweeper.Sweep` where every sibling call in that method already
+  uses `TimeProvider.System`). Both stores also assigned a key/cursor/name value past the length its
+  `sp_executesql` parameter declares (`@key NVARCHAR(512)`, `@watermark_cursor NVARCHAR(256)`, etc.)
+  silently truncated by SQL Server — no warning, no error — so a state key or watermark longer than
+  the column allows would be stored (and later looked up) truncated instead of failing loudly. Every
+  such parameter is now length-checked client-side and refused with PZ0536, naming the field kind and
+  the limit, never the value.
 - `RunResultsWriter` (`run_results.json`) and `KeyedJsonStateStore` (`.pz/state/*.json`) each hand-rolled
   their own write-aside-and-rename instead of using `Pz.Core.Artifacts.AtomicFile`, the shared helper
   `PlanWriter`/`SchemaCacheWriter`/`ManifestWriter` already published to. Both now route through it, so

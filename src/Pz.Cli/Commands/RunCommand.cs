@@ -473,7 +473,7 @@ internal static class RunCommand
                     projectDir,
                     backends.Artifacts,
                     new RetentionOptions(retention.KeepLast, OlderThan: null, Purge: false),
-                    DateTimeOffset.UtcNow,
+                    TimeProvider.System.GetUtcNow(),
                     dryRun: false);
 
                 sweptCount = retentionOutcome.Decisions.Count(d => d.Action != SweepAction.Keep);

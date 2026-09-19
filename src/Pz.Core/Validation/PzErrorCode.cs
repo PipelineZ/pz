@@ -638,6 +638,14 @@ public static class PzErrorCode
     /// <summary><c>pz completion</c> was given a shell name none of the generators recognize.</summary>
     public const string CompletionShellInvalid = "PZ0535";
 
+    /// <summary>A value bound for the SQL Server state backend exceeds the length its
+    /// <c>sp_executesql</c> parameter is declared with (e.g. a state key past 512 characters, a
+    /// watermark cursor/value past 256) -- SQL Server assigns an over-long input into that declared
+    /// length silently, with no truncation warning, so this is checked client-side and refused before
+    /// the value ever reaches a command. Never a silent truncation: the message names the field kind
+    /// and the limit, never the value itself (it may be a credential or otherwise sensitive).</summary>
+    public const string SqlStateValueTooLong = "PZ0536";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

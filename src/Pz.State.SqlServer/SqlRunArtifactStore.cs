@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
+using Pz.Core.Validation;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
@@ -36,8 +37,26 @@ namespace Pz.State.SqlServer;
 /// SQL Server collation; the differentiating character between any two distinct ids is always a digit or
 /// a lowercase hex digit, never a case-foldable letter pair). A collation change here would be
 /// unrequested complexity fixing a defect that cannot occur for these two domains.</summary>
-public sealed class SqlRunArtifactStore(SqlStateConnection connection, string projectName) : IRunArtifactStore
+public sealed class SqlRunArtifactStore(SqlStateConnection connection, string projectName, TimeProvider? time = null)
+    : IRunArtifactStore
 {
+    /// <summary>Matches this file's <c>sp_executesql</c>-declared lengths for the string values that
+    /// come from user-authored project content rather than pz's own fixed-shape identifiers -- see
+    /// <see cref="CheckLength"/>. <c>run_id</c>/<c>node_id</c> are excluded (this class's own doc
+    /// comment above explains why their fixed shape makes a length guard unnecessary); <c>status</c>,
+    /// <c>kind</c>, <c>error_code</c> and <c>provenance</c> are pz's own fixed vocabulary, never
+    /// user-authored text.</summary>
+    private const int MaxProjectNameLength = 256;
+
+    private const int MaxNodeNameLength = 512;
+
+    private const int MaxWatermarkCursorLength = 256;
+
+    private const int MaxWatermarkTypeLength = 64;
+
+    private const int MaxWatermarkValueLength = 256;
+
+
     /// <summary>Serializes concurrent <see cref="WriteSnapshot"/> calls for the SAME run id within this
     /// store instance -- mirrors <c>LocalRunArtifactStore</c>'s per-run <c>RunResultsWriter</c> lock
     /// (that class's doc comment): two <c>NodeCompleted</c> callbacks racing on the same run must never
@@ -73,6 +92,22 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed, string status,
         long? eventsDropped = null)
     {
+        // Checked up front, before any connection/transaction opens: SQL Server assigns an over-long
+        // input value into the matching sp_executesql declared length silently (no truncation warning,
+        // no error), so a value past that length would be stored -- and later read back -- truncated
+        // instead of failing loudly.
+        CheckLength("project name", projectName, MaxProjectNameLength);
+        foreach (var node in completed)
+        {
+            CheckLength("node name", node.Name, MaxNodeNameLength);
+            if (node.WatermarkCandidate is { } candidate)
+            {
+                CheckLength("watermark cursor", candidate.Cursor, MaxWatermarkCursorLength);
+                CheckLength("watermark type", candidate.TypeName, MaxWatermarkTypeLength);
+                CheckLength("watermark value", candidate.Value, MaxWatermarkValueLength);
+            }
+        }
+
         lock (LockFor(runId))
         {
             connection.Execute<object?>(sqlConnection =>
@@ -298,7 +333,9 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         string startedAtIso, string status, long? eventsDropped)
     {
         var startedAt = ParseIso(startedAtIso);
-        var finishedAt = IsTerminal(status) ? DateTime.UtcNow : (DateTime?)null;
+        var finishedAt = IsTerminal(status)
+            ? (time ?? TimeProvider.System).GetUtcNow().UtcDateTime
+            : (DateTime?)null;
 
         using var command = new SqlCommand(
             "DECLARE @sql NVARCHAR(MAX) = N'" +
@@ -625,6 +662,23 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         }
 
         return Encoding.UTF8.GetString(stream.ToArray());
+    }
+
+    /// <summary>SQL Server assigns an over-long input value into the matching <c>sp_executesql</c>
+    /// declared length silently -- no truncation warning, no error -- so a value past that length would
+    /// be stored (and later read back) truncated instead of failing loudly. Checked client-side, before
+    /// the value ever reaches a command. Never echoes <paramref name="value"/> itself into the message
+    /// (it may be a cursor/watermark value carrying data), only its length.</summary>
+    private static void CheckLength(string kind, string value, int max)
+    {
+        if (value.Length > max)
+        {
+            throw new PzConfigException(new PzError(PzErrorCode.SqlStateValueTooLong,
+                $"{kind} is {value.Length} characters, which exceeds the {max}-character limit the SQL " +
+                "Server state backend allows for this field.",
+                "project.yml", null,
+                $"shorten the {kind}, or use a state backend without this limit"));
+        }
     }
 
     private static DateTime ParseIso(string iso) =>

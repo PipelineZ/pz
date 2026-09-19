@@ -26,8 +26,14 @@ public sealed class SqlKeyedStateStore<T>(
     SqlStateConnection connection,
     string scope,
     Func<JsonElement, T?> readEntry,
-    Action<Utf8JsonWriter, T> writeEntry) : IKeyedStateStore<T> where T : class
+    Action<Utf8JsonWriter, T> writeEntry,
+    TimeProvider? time = null) : IKeyedStateStore<T> where T : class
 {
+    /// <summary>Matches the <c>@key NVARCHAR(512)</c> declared in every <c>sp_executesql</c> call
+    /// below -- see <see cref="CheckKeyLength"/>.</summary>
+    private const int MaxKeyLength = 512;
+
+
     /// <summary>The version each key was last read at, by THIS instance. Populated by <see cref="Get"/>
     /// (even when the payload turns out to be corrupt -- see below) and by a successful <see cref="Set"/>
     /// (which bumps it by one, or seeds it at 1 for a fresh insert), so a later <see cref="Set"/> on the
@@ -44,8 +50,10 @@ public sealed class SqlKeyedStateStore<T>(
     /// further locking, because <see cref="Set"/> is once-per-key-at-advancement (see the class doc).</summary>
     private readonly ConcurrentDictionary<string, int> _versions = new(StringComparer.Ordinal);
 
-    public T? Get(string key, Action<string>? notice = null) =>
-        connection.Execute(sqlConnection =>
+    public T? Get(string key, Action<string>? notice = null)
+    {
+        CheckKeyLength(key);
+        return connection.Execute(sqlConnection =>
         {
             using var command = new SqlCommand(
                 "DECLARE @sql NVARCHAR(MAX) = N'SELECT payload, version FROM ' + QUOTENAME(@schema) + " +
@@ -85,6 +93,7 @@ public sealed class SqlKeyedStateStore<T>(
 
             return value;
         });
+    }
 
     public IReadOnlyList<KeyValuePair<string, T>>? ListAll(Action<string>? notice = null) =>
         connection.Execute(sqlConnection =>
@@ -142,8 +151,9 @@ public sealed class SqlKeyedStateStore<T>(
     /// is stored.</summary>
     public void Set(string key, T value)
     {
+        CheckKeyLength(key);
         var payload = SerializePayload(value);
-        var now = DateTime.UtcNow;
+        var now = (time ?? TimeProvider.System).GetUtcNow().UtcDateTime;
         var attempts = 0;
 
         connection.Execute<object?>(sqlConnection =>
@@ -196,6 +206,7 @@ public sealed class SqlKeyedStateStore<T>(
 
     public void Remove(string key)
     {
+        CheckKeyLength(key);
         connection.Execute<object?>(sqlConnection =>
         {
             using var command = new SqlCommand(
@@ -259,6 +270,23 @@ public sealed class SqlKeyedStateStore<T>(
             $"state key '{key}' (scope '{scope}') was advanced by another run while this run was executing.",
             "project.yml", null,
             "re-run; if concurrent runs over the same datasets are intended, split them by dataset"));
+
+    /// <summary>SQL Server assigns an over-long input value into <c>sp_executesql</c>'s declared
+    /// <c>@key NVARCHAR(512)</c> parameter silently -- no truncation warning, no error -- so a key past
+    /// this length would be stored (and later looked up) truncated instead of failing loudly. Checked
+    /// client-side, before the key ever reaches a command, on every entry point that takes one.</summary>
+    private void CheckKeyLength(string key)
+    {
+        if (key.Length > MaxKeyLength)
+        {
+            throw new PzConfigException(new PzError(PzErrorCode.SqlStateValueTooLong,
+                $"state key (scope '{scope}') is {key.Length} characters, which exceeds the " +
+                $"{MaxKeyLength}-character limit the SQL Server state backend allows for a key.",
+                "project.yml", null,
+                "shorten the key (e.g. the entity/connection name it is derived from), or use a state " +
+                "backend without this limit"));
+        }
+    }
 
     private T? ParsePayload(string payload)
     {
