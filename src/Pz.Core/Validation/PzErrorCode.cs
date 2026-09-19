@@ -209,6 +209,12 @@ public static class PzErrorCode
     // each silently clobbering the other's result. Raised in DagCompiler stage 7, aggregated with the
     // dataset-vs-dataset staging collision (PZ0110) it sits beside.
     public const string PipelineNameCollidesWithStaging = "PZ0230";
+    // Two watermark() comparisons for the same (source, dataset) name DIFFERENT cursor columns --
+    // e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` -- so the fold
+    // has no single column to synthesize as the dataset's cursor. Total-or-error: refused rather than
+    // silently taking whichever comparison the SQL AST reader happened to return first. Comparisons that
+    // agree on the SAME column (a lower bound and a recognized ceiling, PZ0351) are unaffected.
+    public const string WatermarkCursorDisagreement = "PZ0231";
     public const string ConnectorConfigInvalid = "PZ0301";
     public const string ConnectorPackageMissing = "PZ0304";
     public const string ConnectorNotInstalled = "PZ0305";

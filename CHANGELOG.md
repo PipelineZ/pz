@@ -58,6 +58,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   one platform and run on another is PZ0321 naming both, instead of the
   "Exec format error" spawn failure it used to reach.
 
+### Fixed
+
+- **`watermark()` comparisons that name different cursor columns for one dataset are now refused
+  (PZ0231)**, instead of silently taking whichever comparison the SQL AST reader returned first --
+  e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` used to synthesize
+  an incremental cursor off only one of the two columns. Two comparisons that agree on the SAME
+  column (a lower bound plus a recognized ceiling, PZ0351) are unaffected.
+
 ### Added
 
 - `.github/dependabot.yml`: weekly, grouped dependency updates for nuget (repo-root `directory`,
