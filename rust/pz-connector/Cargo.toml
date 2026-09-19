@@ -8,7 +8,7 @@ description = "SDK for writing PipelineZ (pz) out-of-process connectors (PCP) in
 [dependencies]
 tonic = "0.12"
 prost = "0.13"
-prost-types = "0.13"
+prost-types = "0.14"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 # arrow-rs treats every release as a new major version, so two different pins never unify in one
