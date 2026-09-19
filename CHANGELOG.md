@@ -165,6 +165,44 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   strict about timestamp unit and timezone spelling: a connector whose
   declared schema says `+00:00` and whose batches say `UTC` is refused with
   both shapes named.
+- `pz connector test`'s read vectors (schema/batch equality, cancellation,
+  ticket handling) now report Skip, not Fail, against a connector declaring
+  the new `NativeOnlyRead` capability — the wire signal for a source with no
+  universal read path at all (`PlanRead` always refuses), mirroring the
+  TestKit's own `SkipIfNativeOnly`. Until now these vectors called `PlanRead`
+  unconditionally and reported the refusal as a protocol failure. The C# SDK
+  declares the capability for any connector that implements
+  `INativeOnlySource`, in the handshake and the manifest alike; an author
+  never sets the flag by hand.
+- Three more type comparisons are now structural instead of `TypeId`-only, using
+  the same shape guard as the SDK data plane and engine Arrow ingest: `pz
+  connector test`'s schema/batch-equality vector (a `list<int32>` vs
+  `list<utf8>` mismatch used to pass conformance and only fail at run time),
+  the TestKit's own `SourceConnectorAcceptanceTests.AssertSchemasMatch`, and
+  `ContractTypes.ArrowTypesEqual` (the `columns:` contract drift check behind
+  PZ0331) — the last of these already compared decimal precision/scale and
+  timestamp unit/timezone by hand; it now shares the general comparison
+  instead of falling back to `_ => true` for nested, fixed-size and other
+  decimal-width types.
+- An integer connector option now survives the wire intact. protobuf's
+  `Struct` has only `number` (a double), so `max_connections: 5` used to
+  arrive at a process-hosted connector — and, symmetrically, come back to the
+  host — as `5.0`; both SDKs (C# and Rust) now normalize an integral value
+  within the range a double still represents exactly (`|x| <= 2^53`) to a
+  proper integer (`long`/`i64`) before the connector or host ever sees it.
+  `ConnectorConfig.GetInt` refuses a genuinely fractional value (`2.5`) with a
+  clear error instead of silently rounding it via `Convert.ToInt64`, and the
+  Rust SDK's `as_i64()` now succeeds for an integral value instead of always
+  returning `None` for a float-backed `serde_json::Number`. An `int[]`/
+  `List<int>` option — not `IEnumerable<object?>`, since generic variance
+  covers reference types only — used to fall through to `ToValue`'s string
+  catch-all and cross as .NET's default collection rendering
+  (`System.Collections.Generic.List\`1[System.Int32]`) instead of a list of
+  numbers; it now crosses correctly. `pz connector test` gained a
+  `numeric-option-fidelity` vector that both SDKs answer on the connector's
+  behalf (a connector built on an older SDK reports Skip), so every connector
+  proves the contract without its author writing anything; the TestKit gained
+  an opt-in `Connection_integer_option_delivered_as_a_double_is_accepted` fact.
 - An exception no verb anticipated now ends as `error PZ0500: internal error …`
   with exit code 3 and a request to report it, instead of a raw stack trace
   with exit code 1 (which the exit-code contract reserves for node failures).

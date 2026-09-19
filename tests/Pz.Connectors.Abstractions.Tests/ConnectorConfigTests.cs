@@ -51,4 +51,56 @@ public sealed class ConnectorConfigTests
         Assert.Equal(5432L, Config("5432").GetInt("k"));
         Assert.True(Config("true").GetBool("k"));
     }
+
+    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so every integer option a
+    /// process-hosted connector reads over PCP arrives as a <see cref="double"/> -- the receiving side
+    /// normalizes an integral one to <see cref="long"/> before it ever reaches <see cref="ConnectorConfig"/>
+    /// (<c>StructMapping.ToObject</c>), but <c>GetInt</c> itself must accept a bare double too: any
+    /// in-process caller (a YAML value, a directly-constructed option dictionary) can still hand it
+    /// one.</summary>
+    [Fact]
+    public void GetInt_accepts_an_integral_double()
+    {
+        Assert.Equal(5L, Config(5.0).GetInt("k"));
+        Assert.Equal(-3L, Config(-3.0).GetInt("k"));
+        Assert.Equal(0L, Config(0.0).GetInt("k"));
+    }
+
+    /// <summary>A fractional option value is never a whole number a connector could silently round --
+    /// <c>Convert.ToInt64</c> would otherwise round 2.5 to 2 (banker's rounding) with no signal at all.
+    /// Refuse it instead of guessing.</summary>
+    [Fact]
+    public void GetInt_refuses_a_non_integral_double()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => Config(2.5).GetInt("k"));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("k", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("2.5", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void GetInt_refuses_a_non_finite_double(double value)
+    {
+        Assert.Throws<PzConnectorException>(() => Config(value).GetInt("k"));
+    }
+
+    // (double)long.MaxValue rounds UP to 2^63, which is a whole number and one past what a long
+    // holds: a cast would wrap it to long.MinValue rather than fail.
+    [Theory]
+    [InlineData(9223372036854775808d)]
+    [InlineData(-9223372036854777856d)]
+    [InlineData(1e300)]
+    public void GetInt_refuses_a_whole_double_that_no_long_holds(double value)
+    {
+        Assert.Throws<PzConnectorException>(() => Config(value).GetInt("k"));
+    }
+
+    [Fact]
+    public void GetInt_accepts_the_smallest_long_as_a_double()
+    {
+        Assert.Equal(long.MinValue, Config(-9223372036854775808d).GetInt("k"));
+    }
 }

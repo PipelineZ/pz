@@ -87,6 +87,17 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
                 capabilities |= ConnectorCapabilities.CheckpointableReads;
             }
 
+            // --native-only stages a connector with no universal read path at all: PartitionedRead is
+            // withdrawn (there is no universal PlanRead to partition) together with declaring
+            // NativeOnlyRead, and StagedSource's PlanReadAsync refuses every call the same way a real
+            // native-only connector's does -- a host test can prove both that a conformance vector
+            // gated on this flag reports Skip, and that removing that gate would make the vector FAIL
+            // rather than silently pass.
+            if (options.NativeOnly)
+            {
+                capabilities = (capabilities & ~ConnectorCapabilities.PartitionedRead) | ConnectorCapabilities.NativeOnlyRead;
+            }
+
             // Simulates a newer SDK build whose Abstractions defines a flag this fixture's own
             // ConnectorCapabilities enum does not: an undefined bit, cast rather than named, since
             // there is no later member to reference from this build.
@@ -119,6 +130,7 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         RefuseHostKeys(config);
+
         return _inner.ValidateAsync(config, ct);
     }
 
@@ -187,6 +199,17 @@ internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IO
     public async ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(
         DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
+        if (options.NativeOnly)
+        {
+            // Same PZ0312 refusal shape every real native-only connector's PlanReadAsync stub raises
+            // (Pz.Connector.S3's S3Source precedent) -- the fixture must fail exactly like the real
+            // thing so a host-side test proves the conformance vector was actually gated, not merely
+            // never reached.
+            throw new PzConnectorException(
+                $"PZ0312: dataset '{spec.Dataset}': localfiles-pcp source is native-scan only; it cannot " +
+                "run on the universal tier", isTransient: false);
+        }
+
         var planned = await inner.PlanReadAsync(spec, hints, ct).ConfigureAwait(false);
         var staged = new List<IDatasetPartition>(planned.Count);
         for (var i = 0; i < planned.Count; i++)

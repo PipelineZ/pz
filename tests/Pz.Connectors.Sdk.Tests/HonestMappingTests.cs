@@ -169,6 +169,36 @@ public sealed class HonestMappingTests
 
     // --- helpers ---
 
+    /// <summary>The marker interface cannot cross the wire, so the SDK says it with the capability bit
+    /// on the connector's behalf -- in the handshake and in the manifest alike, since the host refuses a
+    /// Hello whose capabilities differ from the manifest's.</summary>
+    [Fact]
+    public async Task A_native_only_source_is_declared_NativeOnlyRead_without_its_author_saying_so()
+    {
+        var connector = new NativeOnlyFakeSource();
+
+        var hello = await NewService(connector)
+            .Handshake(new HandshakeRequest { ProtocolMajor = ProtocolVersion.Major }, Context());
+        var manifest = ManifestWriter.Render(connector, new SortedDictionary<string, string>(StringComparer.Ordinal));
+
+        Assert.Equal((long)(ConnectorCapabilities.NativeScan | ConnectorCapabilities.NativeOnlyRead), hello.Capabilities);
+        Assert.Contains("\"NativeOnlyRead\"", manifest, StringComparison.Ordinal);
+    }
+
+    private sealed class NativeOnlyFakeSource : ISourceConnector, INativeOnlySource
+    {
+        public ConnectorInfo Info => new("fake", "1.0.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeScan;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(new ValidationResult([]));
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(new ConnectionCheck(true, null));
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+            throw new NotSupportedException();
+    }
+
     private static PcpConnectorService NewService(IConnector connector) =>
         new(connector, new TicketRegistry(), new HostChannelPeer(), new ConnectorTelemetry(new PzConnectorHostOptions()),
             PcpServerHooks.None, new NullLifetime());

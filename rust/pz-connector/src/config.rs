@@ -43,7 +43,7 @@ fn value_to_json(value: &Value) -> JsonValue {
     match &value.kind {
         None | Some(Kind::NullValue(_)) => JsonValue::Null,
         Some(Kind::NumberValue(n)) => {
-            Number::from_f64(*n).map_or(JsonValue::Null, JsonValue::Number)
+            number_from_f64(*n).map_or(JsonValue::Null, JsonValue::Number)
         }
         Some(Kind::StringValue(s)) => JsonValue::String(s.clone()),
         Some(Kind::BoolValue(b)) => JsonValue::Bool(*b),
@@ -51,6 +51,24 @@ fn value_to_json(value: &Value) -> JsonValue {
         Some(Kind::ListValue(ListValue { values })) => {
             JsonValue::Array(values.iter().map(value_to_json).collect())
         }
+    }
+}
+
+/// protobuf's `Struct` has only `number` (an f64), so an integer connector option
+/// (`max_connections: 5`) arrives here as `5.0`. `serde_json::Number::from_f64` always builds a
+/// float-backed `Number` -- `as_i64()` on it returns `None` even for a whole value like `3.0` -- so a
+/// connector author reading an integer option through `as_i64()` (the obvious thing to reach for) would
+/// see it silently fail. Normalize an integral value within the range an f64 still represents exactly
+/// (`|x| <= 2^53`) to an integer-backed `Number` instead; a fractional value, or one wider than that
+/// range, stays a float, since rounding it would silently change its value or its precision.
+fn number_from_f64(n: f64) -> Option<Number> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_992.0; // 2^53
+    if n.is_finite() && n.fract() == 0.0 && n.abs() <= MAX_SAFE_INTEGER {
+        #[allow(clippy::cast_possible_truncation)]
+        // guarded above: n is a whole number within i64's range
+        Some(Number::from(n as i64))
+    } else {
+        Number::from_f64(n)
     }
 }
 
@@ -115,7 +133,10 @@ mod tests {
             config.0.get("name"),
             Some(&JsonValue::String("csv".to_string()))
         );
-        assert_eq!(config.0.get("count"), Some(&JsonValue::from(3.0)));
+        // Integral: normalizes to an integer-backed Number, not the raw float every wire number
+        // starts life as -- see number_normalizes_integral_values_to_i64 for the full contract.
+        assert_eq!(config.0.get("count"), Some(&JsonValue::from(3i64)));
+        assert_eq!(config.0.get("count").and_then(JsonValue::as_i64), Some(3));
         assert_eq!(config.0.get("missing"), Some(&JsonValue::Null));
         assert_eq!(
             config.0.get("tags"),
@@ -135,5 +156,50 @@ mod tests {
     #[test]
     fn absent_config_is_empty_map() {
         assert_eq!(Config::from_struct(None).0.len(), 0);
+    }
+
+    fn number_value(n: f64) -> Struct {
+        let mut root = Struct::default();
+        root.fields.insert(
+            "k".to_string(),
+            Value {
+                kind: Some(Kind::NumberValue(n)),
+            },
+        );
+        root
+    }
+
+    /// protobuf's `Struct` has only `number` (an f64), so `max_connections: 3` arrives as `3.0`.
+    /// `Number::from_f64` alone would build a float-backed `Number`, and `as_i64()` on a float-backed
+    /// `Number` returns `None` unconditionally -- even for a whole value -- so a connector author
+    /// reading it through `as_i64()` would see it silently fail for every integer option there is.
+    #[test]
+    fn number_normalizes_integral_values_to_i64() {
+        for (wire, expected) in [
+            (5.0, 5i64),
+            (-3.0, -3),
+            (0.0, 0),
+            (9_007_199_254_740_992.0, 9_007_199_254_740_992), // 2^53, inclusive boundary
+        ] {
+            let config = Config::from_struct(Some(&number_value(wire)));
+            let actual = config
+                .0
+                .get("k")
+                .and_then(JsonValue::as_i64)
+                .unwrap_or_else(|| panic!("as_i64() failed for wire value {wire}"));
+            assert_eq!(actual, expected, "wire value {wire}");
+        }
+    }
+
+    /// A fractional value, or one wider than an f64 can represent exactly, stays a float -- rounding it
+    /// would silently change its value (a non-integral) or its precision (out of range).
+    #[test]
+    fn number_leaves_non_integral_or_out_of_range_values_as_f64() {
+        for wire in [2.5, 9_007_199_254_740_994.0] {
+            // 2^53 + 2: the next f64 after the boundary is exact
+            let config = Config::from_struct(Some(&number_value(wire)));
+            assert_eq!(config.0.get("k").and_then(JsonValue::as_f64), Some(wire));
+            assert_eq!(config.0.get("k").and_then(JsonValue::as_i64), None);
+        }
     }
 }

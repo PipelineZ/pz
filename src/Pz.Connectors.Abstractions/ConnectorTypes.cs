@@ -21,8 +21,35 @@ public sealed record ConnectorConfig(IReadOnlyDictionary<string, object?> Values
             _ => v.ToString(),
         }
         : null;
-    public long? GetInt(string key) => Values.TryGetValue(key, out var v) && v is not null
-        ? Convert.ToInt64(v, System.Globalization.CultureInfo.InvariantCulture) : null;
+    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so every integer option a
+    /// process-hosted connector reads over PCP arrives as a <see cref="double"/> -- the receiving SDK
+    /// normalizes an integral one to <see cref="long"/> before it reaches this dictionary, but an
+    /// in-process caller can still hand a bare double straight through. <c>Convert.ToInt64</c> would
+    /// silently round a fractional value (2.5 -> 2, banker's rounding) with no signal at all, so a
+    /// double that is not a whole number -- or is NaN/infinite -- is refused instead of guessed.</summary>
+    public long? GetInt(string key)
+    {
+        if (!Values.TryGetValue(key, out var v) || v is null)
+        {
+            return null;
+        }
+
+        if (v is double d)
+        {
+            // The upper bound is exclusive and spelled as 2^63: (double)long.MaxValue rounds up to it,
+            // so comparing against long.MaxValue would let through the one whole number a cast wraps.
+            if (!double.IsFinite(d) || d != Math.Truncate(d) || d < -9223372036854775808d || d >= 9223372036854775808d)
+            {
+                throw new PzConnectorException(
+                    $"connector option '{key}' is {d.ToString(System.Globalization.CultureInfo.InvariantCulture)}, not a whole number",
+                    isTransient: false);
+            }
+
+            return (long)d;
+        }
+
+        return Convert.ToInt64(v, System.Globalization.CultureInfo.InvariantCulture);
+    }
     public bool GetBool(string key, bool defaultValue = false) => Values.TryGetValue(key, out var v) && v is not null
         ? Convert.ToBoolean(v, System.Globalization.CultureInfo.InvariantCulture) : defaultValue;
 }

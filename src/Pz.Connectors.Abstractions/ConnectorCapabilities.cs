@@ -91,4 +91,11 @@ public enum ConnectorCapabilities
     /// in <c>path:</c> are how one timestamp column becomes a folder. A partitioned output must reach a
     /// connector declaring one flag or the other, or the planner refuses it (PZ0314).</summary>
     ColumnPartitionedWrites = 1048576,
+    /// <summary>Source has no universal read path at all: <c>PlanReadAsync</c> always refuses. In
+    /// process this is <see cref="INativeOnlySource"/>; a marker interface does not cross a process
+    /// boundary, so for a process-hosted connector this bit carries the same fact. The C# SDK sets it
+    /// for any connector that implements the interface -- an author declares the interface, never this
+    /// flag. <c>pz connector test</c> reads it to skip the vectors that need <c>PlanRead</c> to
+    /// succeed.</summary>
+    NativeOnlyRead = 2097152,
 }

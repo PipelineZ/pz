@@ -73,6 +73,14 @@ fn memory_sink_passes_every_sink_conformance_vector() {
             .any(|line| line.starts_with("PASS handshake")),
         "expected at least the handshake vector to pass; got:\n{stdout}"
     );
+    // A whole-number option crosses the wire as an f64; this crate has to hand it to the connector
+    // as an integer, and the host asks this crate -- not the example sink -- whether it did.
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line.starts_with("PASS numeric-option-fidelity")),
+        "expected the numeric-option-fidelity vector to pass; got:\n{stdout}"
+    );
 }
 
 fn find_repo_root() -> Option<PathBuf> {

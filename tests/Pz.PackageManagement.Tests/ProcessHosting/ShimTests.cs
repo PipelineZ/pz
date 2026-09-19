@@ -684,7 +684,10 @@ public sealed class ShimTests : IDisposable
     [Fact]
     public void DatasetSpec_round_trips_null_heavy()
     {
-        var spec = new DatasetSpec("src", "ds", new Dictionary<string, object?> { ["a"] = 1.0 });
+        // An integer option normalizes to long on the way back (the wire's number kind is always a
+        // double; see Integral_struct_number_values_normalize_to_long) -- 1L, not 1.0, is what actually
+        // survives this round trip byte-for-byte.
+        var spec = new DatasetSpec("src", "ds", new Dictionary<string, object?> { ["a"] = 1L });
         var roundTripped = MessageMapping.ToDatasetSpec(MessageMapping.ToDatasetSpecMsg(spec));
         AssertDatasetSpecEqual(spec, roundTripped);
     }
@@ -692,7 +695,7 @@ public sealed class ShimTests : IDisposable
     [Fact]
     public void DatasetSpec_round_trips_full_featured()
     {
-        var spec = new DatasetSpec("src", "ds", new Dictionary<string, object?> { ["a"] = 1.0 })
+        var spec = new DatasetSpec("src", "ds", new Dictionary<string, object?> { ["a"] = 1L })
         {
             WatermarkCursor = "updated_at",
             WatermarkValue = "2026-01-01T00:00:00.000000",
@@ -934,6 +937,8 @@ public sealed class ShimTests : IDisposable
             ["n"] = 3.5,
             ["b"] = true,
             ["nil"] = null,
+            // 1.0 round-trips as a long, not the raw double every wire number starts life as -- see
+            // Integral_struct_number_values_normalize_to_long for the full contract.
             ["list"] = new List<object?> { 1.0, "x", false, null },
             ["map"] = new Dictionary<string, object?> { ["nested"] = "value", ["deep"] = 2.0 },
         };
@@ -944,10 +949,66 @@ public sealed class ShimTests : IDisposable
         Assert.Equal(3.5, roundTripped["n"]);
         Assert.Equal(true, roundTripped["b"]);
         Assert.Null(roundTripped["nil"]);
-        Assert.Equal(new List<object?> { 1.0, "x", false, null }, roundTripped["list"]);
+        Assert.Equal(new List<object?> { 1L, "x", false, null }, roundTripped["list"]);
         var nested = Assert.IsAssignableFrom<IReadOnlyDictionary<string, object?>>(roundTripped["map"]);
         Assert.Equal("value", nested["nested"]);
-        Assert.Equal(2.0, nested["deep"]);
+        Assert.Equal(2L, nested["deep"]);
+    }
+
+    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so every integer value sent
+    /// to a connector (a <c>write:</c>/<c>read:</c> option, a probe's <c>--config</c> value) crosses as
+    /// a double and must come back an integer on a round trip through this shim's own wire shape --
+    /// mirrors <c>Pz.Connectors.Sdk.Tests.MessageMappingTests</c>' identical contract on the connector
+    /// side of the same wire.</summary>
+    [Theory]
+    [InlineData(5.0, 5L)]
+    [InlineData(-3.0, -3L)]
+    [InlineData(0.0, 0L)]
+    [InlineData(9_007_199_254_740_992d, 9_007_199_254_740_992L)] // 2^53, inclusive boundary
+    public void Integral_struct_number_values_normalize_to_long(double wire, long expected)
+    {
+        var roundTripped = MessageMapping.ToDictionary(
+            MessageMapping.ToStruct(new Dictionary<string, object?> { ["k"] = wire }));
+
+        var actual = Assert.IsType<long>(roundTripped["k"]);
+        Assert.Equal(expected, actual);
+    }
+
+    [Theory]
+    [InlineData(2.5)]
+    [InlineData(9_007_199_254_740_994d)] // 2^53 + 2: the next double after the boundary is exact
+    public void Non_integral_or_out_of_range_struct_number_values_stay_double(double wire)
+    {
+        var roundTripped = MessageMapping.ToDictionary(
+            MessageMapping.ToStruct(new Dictionary<string, object?> { ["k"] = wire }));
+
+        Assert.Equal(wire, Assert.IsType<double>(roundTripped["k"]));
+    }
+
+    /// <summary>An <c>int[]</c>/<c>List&lt;int&gt;</c> option is not <c>IEnumerable&lt;object?&gt;</c>
+    /// (generic variance covers reference types only, and <c>int</c> is a value type), so it used to
+    /// fall through <c>ToValue</c>'s switch to the string catch-all and cross the wire as
+    /// <c>value.ToString()</c> -- .NET's default collection rendering
+    /// (<c>System.Collections.Generic.List`1[System.Int32]</c>), never the list of numbers a connector
+    /// would actually read.</summary>
+    [Fact]
+    public void An_int_array_option_crosses_as_a_list_of_numbers_not_a_stringified_collection()
+    {
+        var roundTripped = MessageMapping.ToDictionary(
+            MessageMapping.ToStruct(new Dictionary<string, object?> { ["ports"] = new[] { 80, 443, 8080 } }));
+
+        var list = Assert.IsType<List<object?>>(roundTripped["ports"]);
+        Assert.Equal([80L, 443L, 8080L], list);
+    }
+
+    [Fact]
+    public void A_List_of_int_option_crosses_as_a_list_of_numbers_not_a_stringified_collection()
+    {
+        var roundTripped = MessageMapping.ToDictionary(
+            MessageMapping.ToStruct(new Dictionary<string, object?> { ["codes"] = new List<int> { 1, 2, 3 } }));
+
+        var list = Assert.IsType<List<object?>>(roundTripped["codes"]);
+        Assert.Equal([1L, 2L, 3L], list);
     }
 
     [Fact]

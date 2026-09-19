@@ -29,13 +29,29 @@ internal static class StructMapping
 
     private static object? ToObject(Value value) => value.KindCase switch
     {
-        Value.KindOneofCase.NumberValue => value.NumberValue,
+        Value.KindOneofCase.NumberValue => NormalizeNumber(value.NumberValue),
         Value.KindOneofCase.StringValue => value.StringValue,
         Value.KindOneofCase.BoolValue => value.BoolValue,
         Value.KindOneofCase.StructValue => ToNestedMap(value.StructValue),
         Value.KindOneofCase.ListValue => value.ListValue.Values.Select(ToObject).ToList(),
         _ => null,
     };
+
+    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so an integer connector
+    /// option (`max_connections: 5`) arrives here as <c>5.0</c>. Left as a double, a connector reading
+    /// it via <c>ConnectorConfig.GetInt</c> or a bare cast would either misread it or have to know to
+    /// re-round it itself; normalize an integral value within the range a double still represents
+    /// exactly (|x| &lt;= 2^53) to <see cref="long"/> instead. A fractional value, or one wider than
+    /// that range, stays a double -- rounding it would silently change its value or its precision.</summary>
+    private static object NormalizeNumber(double d) =>
+        double.IsFinite(d) && d == Math.Truncate(d) && d >= -MaxSafeInteger && d <= MaxSafeInteger
+            // The (object) cast on the untaken branch is load-bearing: without it the ?: operator
+            // unifies on double (long -> double is an implicit numeric conversion), silently widening
+            // the long branch back to a double before it is ever boxed.
+            ? (long)d
+            : (object)d;
+
+    private const double MaxSafeInteger = 9_007_199_254_740_992d; // 2^53
 
     /// <summary>A nested map arrives with no .NET type attached, and the ABI reads one of them two
     /// different ways: <c>columns:</c> is an <c>IReadOnlyDictionary&lt;string, string&gt;</c> in-proc

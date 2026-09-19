@@ -119,6 +119,50 @@ public sealed class ConnectorTestCommandTests : IDisposable
         Assert.StartsWith("FAIL sync-state-roundtrip: declares SyncState but does not implement GetNaturalReadShape/GetReadState", failed, StringComparison.Ordinal);
     }
 
+    /// <summary>The fixture cooperates with the numeric-option-fidelity probe (a sentinel key
+    /// <c>ValidateAsync</c> recognizes) by construction, with no fixture switch needed: it proves the
+    /// probe value -- a double on the wire, protobuf's <c>Struct</c> has only <c>number</c> -- reads back
+    /// as a whole number rather than the raw double.</summary>
+    [SkippableFact]
+    public void Connector_test_passes_the_numeric_option_fidelity_vector()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project);
+        var configPath = WriteProbeConfig(project);
+
+        var stdout = RunAndCaptureStdout(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Contains(lines, l => l.StartsWith("PASS numeric-option-fidelity", StringComparison.Ordinal));
+    }
+
+    /// <summary>A source declaring <c>NativeOnlyRead</c> has no universal read path: PlanRead always
+    /// refuses. Every vector that needs PlanRead to succeed (schema/batch equality, cancellation,
+    /// ticket handling) must report Skip against it, not run straight into that refusal as a Fail --
+    /// the write direction is unaffected, so commit-abort-session-rules still runs and passes.</summary>
+    [SkippableFact]
+    public void Connector_test_skips_planread_vectors_for_a_native_only_source()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+
+        var project = NewProjectDir();
+        var packageDir = WriteProcessPackage(project, extraFixtureArgs: "--native-only", capabilities: NativeOnlyCapabilities);
+        var configPath = WriteProbeConfig(project);
+
+        var stdout = RunAndCaptureStdout(["connector", "test", packageDir, "--config", configPath], out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.DoesNotContain(lines, l => l.StartsWith("FAIL", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("SKIP schema-batch-equality", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("SKIP cancellation", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("SKIP ticket-handling", StringComparison.Ordinal));
+        Assert.Contains(lines, l => l.StartsWith("PASS commit-abort-session-rules", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void Connector_test_exits_2_with_a_pz_coded_error_for_an_unknown_path()
     {
@@ -214,6 +258,12 @@ public sealed class ConnectorTestCommandTests : IDisposable
     /// connector withdraws PartitionedRead and declares SyncState.</summary>
     private static readonly string[] FeedCapabilities =
         ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState"];
+
+    /// <summary>What <c>--native-only</c> reports: the same set the fixture always declares for
+    /// writes/native-scan, plus <c>NativeOnlyRead</c> and minus <c>PartitionedRead</c> -- a native-only
+    /// source has no universal read path to partition at all.</summary>
+    private static readonly string[] NativeOnlyCapabilities =
+        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "NativeOnlyRead"];
 
     /// <summary><paramref name="extraFixtureArgs"/> is baked into the wrapper script itself, appended
     /// AFTER the args <c>ConnectorProcess.Spawn</c> forwards (<c>--pz-socket &lt;path&gt;</c>) -- the

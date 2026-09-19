@@ -3,6 +3,7 @@ using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Grpc.Core;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
 using Pz.Connectors.Protocol.V1;
@@ -77,6 +78,12 @@ public static class ConformanceSuite
     private const long ControlPlaneSizeCapBytes = 1024 * 1024;
     private const int ProbeRowCount = 5;
 
+    /// <summary>Mirrors the TestKit's own <c>SkipIfNativeOnly</c> reason text -- "connector is
+    /// INativeOnlySource: it has no universal read path for this fact to read through" -- for the wire
+    /// case where the marker interface itself is unobservable and NativeOnlyRead is the substitute.</summary>
+    private const string NativeOnlyReadSkipReason =
+        "connector declares NativeOnlyRead: it has no universal read path for this vector to probe";
+
     public static async Task<ConformanceReport> RunAsync(
         ConformanceRequest request, string socketRootDir, CancellationToken ct)
     {
@@ -114,9 +121,17 @@ public static class ConformanceSuite
             // answer it -- SimpleGate applies no pacing/retry of its own, it only unblocks the exchange.
             pump = HostChannelPump.Start(client, process, new SimpleGate());
 
+            // A connector declaring NativeOnlyRead has no universal read path at all -- PlanRead always
+            // refuses (the wire mirror of INativeOnlySource; see the capability's own doc comment). Every
+            // vector below that needs PlanRead to succeed has nothing left to probe against such a
+            // connector and reports Skip instead of running straight into that refusal as a Fail.
+            var nativeOnlyRead = (client.Hello.Capabilities & (long)ConnectorCapabilities.NativeOnlyRead) != 0;
+
             await AddVectorAsync(vectors, "schema-batch-equality", request.ReadProbe is null
                 ? SkippedAsync("no read: probe supplied in --config")
-                : SchemaBatchEqualityAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
+                : nativeOnlyRead
+                    ? SkippedAsync(NativeOnlyReadSkipReason)
+                    : SchemaBatchEqualityAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
 
             await AddVectorAsync(vectors, "commit-abort-session-rules", request.WriteProbe is null
                 ? SkippedAsync("no write: probe supplied in --config")
@@ -124,7 +139,9 @@ public static class ConformanceSuite
 
             await AddVectorAsync(vectors, "cancellation", request.ReadProbe is null
                 ? SkippedAsync("no read: probe supplied in --config")
-                : CancellationAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
+                : nativeOnlyRead
+                    ? SkippedAsync(NativeOnlyReadSkipReason)
+                    : CancellationAsync(client, process, request.ConnectionConfig, request.ReadProbe, ct));
 
             await AddVectorAsync(vectors, "transient-error-shape",
                 TransientErrorShapeAsync(client, request.ReadProbe, request.WriteProbe, ct));
@@ -141,10 +158,14 @@ public static class ConformanceSuite
 
             await AddVectorAsync(vectors, "ticket-handling", request.ReadProbe is null
                 ? SkippedAsync("ticket-handling requires a read: probe in --config")
-                : TicketHandlingAsync(client, process, request.ReadProbe, ct));
+                : nativeOnlyRead
+                    ? SkippedAsync(NativeOnlyReadSkipReason)
+                    : TicketHandlingAsync(client, process, request.ReadProbe, ct));
 
             await AddVectorAsync(vectors, "control-plane-message-size",
                 ControlPlaneMessageSizeAsync(client, request.ReadProbe, request.WriteProbe, ct));
+
+            await AddVectorAsync(vectors, "numeric-option-fidelity", NumericOptionFidelityAsync(client, ct));
 
             // Last, always: a passing run ends the process, so nothing after this can still talk to it.
             await AddVectorAsync(vectors, "clean-exit-on-shutdown", CleanExitOnShutdownAsync(client, process, ct));
@@ -243,7 +264,11 @@ public static class ConformanceSuite
             : VectorVerdict.Pass("the probe dataset produced no batches; nothing to compare against the declared schema");
     }
 
-    private static VectorVerdict? CompareSchemas(Schema declared, Schema batch)
+    /// <summary>Internal (not private) so <c>Pz.PackageManagement.Tests</c> can drive it directly with
+    /// a TypeId-matching-but-structurally-different pair (e.g. `list&lt;int32&gt;` vs `list&lt;utf8&gt;`)
+    /// without staging a live connector whose data-plane batches disagree with its own declared
+    /// schema.</summary>
+    internal static VectorVerdict? CompareSchemas(Schema declared, Schema batch)
     {
         if (declared.FieldsList.Count != batch.FieldsList.Count)
         {
@@ -258,11 +283,15 @@ public static class ConformanceSuite
                 return VectorVerdict.Fail($"field {i}: declared and batch schema disagree on field name");
             }
 
-            if (declared.FieldsList[i].DataType.TypeId != batch.FieldsList[i].DataType.TypeId)
+            // Structural, not TypeId-only: nested child types, decimal precision/scale, timestamp
+            // unit/timezone, fixed-size widths and the rest of ArrowSchemaShape's contract -- a
+            // TypeId-only check would pass `list<int32>` against a batch's `list<utf8>`, which
+            // `pz connector test` would then wave through onto a run that DuckDB ingest refuses.
+            if (!ArrowSchemaShape.SameType(declared.FieldsList[i].DataType, batch.FieldsList[i].DataType))
             {
                 return VectorVerdict.Fail(
-                    $"field {i}: declared type {declared.FieldsList[i].DataType.TypeId} " +
-                    $"!= batch type {batch.FieldsList[i].DataType.TypeId}");
+                    $"field {i}: declared type {ArrowSchemaShape.Describe(declared.FieldsList[i].DataType)} " +
+                    $"!= batch type {ArrowSchemaShape.Describe(batch.FieldsList[i].DataType)}");
             }
         }
 
@@ -526,6 +555,68 @@ public static class ConformanceSuite
         return response.Errors.Count > 0
             ? VectorVerdict.Pass()
             : VectorVerdict.Pass("connector reported no errors for an empty config");
+    }
+
+    // ---- vector: numeric option fidelity ---------------------------------------------------------
+
+    /// <summary>A whole number small enough that no normalization boundary (|x| &lt;= 2^53) is in
+    /// play; this vector is about the double-vs-integer shape, not the boundary.</summary>
+    private const long NumericOptionProbeValue = 424242;
+
+    /// <summary>Reserved for this probe alone, and answered by the connector's SDK, never by the
+    /// connector. Deliberately NOT prefixed "__pz": that prefix is the host's own bookkeeping, which a
+    /// connector must never see and refuses outright.</summary>
+    private const string NumericOptionProbeKey = "pz_conformance_numeric_probe";
+
+    /// <summary>What an SDK that answers the probe says about a probe value that did not reach it as
+    /// an integer -- the one reply that tells an answering SDK apart from a connector whose own
+    /// Validate merely ignores (or refuses) a key it has never heard of.</summary>
+    private const string NumericOptionProbeRefusal = NumericOptionProbeKey + ": not integral";
+
+    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so an integer option must
+    /// be turned back into an integer by the SDK that receives it. The SDK answers a Validate whose
+    /// config is the probe key alone: no errors when the value reached it as an integer,
+    /// <see cref="NumericOptionProbeRefusal"/> otherwise. 0.5 goes first -- only an SDK that answers
+    /// the probe refuses it in exactly those words, so anything else is a Skip (an SDK older than the
+    /// probe), never a Fail and never a Pass that proves nothing. The whole number then has to come
+    /// back clean.</summary>
+    private static async Task<VectorVerdict> NumericOptionFidelityAsync(PcpClient client, CancellationToken ct)
+    {
+        IReadOnlyList<string> integral;
+        try
+        {
+            var fractional = await ProbeNumericOptionAsync(client, 0.5, ct).ConfigureAwait(false);
+            if (fractional is not [NumericOptionProbeRefusal])
+            {
+                return VectorVerdict.Skip("the connector's SDK does not answer the numeric-option probe");
+            }
+
+            integral = await ProbeNumericOptionAsync(client, NumericOptionProbeValue, ct).ConfigureAwait(false);
+        }
+        catch (RpcException ex)
+        {
+            return VectorVerdict.Fail(
+                $"Validate surfaced the numeric-option probe as an RPC status failure ({ex.StatusCode}) instead of an errors list");
+        }
+
+        return integral.Count == 0
+            ? VectorVerdict.Pass()
+            : VectorVerdict.Fail(
+                $"the whole number {NumericOptionProbeValue} did not reach the connector as an integer " +
+                $"({string.Join("; ", integral)})");
+    }
+
+    private static async Task<IReadOnlyList<string>> ProbeNumericOptionAsync(
+        PcpClient client, object value, CancellationToken ct)
+    {
+        var request = new ValidateRequest
+        {
+            Config = MessageMapping.ToStruct(new Dictionary<string, object?> { [NumericOptionProbeKey] = value }),
+        };
+        var response = await client.Grpc
+            .ValidateAsync(request, deadline: DateTime.UtcNow.Add(ProbeRpcTimeout), cancellationToken: ct)
+            .ConfigureAwait(false);
+        return response.Errors;
     }
 
     // ---- vector 7: partition id stability ---------------------------------------------------------
@@ -866,7 +957,9 @@ public static class ConformanceSuite
 
     private static Task<VectorVerdict> SkippedAsync(string reason) => Task.FromResult(VectorVerdict.Skip(reason));
 
-    private readonly struct VectorVerdict(ConformanceOutcome outcome, string? detail)
+    /// <summary>Internal (not private): <see cref="CompareSchemas"/> returns it, and that method is
+    /// internal so a test can drive it directly.</summary>
+    internal readonly struct VectorVerdict(ConformanceOutcome outcome, string? detail)
     {
         public ConformanceOutcome Outcome { get; } = outcome;
 

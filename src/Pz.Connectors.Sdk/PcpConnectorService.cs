@@ -64,7 +64,7 @@ internal sealed class PcpConnectorService(
                 Version = connector.Info.Version,
                 ProtocolMajor = connector.Info.ProtocolMajor,
             },
-            Capabilities = (long)connector.Capabilities,
+            Capabilities = (long)ManifestWriter.DeclaredCapabilities(connector),
             ConnectionConfigSchema = connector.ConnectionConfigSchema,
             DatasetConfigSchema = connector.DatasetConfigSchema,
             Sdk = new SdkInfoMsg { Name = SdkInfo.Name, Version = SdkInfo.Version },
@@ -113,8 +113,16 @@ internal sealed class PcpConnectorService(
     public override Task<ValidationResultMsg> Validate(ValidateRequest request, ServerCallContext context) =>
         Guarded(async () =>
         {
+            var config = StructMapping.ToDictionary(request.Config);
+            if (ConformanceProbe.TryAnswerNumericOption(config, out var probeErrors))
+            {
+                var answer = new ValidationResultMsg();
+                answer.Errors.AddRange(probeErrors);
+                return answer;
+            }
+
             var result = await connector
-                .ValidateAsync(new ConnectorConfig(StructMapping.ToDictionary(request.Config)), context.CancellationToken)
+                .ValidateAsync(new ConnectorConfig(config), context.CancellationToken)
                 .ConfigureAwait(false);
             var message = new ValidationResultMsg();
             message.Errors.AddRange(result.Errors);

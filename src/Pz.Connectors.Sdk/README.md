@@ -37,6 +37,21 @@ refuses to write a batch shaped differently.
 
 Anything else is refused. Connector configuration only ever arrives through the `Configure` RPC.
 
+## Reading numeric options
+
+protobuf's `Struct` (what `Configure`/`Validate`/dataset and output options all cross as) has only
+`number` — a double, no separate integer kind. An option written `max_connections: 5` therefore
+arrives as `5.0`: the SDK normalizes a value that is a whole number within the range a double still
+represents exactly (`|x| <= 2^53`) to `long` before your connector ever sees it, so
+`ConnectorConfig.GetInt` reads it back as `5`, not `5.0`. A value outside that range, or a genuinely
+fractional one, stays a `double` — `GetInt` throws a `PzConnectorException` naming the option rather
+than silently rounding it, so `port: 5432.5` fails loudly instead of becoming port `5432` or `5433`
+depending on which way `Convert.ToInt64` happened to round.
+
+`pz connector test`'s `numeric-option-fidelity` vector checks this. The SDK answers it for you: a
+`Validate` call whose config is the single key `pz_conformance_numeric_probe` never reaches your
+connector.
+
 ## Packaging
 
 ```

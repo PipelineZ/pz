@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Xunit;
 
@@ -143,6 +144,16 @@ public abstract class SourceConnectorAcceptanceTests
 
     private const int SmallBatchTargetBytes = 4096;
 
+    /// <summary>A copy of <see cref="ValidConfig"/> with one existing connection option the connector
+    /// reads as an integer (a port, a batch size, anything <c>ConnectorConfig.GetInt</c>-style parsing
+    /// handles) still carrying that same value, but as a bare <see cref="double"/> instead of a
+    /// <see cref="long"/>/<see cref="int"/> -- the shape every integer option actually arrives in over
+    /// PCP (protobuf's <c>Struct</c> has only <c>number</c>, a double). Null (default) skips the fact
+    /// below; a connector that reads at least one connection option as an integer opts in to prove a
+    /// double is accepted exactly like the long/int an in-process caller (a YAML value) would
+    /// otherwise pass.</summary>
+    protected virtual ConnectorConfig? ValidConfigWithIntegerOptionAsDouble => null;
+
     [SkippableFact]
     public async Task Validate_accepts_valid_config()
     {
@@ -151,6 +162,19 @@ public abstract class SourceConnectorAcceptanceTests
         var result = await connector.ValidateAsync(ValidConfig, CancellationToken.None);
 
         Assert.True(result.IsValid);
+    }
+
+    [SkippableFact]
+    public async Task Connection_integer_option_delivered_as_a_double_is_accepted()
+    {
+        Gate();
+        Skip.If(ValidConfigWithIntegerOptionAsDouble is null,
+            "connector does not declare ValidConfigWithIntegerOptionAsDouble");
+        var connector = CreateSource();
+
+        var result = await connector.ValidateAsync(ValidConfigWithIntegerOptionAsDouble!, CancellationToken.None);
+
+        Assert.True(result.IsValid, string.Join("; ", result.Errors));
     }
 
     [SkippableFact]
@@ -1198,13 +1222,24 @@ public abstract class SourceConnectorAcceptanceTests
         }
     }
 
-    private static void AssertSchemasMatch(Schema expected, Schema actual)
+    /// <summary>Internal (not private) so a unit test can drive it directly with a
+    /// TypeId-matching-but-structurally-different pair (e.g. a declared `list&lt;int32&gt;` against a
+    /// batch's `list&lt;utf8&gt;`), which every acceptance-test subclass's own connector would have to
+    /// misbehave on purpose to exercise.</summary>
+    internal static void AssertSchemasMatch(Schema expected, Schema actual)
     {
         Assert.Equal(expected.FieldsList.Count, actual.FieldsList.Count);
         for (var i = 0; i < expected.FieldsList.Count; i++)
         {
             Assert.Equal(expected.FieldsList[i].Name, actual.FieldsList[i].Name);
-            Assert.Equal(expected.FieldsList[i].DataType.TypeId, actual.FieldsList[i].DataType.TypeId);
+            // Structural, not TypeId-only: nested child types, decimal precision/scale, timestamp
+            // unit/timezone, fixed-size widths and the rest of ArrowSchemaShape's contract -- a
+            // TypeId-only check would pass a declared `list<int32>` against a batch's `list<utf8>`.
+            Assert.True(
+                ArrowSchemaShape.SameType(expected.FieldsList[i].DataType, actual.FieldsList[i].DataType),
+                $"field {i} ('{expected.FieldsList[i].Name}'): expected type " +
+                $"{ArrowSchemaShape.Describe(expected.FieldsList[i].DataType)}, got " +
+                $"{ArrowSchemaShape.Describe(actual.FieldsList[i].DataType)}");
         }
     }
 

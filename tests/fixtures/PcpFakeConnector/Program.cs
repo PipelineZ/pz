@@ -78,7 +78,10 @@ internal static class Program
 /// <c>--throw-unhandled</c> raises a plain <see cref="InvalidOperationException"/> from
 /// <c>CheckConnectionAsync</c> instead of a <see cref="Pz.Connectors.Abstractions.PzConnectorException"/>
 /// -- a connector bug the SDK never anticipated, not an operational failure it reported on
-/// purpose.</para></summary>
+/// purpose.
+/// <c>--native-only</c> declares <see cref="Pz.Connectors.Abstractions.ConnectorCapabilities.NativeOnlyRead"/>
+/// and makes every <c>PlanReadAsync</c> call refuse with the same PZ0312 shape a real native-only
+/// connector's stub raises.</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -99,7 +102,8 @@ internal sealed record FixtureOptions(
     bool FailReadMidstreamTransient,
     bool FailWriteMidstreamTransient,
     bool ReportUnknownCapabilityBit,
-    bool ThrowUnhandled)
+    bool ThrowUnhandled,
+    bool NativeOnly)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -118,6 +122,7 @@ internal sealed record FixtureOptions(
         bool pruneColumns = false;
         bool reportUnknownCapabilityBit = false;
         bool throwUnhandled = false;
+        bool nativeOnly = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -205,6 +210,9 @@ internal sealed record FixtureOptions(
                 case "--throw-unhandled":
                     throwUnhandled = true;
                     break;
+                case "--native-only":
+                    nativeOnly = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -219,7 +227,8 @@ internal sealed record FixtureOptions(
             hangHandshake, dieImmediately, wrongProtocolMajor, misreportCapabilities, misreportName,
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
-            failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled),
+            failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
+            nativeOnly),
             passthrough.ToArray());
     }
 }

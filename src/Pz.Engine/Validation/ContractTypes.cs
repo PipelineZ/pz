@@ -1,4 +1,5 @@
 using Apache.Arrow.Types;
+using Pz.Arrow;
 
 namespace Pz.Engine.Validation;
 
@@ -57,23 +58,12 @@ public static class ContractTypes
         _ => type.Name,
     };
 
-    /// <summary>Value-equality for two Arrow types, since <see cref="Decimal128Type"/> and
-    /// <see cref="TimestampType"/> do not override <see cref="object.Equals(object?)"/> --
-    /// comparing the parameters that actually matter (precision/scale, unit/timezone)
-    /// rather than reference identity.</summary>
-    public static bool ArrowTypesEqual(IArrowType expected, IArrowType actual)
-    {
-        if (expected.TypeId != actual.TypeId)
-        {
-            return false;
-        }
-
-        return (expected, actual) switch
-        {
-            (Decimal128Type e, Decimal128Type a) => e.Precision == a.Precision && e.Scale == a.Scale,
-            (TimestampType e, TimestampType a) =>
-                e.Unit == a.Unit && string.Equals(e.Timezone, a.Timezone, StringComparison.Ordinal),
-            _ => true,
-        };
-    }
+    /// <summary>Structural equality for two Arrow types -- nested child types, decimal precision and
+    /// scale, timestamp unit and timezone, fixed-size widths and the rest of
+    /// <see cref="ArrowSchemaShape.SameType"/>'s own contract. <c>ToArrowExpectation</c>'s matrix never
+    /// produces a nested or nonstandard-width type today, but this API is public and general: a
+    /// TypeId-only comparison would silently accept a `list&lt;int32&gt;` where `list&lt;utf8&gt;` was
+    /// declared, exactly the shallow-comparison hazard the shared helper exists to close.</summary>
+    public static bool ArrowTypesEqual(IArrowType expected, IArrowType actual) =>
+        ArrowSchemaShape.SameType(expected, actual);
 }
