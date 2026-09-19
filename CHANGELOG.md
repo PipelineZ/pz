@@ -181,6 +181,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   of invariantly, and an exception logged alongside a message carried only its
   type name onto the wire, never its own message.
 
+### Added
+
+- A test walking every `.cs` file under `src/` and `connectors/` for a `"PZ####"` string literal
+  outside `PzErrorCode.cs`, enforcing that the catalog stays the one source of truth for a code's
+  value: a literal in a project that can reference `Pz.Core` (directly or transitively) must instead
+  read `PzErrorCode.SomeName`, and a literal in a project that architecturally cannot (`Pz.PackageManagement`
+  and the connector projects, per CLAUDE.md's layering table) must still match a real catalog value.
+  `src/Pz.Engine/State/StateEdit.cs`'s three literals (`"PZ0513"`/`"PZ0514"`/`"PZ0515"`) now reference
+  `PzErrorCode` instead — the one occurrence the scan found in a project that could already reach the
+  catalog and simply never had. Message text is unchanged.
+
 ### Fixed
 
 - **A write to a Rust-SDK sink could hang forever at commit.** A small write fits in the kernel's
