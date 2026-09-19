@@ -87,6 +87,52 @@ public class YamlMapperTests
         Assert.Equal(1L, b["x"]);
     }
 
+    // -- root document shape ------------------------------------------------------------------------
+    // A list/scalar root or a second document used to fall back to Convert's own "not a
+    // Dictionary<string,object?>" default, which LoadFile then swallowed into an empty {} -- silently
+    // discarding whatever the author actually wrote, indistinguishable from a genuinely empty file.
+
+    [Fact]
+    public void A_list_root_is_a_config_error_not_an_empty_map()
+    {
+        LoadString("- a\n- b\n", out var error);
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Contains("mapping", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_scalar_root_is_a_config_error_not_an_empty_map()
+    {
+        LoadString("just text\n", out var error);
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+    }
+
+    [Fact]
+    public void A_second_yaml_document_is_a_config_error()
+    {
+        LoadString("a: 1\n---\nb: 2\n", out var error);
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Contains("document", error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // A file holding only comments, a bare `---`, or `~` says nothing at all -- the same as an empty
+    // file, and what a project with every connection commented out looks like.
+    [Theory]
+    [InlineData("")]
+    [InlineData("# nothing declared yet\n")]
+    [InlineData("---\n")]
+    [InlineData("---\n# nothing declared yet\n")]
+    [InlineData("~\n")]
+    public void A_file_that_says_nothing_is_still_an_empty_map_not_an_error(string yaml)
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(LoadString(yaml, out var error));
+        Assert.Null(error);
+        Assert.Empty(map);
+    }
+
     // -- scalar typing ----------------------------------------------------------------------------
     // Quoting is how YAML says "this is a string". Re-typing a quoted scalar turns a password
     // "0123456" into 123456 and a connector version "1.10" into 1.1 — a different package.
@@ -139,5 +185,90 @@ public class YamlMapperTests
     {
         var map = Assert.IsType<Dictionary<string, object?>>(LoadString("\"200\": ok\n", out _));
         Assert.Equal("ok", map["200"]);
+    }
+
+    // -- scalar interpolation hook -----------------------------------------------------------------
+    // The overload a loader passes an interpolator to: the substituted text is typed by the SAME
+    // plain/quoted rule as any other scalar, which is what lets a whole-value "${VAR}" reference come
+    // out as an int/bool when the substitution looks like one, while a quoted reference never does.
+
+    private static object? LoadStringInterpolated(string yaml, YamlScalarInterpolator interpolate)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"pz-yamlmapper-{Guid.NewGuid():N}.yml");
+        File.WriteAllText(path, yaml);
+        try
+        {
+            return YamlMapper.LoadFile(path, "project.yml", interpolate);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void A_substituted_plain_scalar_is_typed_by_its_new_text()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("port: PLACEHOLDER\n", (text, _, _) => text == "PLACEHOLDER" ? "5432" : text));
+        Assert.Equal(5432L, map["port"]);
+    }
+
+    [Fact]
+    public void A_substituted_quoted_scalar_stays_a_string_even_though_the_result_looks_numeric()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("port: \"PLACEHOLDER\"\n", (text, _, _) => text == "PLACEHOLDER" ? "5432" : text));
+        Assert.Equal("5432", map["port"]);
+    }
+
+    // A secret or an account id arrives through ${VAR} far more often than a port does. Typing the
+    // substituted text is only safe when nothing is lost by it: "0123456" read as a number is 123456,
+    // and "1.10" is 1.1 -- a different password and a different version.
+    [Theory]
+    [InlineData("0123456")]
+    [InlineData("1.10")]
+    [InlineData("1e5")]
+    [InlineData("+5")]
+    [InlineData(" 7")]
+    public void A_substituted_plain_scalar_that_would_not_read_back_the_same_stays_a_string(string substituted)
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("value: PLACEHOLDER\n", (text, _, _) => text == "PLACEHOLDER" ? substituted : text));
+        Assert.Equal(substituted, map["value"]);
+    }
+
+    [Theory]
+    [InlineData("5432", 5432L)]
+    [InlineData("-3", -3L)]
+    [InlineData("0.5", 0.5)]
+    [InlineData("true", true)]
+    public void A_substituted_plain_scalar_that_reads_back_the_same_is_typed(string substituted, object expected)
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("value: PLACEHOLDER\n", (text, _, _) => text == "PLACEHOLDER" ? substituted : text));
+        Assert.Equal(expected, map["value"]);
+    }
+
+    [Fact]
+    public void The_interpolator_sees_the_key_path_to_the_scalar()
+    {
+        var seen = new List<string>();
+        LoadStringInterpolated("a:\n  b: x\n  c: [y]\n", (text, _, path) =>
+        {
+            seen.Add(string.Join('.', path));
+            return text;
+        });
+
+        Assert.Contains("a.b", seen);
+        Assert.Contains("a.c", seen); // a sequence element does not add its own path segment
+    }
+
+    [Fact]
+    public void No_interpolator_means_the_ordinary_two_argument_LoadFile_behaviour()
+    {
+        var map = Assert.IsType<Dictionary<string, object?>>(
+            LoadStringInterpolated("i: 42\n", null!));
+        Assert.Equal(42L, map["i"]);
     }
 }

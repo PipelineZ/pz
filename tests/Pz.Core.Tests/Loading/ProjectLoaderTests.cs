@@ -81,6 +81,30 @@ public class ProjectLoaderTests
     }
 
     [Fact]
+    public void A_whole_value_env_reference_in_vars_is_retyped_by_its_substituted_shape()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-loader-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                "name: vars_retype\nversion: 0.1.0\nvars:\n  min_amount: ${MIN_AMOUNT}\n" +
+                "  label: prefix-${MIN_AMOUNT}\n  quoted: \"${MIN_AMOUNT}\"\n");
+
+            var env = new Dictionary<string, string> { ["MIN_AMOUNT"] = "25" };
+            var project = ProjectLoader.Load(dir, env);
+
+            Assert.Equal(25L, project.Vars["min_amount"]);
+            Assert.Equal("prefix-25", project.Vars["label"]);
+            Assert.Equal("25", project.Vars["quoted"]);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
     public void Duplicate_pipeline_name_is_error_PZ0110()
     {
         var ex = Assert.Throws<PzValidationException>(
@@ -446,6 +470,229 @@ public class ProjectLoaderTests
             Assert.Contains(errors, e => e.Message.Contains("failure_threshold is missing"));
             Assert.Contains(errors, e => e.Message.Contains("cool_down is missing"));
             Assert.DoesNotContain(errors, e => e.Message.Contains("(got ''"));
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // -- unknown-key refusal (RefuseUnknownKeys, shared across engine:/duckdb/breaker/sidecars) --------
+
+    private static string TempDir()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-loader-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    [Fact]
+    public void An_unknown_engine_key_is_refused_with_a_near_miss()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                "name: t\nversion: 0.1.0\nengine:\n  thread: 4\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.InvalidEngineConfig);
+            Assert.Contains("thread", error.Message, StringComparison.Ordinal);
+            Assert.Contains("did you mean 'threads'", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void An_unknown_engine_duckdb_key_is_refused()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                "name: t\nversion: 0.1.0\nengine:\n  duckdb:\n    bogus: 1\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.InvalidEngineConfig);
+            Assert.Contains("engine.duckdb", error.Message, StringComparison.Ordinal);
+            Assert.Contains("bogus", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void An_unknown_breaker_key_is_refused()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                "name: t\nversion: 0.1.0\nengine:\n  breaker:\n    failure_threshold: 5\n    cool_down: 2m\n    bogus: 1\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.InvalidEngineConfig);
+            Assert.Contains("engine.breaker", error.Message, StringComparison.Ordinal);
+            Assert.Contains("bogus", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // -- sidecar pipelines/configs/*.yml -------------------------------------------------------------
+
+    [Fact]
+    public void An_unknown_sidecar_key_is_refused_with_a_near_miss()
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines", "configs"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "a.sql"), "select 1");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "configs", "a.yml"),
+                "pipeline: a\nmaterialisation: table\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.YamlShape);
+            Assert.Contains("materialisation", error.Message, StringComparison.Ordinal);
+            Assert.Contains("did you mean 'materialization'", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("ephemral")] // near miss of 'ephemeral'
+    [InlineData("incremental")] // dbt's materialization vocabulary, not pz's
+    public void An_unrecognized_materialization_is_refused(string value)
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines", "configs"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "a.sql"), "select 1");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "configs", "a.yml"),
+                $"pipeline: a\nmaterialization: {value}\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.MaterializationInvalid);
+            Assert.Contains(value, error.Message, StringComparison.Ordinal);
+            Assert.Contains("table, view, ephemeral", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void A_scalar_tags_value_is_a_one_element_list_not_dropped()
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines", "configs"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "a.sql"), "select 1");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "configs", "a.yml"),
+                "pipeline: a\ntags: daily\n");
+
+            var project = ProjectLoader.Load(dir, Env);
+            Assert.Equal(["daily"], project.Pipelines.Single(p => p.Name == "a").Tags);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // -- a stray .yaml file where pz only ever reads .yml -------------------------------------------
+
+    [Fact]
+    public void A_project_yaml_sibling_of_project_yml_is_a_warning()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "project.yaml"), "name: unused\nversion: 0.1.0\n");
+
+            var project = ProjectLoader.Load(dir, Env);
+            var warning = Assert.Single(project.Warnings, w => w.Code == PzErrorCode.YamlExtensionIgnored);
+            Assert.Contains("project.yaml", warning.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void A_sidecar_yaml_extension_is_never_loaded_and_warns()
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines", "configs"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "a.sql"), "select 1");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "configs", "a.yaml"),
+                "pipeline: a\ntags: [daily]\n");
+
+            var project = ProjectLoader.Load(dir, Env);
+
+            // The .yaml sidecar was never read: the pipeline keeps its untagged default.
+            Assert.Empty(project.Pipelines.Single(p => p.Name == "a").Tags);
+            var warning = Assert.Single(project.Warnings, w => w.Code == PzErrorCode.YamlExtensionIgnored);
+            Assert.Contains("a.yaml", warning.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    // -- root document shape --------------------------------------------------------------------------
+
+    [Fact]
+    public void A_list_root_in_project_yml_is_an_error_not_an_empty_project()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "- a\n- b\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            Assert.Contains(ex.Errors, e => e.Code == PzErrorCode.YamlShape);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void A_second_yaml_document_in_project_yml_is_an_error()
+    {
+        var dir = TempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(dir, "project.yml"),
+                "name: t\nversion: 0.1.0\n---\nname: t2\nversion: 0.1.0\n");
+
+            var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
+            Assert.Contains(ex.Errors, e => e.Code == PzErrorCode.YamlShape);
         }
         finally
         {

@@ -144,6 +144,92 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Equal("connections.yml", error.File);
     }
 
+    // YamlMapper only types a plain, lowercase true/false (or a plain integer/decimal); "True", "yes",
+    // "null", and "~" all stay strings by design (see CHANGELOG's "Quoted YAML scalars are strings").
+    // A boolean/integer option that receives one of them must not get the JSON Schema library's raw
+    // "Value is \"string\" but should be \"boolean\"" -- it must name the rule.
+    [Theory]
+    [InlineData("True", "write true/false in lower case, unquoted")]
+    [InlineData("yes", "write true/false in lower case, unquoted")]
+    [InlineData("null", "leave the option out instead of writing null")]
+    [InlineData("~", "leave the option out instead of writing null")]
+    public async Task A_yaml_boolean_lookalike_string_names_the_typing_rule(string literal, string hint)
+    {
+        const string schema =
+            """{ "type": "object", "properties": { "verify": { "type": "boolean" } }, "additionalProperties": false }""";
+        var registry = new ConnectorRegistry();
+        registry.AddSource("thing", new StubConnector { ConnectionConfigSchema = schema });
+
+        var source = new ConnectionDef("t", "thing",
+            new Dictionary<string, object?> { ["verify"] = literal }, [], "connections.yml");
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Contains($"'{literal}' was read as text, not a boolean or number here", error.Message,
+            StringComparison.Ordinal);
+        Assert.Equal(hint, error.Hint);
+    }
+
+    // The mirror case: an unquoted all-digit password, or one that reached the file through a bare
+    // ${VAR}, is a number by YAML's rules. The error must not leak the value (it is as likely a secret
+    // as anything) and must say how to keep it text.
+    [Fact]
+    public async Task A_number_where_text_is_expected_says_to_quote_it_and_does_not_echo_the_value()
+    {
+        const string schema =
+            """{ "type": "object", "properties": { "password": { "type": "string" } }, "additionalProperties": false }""";
+        var registry = new ConnectorRegistry();
+        registry.AddSource("thing", new StubConnector { ConnectionConfigSchema = schema });
+
+        var source = new ConnectionDef("t", "thing",
+            new Dictionary<string, object?> { ["password"] = 12345678L }, [], "connections.yml");
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Contains("password", error.Message, StringComparison.Ordinal);
+        Assert.Contains("read as a number", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("12345678", error.Message, StringComparison.Ordinal);
+        Assert.Contains("\"${VAR}\"", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_yaml_boolean_lookalike_string_against_an_integer_option_also_names_the_rule()
+    {
+        const string schema =
+            """{ "type": "object", "properties": { "port": { "type": "integer" } }, "additionalProperties": false }""";
+        var registry = new ConnectorRegistry();
+        registry.AddSource("thing", new StubConnector { ConnectionConfigSchema = schema });
+
+        var source = new ConnectionDef("t", "thing",
+            new Dictionary<string, object?> { ["port"] = "null" }, [], "connections.yml");
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Equal("leave the option out instead of writing null", error.Hint);
+    }
+
+    // A string that merely LOOKS like a number (e.g. an intentionally quoted "5432") is a different
+    // condition -- this rule fires only for the boolean/null lookalikes, not for every string that
+    // fails a boolean/integer schema check.
+    [Fact]
+    public async Task An_unrelated_string_against_an_integer_option_keeps_the_generic_message()
+    {
+        const string schema =
+            """{ "type": "object", "properties": { "port": { "type": "integer" } }, "additionalProperties": false }""";
+        var registry = new ConnectorRegistry();
+        registry.AddSource("thing", new StubConnector { ConnectionConfigSchema = schema });
+
+        var source = new ConnectionDef("t", "thing",
+            new Dictionary<string, object?> { ["port"] = "5432" }, [], "connections.yml");
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+
+        Assert.DoesNotContain("write true/false", error.Hint, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Missing_required_key_is_PZ0301()
     {

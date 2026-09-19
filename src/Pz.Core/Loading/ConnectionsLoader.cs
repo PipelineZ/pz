@@ -28,7 +28,7 @@ internal static class ConnectionsLoader
     private static readonly string[] Directions = ["read", "write"];
 
     public static List<ConnectionDef> Load(string projectDir, IReadOnlyDictionary<string, string> env,
-        List<PzError> errors)
+        List<PzError> errors, List<PzWarning> warnings)
     {
         var connections = new List<ConnectionDef>();
         var path = Path.Combine(projectDir, FileName);
@@ -40,7 +40,12 @@ internal static class ConnectionsLoader
         Dictionary<string, object?> yaml;
         try
         {
-            yaml = YamlMapper.LoadFile(path, FileName);
+            // ${VAR} references are interpolated (and a whole-value plain-scalar reference retyped by
+            // its substituted shape) only under a connection's own flat config -- NOT under its
+            // `entities:` subtree or any other reserved key, which InterpolateAtPath leaves untouched
+            // (warning about a reference it finds there instead).
+            yaml = YamlMapper.LoadFile(path, FileName,
+                (text, _, segments) => InterpolateAtPath(text, segments, env, errors, warnings));
         }
         catch (PzConfigException ex)
         {
@@ -77,11 +82,10 @@ internal static class ConnectionsLoader
                 continue;
             }
 
-            // Connection config is the one place ${VAR} references are interpolated.
-            var config = (Dictionary<string, object?>)EnvInterpolator.InterpolateTree(
-                block.Where(kv => !ReservedKeys.Contains(kv.Key, StringComparer.Ordinal))
-                    .ToDictionary(kv => kv.Key, kv => kv.Value),
-                env, FileName, errors)!;
+            // Already interpolated (and, for a whole-value plain scalar, retyped) by the LoadFile call
+            // above -- connection config is the one place ${VAR} references are substituted.
+            var config = block.Where(kv => !ReservedKeys.Contains(kv.Key, StringComparer.Ordinal))
+                .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
             var (datasets, writes) = LoadEntities(block, name, errors);
 
@@ -103,6 +107,18 @@ internal static class ConnectionsLoader
     {
         var datasets = new List<DatasetDef>();
         var writes = new Dictionary<string, SinkWriteOptions>(StringComparer.Ordinal);
+
+        if (block.TryGetValue("entities", out var entitiesValue) && entitiesValue is not (null or ""))
+        {
+            if (entitiesValue is not Dictionary<string, object?>)
+            {
+                errors.Add(new PzError(PzErrorCode.YamlShape,
+                    $"{FileName}: connection '{connectionName}' field 'entities' must be a mapping of " +
+                    "entity name to read:/write:.",
+                    FileName, null, "entities:\n    <entity>:\n      read: {}"));
+                return (datasets, writes);
+            }
+        }
 
         foreach (var (entity, value) in ProjectLoader.GetDict(block, "entities"))
         {
@@ -240,5 +256,38 @@ internal static class ConnectionsLoader
         return new DatasetDef(entity, options, columns,
             ProjectLoader.ParseSyncMode(read, entity, FileName, errors),
             ProjectLoader.ParseRetry(read, FileName, errors, $"{where} read "));
+    }
+
+    /// <summary>The <see cref="YamlScalarInterpolator"/> for connections.yml: <paramref name="path"/> is
+    /// <c>[connectionName, key, ...]</c>. A connection's own flat config (<c>path[1]</c> not reserved)
+    /// is substituted normally; <c>entities:</c> and the other reserved keys are left untouched -- a
+    /// reference under <c>entities:</c> gets a warning instead, since that subtree is never
+    /// interpolated.</summary>
+    private static string InterpolateAtPath(string text, IReadOnlyList<string> path,
+        IReadOnlyDictionary<string, string> env, List<PzError> errors, List<PzWarning> warnings)
+    {
+        if (path.Count < 2)
+        {
+            return text; // the connection name itself, or shallower -- never a config value
+        }
+
+        if (string.Equals(path[1], "entities", StringComparison.Ordinal))
+        {
+            if (EnvInterpolator.ContainsReference(text))
+            {
+                warnings.Add(new PzWarning(PzErrorCode.EnvRefNotInterpolatedInEntity,
+                    $"{FileName}: connection '{path[0]}' entity option '{string.Join('.', path.Skip(2))}' " +
+                    $"is '{text}' -- entities: options are never interpolated, so this reaches the " +
+                    "connector as literal, un-substituted text.",
+                    FileName, null,
+                    "move the value to the connection's own top-level config, where ${VAR} IS substituted"));
+            }
+
+            return text;
+        }
+
+        return ReservedKeys.Contains(path[1], StringComparer.Ordinal)
+            ? text
+            : EnvInterpolator.Interpolate(text, env, FileName, errors);
     }
 }

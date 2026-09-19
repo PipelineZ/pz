@@ -29,6 +29,15 @@ public static class ConnectorConfigValidator
     private const string Hint = "fix the value to match the connector's schema";
     private static readonly Regex QuotedNamePattern = new("\"([^\"]+)\"", RegexOptions.Compiled);
 
+    /// <summary>YAML 1.1 boolean/null spellings the loader deliberately does NOT type (see
+    /// <c>YamlMapper.ConvertScalar</c>, which only recognizes a plain, lowercase <c>true</c>/<c>false</c>):
+    /// capitalized/other-cased forms, the <c>yes</c>/<c>no</c>/<c>on</c>/<c>off</c> synonyms, and
+    /// <c>null</c>/<c>~</c>. An author who typed one of these expecting it to be typed gets a schema
+    /// "expected boolean/integer, got string" error that never says why -- this recognizes the specific
+    /// shape and names the rule instead.</summary>
+    private static readonly string[] YamlLikeLiterals =
+        ["true", "false", "yes", "no", "on", "off", "y", "n", "null", "~"];
+
     /// <summary>Tier 3: every source/sink connection block against the connector's
     /// ConnectionConfigSchema, every source dataset's options against DatasetConfigSchema, then the
     /// connector's own ValidateAsync for cross-field rules. All errors aggregated; never throws for
@@ -275,6 +284,30 @@ public static class ConnectorConfigValidator
                 continue;
             }
 
+            if (TryDescribeYamlLikeScalar(schemaText, detail, valuesDoc.RootElement, out var literal))
+            {
+                errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
+                    $"{kind} '{name}'{Where(blockLabel)}: {location}'{literal}' was read as text, not a " +
+                    "boolean or number here",
+                    filePath, null,
+                    literal is "null" or "~"
+                        ? "leave the option out instead of writing null"
+                        : "write true/false in lower case, unquoted"));
+                continue;
+            }
+
+            if (TryDescribeTypedWhereTextExpected(schemaText, detail, valuesDoc.RootElement, out var readAs))
+            {
+                // The value is not echoed: an all-digit value where text is expected is a password or
+                // an account id at least as often as it is a mistake.
+                errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
+                    $"{kind} '{name}'{Where(blockLabel)}: {location}the value was read as {readAs}, but " +
+                    "this option is text",
+                    filePath, null,
+                    "quote it -- \"12345\", or \"${VAR}\" when it comes from the environment -- so it stays text"));
+                continue;
+            }
+
             var firstError = detailErrors.Values.First();
             errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
                 $"{kind} '{name}'{Where(blockLabel)}: {location}{firstError}", filePath, null, Hint));
@@ -344,6 +377,117 @@ public static class ConnectorConfigValidator
         return true;
     }
 
+    /// <summary>Recognizes a "type" violation whose offending value is a string one of the YAML
+    /// boolean/null lookalikes the loader deliberately leaves untyped (<see cref="YamlLikeLiterals"/>),
+    /// against a schema property that declares boolean/integer/number. Detection is structural: the
+    /// violated property's own resolved schema node must declare one of those types, not a textual match
+    /// on the library's message, matching <see cref="TryDescribeUnknownOption"/>'s pattern.</summary>
+    private static bool TryDescribeYamlLikeScalar(
+        string schemaText, EvaluationResults detail, JsonElement valuesRoot, out string literal)
+    {
+        literal = "";
+
+        if (detail.Errors is not { } detailErrors || !detailErrors.ContainsKey("type"))
+        {
+            return false;
+        }
+
+        if (!TryResolve(valuesRoot, SplitPointer(detail.InstanceLocation.ToString()), out var instance,
+                requireObject: false) || instance.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var raw = instance.GetString() ?? "";
+        if (!YamlLikeLiterals.Contains(raw, StringComparer.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        JsonElement schemaRoot;
+        try
+        {
+            using var schemaDoc = JsonDocument.Parse(schemaText);
+            schemaRoot = schemaDoc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (!TryResolve(schemaRoot, SplitPointer(detail.EvaluationPath.ToString()), out var propertySchema,
+                requireObject: true) ||
+            !propertySchema.TryGetProperty("type", out var declaredType) ||
+            !DeclaresBooleanOrNumeric(declaredType))
+        {
+            return false;
+        }
+
+        literal = raw;
+        return true;
+    }
+
+    /// <summary>The mirror of <see cref="TryDescribeYamlLikeScalar"/>: a "type" violation where the
+    /// option is declared <c>string</c> and the value is a number or boolean -- what a plain YAML scalar
+    /// (or a bare <c>${VAR}</c> whose value is all digits) becomes. Structural, like its sibling.</summary>
+    private static bool TryDescribeTypedWhereTextExpected(
+        string schemaText, EvaluationResults detail, JsonElement valuesRoot, out string readAs)
+    {
+        readAs = "";
+
+        if (detail.Errors is not { } detailErrors || !detailErrors.ContainsKey("type"))
+        {
+            return false;
+        }
+
+        if (!TryResolve(valuesRoot, SplitPointer(detail.InstanceLocation.ToString()), out var instance,
+                requireObject: false))
+        {
+            return false;
+        }
+
+        var kind = instance.ValueKind switch
+        {
+            JsonValueKind.Number => "a number",
+            JsonValueKind.True or JsonValueKind.False => "a boolean",
+            _ => null,
+        };
+        if (kind is null)
+        {
+            return false;
+        }
+
+        JsonElement schemaRoot;
+        try
+        {
+            using var schemaDoc = JsonDocument.Parse(schemaText);
+            schemaRoot = schemaDoc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+
+        if (!TryResolve(schemaRoot, SplitPointer(detail.EvaluationPath.ToString()), out var propertySchema,
+                requireObject: true) ||
+            !propertySchema.TryGetProperty("type", out var declaredType) ||
+            declaredType.ValueKind != JsonValueKind.String || declaredType.GetString() != "string")
+        {
+            return false;
+        }
+
+        readAs = kind;
+        return true;
+    }
+
+    private static bool DeclaresBooleanOrNumeric(JsonElement declaredType) => declaredType.ValueKind switch
+    {
+        JsonValueKind.String => declaredType.GetString() is "boolean" or "integer" or "number",
+        JsonValueKind.Array => declaredType.EnumerateArray().Any(e =>
+            e.ValueKind == JsonValueKind.String && e.GetString() is "boolean" or "integer" or "number"),
+        _ => false,
+    };
+
     /// <summary>JSON Pointer segments, unescaped per RFC 6901 (<c>~1</c> before <c>~0</c>, or a literal
     /// <c>~1</c> would decode twice). Works off the pointer's string form rather than the library's
     /// indexer, which has been renamed across major versions of JsonPointer.Net.</summary>
@@ -354,8 +498,13 @@ public static class ConnectorConfigValidator
     ];
 
     /// <summary>Walks <paramref name="segments"/> through <paramref name="root"/>, stepping into array
-    /// elements by index (an <c>allOf</c>/<c>anyOf</c> branch puts one in the evaluation path).</summary>
-    private static bool TryResolve(JsonElement root, IEnumerable<string> segments, out JsonElement resolved)
+    /// elements by index (an <c>allOf</c>/<c>anyOf</c> branch puts one in the evaluation path).
+    /// <paramref name="requireObject"/> is false for an instance-value lookup (a JSON Pointer into the
+    /// user's own config, which may land on a scalar) and true for a schema-node lookup (every schema
+    /// container -- and every leaf subschema like <c>{"type":"boolean"}</c> -- is itself a JSON
+    /// object).</summary>
+    private static bool TryResolve(JsonElement root, IEnumerable<string> segments, out JsonElement resolved,
+        bool requireObject = true)
     {
         resolved = root;
         foreach (var segment in segments)
@@ -373,7 +522,7 @@ public static class ConnectorConfigValidator
             }
         }
 
-        return resolved.ValueKind == JsonValueKind.Object;
+        return !requireObject || resolved.ValueKind == JsonValueKind.Object;
     }
 
     private static async Task ValidateCrossFieldAsync(IConnector connector,

@@ -1,5 +1,6 @@
 using Pz.Core.Dag;
 using Pz.Core.Model;
+using Pz.Core.Templating;
 using Pz.Core.Validation;
 
 namespace Pz.Core.Loading;
@@ -11,12 +12,16 @@ public static class ProjectLoader
         IReadOnlyDictionary<string, object?>? varOverrides = null)
     {
         var errors = new List<PzError>();
+        var warnings = new List<PzWarning>();
+
+        WarnIfYamlSiblingIgnored(projectDir, Path.Combine(projectDir, "project.yaml"), warnings);
+        WarnIfYamlSiblingIgnored(projectDir, Path.Combine(projectDir, "connections.yaml"), warnings);
 
         var (name, version, connectors, vars, engine, retention, state, onSourceDrift) =
             LoadProjectFile(projectDir, env, errors);
-        var connections = ConnectionsLoader.Load(projectDir, env, errors);
+        var connections = ConnectionsLoader.Load(projectDir, env, errors, warnings);
         RetiredConnectionDirectories.Refuse(projectDir, errors);
-        var pipelines = LoadPipelines(projectDir, errors);
+        var pipelines = LoadPipelines(projectDir, errors, warnings);
 
         ValidateStateConnection(state, connections, errors);
 
@@ -35,7 +40,10 @@ public static class ProjectLoader
         }
 
         return new PzProject(name, version, engine, mergedVars, connectors, connections, pipelines, retention, state,
-            onSourceDrift);
+            onSourceDrift)
+        {
+            Warnings = warnings,
+        };
     }
 
     /// <summary>Resolves ONLY <c>state:</c> (from project.yml plus the environment) and whatever
@@ -80,10 +88,11 @@ public static class ProjectLoader
         var state = ParseStateConfig(yaml, env, relativePath, errors);
 
         // connections.yml is read only when state.connection names an entry in it -- that is the one
-        // thing in that file this path can possibly need.
+        // thing in that file this path can possibly need. Warnings are discarded: this path exists so
+        // `pz state`/`pz clean` work when something else is already broken, not to report on it.
         IReadOnlyList<ConnectionDef> connections = state.Connection is null
             ? []
-            : ConnectionsLoader.Load(projectDir, env, errors);
+            : ConnectionsLoader.Load(projectDir, env, errors, []);
         ValidateStateConnection(state, connections, errors);
 
         if (errors.Count > 0)
@@ -122,7 +131,12 @@ public static class ProjectLoader
         Dictionary<string, object?> yaml;
         try
         {
-            yaml = YamlMapper.LoadFile(path, relativePath);
+            // Only the top-level `vars:` block is interpolated -- every other project.yml key (engine,
+            // retention, state, ...) never has been, and a bare ${VAR} elsewhere stays literal text.
+            yaml = YamlMapper.LoadFile(path, relativePath, (text, _, segments) =>
+                segments.Count > 0 && segments[0] == "vars"
+                    ? EnvInterpolator.Interpolate(text, env, relativePath, errors)
+                    : text);
         }
         catch (PzConfigException ex)
         {
@@ -204,9 +218,8 @@ public static class ProjectLoader
                 relativePath, null, "vars:\n  min_amount: 10"));
         }
 
-        var rawVars = GetDict(yaml, "vars");
-        var interpolatedVars = (Dictionary<string, object?>)EnvInterpolator.InterpolateTree(rawVars, env, relativePath, errors)!;
-        vars = interpolatedVars;
+        // Already interpolated (and, for a whole-value plain scalar, retyped) by the LoadFile call above.
+        vars = GetDict(yaml, "vars");
 
         if (PresentButNot<Dictionary<string, object?>>(yaml, "engine"))
         {
@@ -234,22 +247,36 @@ public static class ProjectLoader
     private static void RefuseUnknownProjectKeys(Dictionary<string, object?> yaml, string relativePath,
         List<PzError> errors)
     {
-        foreach (var key in yaml.Keys.Where(k => !KnownProjectKeys.Contains(k, StringComparer.Ordinal))
+        if (yaml.ContainsKey("outputs"))
+        {
+            errors.Add(new PzError(PzErrorCode.RetiredOutputsBlock,
+                "project.yml: the 'outputs' block is retired -- there are no per-target output profiles.",
+                relativePath, null,
+                "declare each place as a top-level connection in connections.yml"));
+        }
+
+        RefuseUnknownKeys(yaml.Where(kv => kv.Key != "outputs").ToDictionary(kv => kv.Key, kv => kv.Value),
+            KnownProjectKeys, PzErrorCode.YamlShape, relativePath, "project.yml: ", errors);
+    }
+
+    /// <summary>Refuses every key in <paramref name="dict"/> that is not in <paramref name="allowed"/>,
+    /// one aggregated <see cref="PzError"/> per unknown key, with a near-miss suggestion
+    /// (<see cref="ScriptKwargs.NearMiss"/>) when the key is one edit -- or a case difference -- away
+    /// from an allowed one. The one "unknown key" check every YAML block with a closed key set shares,
+    /// so a typo reads and sounds the same wherever it is caught. <paramref name="where"/> is the
+    /// message prefix (e.g. <c>"project.yml: "</c>, <c>"connection 'x' engine.breaker: "</c>) and is
+    /// reused verbatim as the hint's lead-in.</summary>
+    internal static void RefuseUnknownKeys(Dictionary<string, object?> dict, IReadOnlyList<string> allowed,
+        string code, string relativePath, string where, List<PzError> errors)
+    {
+        foreach (var key in dict.Keys.Where(k => !allowed.Contains(k, StringComparer.Ordinal))
             .OrderBy(k => k, StringComparer.Ordinal))
         {
-            if (key == "outputs")
-            {
-                errors.Add(new PzError(PzErrorCode.RetiredOutputsBlock,
-                    "project.yml: the 'outputs' block is retired -- there are no per-target output profiles.",
-                    relativePath, null,
-                    "declare each place as a top-level connection in connections.yml"));
-                continue;
-            }
-
-            errors.Add(new PzError(PzErrorCode.YamlShape,
-                $"project.yml: unknown key '{key}'.",
+            var nearMiss = ScriptKwargs.NearMiss(allowed, key);
+            errors.Add(new PzError(code,
+                $"{where}unknown key '{key}'" + (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'") + ".",
                 relativePath, null,
-                "project.yml holds name, version, connectors, vars, engine, retention, state, and on_source_drift"));
+                $"{where}accepts: {string.Join(", ", allowed.OrderBy(a => a, StringComparer.Ordinal))}"));
         }
     }
 
@@ -270,9 +297,16 @@ public static class ProjectLoader
         }
     }
 
+    private static readonly string[] KnownEngineKeys =
+        ["threads", "duckdb", "force_universal", "batch_bytes", "check_samples", "breaker", "node_timeout"];
+    private static readonly string[] KnownDuckDbKeys = ["memory_limit", "threads", "temp_directory"];
+
     private static EngineConfig ParseEngineConfig(Dictionary<string, object?> engineYaml, string relativePath,
         List<PzError> errors)
     {
+        RefuseUnknownKeys(engineYaml, KnownEngineKeys, PzErrorCode.InvalidEngineConfig, relativePath,
+            "engine: ", errors);
+
         RefuseUnreadableEngineValue(engineYaml, "threads", TryGetInt(engineYaml, "threads"),
             "an integer", relativePath, errors);
         var threads = TryGetInt(engineYaml, "threads") ?? 4;
@@ -287,6 +321,8 @@ public static class ProjectLoader
 
         if (engineYaml.TryGetValue("duckdb", out var duckDbValue) && duckDbValue is Dictionary<string, object?> duckDbYaml)
         {
+            RefuseUnknownKeys(duckDbYaml, KnownDuckDbKeys, PzErrorCode.InvalidEngineConfig, relativePath,
+                "engine.duckdb: ", errors);
             RefuseUnreadableEngineValue(duckDbYaml, "threads", TryGetInt(duckDbYaml, "threads"),
                 "an integer", relativePath, errors);
             duckDb = new DuckOptionsConfig(
@@ -715,6 +751,9 @@ public static class ProjectLoader
             return null;
         }
 
+        RefuseUnknownKeys(breakerYaml, ["failure_threshold", "cool_down"], PzErrorCode.InvalidEngineConfig,
+            relativePath, "engine.breaker: ", errors);
+
         var valid = true;
 
         breakerYaml.TryGetValue("failure_threshold", out var thresholdRaw);
@@ -909,7 +948,13 @@ public static class ProjectLoader
             return null;
         }
 
-        var valid = true;
+        // The kwarg surface (SinkFunction.ParseRetry) already refuses an unknown retry key under this
+        // same code -- the two surfaces must agree, since moving a retry: block between them is meant
+        // to be cut-and-paste.
+        var beforeUnknownKeys = errors.Count;
+        RefuseUnknownKeys(retryYaml, ["max_attempts", "base_delay", "max_delay"], PzErrorCode.RetryConfigInvalid,
+            relativePath, $"{context}retry: ", errors);
+        var valid = errors.Count == beforeUnknownKeys;
 
         int? maxAttempts = null;
         if (retryYaml.TryGetValue("max_attempts", out var attemptsRaw) && attemptsRaw is not null)
@@ -981,6 +1026,9 @@ public static class ProjectLoader
                 relativePath, null, hint));
             return null;
         }
+
+        RefuseUnknownKeys(rateLimitYaml, ["requests_per_minute", "burst"], PzErrorCode.RateLimitConfigInvalid,
+            relativePath, "rate_limit: ", errors);
 
         var valid = true;
 
@@ -1065,7 +1113,27 @@ public static class ProjectLoader
         return false;
     }
 
-    private static List<PipelineDef> LoadPipelines(string projectDir, List<PzError> errors)
+    /// <summary>Warns once, naming the file, when <paramref name="yamlPath"/> (a <c>.yaml</c> spelling
+    /// of a location pz only ever reads as <c>.yml</c>) exists -- regardless of whether the <c>.yml</c>
+    /// it was probably meant to be also exists. pz cannot tell a stray unrelated file (a CI config, a
+    /// k8s manifest) from a typo'd extension, only flag that the file sits where it would never be
+    /// read.</summary>
+    private static void WarnIfYamlSiblingIgnored(string projectDir, string yamlPath, List<PzWarning> warnings)
+    {
+        if (!File.Exists(yamlPath))
+        {
+            return;
+        }
+
+        var relativePath = RelativePath(projectDir, yamlPath);
+        warnings.Add(new PzWarning(PzErrorCode.YamlExtensionIgnored,
+            $"{relativePath} exists, but pz only ever reads the '.yml' extension here -- this file is " +
+            "never loaded.",
+            relativePath, null,
+            $"rename {relativePath} to end in .yml, or delete it if it is unrelated to pz"));
+    }
+
+    private static List<PipelineDef> LoadPipelines(string projectDir, List<PzError> errors, List<PzWarning> warnings)
     {
         var pipelines = new List<PipelineDef>();
         var pipelinesDir = Path.Combine(projectDir, "pipelines");
@@ -1103,18 +1171,83 @@ public static class ProjectLoader
                 Array.Empty<string>(), Array.Empty<CheckDef>(), relativePath);
         }
 
-        ApplySidecars(projectDir, byName, errors);
+        ApplySidecars(projectDir, byName, errors, warnings);
 
         pipelines.AddRange(byName.Values);
         return pipelines;
     }
 
-    private static void ApplySidecars(string projectDir, Dictionary<string, PipelineDef> pipelines, List<PzError> errors)
+    private static readonly string[] KnownSidecarKeys = ["pipeline", "materialization", "tags", "checks"];
+    private static readonly string[] Materializations = ["table", "view", "ephemeral"];
+
+    /// <summary>Absent -> <c>table</c>. A value outside <see cref="Materializations"/> -- dbt's
+    /// `incremental`, a near-miss like `ephemral`, or the British spelling under the WRONG key
+    /// (`materialisation:`, caught by <see cref="KnownSidecarKeys"/>'s own near-miss instead) -- is an
+    /// error naming the enum, with a near-miss suggestion when the value is one edit away from an
+    /// allowed one.</summary>
+    private static string ParseMaterialization(Dictionary<string, object?> yaml, string pipelineName,
+        string relativePath, List<PzError> errors)
+    {
+        if (TryGetString(yaml, "materialization") is not { } raw)
+        {
+            return "table";
+        }
+
+        if (Materializations.Contains(raw, StringComparer.Ordinal))
+        {
+            return raw;
+        }
+
+        var nearMiss = ScriptKwargs.NearMiss(Materializations, raw);
+        errors.Add(new PzError(PzErrorCode.MaterializationInvalid,
+            $"{relativePath}: pipeline '{pipelineName}': 'materialization' must be one of: " +
+            $"{string.Join(", ", Materializations)} (got '{raw}')" +
+            (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'") + ".",
+            relativePath, null, "materialization: table"));
+        return "table";
+    }
+
+    /// <summary>A list of strings, same as always. A bare scalar (`tags: daily`) is dbt-shorthand
+    /// accepted as the one-element list `[daily]` rather than silently dropped -- the value the author
+    /// wrote was never ambiguous, only the container shape was informal. Anything else (a mapping) is
+    /// an error naming the pipeline.</summary>
+    private static List<string> GetTags(Dictionary<string, object?> yaml, string pipelineName,
+        string relativePath, List<PzError> errors)
+    {
+        if (!yaml.TryGetValue("tags", out var value) || value is null or "")
+        {
+            return [];
+        }
+
+        if (value is List<object?> list)
+        {
+            return list.Select(t => t?.ToString() ?? string.Empty).ToList();
+        }
+
+        if (value is Dictionary<string, object?>)
+        {
+            errors.Add(new PzError(PzErrorCode.YamlShape,
+                $"{relativePath}: pipeline '{pipelineName}': 'tags' must be a list of strings, or a " +
+                "single string (got a mapping).",
+                relativePath, null, "tags: [daily, crm]"));
+            return [];
+        }
+
+        return [value.ToString() ?? string.Empty];
+    }
+
+    private static void ApplySidecars(string projectDir, Dictionary<string, PipelineDef> pipelines,
+        List<PzError> errors, List<PzWarning> warnings)
     {
         var configsDir = Path.Combine(projectDir, "pipelines", "configs");
         if (!Directory.Exists(configsDir))
         {
             return;
+        }
+
+        foreach (var yamlPath in Directory.EnumerateFiles(configsDir, "*.yaml").OrderBy(f => f, StringComparer.Ordinal))
+        {
+            WarnIfYamlSiblingIgnored(projectDir, yamlPath, warnings);
         }
 
         foreach (var filePath in Directory.EnumerateFiles(configsDir, "*.yml").OrderBy(f => f, StringComparer.Ordinal))
@@ -1131,6 +1264,9 @@ public static class ProjectLoader
                 continue;
             }
 
+            RefuseUnknownKeys(yaml, KnownSidecarKeys, PzErrorCode.YamlShape, relativePath, $"{relativePath}: ",
+                errors);
+
             var pipelineName = TryGetString(yaml, "pipeline") ?? string.Empty;
 
             if (!pipelines.TryGetValue(pipelineName, out var pipeline))
@@ -1144,8 +1280,8 @@ public static class ProjectLoader
                 continue;
             }
 
-            var materialization = TryGetString(yaml, "materialization") ?? "table";
-            var tags = GetList(yaml, "tags").Select(t => t?.ToString() ?? string.Empty).ToList();
+            var materialization = ParseMaterialization(yaml, pipelineName, relativePath, errors);
+            var tags = GetTags(yaml, pipelineName, relativePath, errors);
 
             var checks = new List<CheckDef>();
             // Indices (into `checks`) whose `column:` value was already reported as malformed below --

@@ -144,7 +144,7 @@ internal sealed class SourceFunction : IScriptCustomFunction
         {
             ("rate_limit", PzErrorCode.RateLimitConfigInvalid,
                 "rate_limit is instance-level; declare it on the connection in connections.yml"),
-            ("max_concurrency", PzErrorCode.RateLimitConfigInvalid,
+            ("max_concurrency", PzErrorCode.ConcurrencyConfigInvalid,
                 "max_concurrency is instance-level; declare it on the connection in connections.yml"),
             ("table", PzErrorCode.RetiredEntityQualifier,
                 "the entity name is the table: source('<connection>', 'schema.table')"),

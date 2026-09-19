@@ -277,6 +277,74 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   by file, then position, for a deterministic report. Stages with a genuine
   dependency on an earlier one's success (sink-output binding, the one-reader
   rule, SQL-declared incremental inference, and later) are unchanged.
+- `schema_policy` is now validated against its vocabulary (`fail_on_change`,
+  `additive`, `evolve`) on both surfaces — the `sink()` keyword argument and the YAML
+  `write:` block — instead of riding any string through to the connector,
+  which silently treated an unrecognized one as `fail_on_change`
+  (`schema_policy: aditive` used to reach postgres/sqlserver unchallenged). A
+  near-miss (`aditive` → `additive`) is suggested. Same pass: `max_concurrency`
+  is now refused on `sink()` the same way it already was on `source()` (it
+  used to ride through silently as a connector write option), both now under
+  the connection-level `max_concurrency:` code (PZ0122) instead of the
+  rate-limit one; the `sink()` `rate_limit` refusal's hint now correctly says
+  to declare it on the connection, not "on the sink"; and a boolean/integer
+  connector option that received a YAML string a plain, lowercase
+  `true`/`false` would have typed — `True`, `yes`, `null`, `~`, and similar
+  YAML 1.1 lookalikes the loader deliberately leaves as text — now says "write
+  true/false in lower case, unquoted" (or, for `null`/`~`, "leave the option
+  out") instead of the JSON Schema library's raw
+  `Value is "string" but should be "boolean"`.
+- An unquoted `${VAR}` is now typed by the value it resolves to, when that loses
+  nothing: `port: ${PGPORT}` with `PGPORT=5432` is the integer `5432` instead
+  of the string `"5432"` that failed tier-3 validation with "expected integer",
+  and `${FLAG}` = `true` is a boolean. Substituted text that would not read
+  back the same stays a string — `0123456`, `1.10`, `1e5` — because a bare
+  `${VAR}` is a password or an account id as often as a port. A quoted
+  reference (`port: "${PGPORT}"`) always stays a string. Applies to
+  `connections.yml` connection config, `project.yml`'s `vars:` block, and
+  `pz connector test --config`. A literal `${` that must NOT be read as a
+  reference is now written `$${` (e.g. `$${NAME}` produces the literal text
+  `${NAME}`).
+  *Migration:* a text option fed by an unquoted `${VAR}` whose value is all
+  digits (or `true`/`false`) is now a number (or boolean) and fails validation
+  with "the value was read as a number, but this option is text" — quote the
+  reference (`password: "${PGPASSWORD}"`). The value is never echoed.
+- `${VAR}` inside an `entities: <e>: read:/write:` block in `connections.yml`
+  was always silently left as literal, un-substituted text (unlike the
+  connection's own top-level config, where it IS interpolated) — it now
+  raises a load-time warning naming the connection and option instead of
+  reaching the connector unexpanded with no signal at all. The value itself
+  is unchanged; only connection-level config is interpolated.
+- Several YAML blocks silently ignored an unknown or mistyped key instead of
+  refusing it: `engine:`, `engine.duckdb`, `engine.breaker`, the instance-level
+  `rate_limit:`, and the YAML `retry:` surface (which now agrees with the
+  `sink()`/`source()` kwarg surface's existing unknown-key refusal, using the
+  same code). All go through one shared "unknown key" check that also
+  suggests a near-miss (e.g. `thread:` → "did you mean 'threads'"). Also:
+  - A sidecar `pipelines/configs/*.yml`'s unknown key is refused the same way
+    (`materialisation:` now says "did you mean 'materialization'"); its
+    `materialization:` value is validated against `table`/`view`/`ephemeral`
+    — dbt's `incremental`, or a near-miss like `ephemral`, are now errors
+    instead of silently landing as an unrecognized string nothing downstream
+    reads. A scalar `tags: daily` is now the one-element list `[daily]`
+    rather than silently dropped to no tags.
+  - `connections.yml`'s `entities:` being anything other than a mapping (a
+    list, a string) used to silently drop every entity to `{}`; it is now a
+    load-time error.
+  - A `.yaml` file sitting where pz only ever reads `.yml` — `project.yaml`,
+    `connections.yaml`, or a `pipelines/configs/*.yaml` sidecar — is silently
+    never loaded; it now raises a load-time warning naming the file.
+  - A YAML file (`project.yml`, `connections.yml`, a sidecar) whose document
+    root is a list or a bare scalar, or that contains a second `---`-separated
+    document, used to silently read as `{}`; both are now load-time errors.
+  - `project.yml`'s `pz:` key (documented as an engine-version constraint)
+    remains accepted but unenforced — nothing in the loader or engine reads
+    it today, and its exact constraint syntax is not established in this
+    repository, so guessing a shape to enforce risked being wrong. Left as a
+    deliberately open follow-up rather than a guess.
+  All errors aggregate (a run reports every mistake in a file at once, not
+  just the first) and carry the file and a next step, per this project's
+  error-reporting rule.
 
 ## [0.6.1] - 2026-09-10
 

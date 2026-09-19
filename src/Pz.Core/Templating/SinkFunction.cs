@@ -31,6 +31,11 @@ internal sealed class SinkFunction : IScriptCustomFunction
 
     private static readonly string[] WriteStrategies = ["replace", "append", "merge"];
 
+    /// <summary>The schema-drift vocabulary. A connector is free to refuse a policy it does not
+    /// implement (the builtin sinks refuse <c>evolve</c> themselves), but a string outside this set is a
+    /// typo: it would reach the connector and be treated as <c>fail_on_change</c> without a word.</summary>
+    private static readonly string[] SchemaPolicies = ["fail_on_change", "additive", "evolve"];
+
     /// <summary>Kwargs pz owns. Everything else is a connector write option and rides
     /// <see cref="SinkWriteOptions.Options"/> unchecked, exactly as an unrecognized key under a YAML
     /// <c>write:</c> block does -- no connector publishes a write-option vocabulary to check against,
@@ -141,15 +146,17 @@ internal sealed class SinkFunction : IScriptCustomFunction
         var schemaPolicy = "fail_on_change";
         if (Take(kwargs, "schema_policy") is { } policyArg)
         {
-            if (policyArg.Value is string p)
+            if (policyArg.Value is string p && SchemaPolicies.Contains(p, StringComparer.Ordinal))
             {
                 schemaPolicy = p;
             }
             else
             {
+                var nearMiss = policyArg.Value is string bad ? ScriptKwargs.NearMiss(SchemaPolicies, bad) : null;
                 Error(PzErrorCode.SyncModeInvalid, policyArg.Line,
-                    $"sink('{sink}', '{output}'): 'schema_policy' must be a string " +
-                    $"(got '{Show(policyArg.Value)}')");
+                    $"sink('{sink}', '{output}'): 'schema_policy' must be one of: " +
+                    $"{string.Join(", ", SchemaPolicies)} (got '{Show(policyArg.Value)}')" +
+                    (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'"));
             }
         }
 
@@ -175,7 +182,9 @@ internal sealed class SinkFunction : IScriptCustomFunction
             ("write", PzErrorCode.RetiredWriteSurface,
                 "pass the write options directly: strategy: 'merge', keys: ['<column>']"),
             ("rate_limit", PzErrorCode.RateLimitConfigInvalid,
-                "rate_limit is instance-level; declare it on the sink"),
+                "rate_limit is instance-level; declare it on the connection in connections.yml"),
+            ("max_concurrency", PzErrorCode.ConcurrencyConfigInvalid,
+                "max_concurrency is instance-level; declare it on the connection in connections.yml"),
             ("input", PzErrorCode.RemovedInputField,
                 "the pipeline carrying this sink() call IS the input"),
             ("table", PzErrorCode.RetiredEntityQualifier,

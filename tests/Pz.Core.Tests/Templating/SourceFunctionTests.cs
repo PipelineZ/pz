@@ -79,7 +79,7 @@ public class SourceFunctionTests
 
     [Theory]
     [InlineData("rate_limit: { requests_per_minute: 60 }", PzErrorCode.RateLimitConfigInvalid)]
-    [InlineData("max_concurrency: 4", PzErrorCode.RateLimitConfigInvalid)]
+    [InlineData("max_concurrency: 4", PzErrorCode.ConcurrencyConfigInvalid)]
     [InlineData("table: 'orders'", PzErrorCode.RetiredEntityQualifier)]
     [InlineData("schema: 'dbo'", PzErrorCode.RetiredEntityQualifier)]
     [InlineData("incremental: { cursor: 'id' }", PzErrorCode.RetiredReadSurface)]
