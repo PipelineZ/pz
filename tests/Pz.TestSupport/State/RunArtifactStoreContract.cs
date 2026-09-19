@@ -115,4 +115,39 @@ public abstract class RunArtifactStoreContract
 
         Assert.Equal("20260731T000001Z", store.ReadLatest()!.RunId);
     }
+
+    /// <summary>`pz runs`'s duration column depends on this: <c>finishedAt</c> stays null while the run
+    /// is still "running" (matching the value a crashed run's last snapshot is left holding) and gets
+    /// stamped once the terminal snapshot lands — on both backends, so the verb behaves identically
+    /// under `state: {backend: sqlserver}`.</summary>
+    [SkippableFact]
+    public void ReadLatest_reports_started_at_always_and_finished_at_only_once_terminal()
+    {
+        var store = NewStore();
+        store.WriteSnapshot("20260731T000001Z", StartedAt, [SucceededSourceLoad("n1", "src_a")], "running");
+
+        var running = store.ReadLatest()!;
+        Assert.Equal(StartedAt, running.StartedAtIso);
+        Assert.Null(running.FinishedAtIso);
+
+        store.WriteSnapshot("20260731T000001Z", StartedAt, [SucceededSourceLoad("n1", "src_a")], "success");
+
+        var terminal = store.ReadLatest()!;
+        Assert.Equal(StartedAt, terminal.StartedAtIso);
+        Assert.False(string.IsNullOrEmpty(terminal.FinishedAtIso));
+    }
+
+    /// <summary>`pz runs`'s provenance column: a node's <see cref="NodeResult.Provenance"/> round-trips
+    /// through both backends into <see cref="PriorNode.Provenance"/> as the same wire string
+    /// (RunResultsWriter's <c>ProvenanceName</c>/<c>SqlRunArtifactStore</c>'s own mapping).</summary>
+    [SkippableFact]
+    public void ReadLatest_round_trips_node_provenance()
+    {
+        var store = NewStore();
+        var reused = SucceededSourceLoad("n1", "src_a") with { Provenance = NodeProvenance.Reused };
+
+        store.WriteSnapshot("20260731T000001Z", StartedAt, [reused], "success");
+
+        Assert.Equal("reused", store.ReadLatest()!.Nodes.Single().Provenance);
+    }
 }

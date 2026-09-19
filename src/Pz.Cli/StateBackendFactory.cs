@@ -62,7 +62,7 @@ internal static class StateBackendFactory
                 WatermarkStore.Local(stateDir),
                 SchemaBaselineStore.Local(stateDir),
                 SyncStateStore.Local(stateDir),
-                new LocalRunArtifactStore(projectDir),
+                new LocalRunArtifactStore(projectDir, time),
                 EventSink: null,
                 description,
                 EnsureSchema: static () => { });
@@ -87,7 +87,7 @@ internal static class StateBackendFactory
                     endpoint, "schemas", SchemaBaselineStore.ReadEntry, SchemaBaselineStore.WriteEntry)),
                 new SyncStateStore(new HttpKeyedStateStore<SyncState>(
                     endpoint, "sync-state", SyncStateStore.ReadEntry, SyncStateStore.WriteEntry)),
-                new LocalRunArtifactStore(projectDir),
+                new LocalRunArtifactStore(projectDir, time),
                 EventSink: null,
                 description,
                 // No schema to migrate: the server owns the storage and its own migrations.
@@ -106,7 +106,7 @@ internal static class StateBackendFactory
 
         IRunArtifactStore artifacts = state.Artifacts
             ? new SqlRunArtifactStore(connection, projectName)
-            : new LocalRunArtifactStore(projectDir);
+            : new LocalRunArtifactStore(projectDir, time);
 
         IEventRenderer? eventSink = state.Events && runId is not null
             ? new SqlEventRenderer(new SqlEventSink(connection, runId, time))

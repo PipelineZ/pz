@@ -630,6 +630,14 @@ public static class PzErrorCode
     /// <see cref="Pz.Cli.Commands.EngineFailureMapper"/>.</summary>
     public const string EngineFileLocked = "PZ0533";
 
+    /// <summary><c>pz runs --limit</c> was not a positive integer -- 0 or negative selects nothing
+    /// useful, so unlike <c>pz clean --keep-last</c> (where 0 is a legitimate "every run"), there is no
+    /// reading of 0 worth accepting here.</summary>
+    public const string RunsLimitInvalid = "PZ0534";
+
+    /// <summary><c>pz completion</c> was given a shell name none of the generators recognize.</summary>
+    public const string CompletionShellInvalid = "PZ0535";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

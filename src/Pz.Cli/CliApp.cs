@@ -22,6 +22,7 @@ public static class CliApp
         root.Subcommands.Add(TestCommand.Create());
         root.Subcommands.Add(RetryCommand.Create());
         root.Subcommands.Add(LsCommand.Create());
+        root.Subcommands.Add(RunsCommand.Create());
         root.Subcommands.Add(ConnectorsCommand.Create());
         root.Subcommands.Add(ConnectorTestCommand.Create());
         root.Subcommands.Add(CdcCommand.Create());
@@ -29,6 +30,7 @@ public static class CliApp
         root.Subcommands.Add(StateCommand.Create());
         root.Subcommands.Add(SchemaCommand.Create());
         root.Subcommands.Add(McpCommand.Create());
+        root.Subcommands.Add(CompletionCommand.Create());
 
         return root;
     }

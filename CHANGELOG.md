@@ -45,6 +45,23 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- `pz runs`: lists prior runs, newest first, over `IRunArtifactStore` (works
+  under `state: {backend: sqlserver}` too, not just local files) — run id,
+  status, started/finished time, duration, succeeded/failed/skipped node
+  counts, and a reused/carried_forward provenance summary. `--json` prints one
+  byte-stable JSON object per run (LF-terminated, invariant-culture numbers,
+  UTC ISO-8601 timestamps); `--limit N` caps it to the N most recent runs.
+  `run_results.json` gains an additive `finishedAt` field (stamped only on the
+  terminal snapshot, absent while a run is still "running"), and both backends'
+  `PriorRun`/`PriorNode` now round-trip `startedAt`/`finishedAt` and a node's
+  `provenance` for readers.
+- `pz completion bash|zsh|fish|pwsh`: prints a shell completion script to
+  stdout. The script carries no list of its own: it asks the installed `pz`
+  (`pz "[suggest:<position>]" "<line>"`), so verbs, sub-verbs and options all
+  complete and an upgrade never leaves a stale script behind; where pz has
+  nothing to offer (an option's value is usually a path) the shell's own file
+  completion takes over. No network, no file writes; an unrecognized shell
+  name is a config error (PZ0535).
 - Connectors TestKit: `ColumnPruning_yields_exactly_the_hinted_columns_in_hint_order`,
   the acceptance fact for the `ColumnPruning` capability. It plans a read with a
   non-prefix, reordered column hint and requires every batch to carry exactly

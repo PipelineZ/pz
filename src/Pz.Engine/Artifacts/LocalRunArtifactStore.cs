@@ -12,7 +12,7 @@ namespace Pz.Engine.Artifacts;
 /// <c>startedAtIso</c> its run's FIRST <see cref="WriteSnapshot"/> call is given — later calls for the
 /// same run id reuse it and ignore any different value they are (incorrectly) passed, matching
 /// <see cref="RunResultsWriter"/>'s existing one-value-per-run contract.</summary>
-public sealed class LocalRunArtifactStore(string projectDir) : IRunArtifactStore
+public sealed class LocalRunArtifactStore(string projectDir, TimeProvider? time = null) : IRunArtifactStore
 {
     private readonly Dictionary<string, RunResultsWriter> _writers = new(StringComparer.Ordinal);
     private readonly Lock _writersLock = new();
@@ -27,7 +27,7 @@ public sealed class LocalRunArtifactStore(string projectDir) : IRunArtifactStore
         {
             if (!_writers.TryGetValue(runId, out writer!))
             {
-                writer = new RunResultsWriter(new RunPaths(projectDir, runId), startedAtIso);
+                writer = new RunResultsWriter(new RunPaths(projectDir, runId), startedAtIso, time);
                 _writers[runId] = writer;
             }
         }

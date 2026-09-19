@@ -212,17 +212,20 @@ public sealed class ProcessHostParityTests : IDisposable
 
     private static string Quoted(string value) => JsonEncodedText.Encode($"'{value}'").ToString();
 
-    /// <summary>run_results.json. Three entries, all run identity or wall clock:
+    /// <summary>run_results.json. Four entries, all run identity or wall clock:
     /// <list type="bullet">
     /// <item><c>runId</c> — one per run, minted from the clock plus randomness.</item>
     /// <item><c>startedAt</c> — wall clock.</item>
+    /// <item><c>finishedAt</c> — wall clock.</item>
     /// <item><c>durationMs</c> — measured elapsed time per node.</item>
     /// </list></summary>
     private static string NormalizeResults(string json, string runId) =>
         DurationPattern.Replace(
-            StartedAtPattern.Replace(
-                json.Replace(runId, "<run-id>", StringComparison.Ordinal),
-                "\"startedAt\":\"<started-at>\""),
+            FinishedAtPattern.Replace(
+                StartedAtPattern.Replace(
+                    json.Replace(runId, "<run-id>", StringComparison.Ordinal),
+                    "\"startedAt\":\"<started-at>\""),
+                "\"finishedAt\":\"<finished-at>\""),
             "\"durationMs\":0");
 
     /// <summary>Two further entries, applied ONLY by the force_universal fact so the native-tier fact
@@ -240,6 +243,9 @@ public sealed class ProcessHostParityTests : IDisposable
 
     private static readonly Regex StartedAtPattern =
         new("\"startedAt\":\"[^\"]*\"", RegexOptions.Compiled);
+
+    private static readonly Regex FinishedAtPattern =
+        new("\"finishedAt\":\"[^\"]*\"", RegexOptions.Compiled);
 
     private static readonly Regex DurationPattern =
         new("\"durationMs\":[0-9]+", RegexOptions.Compiled);

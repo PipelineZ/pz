@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text.Json;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
@@ -24,7 +25,7 @@ namespace Pz.Engine.Artifacts;
 /// lock (e.g. <c>ConsoleRunEvents._gate</c>) — callers must not couple their own synchronization to
 /// this writer's.
 /// </summary>
-public sealed class RunResultsWriter(RunPaths paths, string startedAtIso)
+public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimeProvider? time = null)
 {
     private readonly Lock _publishLock = new();
 
@@ -40,6 +41,17 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso)
             writer.WriteString("runId", paths.RunId);
             writer.WriteString("status", status);
             writer.WriteString("startedAt", startedAtIso);
+
+            // Additive-optional, mirroring SqlRunArtifactStore's finished_at column: only the terminal
+            // write (status != "running") stamps it, so `pz runs` can tell "still running" (or a crashed
+            // run's last snapshot) apart from a completed one without needing anything beyond this file.
+            if (status != "running")
+            {
+                writer.WriteString("finishedAt",
+                    (time ?? TimeProvider.System).GetUtcNow().UtcDateTime
+                        .ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
+            }
+
             writer.WriteStartArray("nodes");
             foreach (var node in completed)
             {
