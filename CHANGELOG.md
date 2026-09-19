@@ -66,9 +66,45 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   connection. The clock is wall time for the attempt, including time spent
   queued for the run's one DuckDB connection, so size it for the slowest node
   plus what may run ahead of it.
+- Additive `Hello.sdk {name, version}` on the PCP wire, and a matching `sdk`
+  property in `pz.connector.json` — which SDK built an out-of-process
+  connector, and at what version, previously invisible anywhere. Populated by
+  both SDKs (C# `Pz.Connectors.Sdk`, Rust `pz-connector`) and shown in
+  `pz connectors`, `pz connector test`'s handshake vector, and PZ0356/PZ0357
+  messages. `HostInfo.pz_version` (declared but never set) now carries this
+  pz build's own version on every handshake. Both fields are additive:
+  absent on either side of an older SDK/manifest, never a mismatch. This gap
+  made the 0.6.1 pruning incident hard to triage.
 
 ### Fixed
 
+- An unhandled exception inside a C# SDK connector handler — a connector
+  defect the SDK never anticipated, not an operational failure the connector
+  reported on purpose — now reaches the engine as a non-transient connector
+  error ("unhandled `<Type>`: `<message>`"), instead of surfacing as PZ0357
+  "protocol violation … confirm ABI versions", the wrong diagnosis for a bug
+  in the connector rather than a mismatch between it and the host.
+- A connector-reported error's `code`/`hint` (always sent empty by the C# SDK,
+  and discarded by the host even when a future SDK filled them) now survive
+  the round trip: `PzConnectorException` gains additive `Code`/`Hint`
+  properties, the C# SDK populates the wire detail from them, and the host
+  folds a present hint into the exception's message (every existing consumer
+  — run_results.json, the NDJSON stream, a retry_scheduled reason — already
+  renders `Message`, not a field nothing reads). The Rust SDK already filled
+  both; the two SDKs are consistent now.
+- PZ0356 (handshake failed), PZ0358 (connector died mid-operation), and a
+  connector-reported error the host maps once the connector's process has
+  also exited now name the child's exit code — `exited with code 137 (signal
+  SIGKILL)` for an OOM-kill, `exited with code 139 (signal SIGSEGV)` for a
+  segfault — instead of leaving PZ0358's own hint ("check the connector's
+  exit code") with nothing to check.
+- A connector reporting a capability bit or manifest capability name this pz
+  build does not define — the sanctioned way an out-of-process connector's SDK
+  grows the ABI — no longer fails the handshake with PZ0356 "capabilities
+  (98304) do not match". Only bits this build's `ConnectorCapabilities`
+  actually defines are compared; an unrecognized name or bit is reported once
+  as a warning instead, the same way an out-of-process host already reports a
+  declared-but-unimplemented capability.
 - Cancelling a run now interrupts a statement already running inside DuckDB.
   Ctrl-C (and the new node timeout) used to wait for the statement to finish on
   its own, however long that took.

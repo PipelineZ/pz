@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Sockets;
+using System.Reflection;
 using Grpc.Core;
 using Grpc.Core.Interceptors;
 using Grpc.Net.Client;
@@ -35,6 +36,15 @@ public sealed class PcpClient : IAsyncDisposable
     // partition reads share one PcpClient/Grpc client, so this needs a real memory barrier, not a plain
     // bool? field (a torn or stale read here would misclassify a crash's transience).
     private int _lastErrorTransient;
+
+    /// <summary>This build's own informational version, sent as <c>HostInfo.pz_version</c> on every
+    /// handshake -- MinVer-derived, the same number <c>pz connectors</c> reports for a builtin
+    /// connector. Reflection over this assembly's own attribute, the same pattern
+    /// <c>ConnectorsCommand.PzInformationalVersion</c> uses (this assembly cannot reference
+    /// <c>Pz.Cli</c>, so it cannot share that field directly).</summary>
+    private static readonly string PzInformationalVersion =
+        typeof(PcpClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion ?? "unknown";
 
     private PcpClient(ConnectorProcess process, GrpcChannel channel, Hello hello, PzConnector.PzConnectorClient grpc)
     {
@@ -98,11 +108,13 @@ public sealed class PcpClient : IAsyncDisposable
         ConnectAndConfigureAsync(process, manifest, instanceId, config, HostTelemetry.None, handshakeTimeout, ct);
 
     /// <summary>Same discipline, with what the connector should know about the run and where to
-    /// export telemetry (<see cref="HostTelemetry"/>), carried in the handshake's <c>HostInfo</c>.</summary>
+    /// export telemetry (<see cref="HostTelemetry"/>), carried in the handshake's <c>HostInfo</c>.
+    /// <paramref name="warn"/> reports a capability name or bit this build does not recognize — never a
+    /// handshake failure by itself, see the seven-argument overload's doc.</summary>
     public static Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
-        ConnectorConfig config, HostTelemetry telemetry, CancellationToken ct) =>
-        ConnectAndConfigureAsync(process, manifest, instanceId, config, telemetry, ProtocolConstants.HandshakeTimeout, ct);
+        ConnectorConfig config, HostTelemetry telemetry, CancellationToken ct, Action<string>? warn = null) =>
+        ConnectAndConfigureAsync(process, manifest, instanceId, config, telemetry, ProtocolConstants.HandshakeTimeout, ct, warn);
 
     /// <summary>Same as the five-argument overload, with an injectable handshake timeout — the only
     /// reason this overload exists is so a test can force a short one instead of waiting out the real
@@ -126,10 +138,18 @@ public sealed class PcpClient : IAsyncDisposable
     /// <c>ct.IsCancellationRequested</c> against the RPC's status code and rethrow a plain
     /// <see cref="OperationCanceledException"/> instead of wrapping it as PZ0356/PZ0357/PZ0358. The
     /// internal <paramref name="handshakeTimeout"/> firing is a different token (this method's own linked
-    /// <c>handshakeCts</c>, not the caller's) and still maps to PZ0356.</para></summary>
+    /// <c>handshakeCts</c>, not the caller's) and still maps to PZ0356.</para>
+    ///
+    /// <para>Capability agreement is judged on bits this build's <see cref="ConnectorCapabilities"/>
+    /// actually defines: a manifest-declared name or a Hello-reported bit outside that set is a
+    /// newer-SDK flag this host has not learned yet, not a disagreement, and is dropped from both sides
+    /// before they are compared (see <see cref="CapabilityNames(long)"/>). It is reported once through
+    /// <paramref name="warn"/> instead — the sanctioned ABI growth path, additive by design, must not
+    /// fail an older host's handshake against a newer connector.</para></summary>
     public static async Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
-        ConnectorConfig config, HostTelemetry telemetry, TimeSpan handshakeTimeout, CancellationToken ct)
+        ConnectorConfig config, HostTelemetry telemetry, TimeSpan handshakeTimeout, CancellationToken ct,
+        Action<string>? warn = null)
     {
         // h2c: SocketsHttpHandler refuses to negotiate HTTP/2 over a plaintext transport (there is no
         // TLS/ALPN here to advertise it) unless this switch is set. Idempotent, so setting it on every
@@ -189,7 +209,7 @@ public sealed class PcpClient : IAsyncDisposable
                 var request = new HandshakeRequest
                 {
                     ProtocolMajor = ProtocolVersion.Major,
-                    HostInfo = new HostInfo { RunId = telemetry.RunId ?? string.Empty },
+                    HostInfo = new HostInfo { RunId = telemetry.RunId ?? string.Empty, PzVersion = PzInformationalVersion },
                 };
                 request.HostInfo.Transports.Add(ProtocolConstants.TransportPipe);
                 if (telemetry.OtelEndpoint is { } endpoint)
@@ -220,7 +240,8 @@ public sealed class PcpClient : IAsyncDisposable
             channel.Dispose();
             throw HandshakeFailed(
                 process,
-                $"connector's Hello reported protocol major {hello.Info.ProtocolMajor} during handshake, but this host speaks {ProtocolVersion.Major}");
+                $"connector's Hello reported protocol major {hello.Info.ProtocolMajor} during handshake, but this host speaks {ProtocolVersion.Major}",
+                hello);
         }
 
         // Identity before configuration: a connector that is not the one the manifest registers must
@@ -232,12 +253,14 @@ public sealed class PcpClient : IAsyncDisposable
             channel.Dispose();
             throw HandshakeFailed(
                 process,
-                $"connector introduced itself as '{hello.Info.Name}' but its manifest registers the name '{declaredName}'");
+                $"connector introduced itself as '{hello.Info.Name}' but its manifest registers the name '{declaredName}'",
+                hello);
         }
 
         if (manifest is { Capabilities.Count: > 0 })
         {
-            var declared = new HashSet<string>(manifest.Capabilities, StringComparer.Ordinal);
+            var declared = new HashSet<string>(
+                manifest.Capabilities.Where(name => KnownCapabilityNames.Contains(name)), StringComparer.Ordinal);
             var reported = CapabilityNames(hello.Capabilities);
             if (!declared.SetEquals(reported))
             {
@@ -246,8 +269,26 @@ public sealed class PcpClient : IAsyncDisposable
                     process,
                     "handshake-reported capabilities " +
                     $"({string.Join(", ", Sorted(reported))}) do not match the manifest's declared " +
-                    $"capabilities ({string.Join(", ", Sorted(declared))})");
+                    $"capabilities ({string.Join(", ", Sorted(declared))})",
+                    hello);
             }
+
+            var unknownDeclared = manifest.Capabilities.Where(name => !KnownCapabilityNames.Contains(name)).ToArray();
+            if (unknownDeclared.Length > 0)
+            {
+                warn?.Invoke(
+                    $"connector '{hello.Info.Name}' manifest declares capabilities this pz build does not " +
+                    $"recognize ({string.Join(", ", Sorted(unknownDeclared))}); it will not offer them to the " +
+                    "planner -- upgrade pz to use them");
+            }
+        }
+
+        var unknownReported = hello.Capabilities & ~(long)KnownCapabilities;
+        if (unknownReported != 0)
+        {
+            warn?.Invoke(
+                $"connector '{hello.Info.Name}' handshake reported capability bits this pz build does not " +
+                $"recognize (0x{unknownReported:X}); it will not offer them to the planner -- upgrade pz to use them");
         }
 
         var client = new PcpClient(process, channel, hello, grpc);
@@ -289,12 +330,35 @@ public sealed class PcpClient : IAsyncDisposable
     /// <see cref="ConnectorProcess.StderrTail"/> appended when non-empty.</para></summary>
     /// <summary>A connector-reported failure, rebuilt as the exception the connector raised. One place,
     /// because <see cref="LastErrorWasTransient"/> must see every detail this client maps, whichever
-    /// RPC carried it.</summary>
+    /// RPC carried it.
+    ///
+    /// <para><see cref="PzErrorDetail.Code"/>/<see cref="PzErrorDetail.Hint"/> are carried onto
+    /// <see cref="PzConnectorException.Code"/>/<see cref="PzConnectorException.Hint"/> structurally, and
+    /// the hint is also folded into <see cref="Exception.Message"/> -- the only field every existing
+    /// consumer (run_results.json, the NDJSON stream, a retry_scheduled reason) already renders, so a
+    /// hint the connector went to the trouble of setting is not silently dropped on the floor.</para></summary>
     internal PzConnectorException ToPzConnectorException(PzErrorDetail detail)
     {
         TimeSpan? retryAfter = detail.RetryAfterMs == 0 ? null : TimeSpan.FromMilliseconds(detail.RetryAfterMs);
         Volatile.Write(ref _lastErrorTransient, detail.IsTransient ? 1 : 2);
-        return new PzConnectorException(detail.Message, detail.IsTransient, retryAfter);
+
+        _process.SettleExitDetails();
+        var message = detail.Message;
+        // The connector reported this itself, over the trailer -- but if it has also exited by the
+        // time the host gets here (reported, then died), the exit code is worth knowing too.
+        if (_process.HasExited && _process.ExitDescription is { } exitDescription)
+        {
+            message = $"{message} ({exitDescription})";
+        }
+
+        var hint = detail.Hint.Length > 0 ? detail.Hint : null;
+        if (hint is not null)
+        {
+            message = $"{message} — hint: {hint}";
+        }
+
+        var code = detail.Code.Length > 0 ? detail.Code : null;
+        return new PzConnectorException(message, detail.IsTransient, retryAfter, code: code, hint: hint);
     }
 
     public Exception MapRpcException(RpcException ex, CancellationToken ct = default)
@@ -311,17 +375,23 @@ public sealed class PcpClient : IAsyncDisposable
             return ToPzConnectorException(PzErrorDetail.Parser.ParseFrom(trailer.ValueBytes));
         }
 
+        _process.SettleExitDetails();
         var stderr = _process.StderrTail;
         var suffix = stderr.Length > 0 ? $"\nstderr:\n{stderr}" : string.Empty;
-        return _process.HasExited
-            ? new ConnectorHostException(
-                "PZ0358",
-                $"connector process exited mid-operation: {ex.Status.Detail}{suffix}",
-                "check the connector's exit code and stderr logs, and confirm connector stability under the dataset being processed")
-            : new ConnectorHostException(
+        if (!_process.HasExited)
+        {
+            var sdkNote = Hello.Sdk is { Name.Length: > 0 } sdk ? $" (sdk: {sdk.Name} {sdk.Version})" : string.Empty;
+            return new ConnectorHostException(
                 "PZ0357",
-                $"connector protocol violation: {ex.Status.Detail}{suffix}",
+                $"connector protocol violation: {ex.Status.Detail}{sdkNote}{suffix}",
                 "check connector logs and confirm the connector and host ABI versions are compatible");
+        }
+
+        var exitNote = _process.ExitDescription is { } exitDescription ? $" ({exitDescription})" : string.Empty;
+        return new ConnectorHostException(
+            "PZ0358",
+            $"connector process exited mid-operation: {ex.Status.Detail}{exitNote}{suffix}",
+            "check the connector's exit code and stderr logs, and confirm connector stability under the dataset being processed");
     }
 
     /// <summary>Arms the cancellation ladder for one in-flight operation: when <paramref name="ct"/>
@@ -457,8 +527,22 @@ public sealed class PcpClient : IAsyncDisposable
         await _process.DisposeAsync().ConfigureAwait(false);
     }
 
-    private static ConnectorHostException HandshakeFailed(ConnectorProcess process, string reason)
+    /// <summary><paramref name="hello"/> is passed only from the gates that run AFTER a Hello was
+    /// actually received (protocol major, name, capabilities) -- a timeout or a transport-level RPC
+    /// failure has none to name an SDK from.</summary>
+    private static ConnectorHostException HandshakeFailed(ConnectorProcess process, string reason, Hello? hello = null)
     {
+        process.SettleExitDetails();
+        if (hello?.Sdk is { Name.Length: > 0 } sdk)
+        {
+            reason = $"{reason} (sdk: {sdk.Name} {sdk.Version})";
+        }
+
+        if (process.ExitDescription is { } exitDescription)
+        {
+            reason = $"{reason} ({exitDescription})";
+        }
+
         var stderr = process.StderrTail;
         var message = stderr.Length > 0
             ? $"connector handshake failed: {reason}\nstderr:\n{stderr}"
@@ -469,14 +553,28 @@ public sealed class PcpClient : IAsyncDisposable
             "check the connector's startup logs and confirm its declared protocol major and capabilities match what it actually implements");
     }
 
+    /// <summary>Every bit this build's <see cref="ConnectorCapabilities"/> defines, OR'd together --
+    /// what separates a genuine capability disagreement from a newer connector's flag this host has
+    /// never heard of.</summary>
+    private static readonly ConnectorCapabilities KnownCapabilities =
+        Enum.GetValues<ConnectorCapabilities>().Aggregate(ConnectorCapabilities.None, (acc, v) => acc | v);
+
+    private static readonly HashSet<string> KnownCapabilityNames =
+        new(Enum.GetNames<ConnectorCapabilities>(), StringComparer.Ordinal);
+
     /// <summary>Decomposes a <see cref="Hello.Capabilities"/> flags value into the
-    /// <see cref="ConnectorCapabilities"/> member names it is the OR of. Relies on every declared member
-    /// being a single bit (true in this enum today), which is what lets <see cref="Enum.ToString()"/>
-    /// decompose a [Flags] value into an exact name list instead of falling back to the raw number.</summary>
-    private static HashSet<string> CapabilityNames(long flags) =>
-        new(
-            ((ConnectorCapabilities)unchecked((int)flags)).ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries),
+    /// <see cref="ConnectorCapabilities"/> member names it is the OR of, first masking away any bit
+    /// this build's enum does not define. Masking first is load-bearing: <see cref="Enum.ToString()"/>
+    /// on a [Flags] value decomposes into a name list only when every set bit maps to a declared member
+    /// -- one unrecognized bit (a newer SDK's flag) makes it fall back to the raw decimal number for the
+    /// WHOLE value, which would read as every known capability disagreeing too.</summary>
+    private static HashSet<string> CapabilityNames(long flags)
+    {
+        var known = (ConnectorCapabilities)unchecked((int)flags) & KnownCapabilities;
+        return new HashSet<string>(
+            known == ConnectorCapabilities.None ? [] : known.ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries),
             StringComparer.Ordinal);
+    }
 
     private static IEnumerable<string> Sorted(IEnumerable<string> names) => names.OrderBy(n => n, StringComparer.Ordinal);
 

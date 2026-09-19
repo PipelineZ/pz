@@ -33,6 +33,9 @@ public sealed class ConnectorProcess : IAsyncDisposable
     private readonly StringBuilder _stderrTail = new();
     private readonly TaskCompletionSource _exitSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _disposed;
+    // Boxed so the exit callback's write and any thread's read are one reference swap: an int? is a
+    // flag plus a value, and a reader must never see one without the other.
+    private volatile object? _exitCode;
 
     private ConnectorProcess(Process process, string socketDir, string socketPath)
     {
@@ -72,6 +75,62 @@ public sealed class ConnectorProcess : IAsyncDisposable
             }
         }
     }
+
+    /// <summary>The child's exit code, once it has exited; null before then or if it could not be
+    /// read. Captured from the <see cref="Process.Exited"/> callback, before the process handle is
+    /// ever disposed, so it stays readable for the rest of this instance's lifetime.</summary>
+    public int? ExitCode => (int?)_exitCode;
+
+    /// <summary>"exited with code N" (plus ", signal X)" on Unix when the code is the 128+signal shape
+    /// a POSIX wait status gives a process killed by a signal -- OOM-kill (137) and a segfault (139)
+    /// otherwise leave nothing to diagnose from. Null before the child has exited.</summary>
+    public string? ExitDescription => ExitCode is { } code ? DescribeExitCode(code) : null;
+
+    /// <summary><see cref="HasExited"/> reads true as soon as the OS says so, which can be before the
+    /// exit callback has drained stderr and read the exit code. A failure message built in that window
+    /// would name neither, so whoever is about to describe a dead child waits here first -- briefly,
+    /// and only when the child really is gone: a live child costs nothing.</summary>
+    internal void SettleExitDetails()
+    {
+        if (HasExited && !_exitSignal.Task.IsCompleted)
+        {
+            _exitSignal.Task.Wait(ExitDetailsGrace);
+        }
+    }
+
+    private static readonly TimeSpan ExitDetailsGrace = TimeSpan.FromSeconds(2);
+
+    internal static string DescribeExitCode(int code)
+    {
+        if (OperatingSystem.IsWindows() || code is < 129 or > 192)
+        {
+            return $"exited with code {code}";
+        }
+
+        return $"exited with code {code} (signal {SignalName(code - 128)})";
+    }
+
+    /// <summary>Names the common POSIX signals (signal(7)); an unrecognized number -- real-time
+    /// signals, mostly -- falls back to its bare number rather than guessing a name.</summary>
+    private static string SignalName(int signal) => signal switch
+    {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        5 => "SIGTRAP",
+        6 => "SIGABRT",
+        7 => "SIGBUS",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        10 => "SIGUSR1",
+        11 => "SIGSEGV",
+        12 => "SIGUSR2",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        _ => signal.ToString(System.Globalization.CultureInfo.InvariantCulture),
+    };
 
     /// <summary>Fires once, from the process's exit callback, after stderr has finished draining. Never
     /// fires twice and never fires for a process that never started (that path throws from
@@ -193,10 +252,12 @@ public sealed class ConnectorProcess : IAsyncDisposable
             try
             {
                 _process.WaitForExit();
+                _exitCode = _process.ExitCode;
             }
             catch
             {
-                // best-effort; the process is already reported exited either way
+                // best-effort; the process is already reported exited either way, ExitCode just
+                // stays unknown if it cannot be read
             }
 
             _exitSignal.TrySetResult();

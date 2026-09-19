@@ -27,6 +27,10 @@ public sealed class ConnectorHosts : IAsyncDisposable
     /// one-entry-per-registered-name shape, the host's own <c>Installed</c> uses.</summary>
     public IReadOnlyList<ConnectorInfo> Installed => OutOfProcess?.Installed ?? [];
 
+    /// <summary>Each hosted connector's manifest-declared SDK, by name.</summary>
+    public IReadOnlyDictionary<string, ConnectorManifestSdk?> InstalledSdks =>
+        OutOfProcess?.InstalledSdks ?? new Dictionary<string, ConnectorManifestSdk?>(StringComparer.Ordinal);
+
     public async ValueTask DisposeAsync()
     {
         try

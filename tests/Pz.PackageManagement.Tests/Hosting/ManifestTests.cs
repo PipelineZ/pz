@@ -94,6 +94,36 @@ public sealed class ManifestTests : IDisposable
     }
 
     [Fact]
+    public void Sdk_is_null_when_the_manifest_names_none()
+    {
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1}""");
+
+        var manifest = ManifestReader.TryRead(_packageDir);
+
+        Assert.NotNull(manifest);
+        Assert.Null(manifest!.Sdk);
+    }
+
+    [Fact]
+    public void Sdk_parses_name_and_version_when_present()
+    {
+        WriteManifest("""
+            {
+              "protocolMajorMin": 1,
+              "protocolMajorMax": 1,
+              "sdk": {"name": "Pz.Connectors.Sdk", "version": "0.7.0"}
+            }
+            """);
+
+        var manifest = ManifestReader.TryRead(_packageDir);
+
+        Assert.NotNull(manifest);
+        Assert.NotNull(manifest!.Sdk);
+        Assert.Equal("Pz.Connectors.Sdk", manifest.Sdk!.Name);
+        Assert.Equal("0.7.0", manifest.Sdk.Version);
+    }
+
+    [Fact]
     public void Unknown_runtime_is_PZ0354_upgrade_pz()
     {
         WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1,"runtime":"python"}""");

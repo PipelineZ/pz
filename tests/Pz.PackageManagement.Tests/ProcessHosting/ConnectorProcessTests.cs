@@ -81,6 +81,36 @@ public sealed class ConnectorProcessTests : IDisposable
         Assert.Contains("die.sh: known failure line", process.StderrTail);
     }
 
+    [SkippableFact]
+    public async Task Exit_code_is_captured_for_a_plain_nonzero_exit()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "bash fixtures are unix-only");
+        ChmodExecutable(FixturePath("die.sh"));
+
+        await using var process = ConnectorProcess.Spawn(FixturePath("die.sh"), NewSocketDir(), "test-package");
+        await process.ExitedForTests.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1, process.ExitCode);
+        Assert.Equal("exited with code 1", process.ExitDescription);
+    }
+
+    [SkippableFact]
+    public async Task Group_kill_is_named_by_its_signal()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "bash fixtures are unix-only");
+        ChmodExecutable(FixturePath("hang.sh"));
+
+        var process = ConnectorProcess.Spawn(FixturePath("hang.sh"), NewSocketDir(), "test-package");
+
+        // DisposeAsync's kill sends SIGKILL directly (.NET's Process.Kill on Unix), so the POSIX wait
+        // status this produces -- 128 + signal -- is exactly the OOM-kill (137) shape PZ0356/PZ0358
+        // need to name, deterministically, with no need to raise a real signal by hand.
+        await process.DisposeAsync();
+
+        Assert.Equal(137, process.ExitCode);
+        Assert.Equal("exited with code 137 (signal SIGKILL)", process.ExitDescription);
+    }
+
     /// <summary>Stdout is redirected so a connector's chatter can never reach pz's own stdout (which
     /// may be the NDJSON event stream). A redirected pipe nobody reads fills at the OS buffer size and
     /// blocks the child's next write forever — a hang with no diagnostic. The fixture writes past that

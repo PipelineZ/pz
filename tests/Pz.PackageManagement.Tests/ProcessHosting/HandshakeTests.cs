@@ -83,6 +83,72 @@ public sealed class HandshakeTests : IDisposable
             process, LocalFilesManifest(), "test-instance", ConnectorConfig.Empty, CancellationToken.None));
 
         Assert.Equal("PZ0356", ex.Code);
+        // Hello was actually received (the mismatch is IN its capabilities), so PZ0356 names which SDK
+        // reported it -- unlike a bare timeout or transport failure, which has no Hello to name one from.
+        Assert.Contains("sdk: Pz.Connectors.Sdk", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Handshake_failure_names_the_childs_exit_code_once_it_has_exited()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        // --die-immediately exits 1 before the socket is ever served. The handshake is only started
+        // once the child is known to be gone: on a busy machine a process can take longer to start
+        // and die than ShortHandshakeTimeout takes to give up on it.
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--die-immediately"]);
+        await process.ExitedForTests;
+
+        var ex = await Assert.ThrowsAsync<ConnectorHostException>(() => PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", ConnectorConfig.Empty, ShortHandshakeTimeout,
+            CancellationToken.None));
+
+        Assert.Equal("PZ0356", ex.Code);
+        Assert.Contains("exited with code 1", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task MapRpcException_names_exit_code_and_signal_once_the_child_has_exited()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        // Kills the child directly (not through the client's own shutdown ladder), via .NET's
+        // Process.Kill (SIGKILL on Unix) -- deterministically the same 137 exit code an OOM-kill
+        // leaves behind, so the RPC failure below maps against an already-exited process.
+        await process.DisposeAsync();
+
+        var mapped = client.MapRpcException(new RpcException(new Status(StatusCode.Unavailable, "channel closed")));
+
+        var hostEx = Assert.IsType<ConnectorHostException>(mapped);
+        Assert.Equal("PZ0358", hostEx.Code);
+        Assert.Contains("exited with code 137 (signal SIGKILL)", hostEx.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Unknown_capability_bit_from_a_newer_sdk_does_not_fail_the_handshake()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        // The manifest and the true capability set agree; the fixture's Hello additionally reports one
+        // bit outside every ConnectorCapabilities member this build defines, the shape a connector built
+        // against a newer SDK sends an older host that has not learned its newest flag yet.
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--report-unknown-capability-bit"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+        var warnings = new List<string>();
+
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, HostTelemetry.None, CancellationToken.None,
+            warnings.Add);
+
+        Assert.Equal("localfiles-pcp", client.Hello.Info.Name);
+        Assert.Contains(warnings, w => w.Contains("capabilit", StringComparison.OrdinalIgnoreCase));
     }
 
     [SkippableFact]
@@ -135,6 +201,38 @@ public sealed class HandshakeTests : IDisposable
         var connectorEx = Assert.IsType<PzConnectorException>(mapped);
         Assert.True(connectorEx.IsTransient);
         Assert.Equal(TimeSpan.FromMilliseconds(250), connectorEx.RetryAfter);
+        // The wire PzErrorDetail's code/hint must survive the round trip onto the exception the host
+        // reconstructs, not be discarded the way an all-empty ToErrorDetail used to leave them.
+        Assert.Equal("FIXTURE_CHECK_REFUSED", connectorEx.Code);
+        Assert.Equal("retry after the cool-down", connectorEx.Hint);
+        Assert.Contains("hint: retry after the cool-down", connectorEx.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Unhandled_exception_in_a_handler_maps_to_a_non_transient_connector_error_not_a_protocol_violation()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
+
+        await using var process = ConnectorProcess.Spawn(
+            FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--throw-unhandled"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        var rpcEx = await Assert.ThrowsAsync<RpcException>(() => client.Grpc.CheckConnectionAsync(
+            new CheckRequest { Config = new Struct() }).ResponseAsync);
+
+        var mapped = client.MapRpcException(rpcEx);
+
+        // Not ConnectorHostException PZ0357 "protocol violation" -- a connector bug the SDK never
+        // anticipated is a connector-originated operational failure, the same taxonomy as one the
+        // connector reports on purpose, just permanent and unnamed.
+        var connectorEx = Assert.IsType<PzConnectorException>(mapped);
+        Assert.False(connectorEx.IsTransient);
+        Assert.Contains(
+            "unhandled InvalidOperationException: fixture: deliberate unhandled exception", connectorEx.Message,
+            StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -178,6 +276,7 @@ public sealed class HandshakeTests : IDisposable
         var connectorMapped = client.MapRpcException(cancelledStatus, CancellationToken.None);
         var connectorEx = Assert.IsType<ConnectorHostException>(connectorMapped);
         Assert.Equal("PZ0357", connectorEx.Code);
+        Assert.Contains("sdk: Pz.Connectors.Sdk", connectorEx.Message, StringComparison.Ordinal);
     }
 
     private static ConnectorManifest LocalFilesManifest() => new(

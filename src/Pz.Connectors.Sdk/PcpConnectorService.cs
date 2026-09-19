@@ -67,6 +67,7 @@ internal sealed class PcpConnectorService(
             Capabilities = (long)connector.Capabilities,
             ConnectionConfigSchema = connector.ConnectionConfigSchema,
             DatasetConfigSchema = connector.DatasetConfigSchema,
+            Sdk = new SdkInfoMsg { Name = SdkInfo.Name, Version = SdkInfo.Version },
         };
         hello.Transports.Add(ProtocolConstants.TransportPipe);
 
@@ -215,6 +216,10 @@ internal sealed class PcpConnectorService(
         catch (PzConnectorException ex)
         {
             throw ToRpcException(ex);
+        }
+        catch (Exception ex) when (ex is not RpcException and not OperationCanceledException)
+        {
+            throw ToUnhandledRpcException(ex);
         }
     }
 
@@ -644,6 +649,10 @@ internal sealed class PcpConnectorService(
         {
             throw ToRpcException(ex);
         }
+        catch (Exception ex) when (ex is not RpcException and not OperationCanceledException)
+        {
+            throw ToUnhandledRpcException(ex);
+        }
     }
 
     /// <summary>Operational failures cross as an <c>RpcException</c> carrying a serialized
@@ -657,11 +666,11 @@ internal sealed class PcpConnectorService(
     /// trailer and are a different failure entirely.</para></summary>
     private static PzErrorDetail ToErrorDetail(PzConnectorException ex) => new()
     {
-        Code = string.Empty,
+        Code = ex.Code ?? string.Empty,
         Message = ex.Message,
         IsTransient = ex.IsTransient,
         RetryAfterMs = (long)(ex.RetryAfter?.TotalMilliseconds ?? 0),
-        Hint = string.Empty,
+        Hint = ex.Hint ?? string.Empty,
     };
 
     private static RpcException ToRpcException(PzConnectorException ex)
@@ -671,4 +680,15 @@ internal sealed class PcpConnectorService(
         var status = new Status(ex.IsTransient ? StatusCode.Unavailable : StatusCode.FailedPrecondition, ex.Message);
         return new RpcException(status, trailers);
     }
+
+    /// <summary>A handler bug (a connector's own unhandled exception, not one it raised through
+    /// <see cref="PzConnectorException"/>) still crosses as an operational failure rather than being
+    /// left for gRPC's default mapping -- an uncaught exception in an ASP.NET Core gRPC service method
+    /// surfaces to the caller as bare <c>StatusCode.Unknown</c> with no trailer, which
+    /// <c>PcpClient.MapRpcException</c> cannot tell apart from a genuine protocol violation (a
+    /// malformed call, an ABI mismatch) and reports as PZ0357 -- the wrong diagnosis for what is really
+    /// a connector defect. Routing it through <see cref="ToRpcException"/> gives it the trailer that
+    /// makes the host reconstruct a real, non-transient <see cref="PzConnectorException"/> instead.</summary>
+    private static RpcException ToUnhandledRpcException(Exception ex) =>
+        ToRpcException(new PzConnectorException($"unhandled {ex.GetType().Name}: {ex.Message}", isTransient: false));
 }

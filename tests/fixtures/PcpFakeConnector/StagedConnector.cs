@@ -87,6 +87,14 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
                 capabilities |= ConnectorCapabilities.CheckpointableReads;
             }
 
+            // Simulates a newer SDK build whose Abstractions defines a flag this fixture's own
+            // ConnectorCapabilities enum does not: an undefined bit, cast rather than named, since
+            // there is no later member to reference from this build.
+            if (options.ReportUnknownCapabilityBit)
+            {
+                capabilities |= (ConnectorCapabilities)(1 << 24);
+            }
+
             return capabilities;
         }
     }
@@ -120,7 +128,13 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
         if (options.FailCheckTransient)
         {
             throw new PzConnectorException(
-                "fixture: connection check refused on purpose", isTransient: true, TimeSpan.FromMilliseconds(250));
+                "fixture: connection check refused on purpose", isTransient: true, TimeSpan.FromMilliseconds(250),
+                code: "FIXTURE_CHECK_REFUSED", hint: "retry after the cool-down");
+        }
+
+        if (options.ThrowUnhandled)
+        {
+            throw new InvalidOperationException("fixture: deliberate unhandled exception");
         }
 
         return _inner.CheckConnectionAsync(config, ct);

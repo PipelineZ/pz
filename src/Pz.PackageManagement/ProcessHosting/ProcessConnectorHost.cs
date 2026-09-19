@@ -137,7 +137,8 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
             }
 
             var connector = new LazyProcessConnector(
-                name, packageRef, manifest, entrypoint, socketRootDir, logSink, cancelGrace, shutdownGrace, telemetry);
+                name, packageRef, manifest, entrypoint, socketRootDir, warn, logSink, cancelGrace, shutdownGrace,
+                telemetry);
 
             var dropped = connector.DeclaredCapabilities & ~connector.Capabilities;
             if (dropped != ConnectorCapabilities.None)
@@ -182,6 +183,13 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
             .OrderBy(info => info.Name, StringComparer.Ordinal)
             .ToArray();
 
+    /// <summary>Each registered connector's manifest-declared SDK, by name -- a separate lookup
+    /// rather than folded into <see cref="Installed"/> because <see cref="ConnectorInfo"/> is the
+    /// shared ABI identity type every connector (builtin included) answers, and only a hosted one has
+    /// an SDK to name.</summary>
+    public IReadOnlyDictionary<string, ConnectorManifestSdk?> InstalledSdks =>
+        _connectorsByName.ToDictionary(pair => pair.Key, pair => pair.Value.Sdk, StringComparer.Ordinal);
+
     /// <summary>Runs every spawned process through the shutdown ladder (Shutdown RPC → grace → kill the
     /// process tree) and closes its reverse channel first. Registered-but-never-spawned connectors have
     /// nothing to reap.</summary>
@@ -213,6 +221,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     private readonly ConnectorManifest _manifest;
     private readonly string _entrypoint;
     private readonly string _socketRootDir;
+    private readonly Action<string>? _warn;
     private readonly Action<int, string, IReadOnlyDictionary<string, string>>? _logSink;
     private readonly TimeSpan _cancelGrace;
     private readonly TimeSpan _shutdownGrace;
@@ -226,13 +235,15 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
 
     public LazyProcessConnector(
         string name, ConnectorPackageRef packageRef, ConnectorManifest manifest, string entrypoint,
-        string socketRootDir, Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
+        string socketRootDir, Action<string>? warn,
+        Action<int, string, IReadOnlyDictionary<string, string>>? logSink,
         TimeSpan cancelGrace, TimeSpan shutdownGrace, HostTelemetry telemetry)
     {
         _packageRef = packageRef;
         _manifest = manifest;
         _entrypoint = entrypoint;
         _socketRootDir = socketRootDir;
+        _warn = OnceOnly(warn);
         _logSink = logSink;
         _cancelGrace = cancelGrace;
         _shutdownGrace = shutdownGrace;
@@ -247,6 +258,11 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     public ConnectorCapabilities DeclaredCapabilities { get; }
 
     public ConnectorInfo Info { get; }
+
+    /// <summary>Which SDK the manifest says built this connector, when it names one -- available
+    /// without spawning (unlike a live handshake's <c>Hello.sdk</c>), which is what lets
+    /// <c>pz connectors</c> show it for a connector that has never been opened this run.</summary>
+    public ConnectorManifestSdk? Sdk => _manifest.Sdk;
 
     /// <summary>Manifest-declared, masked by <see cref="ProcessCapabilities"/>. The handshake is
     /// authoritative once a process exists, but <c>PcpClient</c> refuses any Hello whose capability set
@@ -324,7 +340,7 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         {
             var (instanceId, connectorConfig) = SplitInstanceId(config, ordinal);
             client = await PcpClient
-                .ConnectAndConfigureAsync(process, _manifest, instanceId, connectorConfig, _telemetry, ct)
+                .ConnectAndConfigureAsync(process, _manifest, instanceId, connectorConfig, _telemetry, ct, _warn)
                 .ConfigureAwait(false);
             client.CancelGrace = _cancelGrace;
             client.ShutdownGrace = _shutdownGrace;
@@ -401,6 +417,32 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     /// it" is the right, quiet answer.</summary>
     private static readonly HashSet<string> KnownCapabilityNames =
         new(Enum.GetNames<ConnectorCapabilities>(), StringComparer.Ordinal);
+
+    /// <summary>Every open spawns its own process and re-runs the handshake, so a warning the
+    /// handshake raises (an unrecognized capability) would otherwise print once per node. The returned
+    /// channel delivers each distinct message once for this connector's lifetime.</summary>
+    internal static Action<string>? OnceOnly(Action<string>? warn)
+    {
+        if (warn is null)
+        {
+            return null;
+        }
+
+        var delivered = new HashSet<string>(StringComparer.Ordinal);
+        return message =>
+        {
+            bool first;
+            lock (delivered)
+            {
+                first = delivered.Add(message);
+            }
+
+            if (first)
+            {
+                warn(message);
+            }
+        };
+    }
 
     private static ConnectorCapabilities ParseCapabilities(IReadOnlyList<string> names)
     {
