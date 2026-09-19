@@ -24,6 +24,27 @@ public static class SyntheticNupkg
         Directory.CreateDirectory(
             Path.Combine(Path.GetTempPath(), "pz-tests", "synthetic-feed-" + Guid.NewGuid().ToString("N"))).FullName;
 
+    /// <summary>Overwrites <paramref name="feedDir"/>'s <c>id.version.nupkg</c> with a single-file
+    /// package whose one lib asset carries <paramref name="content"/> -- the connector dev loop's own
+    /// shape: pack, restore, edit, pack again into the SAME local feed under the SAME version. A local
+    /// feed is a flat folder of .nupkg files with no versioning of its own, so this is exactly what a
+    /// second `dotnet pack -o` there produces.</summary>
+    public static void Repack(string feedDir, string id, string version, string content)
+    {
+        var builder = new PackageBuilder { Id = id, Version = new NuGetVersion(version) };
+        builder.Authors.Add("pz-tests");
+        builder.Description = "synthetic repackable fixture";
+
+        var stagingDir = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "pz-tests", "synthetic-staging-" + Guid.NewGuid().ToString("N"))).FullName;
+        var sourcePath = Path.Combine(stagingDir, $"{id}.dll");
+        File.WriteAllText(sourcePath, content, Encoding.UTF8);
+        builder.Files.Add(new PhysicalPackageFile { SourcePath = sourcePath, TargetPath = $"lib/net10.0/{id}.dll" });
+
+        using var stream = File.Create(Path.Combine(feedDir, $"{id}.{version}.nupkg")); // overwrites, same version
+        builder.Save(stream);
+    }
+
     /// <summary>A package carrying a fake <c>runtimes/</c> tree, so RID native-asset selection can be
     /// tested without a real native-bearing fixture project.</summary>
     public static string CreateFeedWithNativePackage()

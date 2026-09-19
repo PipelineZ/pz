@@ -19,7 +19,14 @@ namespace Pz.Cli.Commands;
 /// cannot float between restores and a same-version republish cannot slip in. A requirement the lock no
 /// longer satisfies (a bumped version, a new or removed connector) is PZ0321 with <c>--update</c> as the
 /// next step; <c>--update</c> is the one way to re-resolve against the feeds and write a new lock. A
-/// malformed lock is never regenerated silently either: it too needs <c>--update</c>.</para></summary>
+/// malformed lock is never regenerated silently either: it too needs <c>--update</c>.</para>
+///
+/// <para>A lock honoured for exactly this host, with every package already content-verified in the
+/// local package cache, never touches a feed at all (<see cref="PackageMaterializer.TryMaterializeFromCache"/>):
+/// once a project has restored once, every later restore that changes nothing succeeds offline. Any
+/// other failure while contacting a feed or writing under <c>.pz</c> — one <see cref="RestoreException"/>
+/// does not already name — is mapped by <see cref="RestoreFailureMapper"/> to PZ0328 (feed unreachable or
+/// refused) or PZ0329 (a local disk failure) instead of escaping as a raw exception.</para></summary>
 internal static class RestoreCommand
 {
     public static Command Create()
@@ -127,6 +134,40 @@ internal static class RestoreCommand
         }
 
         var packagesDir = Path.Combine(projectDir, ".pz", "packages");
+        var hostRid = RuntimeInformation.RuntimeIdentifier;
+
+        // A lock honoured for exactly this host, with every package already content-verified in the
+        // local cache, needs no feed at all -- so a restore that changes nothing succeeds offline, the
+        // common case in CI and in an air-gapped environment. A lock predating per-file hashes, a cache
+        // miss, or a lock restored for another RID all fall through to the network path below, which
+        // fills in whatever is missing.
+        if (pins is not null && string.Equals(pins.Rid, hostRid, StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (PackageMaterializer.TryMaterializeFromCache(pins, CacheRoot(), packagesDir, out var offlineHits))
+                {
+                    LockFileWriter.Write(pins, lockPath);
+                    ReportRestored(pins.Packages, offlineHits);
+                    Console.WriteLine(
+                        $"pz.lock.json pinned {pins.Packages.Count} package(s); run 'pz restore --update' to re-resolve them");
+                    Console.WriteLine($"wrote pz.lock.json ({pins.Packages.Count} packages)");
+                    return ExitCodes.Ok;
+                }
+            }
+            catch (RestoreException ex)
+            {
+                Console.Error.WriteLine($"error {new PzError(ex.Code, ex.Message, null, null, ex.Hint)}");
+                return ExitCodes.ConfigError;
+            }
+            catch (Exception ex) when (RestoreFailureMapper.IsDiskFailure(ex) &&
+                                       RestoreFailureMapper.TryMap(ex, [], packagesDir) is { } mapped)
+            {
+                Console.Error.WriteLine($"error {new PzError(mapped.Code, mapped.Message, null, null, mapped.Hint)}");
+                return ExitCodes.ConfigError;
+            }
+        }
+
         var workDir = Path.Combine(projectDir, ".pz", "tmp", $"restore-{Guid.NewGuid():N}");
 
         // `pz clean` always sweeps free .pz/tmp workdirs. Holding the
@@ -135,12 +176,13 @@ internal static class RestoreCommand
         var workDirLock = Pz.Engine.Execution.RunDirLock.Acquire(workDir);
         try
         {
+            var feedList = HostFeeds.Resolve(feeds, env);
             ResolveResult resolved;
             IReadOnlyDictionary<string, bool> hits;
             try
             {
                 resolved = await NuGetResolver.ResolveAsync(
-                    requirements, HostFeeds.Resolve(feeds, env), RuntimeInformation.RuntimeIdentifier, workDir, ct,
+                    requirements, feedList, hostRid, workDir, ct,
                     warn: message => Console.Error.WriteLine($"warning: {message}"), pins: pins);
 
                 // Materialization is inside the same arm: it is where the resolver's per-asset choices
@@ -153,14 +195,19 @@ internal static class RestoreCommand
                 Console.Error.WriteLine($"error {new PzError(ex.Code, ex.Message, null, null, ex.Hint)}");
                 return ExitCodes.ConfigError;
             }
+            catch (Exception ex) when (ex is not OperationCanceledException &&
+                                       RestoreFailureMapper.TryMap(ex, feedList, packagesDir) is { } mapped)
+            {
+                // An unreachable feed, an HTTP 401/403, or a local disk failure under .pz. Never the raw
+                // exception -- a feed's own exception text can embed a credential or a SAS token from
+                // the feed URL. Anything else is a defect and stays a fatal error.
+                Console.Error.WriteLine($"error {new PzError(mapped.Code, mapped.Message, null, null, mapped.Hint)}");
+                return ExitCodes.ConfigError;
+            }
 
             LockFileWriter.Write(resolved.Lock, lockPath);
 
-            foreach (var package in resolved.Lock.Packages.OrderBy(p => p.Id, StringComparer.Ordinal))
-            {
-                var mode = hits.TryGetValue(package.Id, out var wasHit) && wasHit ? "cache hit" : "downloaded";
-                Console.WriteLine($"restored {package.Id} {package.Version} ({mode})");
-            }
+            ReportRestored(resolved.Lock.Packages, hits);
 
             if (pins is not null)
             {
@@ -176,6 +223,15 @@ internal static class RestoreCommand
             // Released before the delete: on Windows the open .lock handle would block removing the dir.
             workDirLock.Dispose();
             try { Directory.Delete(workDir, recursive: true); } catch { /* best-effort cleanup */ }
+        }
+    }
+
+    private static void ReportRestored(IReadOnlyList<LockedPackage> packages, IReadOnlyDictionary<string, bool> hits)
+    {
+        foreach (var package in packages.OrderBy(p => p.Id, StringComparer.Ordinal))
+        {
+            var mode = hits.TryGetValue(package.Id, out var wasHit) && wasHit ? "cache hit" : "downloaded";
+            Console.WriteLine($"restored {package.Id} {package.Version} ({mode})");
         }
     }
 

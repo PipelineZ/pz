@@ -70,6 +70,66 @@ public sealed class MaterializerTests(FeedFixture feed)
         Assert.True(File.Exists(entryDll));
     }
 
+    /// <summary>A ".tmp-<guid>" sibling left by a crash that killed the process before its own rename
+    /// (or its own cleanup) ran must not linger forever -- the next materialize of that version sweeps
+    /// it, proving the completeness marker is the atomic rename itself, not the sibling's mere
+    /// existence.</summary>
+    [Fact]
+    public async Task Leftover_tmp_dir_from_a_crashed_copy_is_swept_on_next_materialize()
+    {
+        var resolved = await ResolveFakeSourceConnector();
+        var packagesDir = NewPackagesDir();
+        var idDir = Path.Combine(packagesDir, "FakeSourceConnector");
+        var versionDir = Path.Combine(idDir, "1.2.3");
+        var staleTmp = versionDir + ".tmp-" + Guid.NewGuid().ToString("N");
+        Directory.CreateDirectory(staleTmp);
+        File.WriteAllText(Path.Combine(staleTmp, "leftover.bin"), "torn");
+
+        PackageMaterializer.Materialize(resolved, NewCacheRoot(), packagesDir);
+
+        Assert.Equal([versionDir], Directory.GetDirectories(idDir));
+        Assert.True(File.Exists(Path.Combine(versionDir, "lib", "FakeSourceConnector.dll")));
+    }
+
+    /// <summary>The copy into versionDir is never done in place: a failure partway through (forced
+    /// deterministically via the <see cref="PackageMaterializer.CopyFile"/> test seam, on the SECOND
+    /// file copied so at least one has already landed) must leave neither a partial versionDir nor a
+    /// dangling temp sibling -- both the failed rename's target and its own scratch directory are
+    /// cleaned up by the failing call itself, not merely by a later restore.</summary>
+    [Fact]
+    public async Task A_failure_mid_copy_leaves_no_partial_versionDir_or_tmp_sibling()
+    {
+        var resolved = await ResolveFakeSourceConnector();
+        var cacheRoot = NewCacheRoot();
+        var packagesDir = NewPackagesDir();
+
+        var copyCount = 0;
+        PackageMaterializer.CopyFile = (source, destination) =>
+        {
+            copyCount++;
+            if (copyCount == 2)
+            {
+                throw new IOException("simulated crash mid-copy");
+            }
+
+            PackageMaterializer.DefaultCopyFile(source, destination);
+        };
+        try
+        {
+            Assert.Throws<IOException>(() => PackageMaterializer.Materialize(resolved, cacheRoot, packagesDir));
+        }
+        finally
+        {
+            PackageMaterializer.CopyFile = PackageMaterializer.DefaultCopyFile;
+        }
+
+        var idDir = Path.Combine(packagesDir, "FakeSourceConnector");
+        if (Directory.Exists(idDir))
+        {
+            Assert.Empty(Directory.GetDirectories(idDir)); // no versionDir, no ".tmp-*" sibling
+        }
+    }
+
     [Fact]
     public async Task A_materialized_file_whose_content_changed_is_reinstalled()
     {
@@ -86,6 +146,38 @@ public sealed class MaterializerTests(FeedFixture feed)
         PackageMaterializer.Materialize(resolved, cacheRoot, packagesDir);
 
         Assert.Equal(original, await File.ReadAllBytesAsync(dll));
+    }
+
+    /// <summary>The connector dev loop: pack, restore, edit the connector, repack under the SAME
+    /// version into the SAME local feed. A fresh resolve (the shape `pz restore --update` runs: no
+    /// pins, so PZ0327 never fires) picks up the feed's new bytes and a new content hash, and
+    /// materializing them must REPLACE the stale installed binary, not leave it in place -- the same
+    /// content-check-then-reinstall path <see cref="A_materialized_file_whose_content_changed_is_reinstalled"/>
+    /// proves for a directly-tampered install, here reached through a real resolve against a
+    /// changed feed instead.</summary>
+    [Fact]
+    public async Task Dev_loop_repack_under_the_same_version_replaces_the_stale_install_on_a_fresh_resolve()
+    {
+        var feedDir = Path.Combine(feed.WorkRoot, "dev-loop-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(feedDir);
+        SyntheticNupkg.Repack(feedDir, "FakeDevLoop", "0.1.0", "v1");
+        var cacheRoot = NewCacheRoot();
+        var packagesDir = NewPackagesDir();
+
+        var first = await NuGetResolver.ResolveAsync(
+            [new ConnectorPackageRef("FakeDevLoop", "0.1.0")], [feedDir], "linux-x64", NewWorkDir());
+        PackageMaterializer.Materialize(first, cacheRoot, packagesDir);
+        var dll = Path.Combine(packagesDir, "FakeDevLoop", "0.1.0", "lib", "FakeDevLoop.dll");
+        Assert.Equal("v1", await File.ReadAllTextAsync(dll));
+
+        SyntheticNupkg.Repack(feedDir, "FakeDevLoop", "0.1.0", "v2");
+
+        // No pins: exactly what `pz restore --update` resolves with.
+        var second = await NuGetResolver.ResolveAsync(
+            [new ConnectorPackageRef("FakeDevLoop", "0.1.0")], [feedDir], "linux-x64", NewWorkDir());
+        PackageMaterializer.Materialize(second, cacheRoot, packagesDir);
+
+        Assert.Equal("v2", await File.ReadAllTextAsync(dll));
     }
 
     [Fact]

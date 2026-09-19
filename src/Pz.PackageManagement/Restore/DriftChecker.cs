@@ -120,21 +120,27 @@ public static class DriftChecker
         {
             foreach (var asset in assets)
             {
-                if (asset.Sha512 is null)
-                {
-                    continue;
-                }
-
                 var path = Path.Combine(versionDir, role, asset.File);
-                var actual = HashFile(path);
-                if (actual is null)
+
+                // Existence is checked even when the lock predates per-file hashes: a torn directory
+                // from a crashed materialize must never be trusted just because it exists. Only the
+                // content comparison below needs a recorded hash to run at all.
+                if (!File.Exists(path))
                 {
                     findings.Add(new DriftFinding(ContentMismatch,
                         $"file {role}/{asset.File} of package '{package.Id}' {package.Version} is missing under " +
                         $"{versionDir}",
                         Reinstall));
+                    continue;
                 }
-                else if (!string.Equals(actual, asset.Sha512, StringComparison.OrdinalIgnoreCase))
+
+                if (asset.Sha512 is null)
+                {
+                    continue;
+                }
+
+                var actual = HashFile(path);
+                if (!string.Equals(actual, asset.Sha512, StringComparison.OrdinalIgnoreCase))
                 {
                     findings.Add(new DriftFinding(ContentMismatch,
                         $"file {role}/{asset.File} of package '{package.Id}' {package.Version} does not have the " +

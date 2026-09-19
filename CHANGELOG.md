@@ -470,6 +470,34 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   warning the write side already had -- `SourceFunction`'s near-miss check
   existed but was never wired in, so e.g. `source(..., synk: {...})` rode
   through as a silent connector option.
+- `pz restore` now repairs a torn or stale `.pz/packages/<id>/<version>`
+  instead of trusting that it merely exists. The copy into it is no longer
+  done in place: it materializes into a temp sibling directory and one atomic
+  `Directory.Move` into place, so a crash mid-copy never leaves a reader
+  observing a half-written install, and a sibling a crash left behind is swept
+  on the next restore instead of accumulating. Separately, a lock written
+  before per-file hashes were kept could trust a directory's content just
+  because a file existed at the expected path, without ever checking that the
+  file itself was actually there — a partial install missing that file passed
+  as "no drift". Existence is now always checked, hash or no hash; only the
+  byte-for-byte comparison still needs a recorded hash to run.
+- `pz restore` no longer touches the network when it doesn't need to, and no
+  longer escapes as a raw stack trace when it fails for a reason outside its
+  own coded checks. A lock honoured for exactly this host, with every locked
+  package already content-verified in the local package cache, now succeeds
+  offline -- the common case once a project has restored once, and every
+  restore in CI or an air-gapped environment after that. An unreachable feed,
+  one that returns an HTTP 401/403, or a local disk failure while writing
+  under `.pz` is now PZ0328 (feed) or PZ0329 (disk) naming the feed
+  (credentials and query stripped) or the path and the cause, instead of an
+  uncoded exception rendered as an "internal error" bug report. Only a
+  failure of the feed client, an HTTP request, a socket or the local disk is
+  mapped; anything else is still a fatal error with its stack trace. The feed
+  resolver also no longer reads a downloaded `.nupkg` into memory whole to
+  hash it; the hash is streamed.
+  *Not addressed*: feed credentials (a bearer token or basic auth for a
+  private feed) remain out of scope -- `--feeds`/`PZ_FEEDS` still take only a
+  URL or a local path.
 
 ## [0.6.1] - 2026-09-10
 
