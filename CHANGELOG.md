@@ -192,6 +192,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   surfaced as intermittent CI hangs. The ticket now lives as long as the session: burned by the
   data connection the commit waits for, or revoked by `AbortWrite`. Connectors built on the Rust
   SDK pick the fix up by rebuilding against it; the C# SDK never had the early revoke.
+- `RunResultsWriter` (`run_results.json`) and `KeyedJsonStateStore` (`.pz/state/*.json`) each hand-rolled
+  their own write-aside-and-rename instead of using `Pz.Core.Artifacts.AtomicFile`, the shared helper
+  `PlanWriter`/`SchemaCacheWriter`/`ManifestWriter` already published to. Both now route through it, so
+  there is exactly one temp+rename implementation instead of three independently-maintained copies.
+  Byte output is unchanged (proven by the existing byte-stable/golden tests); a new test pins
+  `SchemaCacheWriter`'s overlapping-writer behavior the way `PlanWriterTests` already pinned
+  `PlanWriter`'s.
 - **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
   - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
     all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.
