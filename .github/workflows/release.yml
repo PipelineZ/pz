@@ -23,12 +23,18 @@
 # Until that one-time setup exists, a real `v*` tag push will fail at the NuGet/login step with an
 # authentication error -- that failure is expected and does not indicate a workflow bug.
 #
-# Shape: Native AOT cannot cross-compile between OSes, so one `pack-aot` job per platform builds that
-# platform's RID sub-package; the `release` job builds/tests/packs everything else, then pushes in the
-# order the RID-specific tool contract requires -- every sub-package BEFORE the `pz` pointer, because
-# the .NET CLI resolves an install through the pointer and fails if a referenced sub-package is not
-# there yet. MinVer computes the same version in every job from the same tag, which is what makes the
-# sub-packages and the pointer agree (a version mismatch breaks installs).
+# Shape: `changelog-gate` fails fast, before anything is packed, if CHANGELOG.md has no entry for
+# the tag. Native AOT cannot cross-compile between OSes, so one `pack-aot` job per platform builds
+# that platform's RID sub-package; `verify-release` runs the same three end-to-end proofs PR CI runs
+# (scripts/verify-tool-install.sh, verify-aot.sh, verify-sdk-package.sh) against this exact tagged
+# commit -- each script packs/publishes its own copy (none takes a "verify this existing artifact"
+# parameter), so this is a proof that the tag's commit and MinVer-computed version produce install-
+# able, runnable artifacts, not a byte-for-byte check of the .nupkg files `release` pushes below. The
+# `release` job builds/tests/packs everything else, then pushes in the order the RID-specific tool
+# contract requires -- every sub-package BEFORE the `pz` pointer, because the .NET CLI resolves an
+# install through the pointer and fails if a referenced sub-package is not there yet. MinVer computes
+# the same version in every job from the same tag, which is what makes the sub-packages and the
+# pointer agree (a version mismatch breaks installs).
 name: release
 
 on:
@@ -36,7 +42,18 @@ on:
     tags: ['v*']
 
 jobs:
+  # Fails fast, before pack-aot or release pack anything, when the tag has no matching CHANGELOG.md
+  # entry -- a binding convention (CLAUDE.md: "Every release tag gets a CHANGELOG.md entry") that
+  # nothing previously enforced.
+  changelog-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/check-changelog-entry.sh "${GITHUB_REF#refs/tags/}"
+
   pack-aot:
+    needs: changelog-gate
     strategy:
       matrix:
         include:
@@ -64,8 +81,27 @@ jobs:
           path: packages/pz.${{ matrix.rid }}.*.nupkg
           if-no-files-found: error
 
+  # The same three end-to-end proofs PR CI's pack-and-verify/verify-aot jobs run (identical
+  # invocations, toolchain setup, and runner OS), run again here against the exact tagged commit
+  # before anything is pushed to nuget.org -- PR CI proved them on the commit that became this tag,
+  # but a merge commit or a tag pushed at the wrong ref could otherwise slip an unproven tree out.
+  verify-release:
+    needs: changelog-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # MinVer computes the release version from this tag + history.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: scripts/verify-tool-install.sh
+      - run: scripts/verify-aot.sh
+      - run: scripts/verify-sdk-package.sh
+
   release:
-    needs: pack-aot
+    needs: [pack-aot, verify-release]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release # secret-scopes NUGET_USER to this job; supports required-reviewer gating too.

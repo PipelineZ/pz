@@ -122,7 +122,11 @@ jobs:
   # script covers the boundary with the .NET host, which nothing else in this workflow exercises.
   rust:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 was the budget before cargo-audit; a cache-cold cargo-audit install compiles its own
+    # dependency tree (including aws-lc-sys) from source, adding several minutes on the first run
+    # after the pinned version changes -- rust-cache's ~/.cargo/bin cache makes every run after that
+    # a no-op reinstall.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
         with:
@@ -144,5 +148,14 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
         working-directory: rust
       - run: cargo test --workspace
+        working-directory: rust
+      # Version-pinned so the job installs the same cargo-audit build every run; rust-cache above
+      # caches ~/.cargo/bin (cache-bin defaults to true), so this only compiles on a cache miss.
+      # RUSTSEC advisories change over time -- a currently-clean workspace can start failing here
+      # without any dependency bump in this repo, which is the point: it is the same signal
+      # Dependabot's grouped nuget/cargo/github-actions PRs (.github/dependabot.yml) exist to let a
+      # human act on quickly.
+      - run: cargo install cargo-audit --locked --version 0.22.2
+      - run: cargo audit
         working-directory: rust
       - run: scripts/rust-conformance.sh

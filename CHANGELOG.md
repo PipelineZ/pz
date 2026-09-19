@@ -52,6 +52,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- `.github/dependabot.yml`: weekly, grouped dependency updates for nuget (repo-root `directory`,
+  which reaches every csproj by expanding `Pz.slnx`), github-actions, and the Rust workspace
+  (`rust/`). Packages that must move together (`Grpc.*`/`Google.Protobuf`, `Apache.Arrow`,
+  `JsonSchema.Net`) are grouped explicitly so a bump lands in one PR across every project that pins
+  them; major-version bumps are never grouped, so they always arrive as their own PR. No auto-merge.
+- `ci.yml`'s `rust` job runs `cargo audit` (a version-pinned install, cached via `rust-cache`'s
+  `~/.cargo/bin`) after `cargo test`, so a RUSTSEC advisory against a workspace dependency fails CI
+  even between dependency bumps.
+- `release.yml` gates the publish on three checks that previously ran only in PR CI:
+  `scripts/check-changelog-entry.sh` (new) fails the release before anything is packed unless
+  `CHANGELOG.md` has a `## [X.Y.Z]` heading for the tag (a pre-release tag like `v0.7.0-rc.1` is
+  checked against its base version's heading, `## [0.7.0]`), and a new `verify-release` job runs
+  `scripts/verify-tool-install.sh`, `verify-aot.sh`, and `verify-sdk-package.sh` against the tagged
+  commit before `release` is allowed to push to nuget.org.
 - `pz runs`: lists prior runs, newest first, over `IRunArtifactStore` (works
   under `state: {backend: sqlserver}` too, not just local files) — run id,
   status, started/finished time, duration, succeeded/failed/skipped node

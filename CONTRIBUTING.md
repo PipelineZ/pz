@@ -95,6 +95,18 @@ $ git push origin vX.Y.Z
 MinVer (`Directory.Build.props`, `MinVerTagPrefix=v`) computes every packable project's version from
 this tag; `release.yml` builds, tests (linux), packs, and pushes every package to nuget.org.
 
+**`CHANGELOG.md` must have a `## [X.Y.Z] - YYYY-MM-DD` entry for the tag before you push it.**
+`release.yml`'s `changelog-gate` job runs `scripts/check-changelog-entry.sh <tag>` first, before
+`pack-aot` or `release` pack anything, and fails the release if that heading is missing -- move the
+`## [Unreleased]` section's content under a new dated heading in the same PR that cuts the tag (this
+is CLAUDE.md's "Every release tag gets a CHANGELOG.md entry" binding convention). For a pre-release
+tag (`v0.7.0-rc.1`), the gate
+checks the *base* version's heading (`## [0.7.0]`) rather than demanding one per candidate -- this
+project's changelog tracks shipped releases, not individual `-rc.N` tags.
+`release.yml`'s `verify-release` job then re-runs `scripts/verify-tool-install.sh`, `verify-aot.sh`,
+and `verify-sdk-package.sh` (the same PR CI proofs) against the tagged commit before `release` is
+allowed to push, in addition to the tag's own `dotnet build`/`dotnet test`.
+
 ### What publishes, and what deliberately does not
 
 Five ids publish, and each has a real consumer:
