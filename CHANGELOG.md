@@ -9,6 +9,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- **SinkWrite `NodeId` now includes `keys:`/`duplicates:`/`on_delete:`.** These change what a commit
+  under that id MEANS (the merge match condition, at-least-once consent, delete routing), so a sink
+  whose write semantics changed since a failed run no longer reuses/carries-forward the earlier
+  commit under `pz retry` — it re-runs instead. `retry:` (attempts/backoff) stays out of the id: it
+  governs how this run attempts the write, not what got committed.
+  *Migration:* none required, but every `SinkWrite` node id changes once on upgrade — a `pz retry`
+  issued against a run from before the upgrade re-runs its sinks instead of reusing them.
+
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
   `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`

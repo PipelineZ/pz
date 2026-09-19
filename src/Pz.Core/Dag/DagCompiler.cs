@@ -1112,8 +1112,17 @@ public static class DagCompiler
                 var pipelineName = ((SinkInputResolution.PipelineInput)resolution).PipelineName;
                 var effectiveOutput = isInlineBound ? output with { Input = pipelineName } : output;
                 var inputNodeId = pipelineNodeIds[pipelineName];
+                // Keys/AcceptDuplicates/OnDelete all change what a commit under this Id MEANS -- e.g.
+                // merge `keys:` is half the join condition a future write against the same relation
+                // performs, so a NodeId that ignored it would let `pz retry` carry forward a prior
+                // commit made under different match semantics as though it were the same output.
+                // Retry (RetryDef) is deliberately excluded: it governs how many attempts/backoff THIS
+                // run gives the write, not what got committed, so changing it must not stop `pz retry`
+                // from matching a prior success.
                 var canonical = string.Join('\n', "sink-write", sink.Name, output.Name, effectiveOutput.Input,
-                    output.Mode, output.SchemaPolicy, CanonicalJson.Serialize(output.Options));
+                    output.Mode, output.SchemaPolicy, CanonicalJson.Serialize(output.Options),
+                    CanonicalJson.Serialize(output.Keys), output.AcceptDuplicates.ToString(),
+                    output.OnDelete ?? "");
                 var id = NodeId.Compute(canonical);
                 nodes.Add(new DagNode(id, NodeKind.SinkWrite, $"{sink.Name}.{output.Name}",
                     [inputNodeId], null, new SinkOutputDef(sink, effectiveOutput, isInlineBound)));

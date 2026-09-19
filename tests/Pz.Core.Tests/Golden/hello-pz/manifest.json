@@ -74,7 +74,7 @@
       "file": "pipelines/orders_enriched.sql"
     },
     {
-      "id": "d310d06e14d9b686",
+      "id": "9c197512c47c0a6b",
       "kind": "sink_write",
       "name": "lake.order_totals",
       "dependsOn": [
@@ -84,7 +84,7 @@
       "file": "connections.yml"
     },
     {
-      "id": "cdb52b6c486cd791",
+      "id": "b6b1e97d54f2c38e",
       "kind": "sink_write",
       "name": "lake.orders_curated",
       "dependsOn": [
