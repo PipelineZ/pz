@@ -44,6 +44,22 @@
     <PackageTags Condition="'$(PackageTags)' != '' and !$(PackageTags.Contains('pipelinez-connector'))">$(PackageTags);pipelinez-connector</PackageTags>
   </PropertyGroup>
 
+  <!-- Anchored once, here, not per-target: unlike the RID-dependent paths below, PzNativeStaging
+       does not depend on $(RuntimeIdentifier), so there is no timing hazard in resolving it now, at
+       the one point that sees both the props file's default AND a later override (the project file,
+       or a -p: global property), either of which may be relative. A relative value must resolve
+       against the PROJECT directory the same way in every consumer of this file, and it did not:
+       PzStageNative's Copy/RemoveDir resolve a relative item path against the project directory
+       (MSBuild's own rule for task/item paths), while _PzFindStagedRids's raw
+       [System.IO.Directory]::GetDirectories call resolves relative to the invoking process's OWN
+       working directory, which differs whenever `dotnet pack`/`publish` runs from somewhere other
+       than the project's own directory. Made absolute exactly once, before either target reads it,
+       closes that gap. -->
+  <PropertyGroup>
+    <PzNativeStaging>$([System.IO.Path]::GetFullPath($(PzNativeStaging), $(MSBuildProjectDirectory)))</PzNativeStaging>
+    <PzNativeStaging>$([MSBuild]::EnsureTrailingSlash('$(PzNativeStaging)'))</PzNativeStaging>
+  </PropertyGroup>
+
   <!-- Every path below is computed INSIDE the target that uses it, never in a file-level
        PropertyGroup. This file is imported from wherever a consumer's build puts package targets,
        which is before the .NET SDK infers RuntimeIdentifier and sets IntermediateOutputPath: an

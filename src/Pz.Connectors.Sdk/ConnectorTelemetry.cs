@@ -29,6 +29,13 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
     private TracerProvider? _tracer;
     private MeterProvider? _meter;
 
+    /// <summary>Backs <see cref="InstanceId"/>. Written once, from Configure's RPC handler thread;
+    /// read from every later RPC's own thread via <see cref="TraceContextServerInterceptor.Begin"/>,
+    /// which has no other synchronization with Configure. Volatile so that write is visible to every
+    /// reader rather than each thread being free to keep observing null past the point Configure
+    /// actually returned.</summary>
+    private volatile string? _instanceId;
+
     public ActivitySource ActivitySource { get; } = new(SourceName);
 
     public Meter Meter { get; } = new(SourceName);
@@ -37,7 +44,11 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
     /// a connection name when the host threaded one in, else <c>&lt;connector&gt;#&lt;n&gt;</c>), known from
     /// Configure onward. A span tag, not a resource attribute, because providers are built at Handshake,
     /// before Configure runs.</summary>
-    public string? InstanceId { get; set; }
+    public string? InstanceId
+    {
+        get => _instanceId;
+        set => _instanceId = value;
+    }
 
     public bool IsExporting
     {

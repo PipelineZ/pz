@@ -90,8 +90,11 @@ internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry
         var method = context.Method;
         var slash = method.LastIndexOf('/');
         var rpc = slash >= 0 ? method[(slash + 1)..] : method;
-        if (rpc == "HostChannel")
+        if (rpc == "HostChannel" || !telemetry.ActivitySource.HasListeners())
         {
+            // With no listener StartActivity below is already a no-op BCL fast path, but the
+            // traceparent/tracestate metadata lookup and parse just below it is not -- checked here so
+            // the common case (telemetry off) skips that work on every single RPC, not just the span.
             return null;
         }
 

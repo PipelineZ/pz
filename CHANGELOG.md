@@ -160,6 +160,38 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
+  - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
+    all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.
+    `HostChannelPeer` fails a send issued after the channel is gone instead of buffering it for a
+    reattach that (the host opens `HostChannel` exactly once per process) is never coming, and the
+    SDK also closes the peer once the process starts stopping, bounding the "never attaches at
+    all" case the same way.
+  - `PcpConnectorService`'s per-op `CancellationTokenSource`s and planned reads were never disposed
+    or cleared, and the `WebApplication` serving PCP was never disposed either, so neither ran even
+    at process exit. The service now releases them from `Dispose`, called once the DI container
+    disposes it as part of disposing the now-disposed `WebApplication`.
+  - `Configure`'s "already configured" check and its write to `_config` were two separate,
+    unsynchronized field accesses: two concurrent `Configure` calls could both observe "not
+    configured yet" and both proceed. The check and the write are now one critical section.
+  - Reopening a partition (a retry, or a host reading it again) reused the previous attempt's
+    `SyncStateCapture`, so `GetReadState` could answer with an already-completed token before the
+    new attempt had even started draining. A fresh capture is minted per open, same as the sibling
+    failure capture already did.
+  - `Handshake` never checked the host's declared protocol major against the connector's own (the
+    Rust SDK already does); a mismatch is now refused there too, with both majors named.
+  - `--pz-socket ""` (or an all-whitespace path) was accepted and only failed later, confusingly, in
+    Kestrel; it is now a usage error naming `--pz-socket` directly.
+  - A relative `PzNativeStaging` (a project-file or `-p:` override; the props file's own default was
+    already absolute) resolved against two different roots: `PzStageNative`'s `Copy`/`RemoveDir`
+    against the project directory, `_PzFindStagedRids`'s raw `System.IO.Directory` call against the
+    invoking process's own working directory. `Pz.Connectors.Sdk.targets` now anchors it to an
+    absolute path once, before either target reads it.
+  - `TraceContextServerInterceptor.Begin` parsed the `traceparent`/`tracestate` metadata on every RPC
+    even with nothing exporting (`StartActivity` was already a no-op, but the parse ahead of it was
+    not); it now short-circuits on `ActivitySource.HasListeners()` first. `ConnectorTelemetry`'s
+    `InstanceId` (written once from Configure, read from every later RPC's own thread) is now backed
+    by a volatile field.
 - `PZ_DOCS_URL=file://…` (the documented air-gapped route for the `pz_docs_*`
   tools) now actually works: `DocsCatalog` reads a `file:` mirror straight off
   disk instead of handing it to `HttpClient`, which threw `NotSupportedException`

@@ -1,17 +1,19 @@
 using System.Collections.Concurrent;
 using Grpc.Core;
+using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol.V1;
 
 namespace Pz.Connectors.Sdk;
 
-/// <summary>The connector side of the PCP reverse channel. One instance per process, reused across
-/// however many <c>HostChannel</c> calls the host makes (there is normally exactly one, held open for
-/// the process's lifetime).
+/// <summary>The connector side of the PCP reverse channel. One instance per process; the host opens
+/// exactly one <c>HostChannel</c> call, held for the process's lifetime.
 ///
 /// <para>Every outgoing message -- gate traffic and logs alike -- goes through one
-/// buffer-until-attach mechanism: a TCS that resolves once a HostChannel call is actually being
-/// served, replaced with a fresh unresolved one on <see cref="Detach"/> so a message queued after the
-/// channel drops waits for the NEXT attach rather than racing a disposed writer.</para></summary>
+/// buffer-until-attach mechanism: a TCS that resolves once the HostChannel call is actually being
+/// served. Because there is exactly one such call, <see cref="Detach"/> (its end, for any reason) is
+/// terminal rather than a wait for reattachment: it fails the TCS instead of replacing it, so nothing
+/// already waiting -- or sent afterward -- blocks on a channel that will never come back. See
+/// <see cref="Close"/>.</para></summary>
 internal sealed class HostChannelPeer
 {
     /// <summary>Log events queued before the host's pump has attached are held here, newest wins:
@@ -23,6 +25,19 @@ internal sealed class HostChannelPeer
     private readonly Lock _attachGate = new();
     private readonly Queue<LogEvent> _logBacklog = new();
     private bool _isAttached;
+
+    /// <summary>Set the moment <see cref="Detach"/> ends the one <c>HostChannel</c> call this process
+    /// will ever see: the host opens it exactly once (see <c>HostChannelPump</c>'s own doc on the host
+    /// side), so once it ends nothing will attach again. Every send already waiting on the current
+    /// <see cref="_attached"/> TCS -- or issued after this point -- fails immediately instead of
+    /// waiting on a channel that is never coming back, mirroring <c>HostChannelPump.FailAllPending</c>
+    /// on the host side of the same channel rather than leaving a gated operation hanging forever.</summary>
+    private bool _closed;
+
+    /// <summary>Set alongside <see cref="_closed"/>, under the same lock: what <see cref="SendAsync"/>
+    /// throws for a send issued after closing, since re-faulting the (possibly already-resolved)
+    /// <see cref="_attached"/> TCS cannot cover that case by itself.</summary>
+    private Exception? _closedReason;
 
     /// <summary>The tail of the log send sequence. Every log send is chained onto it while
     /// <see cref="_attachGate"/> is held, so the order sends are started is the order the events were
@@ -42,6 +57,13 @@ internal sealed class HostChannelPeer
         TaskCompletionSource<IServerStreamWriter<HostChannelUp>> signal;
         lock (_attachGate)
         {
+            if (_closed)
+            {
+                // The one HostChannel call for this process's lifetime already ended (see _closed's
+                // own doc); a late Attach has nothing left to resolve.
+                return;
+            }
+
             signal = _attached;
             _isAttached = true;
             while (_logBacklog.Count > 0)
@@ -55,13 +77,33 @@ internal sealed class HostChannelPeer
         signal.TrySetResult(writer);
     }
 
-    public void Detach()
+    public void Detach() => Close(new PzConnectorException(
+        "the PCP reverse channel ended; no further host attach is expected for this connector process",
+        isTransient: false));
+
+    /// <summary>Ends this peer for good, idempotently: also called (with a process-shutdown reason)
+    /// when the host's own application lifetime starts stopping, which is what bounds the "never
+    /// attaches at all" case -- a channel that Detach was never called for (the HostChannel RPC never
+    /// even started) would otherwise wait on the very first Attach forever.</summary>
+    public void Close(Exception reason)
     {
         lock (_attachGate)
         {
+            if (_closed)
+            {
+                return;
+            }
+
             _isAttached = false;
-            _attached = new TaskCompletionSource<IServerStreamWriter<HostChannelUp>>(
-                TaskCreationOptions.RunContinuationsAsynchronously);
+            _closed = true;
+            _closedReason = reason;
+            // Fails whoever is already waiting on this signal (SendAsync's buffer-until-attach) rather
+            // than leaving them parked: a gated operation cannot finish -- and, over CancellationToken
+            // .None, could not even be cancelled -- if this simply replaced the TCS with a fresh
+            // unresolved one, since no future Attach is coming. A no-op when _attached already resolved
+            // to a writer (the common Attach-then-Detach shape); SendAsync's own _closed check above
+            // covers that case instead.
+            _attached.TrySetException(reason);
         }
     }
 
@@ -130,11 +172,23 @@ internal sealed class HostChannelPeer
         TaskCompletionSource<IServerStreamWriter<HostChannelUp>> signal;
         lock (_attachGate)
         {
+            // Checked explicitly, not left to _attached's own fault: TrySetException on an already-
+            // RESOLVED TCS (the common shape -- Attach ran once, then Detach) is a no-op, since a TCS
+            // cannot move from "has result" to faulted. A send issued after that point would otherwise
+            // still retrieve the now-stale writer from the already-completed Task instead of failing.
+            if (_closed)
+            {
+                throw _closedReason!;
+            }
+
             signal = _attached;
         }
 
         // Buffer-until-attach, not a synchronous throw: a message queued (GateAcquire, or a log) before
         // HostChannel's server method has run Attach() waits here instead of failing the caller outright.
+        // If nobody has attached yet when Close/Detach runs, THIS TCS is still unresolved, and
+        // TrySetException there does unblock the wait -- the check above only covers the send issued
+        // after the fact.
         var writer = await signal.Task.WaitAsync(ct).ConfigureAwait(false);
 
         await _writeLock.WaitAsync(ct).ConfigureAwait(false);

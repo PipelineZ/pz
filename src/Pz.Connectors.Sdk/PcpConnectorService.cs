@@ -26,20 +26,19 @@ internal sealed class PcpConnectorService(
     HostChannelPeer peer,
     ConnectorTelemetry telemetry,
     PcpServerHooks hooks,
-    IHostApplicationLifetime lifetime) : PzConnector.PzConnectorBase
+    IHostApplicationLifetime lifetime) : PzConnector.PzConnectorBase, IDisposable
 {
     private readonly SemaphoreSlim _openGate = new(1, 1);
+    private readonly SemaphoreSlim _configureGate = new(1, 1);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _ops = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, PlannedRead> _plans = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, WriteSessionState> _sessions = new(StringComparer.Ordinal);
     private readonly HostOperationGate _gate = new(peer);
 
-    private bool _handshaken;
+    private volatile bool _handshaken;
     private ConnectorConfig? _config;
     private ISource? _source;
     private ISink? _sink;
-
-    internal TicketRegistry Tickets => tickets;
 
     private sealed record PlannedRead(
         Schema Schema,
@@ -54,6 +53,16 @@ internal sealed class PcpConnectorService(
         if (hooks.HangHandshake is { } hang)
         {
             await hang(context.CancellationToken).ConfigureAwait(false);
+        }
+
+        if (request.ProtocolMajor != connector.Info.ProtocolMajor)
+        {
+            // Refused here, not answered with our own major and left for the host to notice some
+            // other way (the Rust SDK's server.rs does the same): a connector that sees the SAME
+            // disagreement from its own side of the handshake should say so plainly too.
+            throw new RpcException(new Status(
+                StatusCode.FailedPrecondition,
+                $"host speaks protocol major {request.ProtocolMajor}, this connector ({SdkInfo.Name}) speaks major {connector.Info.ProtocolMajor}"));
         }
 
         var hello = new Hello
@@ -86,31 +95,49 @@ internal sealed class PcpConnectorService(
         return hello;
     }
 
-    public override Task<ConfigureResponse> Configure(ConfigureRequest request, ServerCallContext context)
+    public override async Task<ConfigureResponse> Configure(ConfigureRequest request, ServerCallContext context)
     {
         if (!_handshaken)
         {
             throw new RpcException(new Status(StatusCode.FailedPrecondition, "Handshake must precede Configure"));
         }
 
-        if (_config is not null)
+        // The "already configured" check and the config write are one critical section: left apart,
+        // two Configure calls racing the check both see _config as null and both proceed.
+        await _configureGate.WaitAsync(context.CancellationToken).ConfigureAwait(false);
+        try
         {
-            throw new RpcException(new Status(StatusCode.FailedPrecondition, "connector is already configured"));
+            if (_config is not null)
+            {
+                throw new RpcException(new Status(StatusCode.FailedPrecondition, "connector is already configured"));
+            }
+
+            if (hooks.PauseInsideConfigure is { } pause)
+            {
+                // Between the check and the write: a test that holds a call here and starts a SECOND
+                // one proves the gate, not the ordering of the two statements below, is what keeps
+                // them from both observing _config as null.
+                await pause(context.CancellationToken).ConfigureAwait(false);
+            }
+
+            _config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
+            telemetry.InstanceId = request.InstanceId;
+            hooks.OnConfigure?.Invoke();
+
+            // One log event per Configure, always -- fields carry the connection NAME (instance_id) and
+            // the connector's own identity, never a config VALUE. The reverse channel is not open yet at
+            // this point in the RPC sequence, so this is held and flushed the moment HostChannel attaches.
+            var configured = new LogEvent { Level = (int)LogLevel.Information, Message = "connector configured" };
+            configured.Fields["instance_id"] = request.InstanceId;
+            configured.Fields["connector"] = connector.Info.Name;
+            peer.QueueLog(configured);
+        }
+        finally
+        {
+            _configureGate.Release();
         }
 
-        _config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
-        telemetry.InstanceId = request.InstanceId;
-        hooks.OnConfigure?.Invoke();
-
-        // One log event per Configure, always -- fields carry the connection NAME (instance_id) and the
-        // connector's own identity, never a config VALUE. The reverse channel is not open yet at this
-        // point in the RPC sequence, so this is held and flushed the moment HostChannel attaches.
-        var configured = new LogEvent { Level = (int)LogLevel.Information, Message = "connector configured" };
-        configured.Fields["instance_id"] = request.InstanceId;
-        configured.Fields["connector"] = connector.Info.Name;
-        peer.QueueLog(configured);
-
-        return Task.FromResult(new ConfigureResponse());
+        return new ConfigureResponse();
     }
 
     public override Task<ValidationResultMsg> Validate(ValidateRequest request, ServerCallContext context) =>
@@ -256,9 +283,11 @@ internal sealed class PcpConnectorService(
                 partition,
                 SpecMapping.ToBatchOptions(request.Options),
                 OpToken(request.OpId),
-                plan.Captures.GetOrAdd(request.PartitionId, _ => new SyncStateCapture()),
-                // A fresh capture per stream, never GetOrAdd: a partition read again after a failed
-                // attempt must not answer with the earlier attempt's failure.
+                // A fresh capture per stream, never GetOrAdd: a partition reopened after a completed
+                // attempt (a retry, or a host that reads it again) must not answer GetReadState with
+                // the PREVIOUS attempt's already-completed token before its own drain has even
+                // started. Same rule Failures already followed on the line below.
+                plan.Captures[request.PartitionId] = new SyncStateCapture(),
                 plan.Failures[request.PartitionId] = new StreamFailureCapture(),
                 Activity.Current?.Context ?? default));
             return Task.FromResult(new ReadStreamTicket { Ticket = ByteString.CopyFrom(ticket) });
@@ -703,4 +732,37 @@ internal sealed class PcpConnectorService(
     /// makes the host reconstruct a real, non-transient <see cref="PzConnectorException"/> instead.</summary>
     private static RpcException ToUnhandledRpcException(Exception ex) =>
         ToRpcException(new PzConnectorException($"unhandled {ex.GetType().Name}: {ex.Message}", isTransient: false));
+
+    // ---- lifetime -----------------------------------------------------------------------------
+
+    /// <summary>Registered as a singleton (<c>PcpServer.ServeAsync</c>), so the DI container calls this
+    /// exactly once, when the <c>WebApplication</c> it belongs to is disposed at the end of that
+    /// method -- i.e. at process shutdown, matching <see cref="OpToken"/>'s own "op state lives until
+    /// the process exits" rule: nothing here is torn down mid-run, only at the point where nothing can
+    /// reference it again. Releases every per-op <see cref="CancellationTokenSource"/> <see cref="_ops"/>
+    /// accumulated (one per op id for the life of the process, never freed individually since an op's
+    /// true end -- its data-plane streams draining -- is not observable from the control plane alone)
+    /// and drops every planned read, neither of which was ever otherwise reclaimed.</summary>
+    public void Dispose()
+    {
+        foreach (var cts in _ops.Values)
+        {
+            cts.Dispose();
+        }
+
+        _ops.Clear();
+        _plans.Clear();
+    }
+
+    /// <summary>Test seam: <see cref="Dispose"/> is proven by observing these, not by inspection.</summary>
+    internal int TrackedOperationCount => _ops.Count;
+
+    /// <summary>Test seam, see <see cref="TrackedOperationCount"/>.</summary>
+    internal int TrackedPlanCount => _plans.Count;
+
+    /// <summary>Test seam, see <see cref="TrackedOperationCount"/>: hands back the actual
+    /// <see cref="CancellationTokenSource"/> tracked for <paramref name="opId"/> so a test can assert
+    /// it was disposed, not merely removed.</summary>
+    internal bool TryGetOpCancellationSource(string opId, out CancellationTokenSource cts) =>
+        _ops.TryGetValue(opId, out cts!);
 }

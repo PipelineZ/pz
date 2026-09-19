@@ -78,6 +78,12 @@ Publish for the packing machine's own RID too, whichever RIDs you ship: the mani
 running the binary, so a machine that packs without having published its own RID fails with
 `PZSDK003`.
 
+On a machine (or CI runner) whose NuGet cache has never restored a given RID before, the first
+`dotnet publish -r <rid>` for it can fail with `NETSDK1112` ("The runtime pack for ... was not
+downloaded"): publish's own implicit restore does not always pull every RID-specific asset the Native
+AOT compiler pack needs. Run `dotnet restore <project> -r <rid>` once before that first cold publish;
+a warm cache (every later publish, and most CI setups that restore separately) never hits this.
+
 The nupkg carries `runtimes/<rid>/native/<binary>` per RID and the generated manifest at its root;
 `pz restore` installs the host's RID and `pz run` spawns it. See
 https://pipelinez.dev/how-to/author-a-connector/ for the full guide and a release workflow.
