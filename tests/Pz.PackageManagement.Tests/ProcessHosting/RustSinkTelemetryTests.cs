@@ -11,11 +11,23 @@ using Pz.PackageManagement.Tests.Otlp;
 
 namespace Pz.PackageManagement.Tests.ProcessHosting;
 
+/// <summary>Runs <see cref="RustSinkTelemetryTests"/> with nothing else in this assembly beside it.
+/// What those facts wait for is exported by the connector's flush at shutdown, and that flush is
+/// bounded by a few wall-clock seconds inside the connector: on a machine busy with this assembly's
+/// other process-spawning suites the bound expires, the export is dropped, and no amount of waiting
+/// on this side can bring it back.</summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class RustSinkTelemetryCollection
+{
+    public const string Name = "rust-sink-telemetry";
+}
+
 /// <summary>The Rust SDK's half of telemetry export -- spans and meters -- against the built
 /// <c>memory_sink</c> example.
 /// Skips when the example is not built (scripts/rust-conformance.sh builds it and then runs this
 /// category), so a contributor without cargo still gets a green suite.</summary>
 [Trait("Category", "RustPcp")]
+[Collection(RustSinkTelemetryCollection.Name)]
 public sealed class RustSinkTelemetryTests : IDisposable
 {
     private static readonly TimeSpan WaitTimeout = TimeSpan.FromSeconds(20);

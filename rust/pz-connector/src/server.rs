@@ -209,9 +209,8 @@ pub enum ServeExit {
 pub(crate) struct SessionState {
     pub(crate) op_id: String,
     /// The single-use data-plane ticket minted for this session, recorded here (not just handed to the
-    /// host) so `commit_write`/`abort_write` can revoke it -- see `TicketRegistry::revoke`'s doc for why
-    /// a session that finishes before its ticket is ever presented would otherwise leave that ticket
-    /// live forever.
+    /// host) so `abort_write` can revoke it -- see `TicketRegistry::revoke`'s doc for why a session
+    /// aborted before its ticket is ever presented would otherwise leave that ticket live forever.
     ticket: [u8; TICKET_LENGTH],
     write_session: AsyncMutex<Option<Box<dyn WriteSession>>>,
     drained_tx: StdMutex<Option<oneshot::Sender<Result<(), PzError>>>>,
@@ -597,9 +596,9 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
 
         let session_id = Self::new_session_id();
         // Generated before the entry is built, not via `TicketRegistry::mint`: the ticket has to be
-        // baked into `SessionState` itself (see its `ticket` field's doc) so `commit_write`/
-        // `abort_write` can revoke it later, and that means the bytes have to exist before the `Arc`
-        // the registry entry wraps does.
+        // baked into `SessionState` itself (see its `ticket` field's doc) so `abort_write` can revoke
+        // it later, and that means the bytes have to exist before the `Arc` the registry entry wraps
+        // does.
         let ticket_bytes = TicketRegistry::generate();
         let state = SessionState::new(msg.op_id, ticket_bytes, session, Span::current().context());
         self.sessions
@@ -628,12 +627,12 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         }
         .ok_or_else(|| unknown_session(&session_id))?;
 
-        // Revoked as soon as the control plane claims this session for finalization, whether or not the
-        // data connection ever burned it itself (the premature-commit case: no data connection ever
-        // opened at all). Without this a session that finishes control-plane-first leaves its ticket
-        // live forever -- a later connection presenting it would reach a `SessionState` already taken
-        // apart. See `TicketRegistry::revoke`'s doc.
-        self.tickets.revoke(&state.ticket());
+        // The ticket is deliberately NOT revoked here. A small write fits in the kernel's socket buffer,
+        // so the host can finish its whole data stream and send this RPC while the data connection is
+        // still waiting to be accepted; revoking now would turn that connection away unread, and the
+        // drain awaited below -- which only that connection can signal -- would never come. The ticket
+        // lives exactly as long as the session does: burned by the data connection this commit waits
+        // for, or revoked by `abort_write`, which is also how a commit the host gave up on is cleaned up.
 
         // Not removed from `sessions` until the drain actually completes: a cancelled/dropped commit
         // attempt (client deadline, caller cancellation) must leave the session exactly as abortable as
@@ -674,8 +673,8 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         }
         .ok_or_else(|| unknown_session(&session_id))?;
 
-        // See commit_write's identical revoke: a session that finishes control-plane-first must not
-        // leave a live ticket a later connection could still present.
+        // A session aborted before its data connection arrived must not leave a live ticket a later
+        // connection could still present.
         self.tickets.revoke(&state.ticket());
 
         // No drain wait: abort exists precisely for a stream that never completed. Force-unblock first
@@ -2099,5 +2098,67 @@ mod tests {
 
         assert!(response.errors.is_empty());
         assert!(response.warnings.is_empty());
+    }
+
+    /// A small write fits in the kernel's socket buffer, so the host can finish its whole data stream
+    /// and send `CommitWrite` while the data connection still sits un-accepted in the listener's
+    /// backlog. The commit must wait for that stream, however late this side gets around to reading
+    /// its ticket.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_commit_that_arrives_before_the_data_connection_is_claimed_still_completes() {
+        use std::io::Write;
+
+        let service = test_service(FixtureConnector::default());
+        service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "a".to_string(),
+                config: None,
+            }))
+            .await
+            .expect("Configure must succeed before BeginWrite can open a sink");
+
+        let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "value",
+            arrow::datatypes::DataType::Int64,
+            false,
+        )]);
+        let begun = service
+            .begin_write(Request::new(pb::BeginWriteRequest {
+                op_id: "op1".to_string(),
+                spec: Some(pb::OutputSpecMsg::default()),
+                arrow_schema_ipc: encode_schema_ipc(&schema),
+            }))
+            .await
+            .expect("BeginWrite must succeed against the fixture sink")
+            .into_inner();
+
+        // The host's whole side of the write, finished before this process accepts anything: ticket,
+        // a complete Arrow IPC stream (end-of-stream marker included), half-close.
+        let dir = tempfile::tempdir().unwrap();
+        let data_path = dir.path().join("c.sock.data");
+        let listener = tokio::net::UnixListener::bind(&data_path).unwrap();
+        let mut host_side = StdUnixStream::connect(&data_path).unwrap();
+        host_side.write_all(&begun.ticket).unwrap();
+        host_side.write_all(&encode_schema_ipc(&schema)).unwrap();
+        host_side.shutdown(Shutdown::Write).unwrap();
+
+        // Polled exactly once: far enough to be parked on the drain, before the accept loop exists.
+        let commit = service.commit_write(Request::new(pb::SessionRef {
+            session_id: begun.session_id.clone(),
+        }));
+        tokio::pin!(commit);
+        tokio::select! {
+            biased;
+            early = &mut commit => panic!("CommitWrite answered before any data was read: {early:?}"),
+            _ = std::future::ready(()) => {}
+        }
+
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(data_plane::run(listener, service.tickets.clone(), stop_rx));
+
+        let answered = tokio::time::timeout(Duration::from_secs(10), &mut commit)
+            .await
+            .expect("CommitWrite never answered although its data stream was complete");
+        answered.expect("a completely delivered write must commit");
     }
 }

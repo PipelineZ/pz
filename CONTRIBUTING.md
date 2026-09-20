@@ -24,6 +24,23 @@ to be clean modulo those expected skips.
 `pz init` -> `pz init --template sample` -> `pz run`, fully offline). Run it after touching anything
 under `src/Pz.Cli`, `templates/`, or any packable project's `.csproj`.
 
+### The Rust-backed tests
+
+The `Category=RustPcp` facts in `tests/Pz.PackageManagement.Tests` drive the Rust SDK's `memory_sink`
+example and SKIP unless it is built (`rust/target/debug/examples/memory_sink`), so a contributor
+without cargo still gets a green suite. `scripts/rust-conformance.sh` builds the example and runs
+them on their own -- that is the supported way to run them, and what CI's `rust` job does.
+
+Once the example is built, a whole-solution `dotnet test` runs them too, beside every other test
+assembly. They assert on telemetry the connector exports in its shutdown flush, which is bounded by
+a few wall-clock seconds inside the connector; on a small or busy machine (seen on a 16 GB box) that
+bound can expire and the facts time out although nothing is wrong. Re-run them through the script, or
+run the solution one assembly at a time:
+
+```console
+$ dotnet test Pz.slnx -c Release --no-build -m:1
+```
+
 ## Branch protection
 
 - `main` requires the `ci` workflow (`.github/workflows/ci.yml`) green before merging -- both the

@@ -62,6 +62,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - `ci.yml`'s `rust` job runs `cargo audit` (a version-pinned install, cached via `rust-cache`'s
   `~/.cargo/bin`) after `cargo test`, so a RUSTSEC advisory against a workspace dependency fails CI
   even between dependency bumps.
+- CI keeps what `--blame-hang` writes: the `build-test` and `rust` jobs upload `TestResults/` (hang
+  dumps and test sequence files) when they fail, and `scripts/rust-conformance.sh` runs its
+  `Category=RustPcp` facts under `--blame-hang` with a five-minute ceiling. A rare hang used to be a
+  silent job timeout with nothing left to read afterwards.
+- Contributors: the `Category=RustPcp` facts run with nothing else in their assembly beside them
+  (their telemetry rides on the connector's wall-clock-bounded shutdown flush, which a busy machine
+  can starve), and `CONTRIBUTING.md` says how to run them and what `-m:1` is for.
 - `release.yml` gates the publish on three checks that previously ran only in PR CI:
   `scripts/check-changelog-entry.sh` (new) fails the release before anything is packed unless
   `CHANGELOG.md` has a `## [X.Y.Z]` heading for the tag (a pre-release tag like `v0.7.0-rc.1` is
@@ -176,6 +183,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **A write to a Rust-SDK sink could hang forever at commit.** A small write fits in the kernel's
+  socket buffer, so the engine can finish the whole data stream and send `CommitWrite` before the
+  connector process has accepted the data connection. The Rust SDK's `CommitWrite` revoked the
+  session's data-plane ticket on arrival, so that late connection was turned away unread and the
+  commit waited for a drain nothing could signal any more — an idle connector, a run that never
+  ends (no `engine.node_timeout` by default). It needed a busy machine to show, which is why it
+  surfaced as intermittent CI hangs. The ticket now lives as long as the session: burned by the
+  data connection the commit waits for, or revoked by `AbortWrite`. Connectors built on the Rust
+  SDK pick the fix up by rebuilding against it; the C# SDK never had the early revoke.
 - **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
   - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
     all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.
