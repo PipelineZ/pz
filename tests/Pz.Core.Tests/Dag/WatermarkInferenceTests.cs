@@ -553,4 +553,60 @@ public class WatermarkInferenceTests
         // synthesized for a dataset that failed.
         Assert.False(result.Synthesized.ContainsKey(("crm", "orders")));
     }
+
+    // -- Cursor-column disagreement (PZ0231) -----------------------------------------------------
+
+    [Fact]
+    public void Two_comparisons_naming_different_cursor_columns_against_the_same_watermark_call_is_PZ0231()
+    {
+        // `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` -- both
+        // comparisons resolve to the same sentinel (one watermark() call per (source, dataset), not per
+        // call site), but there is no single column to synthesize as the cursor. Before the fix,
+        // `items[0].Column` silently won -- whichever comparison the reader happened to return first.
+        var wref = new WatermarkRef("crm", "orders");
+        var analysis = new WatermarkAnalysis(
+            [
+                new WatermarkComparison(wref.Sentinel, "updated_at", "src_crm__orders",
+                    Inclusive: false, ValueExprSql: $"'{wref.Sentinel}'", IsUpper: false),
+                new WatermarkComparison(wref.Sentinel, "created_at", "src_crm__orders",
+                    Inclusive: true, ValueExprSql: $"'{wref.Sentinel}'", IsUpper: true),
+            ],
+            [], "select ...");
+        var sources = new Dictionary<string, ConnectionDef> { ["crm"] = CrmSource() };
+
+        var result = WatermarkInference.Run(
+            [new WatermarkInference.PipelineInput(Pipeline("stg"), Rendered(wref), "assembled sql")],
+            sources, new StubSqlAstReader(analysis));
+
+        var error = Assert.Single(result.Errors, e => e.Code == PzErrorCode.WatermarkCursorDisagreement);
+        Assert.Contains("crm.orders", error.Message, StringComparison.Ordinal);
+        Assert.Contains("created_at", error.Message, StringComparison.Ordinal);
+        Assert.Contains("updated_at", error.Message, StringComparison.Ordinal);
+        Assert.False(result.Synthesized.ContainsKey(("crm", "orders")));
+    }
+
+    [Fact]
+    public void Two_comparisons_on_the_SAME_column_a_floor_and_a_recognized_ceiling_still_compiles()
+    {
+        // The PZ0231 guard must not regress the already-working shape it sits beside: a lower bound and
+        // an upper bound on the SAME cursor column both fold into one synthesized incremental (the
+        // bounded-window trio's ceiling half, PZ0351 territory).
+        var wref = new WatermarkRef("crm", "orders");
+        var analysis = new WatermarkAnalysis(
+            [
+                new WatermarkComparison(wref.Sentinel, "updated_at", "src_crm__orders",
+                    Inclusive: false, ValueExprSql: $"'{wref.Sentinel}'", IsUpper: false),
+                new WatermarkComparison(wref.Sentinel, "updated_at", "src_crm__orders",
+                    Inclusive: true, ValueExprSql: $"'{wref.Sentinel}' + interval 7 day", IsUpper: true),
+            ],
+            [], "select ...");
+        var sources = new Dictionary<string, ConnectionDef> { ["crm"] = CrmSource() };
+
+        var result = WatermarkInference.Run(
+            [new WatermarkInference.PipelineInput(Pipeline("stg"), Rendered(wref), "assembled sql")],
+            sources, new StubSqlAstReader(analysis));
+
+        Assert.DoesNotContain(result.Errors, e => e.Code == PzErrorCode.WatermarkCursorDisagreement);
+        Assert.Equal("updated_at", result.Synthesized[("crm", "orders")].Cursor);
+    }
 }

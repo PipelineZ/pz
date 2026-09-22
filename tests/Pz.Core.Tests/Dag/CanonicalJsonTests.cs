@@ -1,3 +1,4 @@
+using System.Numerics;
 using System.Text.Json;
 using Pz.Core.Dag;
 
@@ -121,5 +122,51 @@ public sealed class CanonicalJsonTests
         var ex = Assert.Throws<NotSupportedException>(() => CanonicalJson.Serialize(Guid.Empty));
 
         Assert.Contains("Guid", ex.Message, StringComparison.Ordinal);
+    }
+
+    // -- Exotic kwarg types Scriban can hand a source()/sink() call ------------------------------
+    // A huge integer literal (too big for long) evaluates to BigInteger, and an `m`-suffixed literal
+    // evaluates to decimal -- both are real values a real source()/sink() kwarg can carry, and both
+    // have an obvious lossless JSON form, so both are supported rather than refused.
+
+    [Fact]
+    public void BigInteger_serializes_as_a_raw_json_number_preserving_every_digit()
+    {
+        var huge = BigInteger.Parse("99999999999999999999999999999999999999");
+
+        var serialized = CanonicalJson.Serialize(huge);
+
+        Assert.Equal("99999999999999999999999999999999999999", serialized);
+        // Round-trips through a real JSON parser too -- JSON numbers are arbitrary precision, so this
+        // is valid JSON, not merely valid-looking text.
+        using var doc = JsonDocument.Parse(serialized);
+        Assert.Equal(huge, BigInteger.Parse(doc.RootElement.GetRawText()));
+    }
+
+    [Fact]
+    public void Negative_BigInteger_round_trips()
+    {
+        var huge = BigInteger.Parse("-99999999999999999999999999999999999999");
+        Assert.Equal("-99999999999999999999999999999999999999", CanonicalJson.Serialize(huge));
+    }
+
+    [Fact]
+    public void Decimal_serializes_round_trippable() =>
+        Assert.Equal("1.5", CanonicalJson.Serialize(1.5m));
+
+    [Fact]
+    public void DateTime_serializes_as_an_iso8601_string()
+    {
+        var serialized = CanonicalJson.Serialize(new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+        using var doc = JsonDocument.Parse(serialized);
+        Assert.Equal("2026-01-01T00:00:00Z", doc.RootElement.GetString());
+    }
+
+    [Fact]
+    public void BigInteger_nested_in_a_list_still_serializes()
+    {
+        var value = new List<object?> { 1L, BigInteger.Parse("99999999999999999999999999999999999999") };
+        Assert.Equal("[1,99999999999999999999999999999999999999]", CanonicalJson.Serialize(value));
     }
 }

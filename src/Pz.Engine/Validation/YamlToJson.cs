@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Numerics;
 using System.Text.Json.Nodes;
 
 namespace Pz.Engine.Validation;
@@ -10,8 +12,10 @@ namespace Pz.Engine.Validation;
 /// object-to-JSON serializer.
 ///
 /// Connector options may also be written as <c>source()</c>/<c>sink()</c> keyword arguments, where
-/// Scriban produces <c>int</c> in place of the YAML loader's <c>long</c>. Both integer shapes are
-/// accepted; the set is otherwise still closed.</summary>
+/// Scriban produces <c>int</c> in place of the YAML loader's <c>long</c>, <c>decimal</c> for an
+/// <c>m</c>-suffixed literal, and <c>BigInteger</c> for an integer too big for <c>long</c>. Those are
+/// accepted too -- the compiler hashes the same values into node identity, so a kwarg that compiles
+/// must also validate; the set is otherwise still closed.</summary>
 internal static class YamlToJson
 {
     public static JsonNode? Convert(object? yamlValue) => yamlValue switch
@@ -20,6 +24,9 @@ internal static class YamlToJson
         long l => JsonValue.Create(l),
         int i => JsonValue.Create(i),
         double d => JsonValue.Create(d),
+        decimal m => JsonValue.Create(m),
+        // JSON numbers are arbitrary precision; the digits are the lossless form.
+        BigInteger bi => JsonNode.Parse(bi.ToString(CultureInfo.InvariantCulture)),
         bool b => JsonValue.Create(b),
         string s => JsonValue.Create(s),
         Dictionary<string, object?> dict => ConvertObject(dict),

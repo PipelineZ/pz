@@ -17,6 +17,14 @@ public sealed record RenderResult(string Sql, IReadOnlySet<DepRef> Dependencies)
 {
     public IReadOnlyList<InlineSinkBinding> InlineBindings { get; init; } = [];
     public IReadOnlyList<WatermarkRef> WatermarkRefs { get; init; } = [];
+
+    /// <summary>True when the pipeline's SQL referenced the <c>run_id</c> and/or <c>run_started_at</c>
+    /// constants -- both change every run, so rendered SQL that embeds either one changes the
+    /// Pipeline NodeId every run too, defeating `pz retry`'s node-id matching against a prior run.
+    /// DagCompiler turns this into a once-per-pipeline compile warning (PZ0232); it does NOT change
+    /// how the NodeId itself is computed -- the hash stays a pure function of the rendered SQL text,
+    /// exactly as every other pipeline's does.</summary>
+    public bool UsesRunIdentity { get; init; }
 }
 
 /// <summary>One <c>sink(&lt;sink&gt;, &lt;output&gt;)</c> call recorded by <see cref="TemplateRenderer"/>.

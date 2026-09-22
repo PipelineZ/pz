@@ -9,6 +9,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- **SinkWrite `NodeId` now includes `keys:`/`duplicates:`/`on_delete:`.** These change what a commit
+  under that id MEANS (the merge match condition, at-least-once consent, delete routing), so a sink
+  whose write semantics changed since a failed run no longer reuses/carries-forward the earlier
+  commit under `pz retry` — it re-runs instead. `retry:` (attempts/backoff) stays out of the id: it
+  governs how this run attempts the write, not what got committed.
+  *Migration:* none required, but every `SinkWrite` node id changes once on upgrade — a `pz retry`
+  issued against a run from before the upgrade re-runs its sinks instead of reusing them.
+
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
   `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
@@ -191,6 +199,27 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **A pipeline that renders `run_id`/`run_started_at` into its SQL now gets a compile-time warning
+  (PZ0232),** once per pipeline. Both constants change every run, so embedding either one in rendered
+  SQL changes that Pipeline's NodeId every run too, and `pz retry` (which matches nodes by id against
+  a prior run) can never treat two runs of that pipeline as the same node -- it always re-runs it.
+  The warning is advisory only; NodeId computation is unchanged.
+- **`watermark()` comparisons that name different cursor columns for one dataset are now refused
+  (PZ0231)**, instead of silently taking whichever comparison the SQL AST reader returned first --
+  e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` used to synthesize
+  an incremental cursor off only one of the two columns. Two comparisons that agree on the SAME
+  column (a lower bound plus a recognized ceiling, PZ0351) are unaffected.
+- **A `source()`/`sink()` kwarg (or a YAML read/write option) with a huge integer literal or a
+  decimal literal (Scriban's `BigInteger`/`decimal`) no longer crashes the compile.** `CanonicalJson`,
+  which every node's content-addressed id hashes options through, threw an uncaught
+  `NotSupportedException` for either type -- unlike a render-time mistake, nothing downstream of
+  rendering catches it, so it surfaced as a raw crash instead of a coded error. `CanonicalJson` now
+  supports `BigInteger`, `decimal`, and `DateTime` losslessly (arbitrary-precision digits, the decimal
+  value, and an ISO-8601 string, respectively); whatever value type still has no lossless canonical
+  form is refused as PZ0137, naming the option and the file, never the value. That includes a
+  non-finite number (`ratio: 1.0 / 0.0` evaluates to infinity, which JSON cannot represent), and the
+  tier-3 schema check accepts the decimal and big-integer values the compiler now hashes, so a kwarg
+  that compiles also validates.
 - **A write to a Rust-SDK sink could hang forever at commit.** A small write fits in the kernel's
   socket buffer, so the engine can finish the whole data stream and send `CommitWrite` before the
   connector process has accepted the data connection. The Rust SDK's `CommitWrite` revoked the

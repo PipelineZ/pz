@@ -269,6 +269,66 @@ public class DagCompilerTests
         Assert.Matches("^[0-9a-f]{16}$", id1.Value);
     }
 
+    /// <summary>Merge `keys:` is half the join condition a future commit against the same relation
+    /// performs -- a retry that reuses/carries-forward a prior commit made under different keys would
+    /// silently change what "already committed" means. See
+    /// <c>Pz.Engine.Tests.Execution.RetryReusePlannerTests</c> for the retry-planner-level proof that a
+    /// changed SinkWrite id is exactly what keeps `pz retry` from carrying forward a stale commit.</summary>
+    [Fact]
+    public void SinkWrite_node_id_changes_when_merge_keys_change()
+    {
+        var p1 = Project([Pipe("a", Into("out", "merge", ["id"]) + "select 1 as id")], sinks: [Sink()]);
+        var p2 = Project([Pipe("a", Into("out", "merge", ["id", "region"]) + "select 1 as id")], sinks: [Sink()]);
+        var id1 = DagCompiler.Compile(p1, Ctx(p1)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        var id2 = DagCompiler.Compile(p2, Ctx(p2)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        Assert.NotEqual(id1, id2);
+    }
+
+    [Fact]
+    public void SinkWrite_node_id_changes_when_duplicates_consent_changes()
+    {
+        var p1 = Project([Pipe("a", Into("out", "append") + "select 1 as id")], sinks: [Sink()]);
+        var p2 = Project([Pipe("a", Into("out", "append", duplicates: "accept") + "select 1 as id")], sinks: [Sink()]);
+        var id1 = DagCompiler.Compile(p1, Ctx(p1)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        var id2 = DagCompiler.Compile(p2, Ctx(p2)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        Assert.NotEqual(id1, id2);
+    }
+
+    [Fact]
+    public void SinkWrite_node_id_changes_when_on_delete_changes()
+    {
+        var cdcSource = new ConnectionDef("crm", "postgres", new Dictionary<string, object?>(),
+            [new DatasetDef("orders", new Dictionary<string, object?>(), null, new SyncModeDef(SyncMode.Cdc, null))],
+            "connections.yml");
+        var p1 = Project(
+            [Pipe("a", Into("out", "merge", ["id"], onDelete: "ignore") + "select * from {{ source('crm', 'orders') }}")],
+            sources: [cdcSource], sinks: [Sink()]);
+        var p2 = Project(
+            [Pipe("a", Into("out", "merge", ["id"], onDelete: "delete") + "select * from {{ source('crm', 'orders') }}")],
+            sources: [cdcSource], sinks: [Sink()]);
+        var id1 = DagCompiler.Compile(p1, Ctx(p1)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        var id2 = DagCompiler.Compile(p2, Ctx(p2)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        Assert.NotEqual(id1, id2);
+    }
+
+    /// <summary>Retry policy governs how many attempts/backoff THIS run gives the write -- it does not
+    /// change what gets committed, so it deliberately stays OUT of the SinkWrite NodeId (unlike
+    /// keys/duplicates/on_delete above): a project that only tunes retry tuning must not stop `pz
+    /// retry` from matching a prior success.</summary>
+    [Fact]
+    public void SinkWrite_node_id_is_unaffected_by_retry_policy()
+    {
+        var p1 = Project(
+            [Pipe("a", "INSERT INTO {{ sink('lake', 'out', strategy: 'replace', format: 'parquet', " +
+                "retry: { max_attempts: 1 }) }}\nselect 1 as id")], sinks: [Sink()]);
+        var p2 = Project(
+            [Pipe("a", "INSERT INTO {{ sink('lake', 'out', strategy: 'replace', format: 'parquet', " +
+                "retry: { max_attempts: 9 }) }}\nselect 1 as id")], sinks: [Sink()]);
+        var id1 = DagCompiler.Compile(p1, Ctx(p1)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        var id2 = DagCompiler.Compile(p2, Ctx(p2)).Nodes.Single(n => n.Kind == NodeKind.SinkWrite).Id;
+        Assert.Equal(id1, id2);
+    }
+
     [Fact]
     public void Topological_order_respects_dependencies()
     {

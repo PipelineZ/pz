@@ -224,8 +224,28 @@ public static class WatermarkInference
 
             // There is no cross-pipeline cursor-disagreement check: PZ0349 refuses a source read by more
             // than one pipeline, so two pipelines cannot infer different cursor columns for one dataset.
-            // The fold below handles several comparisons within ONE pipeline, which stays reachable.
-            var cursor = items[0].Column;
+            // The fold below handles several comparisons within ONE pipeline, which stays reachable --
+            // total-or-error: several comparisons that all name the SAME column (a lower bound plus a
+            // recognized ceiling, PZ0351 territory) fold cleanly, but comparisons that name DIFFERENT
+            // columns against the same watermark(source, dataset) call have no single column to
+            // synthesize as the cursor, so that disagreement is refused rather than silently resolved by
+            // taking whichever comparison happened to sort first.
+            var distinctColumns = items.Select(i => i.Column).Distinct(StringComparer.Ordinal)
+                .OrderBy(c => c, StringComparer.Ordinal).ToList();
+            if (distinctColumns.Count > 1)
+            {
+                errors.Add(new PzError(PzErrorCode.WatermarkCursorDisagreement,
+                    $"source '{group.Key.Source}.{group.Key.Dataset}': watermark() comparisons in " +
+                    $"pipeline '{declaringPipelines}' name different cursor columns " +
+                    $"({string.Join(", ", distinctColumns)}) against the same watermark('{group.Key.Source}', " +
+                    $"'{group.Key.Dataset}') call",
+                    filePath, null,
+                    "use one cursor column for every watermark() comparison against this dataset, " +
+                    "or split the differing comparison into an ordinary WHERE filter with no watermark() call"));
+                continue;
+            }
+
+            var cursor = distinctColumns[0];
             string? cursorType = dataset?.Columns is { } columns && columns.TryGetValue(cursor, out var declaredType)
                 ? declaredType
                 : null;

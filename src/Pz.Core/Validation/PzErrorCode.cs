@@ -84,6 +84,16 @@ public static class PzErrorCode
     // by the MCP pz_write_pipeline tool so an agent-authored name cannot pass this check at authoring
     // time only to fail it at the next load.
     public const string InvalidIdentifierName = "PZ0136";
+    // A source()/sink() kwarg (or a YAML-declared read/write option) has a value CanonicalJson cannot
+    // hash into a node's content-addressed id -- e.g. a type with no obvious lossless JSON form.
+    // CanonicalJson itself supports every type a real kwarg can produce today (string/bool/number,
+    // including BigInteger/decimal/date, and nested lists/mappings); this is the backstop for
+    // whatever remains unsupported, so it fails as a coded, aggregated compile error naming the
+    // KWARG and the FILE -- never the value (secret hygiene) -- instead of an unhandled
+    // NotSupportedException crashing the compile. Its own code because PZ0104 (TemplateError) is
+    // already taken by the render-time catch, which this is not -- CanonicalJson.Serialize runs
+    // during DagCompiler's node-building, after rendering has already succeeded.
+    public const string UnsupportedOptionValue = "PZ0137";
     public const string UnresolvedRef = "PZ0201";
     public const string Cycle = "PZ0202";
     // PZ0203 (was SinkInputMissing: a YAML `input:` that matched no pipeline/source dataset) is
@@ -209,6 +219,16 @@ public static class PzErrorCode
     // each silently clobbering the other's result. Raised in DagCompiler stage 7, aggregated with the
     // dataset-vs-dataset staging collision (PZ0110) it sits beside.
     public const string PipelineNameCollidesWithStaging = "PZ0230";
+    // Two watermark() comparisons for the same (source, dataset) name DIFFERENT cursor columns --
+    // e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` -- so the fold
+    // has no single column to synthesize as the dataset's cursor. Total-or-error: refused rather than
+    // silently taking whichever comparison the SQL AST reader happened to return first. Comparisons that
+    // agree on the SAME column (a lower bound and a recognized ceiling, PZ0351) are unaffected.
+    public const string WatermarkCursorDisagreement = "PZ0231";
+    // A pipeline's rendered SQL embeds `run_id`/`run_started_at` -- both change every run, so the
+    // Pipeline NodeId (a hash of the rendered SQL text) changes every run too, defeating `pz retry`'s
+    // node-id match against a prior run's results. Non-blocking WARNING, once per pipeline.
+    public const string RunIdentityInRenderedSql = "PZ0232";
     public const string ConnectorConfigInvalid = "PZ0301";
     public const string ConnectorPackageMissing = "PZ0304";
     public const string ConnectorNotInstalled = "PZ0305";
@@ -709,9 +729,8 @@ public static class PzErrorCode
     public const string McpDocsResponseTooLarge = "PZ0610";
 
     /// <summary>Under `pz mcp init`, an existing client config file (`.vscode/mcp.json` and similar)
-    /// parses only tolerantly -- it legally carries comments/trailing commas (JSONC) -- which
-    /// <see cref="PzErrorCode.McpClientConfigInvalid"/> (PZ0605) used to reject outright as "not valid
-    /// JSON". Distinct from PZ0605: the file is recognized, not broken, but merging the pz entry in and
+    /// parses only tolerantly -- it legally carries comments/trailing commas (JSONC). Distinct from
+    /// <see cref="PzErrorCode.McpClientConfigInvalid"/> (PZ0605, broken JSON): the file is recognized, not broken, but merging the pz entry in and
     /// serializing back through <c>System.Text.Json</c> would silently delete every comment, so pz
     /// refuses to rewrite it and instead hands back the exact entry to paste in by hand.</summary>
     public const string McpClientConfigHasComments = "PZ0611";
