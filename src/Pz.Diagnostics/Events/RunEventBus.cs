@@ -14,6 +14,10 @@ namespace Pz.Diagnostics.Events;
 /// ordered relative to each other.</summary>
 public sealed class RunEventBus
 {
+    // Unbounded is a deliberate trade-off, not an oversight: a bounded channel would have to choose
+    // between blocking Publish (defeating "never blocks the engine") or dropping events (breaking the
+    // ordering/completeness guarantee below), so a permanently hung reader instead grows this queue's
+    // memory without bound rather than either of those.
     private readonly Channel<RunEvent> _channel = Channel.CreateUnbounded<RunEvent>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 

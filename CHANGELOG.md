@@ -53,6 +53,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   separate SBOM is not added here: every option needs tooling this repo does not already carry
   (a CycloneDX/SPDX generator step, or `dotnet list package` post-processing), which is out of scope
   for a minimal supply-chain pass.
+- **`Pz.Connectors.Abstractions` no longer references `Microsoft.Extensions.Logging.Abstractions`.**
+  The reference allowlist is Apache.Arrow only (now enforced by `AbiSurfaceTests`, matching this
+  repo's own architecture docs); nothing in Abstractions' own source used the logging package, and
+  every SDK-hosted connector already gets it transitively through `Pz.Connectors.Sdk`'s
+  `FrameworkReference` to `Microsoft.AspNetCore.App`.
+  *Migration:* a connector project that used `ILogger`/logging types via this transitive reference
+  without also referencing `Pz.Connectors.Sdk` (or another package that itself brings in
+  `Microsoft.Extensions.Logging.Abstractions`) must now add that `PackageReference` explicitly.
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
   `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
