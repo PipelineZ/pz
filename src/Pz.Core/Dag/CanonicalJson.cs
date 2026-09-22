@@ -43,6 +43,10 @@ public static class CanonicalJson
             case int i:
                 writer.WriteNumberValue(i);
                 break;
+            // NaN and the infinities have no JSON number form; refused like any other value without a
+            // canonical one, so the compiler reports it as a coded error.
+            case double d when !double.IsFinite(d):
+                throw new NotSupportedException("CanonicalJson cannot serialize a non-finite double.");
             case double d:
                 writer.WriteNumberValue(d);
                 break;

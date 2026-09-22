@@ -216,7 +216,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   rendering catches it, so it surfaced as a raw crash instead of a coded error. `CanonicalJson` now
   supports `BigInteger`, `decimal`, and `DateTime` losslessly (arbitrary-precision digits, the decimal
   value, and an ISO-8601 string, respectively); whatever value type still has no lossless canonical
-  form is refused as PZ0137, naming the option and the file, never the value.
+  form is refused as PZ0137, naming the option and the file, never the value. That includes a
+  non-finite number (`ratio: 1.0 / 0.0` evaluates to infinity, which JSON cannot represent), and the
+  tier-3 schema check accepts the decimal and big-integer values the compiler now hashes, so a kwarg
+  that compiles also validates.
 - **A write to a Rust-SDK sink could hang forever at commit.** A small write fits in the kernel's
   socket buffer, so the engine can finish the whole data stream and send `CommitWrite` before the
   connector process has accepted the data connection. The Rust SDK's `CommitWrite` revoked the

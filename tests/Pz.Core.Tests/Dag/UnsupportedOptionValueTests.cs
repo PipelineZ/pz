@@ -5,16 +5,11 @@ using static Pz.Core.Tests.TestProjects;
 
 namespace Pz.Core.Tests.Dag;
 
-/// <summary>#125: <see cref="CanonicalJson.Serialize"/> feeds every node's NodeId, and used to throw a
-/// raw, uncaught <see cref="NotSupportedException"/> for a kwarg value type it could not canonicalize --
-/// unlike a render-time failure (a <c>ScriptRuntimeException</c>), nothing downstream in
-/// <see cref="DagCompiler.Compile"/> caught it, so it crashed the compile instead of becoming a coded
-/// error. Two kinds of fact live here: (1) real source()/sink() kwarg values (a huge integer literal, a
-/// decimal literal) that used to crash and now compile clean, because <see cref="CanonicalJson"/> itself
-/// grew a lossless form for them; (2) the PZ0137 backstop for whatever remains unsupported, exercised
-/// with a hand-built option value (<see cref="Guid"/>) since nothing reachable through pz's sandboxed
-/// kwarg surface is unsupported any more -- the sandbox strips the `date`/`timespan`/every other
-/// Scriban builtin object that could otherwise manufacture one.</summary>
+/// <summary><see cref="CanonicalJson.Serialize"/> feeds every node's NodeId, and it runs during
+/// <see cref="DagCompiler.Compile"/>'s node building, after rendering -- where nothing catches a raw
+/// exception. Two kinds of fact live here: real source()/sink() kwarg values (a huge integer literal, a
+/// decimal literal) that must compile, and the PZ0137 refusal for a value that has no canonical form,
+/// named by option key and never by value.</summary>
 public class UnsupportedOptionValueTests
 {
     // -- Real kwargs that used to crash the compile (now supported outright) ---------------------
@@ -110,5 +105,20 @@ public class UnsupportedOptionValueTests
         Assert.Contains("lake.out", error.Message, StringComparison.Ordinal);
         Assert.Contains("driver_token", error.Message, StringComparison.Ordinal);
         Assert.DoesNotContain(badValue.ToString(), error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_non_finite_number_kwarg_is_PZ0137_not_a_crash()
+    {
+        // 1.0 / 0.0 is a legal Scriban expression and evaluates to double infinity, which has no JSON
+        // number form at all.
+        var p = Project(
+            [Pipe("stg", "select * from {{ source('crm', 'orders', ratio: 1.0 / 0.0) }}")],
+            sources: [Sink("crm")]);
+
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.UnsupportedOptionValue);
+        Assert.Contains("ratio", error.Message, StringComparison.Ordinal);
     }
 }
