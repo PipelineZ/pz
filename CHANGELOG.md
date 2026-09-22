@@ -7,12 +7,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
-### Changed
+## [0.7.0] - 2026-09-23
 
-- **The Rust SDK (`rust/pz-connector`) now builds on tonic 0.14 (prost codegen moved to the
-  `tonic-prost`/`tonic-prost-build` crates) and opentelemetry/opentelemetry_sdk/opentelemetry-otlp
-  0.32.** A Rust connector crate that pins its own older tonic or opentelemetry line alongside
-  `pz-connector` would get a second, duplicate copy of both in its `Cargo.lock`.
+### Breaking
+
 - **SinkWrite `NodeId` now includes `keys:`/`duplicates:`/`on_delete:`.** These change what a commit
   under that id MEANS (the merge match condition, at-least-once consent, delete routing), so a sink
   whose write semantics changed since a failed run no longer reuses/carries-forward the earlier
@@ -20,6 +18,107 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   governs how this run attempts the write, not what got committed.
   *Migration:* none required, but every `SinkWrite` node id changes once on upgrade — a `pz retry`
   issued against a run from before the upgrade re-runs its sinks instead of reusing them.
+- **`Pz.Connectors.Abstractions` no longer references `Microsoft.Extensions.Logging.Abstractions`.**
+  The reference allowlist is Apache.Arrow only (now enforced by `AbiSurfaceTests`, matching this
+  repo's own architecture docs); nothing in Abstractions' own source used the logging package, and
+  every SDK-hosted connector already gets it transitively through `Pz.Connectors.Sdk`'s
+  `FrameworkReference` to `Microsoft.AspNetCore.App`.
+  *Migration:* a connector project that used `ILogger`/logging types via this transitive reference
+  without also referencing `Pz.Connectors.Sdk` (or another package that itself brings in
+  `Microsoft.Extensions.Logging.Abstractions`) must now add that `PackageReference` explicitly.
+- **Quoted YAML scalars are strings.** The loader typed every scalar by its
+  text and ignored the quotes, so `password: "0123456"` reached the connector as
+  `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
+  became a boolean — undoing the quoting `pz mcp`'s authoring tools add around
+  number-like strings. Only plain (unquoted) scalars are typed now; quoted and
+  block (`|`, `>`) scalars stay text.
+  *Migration:* a value that must be a number or a boolean must not be quoted in
+  pz's own keys — `threads: "4"` is now refused with PZ0120 where it used to be
+  read as `4`. Connector options are unaffected where the connector reads them
+  through `ConnectorConfig.GetInt`/`GetBool`, which still accept `port: "5432"`.
+- **Unknown `write:`/`sink()` options on a builtin sink are refused.** They used to reach the
+  connector unchecked and were silently ignored; every builtin sink now publishes a schema for its
+  own write options and `pz validate` (tier 3) reports an option it does not read as PZ0301, with
+  the accepted options and a near-miss suggestion.
+  *Migration:* remove or correct the option the error names -- it never had an effect. Options the
+  engine owns (`strategy`, `keys`, `duplicates`, `on_delete`, `schema_policy`, `retry`) and
+  `partition_by` are unaffected, and so is any connector that publishes no such schema.
+- `pz restore` now honours an existing `pz.lock.json` instead of re-resolving and
+  overwriting it: every locked package is restored at exactly its locked version
+  and must hash to its locked `sha512`, so a version range in `project.yml` no
+  longer floats between restores and a package republished under the same
+  version is refused (PZ0327) rather than silently accepted. A requirement the
+  lock no longer satisfies — a bumped version, a connector added or removed — is
+  PZ0321, and a malformed or older-schema lock is no longer regenerated
+  silently. The new `pz restore --update` is the one way to re-resolve against
+  the feeds and write a new lock. **Migration:** where a script relied on
+  `pz restore` picking up a changed `project.yml` or a newer version within a
+  range, run `pz restore --update` there instead.
+- **A relative `path:`/entity-derived location that escapes a connection's `root:` is now refused
+  (PZ0365)** instead of silently reading or writing outside it. Only a DECLARED `root:` is a boundary:
+  a `localfiles` connection without one resolves relative paths against the project directory exactly
+  as before, so a data folder beside the project (`path: ../shared/x.csv`) keeps working.
+  *Migration:* a connection that declares `root:` and reaches outside it with `..` — give that
+  `path:` as an absolute path, or move `root:` up to a directory that contains both. `localfiles` checks this with real
+  filesystem containment (`Path.GetFullPath`, so a `..` segment lands where it actually lands,
+  compared against the root with a trailing separator to avoid mistaking a same-prefix sibling
+  directory for "inside"); an absolute `path:` is unaffected, unchanged from before. `s3` and `gcs`
+  refuse a `..` segment in a `path:` option the same way, since their keys are opaque
+  slash-delimited strings with no real filesystem resolution to check containment against, and `..`
+  can never be a legitimate authored key component anyway (pz's entity-name grammar already forbids
+  one everywhere else). `azureblob` is unaffected: it has no connection-level `root:` for a `path:`
+  to escape -- container and path are both always author-declared directly on the dataset/output.
+- An unquoted `${VAR}` is now typed by the value it resolves to, when that loses
+  nothing: `port: ${PGPORT}` with `PGPORT=5432` is the integer `5432` instead
+  of the string `"5432"` that failed tier-3 validation with "expected integer",
+  and `${FLAG}` = `true` is a boolean. Substituted text that would not read
+  back the same stays a string — `0123456`, `1.10`, `1e5` — because a bare
+  `${VAR}` is a password or an account id as often as a port. A quoted
+  reference (`port: "${PGPORT}"`) always stays a string. Applies to
+  `connections.yml` connection config, `project.yml`'s `vars:` block, and
+  `pz connector test --config`. A literal `${` that must NOT be read as a
+  reference is now written `$${` (e.g. `$${NAME}` produces the literal text
+  `${NAME}`).
+  *Migration:* a text option fed by an unquoted `${VAR}` whose value is all
+  digits (or `true`/`false`) is now a number (or boolean) and fails validation
+  with "the value was read as a number, but this option is text" — quote the
+  reference (`password: "${PGPASSWORD}"`). The value is never echoed.
+- A pipeline's file stem and a connection's name are validated at load time
+  as legal unquoted identifiers (`[A-Za-z_][A-Za-z0-9_]*`) instead of being
+  interpolated raw into `staging.<name>`/`src_<connection>__<entity>` and
+  left to fail as a raw DuckDB parse error: `01_load.sql`, `daily-orders.sql`
+  and a connection named `my-warehouse` are now PZ0136 at load, each naming
+  the file, the offending name, and a concrete rename (`01_load` ->
+  `load_01`, `daily-orders` -> `daily_orders`). A connection name containing
+  `__` is refused for the same reason (PZ0136): it is the literal separator
+  `src_<connection>__<entity>` splices in, so e.g. `erp__mart` could collide
+  with connection `erp` reading a `mart__<entity>` dataset. Two duplicate
+  checks are now case-insensitive, matching DuckDB's own unquoted-identifier
+  folding: two pipeline files (PZ0110) or two datasets of one connection
+  (PZ0110) differing only by case now collide at compile time instead of
+  silently sharing one staging relation on Linux (where both files coexist on
+  disk). The dataset check also spans connections now: `ERP.orders` and
+  `erp.orders`, or `a._b` and `a_.b`, stage to one relation and are PZ0110
+  naming both. A pipeline named exactly like a referenced SourceLoad's staging
+  relation (`src_<connection>__<entity>`) is the new PZ0230: both would
+  target the same `staging.<name>` table. The MCP `pz_write_pipeline`/
+  `pz_remove_pipeline` tools enforce the identical rule before ever writing a
+  file, off the same shared predicate (`Pz.Core.Model.PzIdentifier`), so an
+  agent-authored name cannot pass authoring only to fail at the next load.
+  DuckDB's reserved words themselves are unaffected -- `staging.order` parses
+  fine schema-qualified, so nothing here refuses on reservedness, only shape.
+  **Migration:** a project with a pipeline file or connection name outside
+  `[A-Za-z_][A-Za-z0-9_]*`, a connection name containing `__`, or file/dataset
+  names that were previously distinguishable only by letter case must rename
+  the offending file/connection/dataset; every template and sample under
+  `templates/`/`samples/` already conforms and needs no change.
+
+### Changed
+
+- **The Rust SDK (`rust/pz-connector`) now builds on tonic 0.14 (prost codegen moved to the
+  `tonic-prost`/`tonic-prost-build` crates) and opentelemetry/opentelemetry_sdk/opentelemetry-otlp
+  0.32.** A Rust connector crate that pins its own older tonic or opentelemetry line alongside
+  `pz-connector` would get a second, duplicate copy of both in its `Cargo.lock`.
 - `IcebergAzureRestTests`' `finally` block no longer lets a failed cleanup `drop table` replace a
   pending assertion failure from the test body — a cleanup exception thrown from `finally` supersedes
   whatever is already propagating, so a real Azure REST catalog failure would have surfaced as an
@@ -57,44 +156,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   separate SBOM is not added here: every option needs tooling this repo does not already carry
   (a CycloneDX/SPDX generator step, or `dotnet list package` post-processing), which is out of scope
   for a minimal supply-chain pass.
-- **`Pz.Connectors.Abstractions` no longer references `Microsoft.Extensions.Logging.Abstractions`.**
-  The reference allowlist is Apache.Arrow only (now enforced by `AbiSurfaceTests`, matching this
-  repo's own architecture docs); nothing in Abstractions' own source used the logging package, and
-  every SDK-hosted connector already gets it transitively through `Pz.Connectors.Sdk`'s
-  `FrameworkReference` to `Microsoft.AspNetCore.App`.
-  *Migration:* a connector project that used `ILogger`/logging types via this transitive reference
-  without also referencing `Pz.Connectors.Sdk` (or another package that itself brings in
-  `Microsoft.Extensions.Logging.Abstractions`) must now add that `PackageReference` explicitly.
-- **Quoted YAML scalars are strings.** The loader typed every scalar by its
-  text and ignored the quotes, so `password: "0123456"` reached the connector as
-  `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
-  became a boolean — undoing the quoting `pz mcp`'s authoring tools add around
-  number-like strings. Only plain (unquoted) scalars are typed now; quoted and
-  block (`|`, `>`) scalars stay text.
-  *Migration:* a value that must be a number or a boolean must not be quoted in
-  pz's own keys — `threads: "4"` is now refused with PZ0120 where it used to be
-  read as `4`. Connector options are unaffected where the connector reads them
-  through `ConnectorConfig.GetInt`/`GetBool`, which still accept `port: "5432"`.
-- **Unknown `write:`/`sink()` options on a builtin sink are refused.** They used to reach the
-  connector unchecked and were silently ignored; every builtin sink now publishes a schema for its
-  own write options and `pz validate` (tier 3) reports an option it does not read as PZ0301, with
-  the accepted options and a near-miss suggestion.
-  *Migration:* remove or correct the option the error names -- it never had an effect. Options the
-  engine owns (`strategy`, `keys`, `duplicates`, `on_delete`, `schema_policy`, `retry`) and
-  `partition_by` are unaffected, and so is any connector that publishes no such schema.
 - An unquoted decimal connector version (`version: 1.10`) is refused: YAML reads
   it as the number 1.1, a different package. Quote it.
-- `pz restore` now honours an existing `pz.lock.json` instead of re-resolving and
-  overwriting it: every locked package is restored at exactly its locked version
-  and must hash to its locked `sha512`, so a version range in `project.yml` no
-  longer floats between restores and a package republished under the same
-  version is refused (PZ0327) rather than silently accepted. A requirement the
-  lock no longer satisfies — a bumped version, a connector added or removed — is
-  PZ0321, and a malformed or older-schema lock is no longer regenerated
-  silently. The new `pz restore --update` is the one way to re-resolve against
-  the feeds and write a new lock. **Migration:** where a script relied on
-  `pz restore` picking up a changed `project.yml` or a newer version within a
-  range, run `pz restore --update` there instead.
 - The lock records a `sha512` for every installed file (the connector's
   entrypoint binary above all), and `pz run`/`plan`/`validate`/`connectors`
   verify the installed files against it before anything is spawned: a modified,
@@ -105,20 +168,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - The lock's `rid` is compared with the host's: a `.pz/packages` restored on
   one platform and run on another is PZ0321 naming both, instead of the
   "Exec format error" spawn failure it used to reach.
-- **A relative `path:`/entity-derived location that escapes a connection's `root:` is now refused
-  (PZ0365)** instead of silently reading or writing outside it. Only a DECLARED `root:` is a boundary:
-  a `localfiles` connection without one resolves relative paths against the project directory exactly
-  as before, so a data folder beside the project (`path: ../shared/x.csv`) keeps working.
-  *Migration:* a connection that declares `root:` and reaches outside it with `..` — give that
-  `path:` as an absolute path, or move `root:` up to a directory that contains both. `localfiles` checks this with real
-  filesystem containment (`Path.GetFullPath`, so a `..` segment lands where it actually lands,
-  compared against the root with a trailing separator to avoid mistaking a same-prefix sibling
-  directory for "inside"); an absolute `path:` is unaffected, unchanged from before. `s3` and `gcs`
-  refuse a `..` segment in a `path:` option the same way, since their keys are opaque
-  slash-delimited strings with no real filesystem resolution to check containment against, and `..`
-  can never be a legitimate authored key component anyway (pz's entity-name grammar already forbids
-  one everywhere else). `azureblob` is unaffected: it has no connection-level `root:` for a `path:`
-  to escape -- container and path are both always author-declared directly on the dataset/output.
 - **The iceberg connector accepts an optional `storage_scope:` connection option**, which becomes
   the `SCOPE` of the storage secret it creates. Without it, a catalog connection's storage secret
   (S3 keys, the AWS credential chain, or an Azure auth method) is unscoped, since a catalog's data
@@ -425,7 +474,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   Every value's sub-millisecond component (down to DuckDB's own microsecond resolution) was
   dropped on write with no error. Fixed by requesting `DateTimeFormat.DateAndTimeMicros` instead.
   The native COPY path (DuckDB's own `COPY ... TO parquet`) was never affected.
-
 - **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
   - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
     all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.
@@ -558,7 +606,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - Cancelling a run now interrupts a statement already running inside DuckDB.
   Ctrl-C (and the new node timeout) used to wait for the statement to finish on
   its own, however long that took.
-
 - A transient failure an out-of-process connector raises mid-stream (a rate
   limit thrown from a partition's read after its first batch, or from a sink's
   write) now reaches the engine with its transience and retry-after intact and
@@ -746,21 +793,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   true/false in lower case, unquoted" (or, for `null`/`~`, "leave the option
   out") instead of the JSON Schema library's raw
   `Value is "string" but should be "boolean"`.
-- An unquoted `${VAR}` is now typed by the value it resolves to, when that loses
-  nothing: `port: ${PGPORT}` with `PGPORT=5432` is the integer `5432` instead
-  of the string `"5432"` that failed tier-3 validation with "expected integer",
-  and `${FLAG}` = `true` is a boolean. Substituted text that would not read
-  back the same stays a string — `0123456`, `1.10`, `1e5` — because a bare
-  `${VAR}` is a password or an account id as often as a port. A quoted
-  reference (`port: "${PGPORT}"`) always stays a string. Applies to
-  `connections.yml` connection config, `project.yml`'s `vars:` block, and
-  `pz connector test --config`. A literal `${` that must NOT be read as a
-  reference is now written `$${` (e.g. `$${NAME}` produces the literal text
-  `${NAME}`).
-  *Migration:* a text option fed by an unquoted `${VAR}` whose value is all
-  digits (or `true`/`false`) is now a number (or boolean) and fails validation
-  with "the value was read as a number, but this option is text" — quote the
-  reference (`password: "${PGPASSWORD}"`). The value is never echoed.
 - `${VAR}` inside an `entities: <e>: read:/write:` block in `connections.yml`
   was always silently left as literal, un-substituted text (unlike the
   connection's own top-level config, where it IS interpolated) — it now
@@ -832,35 +864,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   version 3 adds a PRIMARY KEY to `schema_version`, first reducing it to one
   row (the race left two rows at the same version); migrates automatically,
   same as version 2.
-- A pipeline's file stem and a connection's name are validated at load time
-  as legal unquoted identifiers (`[A-Za-z_][A-Za-z0-9_]*`) instead of being
-  interpolated raw into `staging.<name>`/`src_<connection>__<entity>` and
-  left to fail as a raw DuckDB parse error: `01_load.sql`, `daily-orders.sql`
-  and a connection named `my-warehouse` are now PZ0136 at load, each naming
-  the file, the offending name, and a concrete rename (`01_load` ->
-  `load_01`, `daily-orders` -> `daily_orders`). A connection name containing
-  `__` is refused for the same reason (PZ0136): it is the literal separator
-  `src_<connection>__<entity>` splices in, so e.g. `erp__mart` could collide
-  with connection `erp` reading a `mart__<entity>` dataset. Two duplicate
-  checks are now case-insensitive, matching DuckDB's own unquoted-identifier
-  folding: two pipeline files (PZ0110) or two datasets of one connection
-  (PZ0110) differing only by case now collide at compile time instead of
-  silently sharing one staging relation on Linux (where both files coexist on
-  disk). The dataset check also spans connections now: `ERP.orders` and
-  `erp.orders`, or `a._b` and `a_.b`, stage to one relation and are PZ0110
-  naming both. A pipeline named exactly like a referenced SourceLoad's staging
-  relation (`src_<connection>__<entity>`) is the new PZ0230: both would
-  target the same `staging.<name>` table. The MCP `pz_write_pipeline`/
-  `pz_remove_pipeline` tools enforce the identical rule before ever writing a
-  file, off the same shared predicate (`Pz.Core.Model.PzIdentifier`), so an
-  agent-authored name cannot pass authoring only to fail at the next load.
-  DuckDB's reserved words themselves are unaffected -- `staging.order` parses
-  fine schema-qualified, so nothing here refuses on reservedness, only shape.
-  **Migration:** a project with a pipeline file or connection name outside
-  `[A-Za-z_][A-Za-z0-9_]*`, a connection name containing `__`, or file/dataset
-  names that were previously distinguishable only by letter case must rename
-  the offending file/connection/dataset; every template and sample under
-  `templates/`/`samples/` already conforms and needs no change.
 - Template/compile errors now carry a next step instead of `next_step: null`
   on the MCP surface (or a bare code on the CLI): a `source()`/`sink()` call
   split across more than one line -- documented as a single-line-only call,
