@@ -14,7 +14,7 @@ public sealed record StubResponse(int Status, string Body, IReadOnlyDictionary<s
 /// that needs an unserved request asserts on <see cref="Requests"/>, never on listener state.</summary>
 public sealed class StubHttpServer : IAsyncDisposable
 {
-    private readonly HttpListener _listener = new();
+    private readonly HttpListener _listener;
     private readonly ConcurrentDictionary<string, Func<StubRequest, StubResponse>> _routes = new();
     private readonly List<(string Prefix, Func<StubRequest, StubResponse> Handler)> _prefixRoutes = [];
     private readonly List<StubRequest> _requests = [];
@@ -32,11 +32,34 @@ public sealed class StubHttpServer : IAsyncDisposable
     public Exception? HandlerError => _handlerError;
 
     public StubHttpServer()
+        : this(FreePort)
     {
-        var port = FreePort();
-        BaseUrl = new Uri($"http://127.0.0.1:{port}/");
-        _listener.Prefixes.Add(BaseUrl.ToString());
-        _listener.Start();
+    }
+
+    /// <summary>A probed free port can be taken by a parallel test or another process before the
+    /// listener binds it, so a failed bind moves on to a freshly probed port. A listener whose Start
+    /// failed is not reusable; each attempt gets a new one.</summary>
+    internal StubHttpServer(Func<int> nextPort)
+    {
+        const int attempts = 10;
+        for (var attempt = 1; ; attempt++)
+        {
+            var url = new Uri($"http://127.0.0.1:{nextPort()}/");
+            var listener = new HttpListener();
+            listener.Prefixes.Add(url.ToString());
+            try
+            {
+                listener.Start();
+                BaseUrl = url;
+                _listener = listener;
+                break;
+            }
+            catch (HttpListenerException) when (attempt < attempts)
+            {
+                listener.Close();
+            }
+        }
+
         _loop = Task.Run(ServeAsync);
     }
 

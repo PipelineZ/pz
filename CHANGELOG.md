@@ -287,6 +287,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **`Pz.Connectors.TestKit`'s `StubHttpServer` could fail to start under parallel tests.** It probed
+  a free port and then bound it, and anything else could take the port in between ("Address already
+  in use"). A failed bind now moves on to a freshly probed port, up to ten times.
 - **A pipeline that renders `run_id`/`run_started_at` into its SQL now gets a compile-time warning
   (PZ0232),** once per pipeline. Both constants change every run, so embedding either one in rendered
   SQL changes that Pipeline's NodeId every run too, and `pz retry` (which matches nodes by id against
