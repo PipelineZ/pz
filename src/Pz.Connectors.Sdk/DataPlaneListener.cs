@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.Net.Sockets;
 using Apache.Arrow;
 using Apache.Arrow.Ipc;
+using Apache.Arrow.Memory;
 using Pz.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Memory;
 using Pz.Connectors.Protocol;
 
 namespace Pz.Connectors.Sdk;
@@ -220,15 +222,18 @@ internal sealed class DataPlaneListener : IAsyncDisposable
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             _stopping.Token, write.Session.Cancellation.Token);
-        await ServeWriteAsync(stream, write, _source, linked.Token).ConfigureAwait(false);
+        await ServeWriteAsync(stream, write, _source, PooledNativeAllocator.Shared, linked.Token).ConfigureAwait(false);
     }
 
-    /// <summary>Reads batches off the wire into <see cref="WriteTicket.Session"/> until end-of-stream,
-    /// then releases the session's <see cref="WriteSessionState.Drained"/> gate that CommitWrite
-    /// awaits. Split out from the instance overload (mirroring <see cref="ServeReadAsync(Stream,
-    /// ReadTicket,ActivitySource,CancellationToken)"/>) so a test can drive the pump directly, against
-    /// an in-memory stream, without a live socket.</summary>
-    internal static async Task ServeWriteAsync(Stream stream, WriteTicket write, ActivitySource source, CancellationToken ct)
+    /// <summary>Reads batches off the wire into <paramref name="write"/>'s session until end-of-stream.
+    /// Static and allocator-injectable so a test can drive it directly against a fresh
+    /// <see cref="PooledNativeAllocator"/> and observe rent/return counts exactly, the way
+    /// <see cref="ServeReadAsync(Stream,ReadTicket,ActivitySource,CancellationToken)"/> already does for
+    /// the read side; production always passes <see cref="PooledNativeAllocator.Shared"/> (see the
+    /// instance overload above) so a batch built here lands in the same off-heap pool the host's own
+    /// read path uses -- an unpooled reader would put every incoming batch on the managed LOH.</summary>
+    internal static async Task ServeWriteAsync(
+        Stream stream, WriteTicket write, ActivitySource source, MemoryAllocator allocator, CancellationToken ct)
     {
         using var activity = source.StartActivity("pcp.write_stream", ActivityKind.Server, write.Parent);
         var state = write.Session;
@@ -244,11 +249,14 @@ internal sealed class DataPlaneListener : IAsyncDisposable
 
         try
         {
-            using var reader = new ArrowStreamReader(stream, leaveOpen: true);
+            using var reader = new ArrowStreamReader(stream, allocator, leaveOpen: true);
             while (await reader.ReadNextRecordBatchAsync(ct).ConfigureAwait(false) is { } batch)
             {
                 // Batches read off the wire are ours; ISinkWriteSession must not retain them past the
-                // call, exactly as in-proc.
+                // call, exactly as in-proc. Disposing here -- unconditionally, on every exit including a
+                // throw from WriteBatchAsync -- is what returns the batch's pooled native buffers to
+                // the allocator's free list the moment the sink is done with them, rather than leaking
+                // them to the managed GC or holding them open across the next batch's read.
                 using (batch)
                 {
                     await state.Session.WriteBatchAsync(batch, ct).ConfigureAwait(false);

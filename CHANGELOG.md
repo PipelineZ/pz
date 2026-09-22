@@ -288,6 +288,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   non-finite number (`ratio: 1.0 / 0.0` evaluates to infinity, which JSON cannot represent), and the
   tier-3 schema check accepts the decimal and big-integer values the compiler now hashes, so a kwarg
   that compiles also validates.
+- **The C# connector SDK's write-path data plane allocated every incoming batch on the managed
+  heap.** `DataPlaneListener`'s `ArrowStreamReader` was constructed with no allocator, unlike the
+  host's own read path (`PooledNativeAllocator.Shared`) -- a large enough batch landed on the LOH
+  instead of the off-heap native pool the rest of the write path assumes. Batches now come from the
+  same pool; ownership is unchanged (a batch is disposed exactly once, immediately after
+  `WriteBatchAsync` returns, on every exit including a throw).
 - **A write to a Rust-SDK sink could hang forever at commit.** A small write fits in the kernel's
   socket buffer, so the engine can finish the whole data stream and send `CommitWrite` before the
   connector process has accepted the data connection. The Rust SDK's `CommitWrite` revoked the
