@@ -233,7 +233,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   silently truncated by SQL Server — no warning, no error — so a state key or watermark longer than
   the column allows would be stored (and later looked up) truncated instead of failing loudly. Every
   such parameter is now length-checked client-side and refused with PZ0536, naming the field kind and
-  the limit, never the value.
+  the limit, never the value. A run-artifact field over its limit costs that run's resume/retry
+  record (the run itself goes on, with the existing "could not write" warning); the hint names the
+  way out — rename what the author controls, or `state.artifacts: false` to keep run artifacts local
+  while watermarks and events stay on SQL Server.
 - `RunResultsWriter` (`run_results.json`) and `KeyedJsonStateStore` (`.pz/state/*.json`) each hand-rolled
   their own write-aside-and-rename instead of using `Pz.Core.Artifacts.AtomicFile`, the shared helper
   `PlanWriter`/`SchemaCacheWriter`/`ManifestWriter` already published to. Both now route through it, so

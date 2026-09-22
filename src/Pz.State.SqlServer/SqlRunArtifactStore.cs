@@ -96,15 +96,15 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         // input value into the matching sp_executesql declared length silently (no truncation warning,
         // no error), so a value past that length would be stored -- and later read back -- truncated
         // instead of failing loudly.
-        CheckLength("project name", projectName, MaxProjectNameLength);
+        CheckLength("project name", projectName, MaxProjectNameLength, authored: true);
         foreach (var node in completed)
         {
-            CheckLength("node name", node.Name, MaxNodeNameLength);
+            CheckLength("node name", node.Name, MaxNodeNameLength, authored: true);
             if (node.WatermarkCandidate is { } candidate)
             {
-                CheckLength("watermark cursor", candidate.Cursor, MaxWatermarkCursorLength);
-                CheckLength("watermark type", candidate.TypeName, MaxWatermarkTypeLength);
-                CheckLength("watermark value", candidate.Value, MaxWatermarkValueLength);
+                CheckLength("watermark cursor", candidate.Cursor, MaxWatermarkCursorLength, authored: true);
+                CheckLength("watermark type", candidate.TypeName, MaxWatermarkTypeLength, authored: false);
+                CheckLength("watermark value", candidate.Value, MaxWatermarkValueLength, authored: false);
             }
         }
 
@@ -669,15 +669,20 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// be stored (and later read back) truncated instead of failing loudly. Checked client-side, before
     /// the value ever reaches a command. Never echoes <paramref name="value"/> itself into the message
     /// (it may be a cursor/watermark value carrying data), only its length.</summary>
-    private static void CheckLength(string kind, string value, int max)
+    private static void CheckLength(string kind, string value, int max, bool authored)
     {
         if (value.Length > max)
         {
+            // A value the source produced (a watermark's type or value) is nothing the author can
+            // shorten; keeping run artifacts on the local store is the way out, and watermarks and
+            // events can stay on SQL Server meanwhile.
+            const string keepLocal = "set `state.artifacts: false` in project.yml to keep run artifacts " +
+                "(the resume/retry record) on the local store";
             throw new PzConfigException(new PzError(PzErrorCode.SqlStateValueTooLong,
                 $"{kind} is {value.Length} characters, which exceeds the {max}-character limit the SQL " +
-                "Server state backend allows for this field.",
+                "Server state backend allows for this field, so this run's resume/retry record was not stored.",
                 "project.yml", null,
-                $"shorten the {kind}, or use a state backend without this limit"));
+                authored ? $"rename the {kind} to at most {max} characters, or {keepLocal}" : keepLocal));
         }
     }
 

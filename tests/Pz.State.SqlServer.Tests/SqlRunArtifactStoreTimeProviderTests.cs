@@ -134,6 +134,10 @@ public sealed class SqlRunArtifactStoreTimeProviderTests(SqlServerFixture fixtur
             store.WriteSnapshot("r1", "2026-03-14T00:00:00.000Z", [node], "running"));
 
         Assert.Equal(PzErrorCode.SqlStateValueTooLong, ex.Error.Code);
+        // A watermark value is data the source produced, not something the author can shorten: the
+        // way out is keeping run artifacts off this backend.
+        Assert.Contains("state.artifacts: false", ex.Error.Hint, StringComparison.Ordinal);
+        Assert.DoesNotContain("shorten", ex.Error.Hint, StringComparison.Ordinal);
     }
 
     [Fact]
