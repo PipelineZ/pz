@@ -72,6 +72,70 @@ EOF
   echo "ok: PublishAot=${aot} PublishSingleFile=${single}"
 }
 
+# PZSDK001/PZSDK002/PZSDK003/PZSDK004 are the targets' own guardrails (Pz.Connectors.Sdk.targets):
+# no staged binary at all, a wanted RID never published, the packing machine's own RID missing from
+# what WAS staged, and PzPackaging set to neither "aot" nor "self-contained". None of the four needs
+# an actual Native AOT compile -- PzGenerateManifest only runs the staged binary (`--pz-manifest`)
+# after every one of these checks has already passed, so a placeholder file staged under the right
+# name and RID is enough. Kept independent of RID and packaging mode, and run before either
+# verify_mode so a regression here is caught even where the AOT toolchain itself is unavailable.
+verify_error_codes() {
+  echo
+  echo "== PZSDK001-004 =="
+  local out
+
+  echo "-- dotnet build with an invalid PzPackaging: must fail with PZSDK004 --"
+  if out="$(dotnet build "${FIXTURE}" -c Release -p:PzPackaging=bogus --nologo -v quiet 2>&1)"; then
+    echo "FAIL: build with an invalid PzPackaging succeeded"; exit 1
+  fi
+  grep -q "PZSDK004" <<<"${out}" || { echo "FAIL: build failed for another reason"; echo "${out}"; exit 1; }
+  echo "ok: PZSDK004"
+
+  echo "-- dotnet pack with nothing staged: must fail with PZSDK001 --"
+  local empty_stage="${WORK_DIR}/pzsdk-empty-stage/"
+  mkdir -p "${empty_stage}"
+  if out="$(dotnet pack "${FIXTURE}" -c Release -p:PzNativeStaging="${empty_stage}" -p:IsPackable=true \
+      -p:MinVerVersionOverride="${PKG_VERSION}" -o "${WORK_DIR}/pzsdk-empty-feed" --nologo -v quiet 2>&1)"; then
+    echo "FAIL: pack with nothing staged succeeded"; exit 1
+  fi
+  grep -q "PZSDK001" <<<"${out}" || { echo "FAIL: pack failed for another reason"; echo "${out}"; exit 1; }
+  echo "ok: PZSDK001"
+
+  echo "-- dotnet pack with a staged RID that is not the packing machine's own: must fail with PZSDK003 --"
+  local wrong_stage="${WORK_DIR}/pzsdk-wrong-stage/" other_rid="not-${RID}"
+  mkdir -p "${wrong_stage}${other_rid}"
+  : > "${wrong_stage}${other_rid}/PcpFakeConnector"
+  chmod +x "${wrong_stage}${other_rid}/PcpFakeConnector"
+  if out="$(dotnet pack "${FIXTURE}" -c Release -p:PzNativeStaging="${wrong_stage}" -p:PzRuntimeIdentifiers="${other_rid}" \
+      -p:IsPackable=true -p:MinVerVersionOverride="${PKG_VERSION}" -o "${WORK_DIR}/pzsdk-wrong-feed" --nologo -v quiet 2>&1)"; then
+    echo "FAIL: pack with no host-RID staged binary succeeded"; exit 1
+  fi
+  grep -q "PZSDK003" <<<"${out}" || { echo "FAIL: pack failed for another reason"; echo "${out}"; exit 1; }
+  echo "ok: PZSDK003"
+
+  echo "-- dotnet pack wanting an extra, unstaged RID: PZSDK002 --"
+  # PZSDK002 is a Warning, not an Error, and this repo's <TreatWarningsAsErrors> (read only by the C#
+  # compiler task) does not promote it -- pack succeeds, with the warning as the only sign anything is
+  # missing. PzGenerateManifest's Exec actually RUNS the staged host binary to produce the manifest
+  # (a placeholder file, unlike the three checks above, would fail pack for an unrelated reason: no
+  # manifest, NU5019), so this needs one real publish -- self-contained, not aot, so it costs nothing
+  # extra where the Native AOT toolchain is unavailable.
+  local host_stage="${WORK_DIR}/pzsdk-host-stage/" missing_rid="not-${RID}"
+  dotnet publish "${FIXTURE}" -c Release -r "${RID}" -p:PzPackaging=self-contained -p:PzNativeStaging="${host_stage}" \
+    --nologo -v quiet
+  # A single, definitely-unstaged RID: PzRuntimeIdentifiers only drives which RIDs the warning wants,
+  # never which ones get packed (that reads the staged directories themselves), so it need not be real.
+  # A list of more than one RID here would need its separating ';' escaped as %3B to survive MSBuild's
+  # own command-line parsing AND then be re-split on assignment to an item list -- not worth the two
+  # layers of escaping when one missing RID already exercises the warning.
+  out="$(dotnet pack "${FIXTURE}" -c Release -p:PzPackaging=self-contained -p:PzNativeStaging="${host_stage}" \
+    -p:PzRuntimeIdentifiers="${missing_rid}" -p:IsPackable=true -p:MinVerVersionOverride="${PKG_VERSION}" \
+    -o "${WORK_DIR}/pzsdk-host-feed" --nologo -v quiet 2>&1)" || { echo "FAIL: pack failed"; echo "${out}"; exit 1; }
+  grep -q "warning PZSDK002" <<<"${out}" && grep -q "${missing_rid}" <<<"${out}" \
+    || { echo "FAIL: no PZSDK002 warning naming the missing RID"; echo "${out}"; exit 1; }
+  echo "ok: PZSDK002"
+}
+
 verify_mode() {
   local mode="$1"
   local mode_dir="${WORK_DIR}/${mode}"
@@ -114,6 +178,7 @@ verify_mode() {
   nuspec="$(unzip -p "${nupkg}" "${PKG_ID}.nuspec")"
   [[ -n "${nuspec}" ]] || { echo "FAIL: could not read ${PKG_ID}.nuspec out of the nupkg"; exit 1; }
   ! grep -q '<dependency ' <<<"${nuspec}" || { echo "FAIL: nuspec declares dependencies"; echo "${nuspec}"; exit 1; }
+  grep -q '<tags>[^<]*pipelinez-connector[^<]*</tags>' <<<"${nuspec}" || { echo "FAIL: nuspec missing the pipelinez-connector discovery tag"; echo "${nuspec}"; exit 1; }
   local manifest
   manifest="$(unzip -p "${nupkg}" pz.connector.json)"
   grep -q '"runtime": "process"' <<<"${manifest}" || { echo "FAIL: manifest runtime"; echo "${manifest}"; exit 1; }
@@ -362,6 +427,7 @@ EOF
 }
 
 verify_project_level_packaging
+verify_error_codes
 verify_mode aot
 verify_mode self-contained
 verify_consumer_through_package

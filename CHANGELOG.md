@@ -32,7 +32,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   connector's source/sink at most once per process and reuses it across ops -- the "connector process
   spawned once per open" contract, not previously exercised for a SECOND op sharing the first one's
   already-open connector.
-
+- **Test coverage: `scripts/verify-sdk-package.sh` now asserts PZSDK001-004**, not only PZSDK005 --
+  no staged binary at all, a wanted RID never published, the packing machine's own RID missing from
+  what was staged, and an invalid `PzPackaging` -- plus the `pipelinez-connector` nuspec discovery
+  tag every packed connector must carry. None of the four new checks needs a Native AOT compile
+  (`PzGenerateManifest` only runs the staged binary after they have all already passed), so they run
+  even where the AOT toolchain itself is unavailable.
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
   `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
