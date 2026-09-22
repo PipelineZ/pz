@@ -86,7 +86,17 @@ public sealed class IcebergAzureRestTests : IDisposable
         }
         finally
         {
-            await duck.ExecuteAsync($"drop table {IcebergSql.Alias("wh")}.\"{ns}\".\"{table}\"");
+            // A failed drop must never replace a pending assertion failure from the try block above
+            // (an exception thrown from `finally` supersedes one already propagating) — report it
+            // instead, the way the rest of this suite treats best-effort cleanup.
+            try
+            {
+                await duck.ExecuteAsync($"drop table {IcebergSql.Alias("wh")}.\"{ns}\".\"{table}\"");
+            }
+            catch (Exception cleanupEx)
+            {
+                await Console.Error.WriteLineAsync($"Cleanup failed to drop table {ns}.{table}: {cleanupEx}");
+            }
         }
     }
 }

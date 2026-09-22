@@ -225,6 +225,25 @@ public sealed class HonestMappingTests
         Assert.Equal(1, connector.Source.GateHandovers);
     }
 
+    /// <summary>PcpConnectorService opens a connector's source at most once per process
+    /// (<c>_source</c> is process-wide state): two PlanRead calls for two different ops -- the shape
+    /// a process hosting two entities read through the same connection takes -- must reuse the one
+    /// already-opened source rather than opening it again for the second op.</summary>
+    [Fact]
+    public async Task Two_reads_from_different_ops_reuse_the_one_opened_source()
+    {
+        var connector = new GateCountingSourceConnector();
+        var service = await ConfiguredAsync(connector);
+        connector.ReleaseOpen();
+
+        var first = await PlanAsync(service, "op-a");
+        var second = await PlanAsync(service, "op-b");
+
+        Assert.NotEmpty(first);
+        Assert.NotEmpty(second);
+        Assert.Equal(1, connector.Opens);
+    }
+
     [Fact]
     public async Task TryNativeScan_is_not_found_when_the_source_offers_none()
     {

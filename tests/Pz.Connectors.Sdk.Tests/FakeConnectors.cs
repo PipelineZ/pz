@@ -117,3 +117,82 @@ internal sealed class GateAwareSource : PlainSource, IOperationGateAware
 
     public void UseOperationGate(IOperationGate gate) => GateHandovers++;
 }
+
+/// <summary>The sink counterpart of <see cref="FakeSourceConnector"/>: one write session that records
+/// every batch it is handed (a clone, honoring the ABI's "not the caller's buffer past the call"
+/// rule) and reports it back on commit.</summary>
+internal sealed class FakeSinkConnector : ISinkConnector
+{
+    public FakeSink Sink { get; } = new();
+
+    /// <summary>How many times <see cref="OpenAsync"/> actually ran -- PcpConnectorService is
+    /// supposed to open a sink at most once per process and hand every later BeginWrite the same
+    /// instance, whatever op or output each call names.</summary>
+    public int Opens { get; private set; }
+
+    public ConnectorInfo Info => new("fake-sink", "1.0.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+        ValueTask.FromResult(new ValidationResult([]));
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+        ValueTask.FromResult(new ConnectionCheck(true, null));
+    public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct)
+    {
+        Opens++;
+        return ValueTask.FromResult<ISink>(Sink);
+    }
+}
+
+internal sealed class FakeSink : ISink
+{
+    public FakeWriteSession? LastSession { get; private set; }
+
+    public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
+    {
+        copy = null;
+        return false;
+    }
+
+    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
+    {
+        LastSession = new FakeWriteSession(schema);
+        return ValueTask.FromResult<ISinkWriteSession>(LastSession);
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+internal sealed class FakeWriteSession(Schema schema) : ISinkWriteSession
+{
+    private readonly List<RecordBatch> _committed = [];
+
+    public Schema Schema { get; } = schema;
+    public bool Committed { get; private set; }
+    public bool Aborted { get; private set; }
+    public IReadOnlyList<RecordBatch> Batches => _committed;
+    public long Rows => _committed.Sum(b => b.Length);
+
+    public ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
+    {
+        // The batch handed in is only valid until this call returns (pooled, off-heap buffers on the
+        // real data plane): clone it, as any well-behaved sink must, instead of retaining the argument.
+        _committed.Add(batch.Clone());
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<WriteResult> CommitAsync(CancellationToken ct)
+    {
+        Committed = true;
+        return ValueTask.FromResult(new WriteResult(Rows, _committed.Count));
+    }
+
+    public ValueTask AbortAsync(CancellationToken ct)
+    {
+        Aborted = true;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
