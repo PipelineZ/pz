@@ -180,9 +180,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   property rendered through the connector process's current culture instead
   of invariantly, and an exception logged alongside a message carried only its
   type name onto the wire, never its own message.
-
-### Added
-
 - A test walking every `.cs` file under `src/` and `connectors/` for a `"PZ####"` string literal
   outside `PzErrorCode.cs`, enforcing that the catalog stays the one source of truth for a code's
   value: a literal in a project that can reference `Pz.Core` (directly or transitively) must instead
