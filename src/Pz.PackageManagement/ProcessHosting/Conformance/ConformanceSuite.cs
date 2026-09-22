@@ -167,6 +167,10 @@ public static class ConformanceSuite
 
             await AddVectorAsync(vectors, "numeric-option-fidelity", NumericOptionFidelityAsync(client, ct));
 
+            await AddVectorAsync(
+                vectors, "exits-on-connection-loss",
+                ExitsOnConnectionLossAsync(request, socketRootDir, ct));
+
             // Last, always: a passing run ends the process, so nothing after this can still talk to it.
             await AddVectorAsync(vectors, "clean-exit-on-shutdown", CleanExitOnShutdownAsync(client, process, ct));
         }
@@ -846,6 +850,70 @@ public static class ConformanceSuite
         catch (ConnectorHostException)
         {
             return true;
+        }
+    }
+
+    // ---- vector: exits when the control connection closes (no Shutdown RPC) ---------------------
+
+    /// <summary>How long a connector may take to notice its control connection dropped and exit on its
+    /// own, from the host's perspective. Not tied to the SDK's own internal orphan-exit grace (5s):
+    /// only "exits without being killed" is the contract this probes, a well-behaved connector's own
+    /// choice of grace period is its business, so the budget is generous (the same order of magnitude
+    /// as <see cref="CleanExitOnShutdownAsync"/>'s explicit-Shutdown grace) rather than pinned to one
+    /// implementation's constant.</summary>
+    private static readonly TimeSpan ConnectionLossExitBudget = ProtocolConstants.ShutdownGrace * 2;
+
+    /// <summary>Spawns and probes its own connector instance -- never the suite's shared one, since this
+    /// vector destroys the only control connection it has -- and closes the control channel outright
+    /// instead of sending Shutdown: what a crashed or SIGKILLed host looks like from the connector's
+    /// side. A connector that only ever watches for the Shutdown RPC (never the connection itself)
+    /// lingers until <see cref="ConnectorProcess"/>'s own kill ladder reaps it in the <c>finally</c>
+    /// below, which this vector reports as a failure it observed, not a safety net it silently relied
+    /// on.</summary>
+    private static async Task<VectorVerdict> ExitsOnConnectionLossAsync(
+        ConformanceRequest request, string socketRootDir, CancellationToken ct)
+    {
+        var socketDir = Path.Combine(socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]);
+        var process = ConnectorProcess.Spawn(request.EntrypointPath, socketDir, request.PackageName);
+        try
+        {
+            PcpClient client;
+            try
+            {
+                client = await PcpClient
+                    .ConnectAndConfigureAsync(process, request.Manifest, request.InstanceId, request.ConnectionConfig, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                return VectorVerdict.Fail(
+                    $"could not open a second connection to probe connection loss: {ex.Message}");
+            }
+
+            var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            process.Exited += () => exited.TrySetResult();
+            if (process.HasExited)
+            {
+                exited.TrySetResult();
+            }
+
+            // Not client.DisposeAsync(): that sends Shutdown first, which is exactly the well-behaved
+            // path this vector must NOT exercise. The channel is the only thing torn down here --
+            // ConnectorProcess stays this method's to reap, in the finally below either way.
+            client.CloseChannelWithoutShutdown();
+
+            var winner = await Task.WhenAny(exited.Task, Task.Delay(ConnectionLossExitBudget, ct)).ConfigureAwait(false);
+            return ReferenceEquals(winner, exited.Task)
+                ? VectorVerdict.Pass()
+                : VectorVerdict.Fail(
+                    $"connector did not exit within {ConnectionLossExitBudget.TotalSeconds:0}s of its control " +
+                    "connection closing without a Shutdown RPC");
+        }
+        finally
+        {
+            // Whatever the outcome: a Pass means this is a no-op reap of an already-exited process, a
+            // Fail means the connector is still alive and needs the kill ladder regardless.
+            await process.DisposeAsync().ConfigureAwait(false);
         }
     }
 

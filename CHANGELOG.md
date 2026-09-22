@@ -128,6 +128,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **Process-hosted connectors are harder to orphan.** On Windows, a spawned connector is now assigned
+  to a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: if the pz process itself dies ungracefully
+  (crash, `taskkill /f`) before its own shutdown ladder can run, the OS kills the connector too, the
+  moment the job handle's last reference goes with it. `pz` also sweeps stale `pz-<pid>-*` temp socket
+  roots left behind by an earlier, killed pz process (never a live process's, own pid included) each
+  time it mints a new one. The out-of-process conformance suite (`pz connector test`) gained an
+  `exits-on-connection-loss` vector: a connector must exit on its own within a bounded window of its
+  control connection closing without a Shutdown RPC, not only when the host explicitly asks.
+  *Not covered*: Linux/macOS have no host-side equivalent of the Windows Job Object reachable from
+  .NET's `Process.Start` (the kernel primitive, `prctl(PR_SET_PDEATHSIG, ...)`, must run in the child
+  before it execs); a hand-rolled (non-SDK) connector on those platforms still relies on the ordinary
+  shutdown ladder alone.
 - `.github/dependabot.yml`: weekly, grouped dependency updates for nuget (repo-root `directory`,
   which reaches every csproj by expanding `Pz.slnx`), github-actions, and the Rust workspace
   (`rust/`). Packages that must move together (`Grpc.*`/`Google.Protobuf`, `Apache.Arrow`,
