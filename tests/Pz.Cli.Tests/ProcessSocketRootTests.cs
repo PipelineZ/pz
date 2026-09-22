@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Pz.Cli;
 using Pz.Core.Validation;
 using Pz.PackageManagement.Hosting;
@@ -101,5 +102,81 @@ public sealed class ProcessSocketRootTests
     private static void Delete(string dir)
     {
         try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
+    }
+}
+
+/// <summary><see cref="ProcessSocketRoot.SweepStaleRoots"/>: the housekeeping that reclaims a temp
+/// socket root a killed (not merely exited) <c>pz</c> process left behind -- <see cref="Resolve"/>
+/// itself has nothing that ever runs it, since a run-scoped root does not need it (collected with its
+/// run directory regardless of how the process ends). Each test points the sweep at its own scratch
+/// directory rather than the real system temp directory, so it needs neither the
+/// "console-and-env-serialized" collection above (no TMPDIR mutation) nor cleans up anything real.</summary>
+public sealed class ProcessSocketRootSweepTests : IDisposable
+{
+    private readonly string _scratch = Directory.CreateTempSubdirectory("pz-sweep-test-").FullName;
+
+    [Fact]
+    public void A_root_whose_pid_is_no_longer_running_is_deleted()
+    {
+        var deadPid = SpawnAndWaitForExit();
+        var stale = Path.Combine(_scratch, $"pz-{deadPid}-deadbeef");
+        Directory.CreateDirectory(stale);
+
+        ProcessSocketRoot.SweepStaleRoots(_scratch);
+
+        Assert.False(Directory.Exists(stale));
+    }
+
+    /// <summary>The other half of the same guard: a live pid's root -- including this very process's
+    /// own -- must never be swept, or the sweep could delete sockets a running process is still
+    /// serving.</summary>
+    [Fact]
+    public void A_root_whose_pid_is_still_running_is_left_alone()
+    {
+        var alive = Path.Combine(_scratch, $"pz-{Environment.ProcessId}-a1a1a1a1");
+        Directory.CreateDirectory(alive);
+
+        ProcessSocketRoot.SweepStaleRoots(_scratch);
+
+        Assert.True(Directory.Exists(alive));
+    }
+
+    /// <summary>A directory that merely starts with "pz-" but does not fit the exact
+    /// "pz-&lt;pid&gt;-&lt;8 hex&gt;" shape (no pid to prove dead) is not this scheme's to guess at, dead
+    /// pid or not.</summary>
+    [Fact]
+    public void A_directory_that_does_not_fit_the_naming_scheme_is_left_alone()
+    {
+        var notOurs = Path.Combine(_scratch, "pz-not-a-pid-root");
+        Directory.CreateDirectory(notOurs);
+
+        ProcessSocketRoot.SweepStaleRoots(_scratch);
+
+        Assert.True(Directory.Exists(notOurs));
+    }
+
+    /// <summary>Spawns a trivial child, waits for it to exit, and returns its pid -- a pid this specific
+    /// test run can prove is dead (rather than picking an arbitrary large number and hoping nothing on
+    /// the box happens to hold it).</summary>
+    private static int SpawnAndWaitForExit()
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add(OperatingSystem.IsWindows() ? "/c" : "-c");
+        psi.ArgumentList.Add("exit 0");
+
+        using var process = Process.Start(psi)!;
+        process.WaitForExit();
+        return process.Id;
+    }
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_scratch, recursive: true); } catch { /* best-effort cleanup */ }
     }
 }

@@ -7,9 +7,9 @@ public class AbiSurfaceTests
     private static readonly Assembly Abi = typeof(IConnector).Assembly;
 
     [Fact]
-    public void Abstractions_references_only_arrow_and_logging()
+    public void Abstractions_references_only_arrow()
     {
-        var allowed = new[] { "System", "netstandard", "mscorlib", "Apache.Arrow", "Microsoft.Extensions.Logging.Abstractions" };
+        var allowed = new[] { "System", "netstandard", "mscorlib", "Apache.Arrow" };
         foreach (var reference in Abi.GetReferencedAssemblies())
         {
             Assert.True(

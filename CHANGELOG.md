@@ -53,6 +53,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   separate SBOM is not added here: every option needs tooling this repo does not already carry
   (a CycloneDX/SPDX generator step, or `dotnet list package` post-processing), which is out of scope
   for a minimal supply-chain pass.
+- **`Pz.Connectors.Abstractions` no longer references `Microsoft.Extensions.Logging.Abstractions`.**
+  The reference allowlist is Apache.Arrow only (now enforced by `AbiSurfaceTests`, matching this
+  repo's own architecture docs); nothing in Abstractions' own source used the logging package, and
+  every SDK-hosted connector already gets it transitively through `Pz.Connectors.Sdk`'s
+  `FrameworkReference` to `Microsoft.AspNetCore.App`.
+  *Migration:* a connector project that used `ILogger`/logging types via this transitive reference
+  without also referencing `Pz.Connectors.Sdk` (or another package that itself brings in
+  `Microsoft.Extensions.Logging.Abstractions`) must now add that `PackageReference` explicitly.
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
   `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
@@ -128,6 +136,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **Process-hosted connectors are harder to orphan.** On Windows, a spawned connector is now assigned
+  to a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: if the pz process itself dies ungracefully
+  (crash, `taskkill /f`) before its own shutdown ladder can run, the OS kills the connector too, the
+  moment the job handle's last reference goes with it. `pz` also sweeps stale `pz-<pid>-*` temp socket
+  roots left behind by an earlier, killed pz process (never a live process's, own pid included) each
+  time it mints a new one. The out-of-process conformance suite (`pz connector test`) gained an
+  `exits-on-connection-loss` vector: a connector must exit on its own within a bounded window of its
+  control connection closing without a Shutdown RPC, not only when the host explicitly asks.
+  *Not covered*: Linux/macOS have no host-side equivalent of the Windows Job Object reachable from
+  .NET's `Process.Start` (the kernel primitive, `prctl(PR_SET_PDEATHSIG, ...)`, must run in the child
+  before it execs); a hand-rolled (non-SDK) connector on those platforms still relies on the ordinary
+  shutdown ladder alone.
 - `.github/dependabot.yml`: weekly, grouped dependency updates for nuget (repo-root `directory`,
   which reaches every csproj by expanding `Pz.slnx`), github-actions, and the Rust workspace
   (`rust/`). Packages that must move together (`Grpc.*`/`Google.Protobuf`, `Apache.Arrow`,
@@ -267,6 +287,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **`Pz.Connectors.TestKit`'s `StubHttpServer` could fail to start under parallel tests.** It probed
+  a free port and then bound it, and anything else could take the port in between ("Address already
+  in use"). A failed bind now moves on to a freshly probed port, up to ten times.
 - **A pipeline that renders `run_id`/`run_started_at` into its SQL now gets a compile-time warning
   (PZ0232),** once per pipeline. Both constants change every run, so embedding either one in rendered
   SQL changes that Pipeline's NodeId every run too, and `pz retry` (which matches nodes by id against
@@ -288,6 +311,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   non-finite number (`ratio: 1.0 / 0.0` evaluates to infinity, which JSON cannot represent), and the
   tier-3 schema check accepts the decimal and big-integer values the compiler now hashes, so a kwarg
   that compiles also validates.
+- **The C# connector SDK's write-path data plane allocated every incoming batch on the managed
+  heap.** `DataPlaneListener`'s `ArrowStreamReader` was constructed with no allocator, unlike the
+  host's own read path (`PooledNativeAllocator.Shared`) -- a large enough batch landed on the LOH
+  instead of the off-heap native pool the rest of the write path assumes. Batches now come from the
+  same pool; ownership is unchanged (a batch is disposed exactly once, immediately after
+  `WriteBatchAsync` returns, on every exit including a throw).
 - **A write to a Rust-SDK sink could hang forever at commit.** A small write fits in the kernel's
   socket buffer, so the engine can finish the whole data stream and send `CommitWrite` before the
   connector process has accepted the data connection. The Rust SDK's `CommitWrite` revoked the

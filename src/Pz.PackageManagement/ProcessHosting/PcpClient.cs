@@ -24,6 +24,17 @@ public sealed class PcpClient : IAsyncDisposable
 {
     private readonly ConnectorProcess _process;
     private readonly GrpcChannel _channel;
+
+    /// <summary>The one physical unix-domain socket <see cref="GrpcChannelOptions.HttpHandler"/>'s
+    /// <c>ConnectCallback</c> dialed -- kept alongside the channel itself because disposing
+    /// <see cref="GrpcChannel"/> disposes an <c>HttpClient</c> wrapper that owns
+    /// <c>SocketsHttpHandler</c>, not the socket directly; that teardown is not guaranteed to reach an
+    /// established HTTP/2 connection promptly, especially with <c>PooledConnectionIdleTimeout</c> set to
+    /// infinite below. <see cref="CloseChannelWithoutShutdown"/> needs this to guarantee the transport
+    /// itself closes (an immediate FIN the connector's Kestrel side actually observes), not merely that
+    /// the managed wrapper around it was asked to.</summary>
+    private readonly Socket? _controlSocket;
+
     private readonly ConcurrentDictionary<string, byte> _escalating = new(StringComparer.Ordinal);
     private readonly ConcurrentBag<Task> _escalations = [];
     private readonly TaskCompletionSource _ladderClaimedByEscalation =
@@ -46,10 +57,13 @@ public sealed class PcpClient : IAsyncDisposable
         typeof(PcpClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion ?? "unknown";
 
-    private PcpClient(ConnectorProcess process, GrpcChannel channel, Hello hello, PzConnector.PzConnectorClient grpc)
+    private PcpClient(
+        ConnectorProcess process, GrpcChannel channel, Socket? controlSocket, Hello hello,
+        PzConnector.PzConnectorClient grpc)
     {
         _process = process;
         _channel = channel;
+        _controlSocket = controlSocket;
         Hello = hello;
         Grpc = grpc;
     }
@@ -61,6 +75,34 @@ public sealed class PcpClient : IAsyncDisposable
     /// <summary>The generated gRPC client, open for the lifetime of this <see cref="PcpClient"/>. Every
     /// later control-plane call (Validate, CheckConnection, GetSchema, ...) goes through this.</summary>
     public PzConnector.PzConnectorClient Grpc { get; }
+
+    /// <summary>Conformance-only: closes the control-plane transport outright, without the Shutdown RPC
+    /// <see cref="DisposeAsync"/> always sends first -- what a crashed or SIGKILLed host's connection
+    /// loss looks like from the connector's side. <see cref="ConnectorProcess"/> ownership stays with
+    /// the caller (unlike <see cref="DisposeAsync"/>, which reaps it as part of the same ladder): the
+    /// "exits on connection loss" probe needs to watch the process on its own terms before deciding
+    /// whether it has to reap it itself.
+    ///
+    /// <para>Closes <see cref="_controlSocket"/> directly rather than relying on
+    /// <see cref="GrpcChannel.Dispose"/> alone: disposing the channel tears down the managed
+    /// <c>HttpClient</c>/<c>SocketsHttpHandler</c> wrapper around the transport, which is not observed
+    /// to close an already-established HTTP/2 connection's socket promptly (measured: the connector's
+    /// Kestrel side never saw the connection end). <c>Shutdown</c> before <c>Dispose</c> sends the OS a
+    /// half-close the peer's read actually wakes up on, rather than trusting a bare close to.</para></summary>
+    internal void CloseChannelWithoutShutdown()
+    {
+        try
+        {
+            _controlSocket?.Shutdown(SocketShutdown.Both);
+        }
+        catch (SocketException)
+        {
+            // Already closed/reset; the point is that it ends up closed one way or the other.
+        }
+
+        _controlSocket?.Dispose();
+        _channel.Dispose();
+    }
 
     /// <summary>How long <see cref="AttachCancelLadder"/> waits for the connector to acknowledge a
     /// <c>Cancel</c> before condemning the instance. Defaults to
@@ -156,6 +198,11 @@ public sealed class PcpClient : IAsyncDisposable
         // call is harmless.
         AppContext.SetSwitch("System.Net.Http.SocketsHttpHandler.Http2UnencryptedSupport", true);
 
+        // Captured by ConnectCallback below the moment it dials successfully -- there is exactly one
+        // logical (and, given PooledConnectionIdleTimeout below, physical) connection per instance, so
+        // this is unambiguous. See _controlSocket's own doc for why PcpClient keeps this reference at
+        // all rather than trusting GrpcChannel.Dispose() to tear the transport down.
+        Socket? controlSocket = null;
         var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions
         {
             HttpHandler = new SocketsHttpHandler
@@ -175,6 +222,7 @@ public sealed class PcpClient : IAsyncDisposable
                         {
                             await socket.ConnectAsync(new UnixDomainSocketEndPoint(process.SocketPath), cancellationToken)
                                 .ConfigureAwait(false);
+                            controlSocket = socket;
                             return new NetworkStream(socket, ownsSocket: true);
                         }
                         catch (SocketException) when (!process.HasExited)
@@ -291,7 +339,7 @@ public sealed class PcpClient : IAsyncDisposable
                 $"recognize (0x{unknownReported:X}); it will not offer them to the planner -- upgrade pz to use them");
         }
 
-        var client = new PcpClient(process, channel, hello, grpc);
+        var client = new PcpClient(process, channel, controlSocket, hello, grpc);
         try
         {
             var configureRequest = new ConfigureRequest { InstanceId = instanceId, Config = MessageMapping.ToStruct(config.Values) };

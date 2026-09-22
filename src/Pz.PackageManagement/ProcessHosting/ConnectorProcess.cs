@@ -37,12 +37,19 @@ public sealed class ConnectorProcess : IAsyncDisposable
     // flag plus a value, and a reader must never see one without the other.
     private volatile object? _exitCode;
 
-    private ConnectorProcess(Process process, string socketDir, string socketPath)
+    /// <summary>Windows-only OS-level backstop: null on every other platform, and null on Windows too
+    /// when the job object could not be created (never a reason to fail the spawn -- see
+    /// <see cref="WindowsJobObject.AssignToNewJob"/>). See that type's own doc for what this actually
+    /// guarantees and why it exists alongside the ordinary shutdown ladder rather than instead of it.</summary>
+    private readonly SafeJobObjectHandle? _jobObject;
+
+    private ConnectorProcess(Process process, string socketDir, string socketPath, SafeJobObjectHandle? jobObject)
     {
         _process = process;
         _socketDir = socketDir;
         SocketPath = socketPath;
         DataSocketPath = socketPath + ProtocolConstants.DataSocketSuffix;
+        _jobObject = jobObject;
     }
 
     /// <summary>Path of the control-plane Unix domain socket the child was told to listen on via
@@ -219,7 +226,12 @@ public sealed class ConnectorProcess : IAsyncDisposable
                 "check the package's entrypoints for this platform");
         }
 
-        var connectorProcess = new ConnectorProcess(process, socketDir, socketPath);
+        // Best-effort and Windows-only: see WindowsJobObject's own doc for why this exists alongside
+        // (not instead of) the ordinary shutdown ladder, and why a failure here never fails the spawn
+        // that already succeeded.
+        var jobObject = OperatingSystem.IsWindows() ? WindowsJobObject.AssignToNewJob(process) : null;
+
+        var connectorProcess = new ConnectorProcess(process, socketDir, socketPath, jobObject);
         connectorProcess.WireStreams();
         return connectorProcess;
     }
@@ -369,6 +381,10 @@ public sealed class ConnectorProcess : IAsyncDisposable
         }
 
         _process.Dispose();
+        // By now the process is already gone (killed above or exited on its own), so this is just
+        // releasing the OS handle -- never the thing that reaches for the kill-on-close backstop, which
+        // exists for exactly the case where nothing in this method ever ran at all.
+        _jobObject?.Dispose();
 
         try
         {

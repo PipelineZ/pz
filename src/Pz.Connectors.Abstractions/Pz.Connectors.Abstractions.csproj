@@ -6,7 +6,9 @@
     <Description>Connector authoring abstractions (sources, sinks, schema, protocol handshake) for PipelineZ (pz).</Description>
   </PropertyGroup>
   <ItemGroup>
+    <!-- The whole ABI reference allowlist is Apache.Arrow only (see AbiSurfaceTests); a connector
+         author's own ILogger needs, if any, come from Pz.Connectors.Sdk's FrameworkReference to
+         Microsoft.AspNetCore.App (which every SDK-hosted connector already references), not from here. -->
     <PackageReference Include="Apache.Arrow" Version="23.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.9" />
   </ItemGroup>
 </Project>

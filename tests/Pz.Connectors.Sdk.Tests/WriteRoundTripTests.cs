@@ -6,6 +6,7 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Extensions.Hosting;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Memory;
 using Pz.Connectors.Protocol.V1;
 
 namespace Pz.Connectors.Sdk.Tests;
@@ -13,7 +14,7 @@ namespace Pz.Connectors.Sdk.Tests;
 /// <summary>Exercises the write path <see cref="FakeConnectors"/>' source fakes never reach:
 /// BeginWrite mints a ticket, the data plane pump drains an Arrow IPC stream into the sink's own
 /// <see cref="ISinkWriteSession"/> exactly as a real socket connection would (<see
-/// cref="DataPlaneListener.ServeWriteAsync(Stream,WriteTicket,ActivitySource,CancellationToken)"/>),
+/// cref="DataPlaneListener.ServeWriteAsync(Stream,WriteTicket,ActivitySource,Apache.Arrow.Memory.MemoryAllocator,CancellationToken)"/>),
 /// and CommitWrite/AbortWrite report back whatever the session itself recorded. The write-side mirror
 /// of <c>HonestMappingTests.GetReadState_answers_from_the_capture_and_never_polls_the_partition_itself</c>.</summary>
 public sealed class WriteRoundTripTests
@@ -36,7 +37,7 @@ public sealed class WriteRoundTripTests
         {
             await WriteBatchesAsync(stream, rowsPerBatch: [2, 1]);
             stream.Position = 0;
-            await DataPlaneListener.ServeWriteAsync(stream, write, Source, CancellationToken.None);
+            await DataPlaneListener.ServeWriteAsync(stream, write, Source, PooledNativeAllocator.Shared, CancellationToken.None);
         }
 
         // Committing only after the drain matches CommitWrite's own contract: the control plane awaits
