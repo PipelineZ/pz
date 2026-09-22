@@ -14,16 +14,8 @@ public sealed class FileFormatCatalogTests
         return o;
     }
 
-    private static string Duck(string typeName, string column) => typeName switch
-    {
-        "bigint" => "BIGINT",
-        "varchar" => "VARCHAR",
-        "int" => "INTEGER",
-        _ => throw new PzConnectorException($"column '{column}': unknown type '{typeName}'", isTransient: false),
-    };
-
     private static FormatReadRequest Req(string url = "'s3://b/k.csv'", int files = 1, Dictionary<string, string>? declared = null) =>
-        new(url, files, declared, Duck);
+        new(url, files, declared);
 
     [Fact]
     public void Resolve_uses_default_when_format_absent()

@@ -23,11 +23,11 @@ public sealed record FileFormat(
 /// SQL string literal (<c>'…'</c>) or list literal (<c>['…', '…']</c>) with the connector's own escaping;
 /// <see cref="FileCount"/> says how many files it names -- formats that read one file per entity (a
 /// footer-scoped or header-scoped peek) refuse a multi-file read with the file count in the message;
-/// <see cref="DeclaredColumns"/> is the <c>columns:</c> contract or null; <see cref="DuckDbTypeName"/>
-/// maps (typeName, columnName) to the DuckDB type name and throws the connector's own permanent error
-/// for an unknown type.</summary>
+/// <see cref="DeclaredColumns"/> is the <c>columns:</c> contract or null. A declared column's DuckDB
+/// type name comes from <see cref="ColumnTypeCatalog.ToDuckDbName"/> -- the one shared `columns:`
+/// contract type matrix every file-place connector's contract uses, so there is nothing
+/// connector-specific left to plug in here.</summary>
 public sealed record FormatReadRequest(
     string UrlArg,
     int FileCount,
-    IReadOnlyDictionary<string, string>? DeclaredColumns,
-    Func<string, string, string> DuckDbTypeName);
+    IReadOnlyDictionary<string, string>? DeclaredColumns);

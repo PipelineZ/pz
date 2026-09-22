@@ -86,7 +86,7 @@ internal sealed class CsvSource(string baseDir) : ISource
         var header = await ReadHeaderAsync(ResolvePath(spec), DelimiterOf(spec), ct).ConfigureAwait(false);
         var fields = columns
             .Where(kv => header.Contains(kv.Key))
-            .Select(kv => TypeNameMap.ToArrowField(kv.Key, kv.Value))
+            .Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value))
             .ToArray();
         return new DatasetSchema(new Schema(fields, null));
     }
@@ -148,7 +148,7 @@ internal sealed class CsvSource(string baseDir) : ISource
         }
 
         var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
-        var request = new FormatReadRequest(urlArg, 1, declared, TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, 1, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
         scan = new NativeScan(WrapWindowed(fragment, spec), FileFormatCatalog.SetupStatements(format))
@@ -387,7 +387,7 @@ internal sealed class CsvPartition(
         var fields = new Field[names.Length];
         for (var i = 0; i < names.Length; i++)
         {
-            fields[i] = TypeNameMap.ToArrowField(names[i], typeNames[i]);
+            fields[i] = ColumnTypeCatalog.ToArrowField(names[i], typeNames[i]);
         }
 
         var schema = new Schema(fields, null);

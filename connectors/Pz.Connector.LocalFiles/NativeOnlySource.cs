@@ -31,7 +31,7 @@ internal sealed class NativeOnlySource(string baseDir) : ISource
         }
 
         var columns = GetColumnsContract(spec, format);
-        var fields = columns.Select(kv => TypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+        var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new(new DatasetSchema(new Schema(fields, null)));
     }
 
@@ -42,7 +42,7 @@ internal sealed class NativeOnlySource(string baseDir) : ISource
         var absPath = ResolvePath(spec, format);
         var declared = ExtractColumns(spec);
         var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
-        var request = new FormatReadRequest(urlArg, 1, declared, TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, 1, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {

@@ -78,6 +78,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   the same way. No automated cross-connection warning is added: detecting "two connections with
   different storage credentials" without comparing the credential values themselves (which would
   leak them) is not a reliable signal, so this is documented instead.
+- **The `columns:` contract's fixed v0 type matrix (int, bigint, double, decimal, varchar, boolean,
+  date, timestamp) is now one shared implementation** (`Pz.Connectors.Toolkit.Formats.ColumnTypeCatalog`)
+  instead of four byte-identical copies (`localfiles`' `TypeNameMap`, `s3`'s `S3TypeNameMap`, `gcs`'s
+  `GcsTypeNameMap`, `azureblob`'s `AzureTypeNameMap`). No behavior change -- the four copies agreed on
+  every mapping and every error message already. `FormatReadRequest` no longer carries a
+  `DuckDbTypeName` delegate: the format catalog calls the shared catalog directly instead of a
+  per-connector strategy that always ended up passing the identical function.
 
 ### Added
 

@@ -29,7 +29,7 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
             isTransient: false);
 
-        var fields = columns.Select(kv => S3TypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+        var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new ValueTask<DatasetSchema>(new DatasetSchema(new Schema(fields, null)));
     }
 
@@ -42,7 +42,7 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
         var urlList = string.Join(", ", keyPatterns.Select(k => $"'s3://{S3Sql.Esc(bucket)}/{S3Sql.Esc(k)}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var declared = ExtractColumns(spec);
-        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared, S3TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 

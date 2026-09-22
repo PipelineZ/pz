@@ -36,7 +36,7 @@ internal sealed class ParquetSource(string baseDir) : ISource
 
         var footer = await ParquetReader.ReadSchemaAsync(path).ConfigureAwait(false);
         var fields = footer.GetDataFields()
-            .Select(f => TypeNameMap.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f)))
+            .Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f)))
             .ToArray();
         return new DatasetSchema(new Schema(fields, null));
     }
@@ -56,7 +56,7 @@ internal sealed class ParquetSource(string baseDir) : ISource
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", context);
         var absPath = ResolvePath(spec);
         var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
-        var request = new FormatReadRequest(urlArg, 1, null, TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, 1, null);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {

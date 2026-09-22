@@ -89,13 +89,13 @@ public static class FileFormatCatalog
         {
             "csv" or "tsv" => declared is null
                 ? $"read_csv({read.UrlArg}, header = true, auto_detect = true{DelimiterSuffix(format, options, context, "delim")})"
-                : $"read_csv({read.UrlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared, read.DuckDbTypeName)}}}{DelimiterSuffix(format, options, context, "delim")})",
+                : $"read_csv({read.UrlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared)}}}{DelimiterSuffix(format, options, context, "delim")})",
             "json" => declared is null
                 ? $"read_json({read.UrlArg}, auto_detect = true, format = '{JsonReadFormat(format, options)}')"
-                : $"read_json({read.UrlArg}, columns = {{{ColumnsMap(declared, read.DuckDbTypeName)}}}, format = '{JsonReadFormat(format, options)}')",
+                : $"read_json({read.UrlArg}, columns = {{{ColumnsMap(declared)}}}, format = '{JsonReadFormat(format, options)}')",
             "parquet" => $"read_parquet({read.UrlArg})",
             "xlsx" => XlsxRead(options, read, context, declared),
-            "avro" => declared is null ? $"read_avro({read.UrlArg})" : CastProjection($"read_avro({read.UrlArg})", declared, read.DuckDbTypeName),
+            "avro" => declared is null ? $"read_avro({read.UrlArg})" : CastProjection($"read_avro({read.UrlArg})", declared),
             _ => throw new UnreachableException($"format '{format.Name}' has no native read fragment"),
         };
     }
@@ -118,7 +118,7 @@ public static class FileFormatCatalog
         }
 
         var inner = $"read_xlsx({read.UrlArg}, {XlsxReadArgs(options, context)})";
-        return declared is null ? inner : CastProjection(inner, declared, read.DuckDbTypeName);
+        return declared is null ? inner : CastProjection(inner, declared);
     }
 
     private static readonly char[] GlobChars = ['*', '?', '['];
@@ -126,8 +126,8 @@ public static class FileFormatCatalog
     /// <summary>read_xlsx/read_avro take no columns= map: a declared contract is applied as a projecting
     /// cast, which also prunes to the declared columns. A cast failure is DuckDB's own loud error at
     /// scan time, the same posture as read_csv(auto_detect = false).</summary>
-    private static string CastProjection(string inner, IReadOnlyDictionary<string, string> declared, Func<string, string, string> duckType) =>
-        "(select " + string.Join(", ", declared.Select(c => $"{Ident(c.Key)}::{duckType(c.Value, c.Key)} as {Ident(c.Key)}")) + $" from {inner})";
+    private static string CastProjection(string inner, IReadOnlyDictionary<string, string> declared) =>
+        "(select " + string.Join(", ", declared.Select(c => $"{Ident(c.Key)}::{ColumnTypeCatalog.ToDuckDbName(c.Value, c.Key)} as {Ident(c.Key)}")) + $" from {inner})";
 
     private static string Ident(string name) => "\"" + name.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 
@@ -369,8 +369,8 @@ public static class FileFormatCatalog
         return delimiter == ',' ? "" : $", {keyword} = {DelimiterLiteral(delimiter)}";
     }
 
-    private static string ColumnsMap(IReadOnlyDictionary<string, string> declared, Func<string, string, string> duckType) =>
-        string.Join(", ", declared.Select(c => $"'{Esc(c.Key)}': '{duckType(c.Value, c.Key)}'"));
+    private static string ColumnsMap(IReadOnlyDictionary<string, string> declared) =>
+        string.Join(", ", declared.Select(c => $"'{Esc(c.Key)}': '{ColumnTypeCatalog.ToDuckDbName(c.Value, c.Key)}'"));
 
     private static string Esc(string value) => value.Replace("'", "''", StringComparison.Ordinal);
 
