@@ -388,7 +388,7 @@ impl<C: SinkConnector> PzConnectorService<C> {
 
     fn new_session_id() -> String {
         let mut bytes = [0u8; 16];
-        getrandom::getrandom(&mut bytes).expect("system randomness source unavailable");
+        getrandom::fill(&mut bytes).expect("system randomness source unavailable");
         bytes.iter().map(|b| format!("{b:02x}")).collect()
     }
 }

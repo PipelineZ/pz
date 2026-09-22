@@ -29,7 +29,7 @@ impl TicketRegistry {
     /// generate it first and build that entry around it.
     pub(crate) fn generate() -> [u8; TICKET_LENGTH] {
         let mut ticket = [0u8; TICKET_LENGTH];
-        getrandom::getrandom(&mut ticket).expect("system randomness source unavailable");
+        getrandom::fill(&mut ticket).expect("system randomness source unavailable");
         ticket
     }
 
