@@ -1,4 +1,6 @@
 using System.Buffers;
+using System.Globalization;
+using System.Numerics;
 using System.Text;
 using System.Text.Json;
 
@@ -43,6 +45,26 @@ public static class CanonicalJson
                 break;
             case double d:
                 writer.WriteNumberValue(d);
+                break;
+            // A Scriban kwarg literal too big for long (e.g. an author-typed huge id) evaluates to
+            // BigInteger, not a parse error -- JSON numbers are arbitrary precision, so the decimal
+            // digits ARE the canonical, lossless form. Utf8JsonWriter has no BigInteger overload, so
+            // this writes the digits as a raw (unquoted) JSON number rather than routing through
+            // WriteNumberValue.
+            case BigInteger bi:
+                writer.WriteRawValue(bi.ToString(CultureInfo.InvariantCulture), skipInputValidation: true);
+                break;
+            // A `1.5m`-suffixed Scriban literal evaluates to decimal, not double -- Utf8JsonWriter has a
+            // direct decimal overload, so this is lossless without any string round trip.
+            case decimal m:
+                writer.WriteNumberValue(m);
+                break;
+            // Unreachable through today's sandboxed kwarg surface (the `date` builtin is stripped
+            // along with every other Scriban builtin object), but CanonicalJson is a shared utility,
+            // not kwarg-specific -- ISO-8601 round-trip ("O") is lossless and deterministic for a
+            // given DateTime.Kind.
+            case DateTime dt:
+                writer.WriteStringValue(dt);
                 break;
             case IReadOnlyDictionary<string, object?> objDict:
                 WriteObject(writer, objDict.Select(kv => (kv.Key, (object?)kv.Value)));

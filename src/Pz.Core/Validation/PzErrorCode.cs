@@ -84,6 +84,16 @@ public static class PzErrorCode
     // by the MCP pz_write_pipeline tool so an agent-authored name cannot pass this check at authoring
     // time only to fail it at the next load.
     public const string InvalidIdentifierName = "PZ0136";
+    // A source()/sink() kwarg (or a YAML-declared read/write option) has a value CanonicalJson cannot
+    // hash into a node's content-addressed id -- e.g. a type with no obvious lossless JSON form.
+    // CanonicalJson itself supports every type a real kwarg can produce today (string/bool/number,
+    // including BigInteger/decimal/date, and nested lists/mappings); this is the backstop for
+    // whatever remains unsupported, so it fails as a coded, aggregated compile error naming the
+    // KWARG and the FILE -- never the value (secret hygiene) -- instead of an unhandled
+    // NotSupportedException crashing the compile. Its own code because PZ0104 (TemplateError) is
+    // already taken by the render-time catch, which this is not -- CanonicalJson.Serialize runs
+    // during DagCompiler's node-building, after rendering has already succeeded.
+    public const string UnsupportedOptionValue = "PZ0137";
     public const string UnresolvedRef = "PZ0201";
     public const string Cycle = "PZ0202";
     // PZ0203 (was SinkInputMissing: a YAML `input:` that matched no pipeline/source dataset) is

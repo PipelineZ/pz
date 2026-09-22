@@ -70,6 +70,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` used to synthesize
   an incremental cursor off only one of the two columns. Two comparisons that agree on the SAME
   column (a lower bound plus a recognized ceiling, PZ0351) are unaffected.
+- **A `source()`/`sink()` kwarg (or a YAML read/write option) with a huge integer literal or a
+  decimal literal (Scriban's `BigInteger`/`decimal`) no longer crashes the compile.** `CanonicalJson`,
+  which every node's content-addressed id hashes options through, threw an uncaught
+  `NotSupportedException` for either type -- unlike a render-time mistake, nothing downstream of
+  rendering catches it, so it surfaced as a raw crash instead of a coded error. `CanonicalJson` now
+  supports `BigInteger`, `decimal`, and `DateTime` losslessly (arbitrary-precision digits, the decimal
+  value, and an ISO-8601 string, respectively); whatever value type still has no lossless canonical
+  form is refused as PZ0137, naming the option and the file, never the value.
 
 ### Added
 

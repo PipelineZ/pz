@@ -1025,10 +1025,25 @@ public static class DagCompiler
                 // resurrect a staged table whose columns no longer match. They are appended only when
                 // something is actually pushable, so a project that pushes nothing keeps a
                 // byte-identical Id.
+                string optionsJson;
+                try
+                {
+                    optionsJson = CanonicalJson.Serialize(dataset.Options);
+                }
+                catch (NotSupportedException)
+                {
+                    stagingCollisions.Add(new PzError(PzErrorCode.UnsupportedOptionValue,
+                        $"source '{source.Name}.{dataset.Name}': option '{FindUnsupportedOptionKey(dataset.Options)}' " +
+                        "has a value pz cannot hash into this node's identity",
+                        source.FilePath, null,
+                        "use a string/number/bool/date value, or a list/mapping of them, for this option"));
+                    continue;
+                }
+
                 var canonicalParts = new List<string>
                 {
                     "source-load", source.Name, dataset.Name,
-                    CanonicalJson.Serialize(dataset.Options),
+                    optionsJson,
                     CanonicalJson.Serialize(dataset.Columns),
                 };
                 if (hints is not null)
@@ -1120,6 +1135,7 @@ public static class DagCompiler
         //     resolution (the claimant pipeline's name) for every downstream consumer — the canonical
         //     hash below and SinkWriteExecutor's staging-relation lookup — that expects it populated.
         //     Only outputs with a claimant reach here, so isInlineBound is always true.
+        var sinkOptionErrors = new List<PzError>();
         foreach (var sink in project.Connections)
         {
             foreach (var output in sink.Outputs)
@@ -1127,6 +1143,21 @@ public static class DagCompiler
                 if (!sinkInputs.TryGetValue((sink, output), out var resolution))
                 {
                     continue; // no resolved claimant — no SinkWrite node
+                }
+
+                string outputOptionsJson;
+                try
+                {
+                    outputOptionsJson = CanonicalJson.Serialize(output.Options);
+                }
+                catch (NotSupportedException)
+                {
+                    sinkOptionErrors.Add(new PzError(PzErrorCode.UnsupportedOptionValue,
+                        $"output '{sink.Name}.{output.Name}': option '{FindUnsupportedOptionKey(output.Options)}' " +
+                        "has a value pz cannot hash into this node's identity",
+                        sink.FilePath, null,
+                        "use a string/number/bool/date value, or a list/mapping of them, for this option"));
+                    continue;
                 }
 
                 var isInlineBound = string.IsNullOrEmpty(output.Input);
@@ -1141,13 +1172,18 @@ public static class DagCompiler
                 // run gives the write, not what got committed, so changing it must not stop `pz retry`
                 // from matching a prior success.
                 var canonical = string.Join('\n', "sink-write", sink.Name, output.Name, effectiveOutput.Input,
-                    output.Mode, output.SchemaPolicy, CanonicalJson.Serialize(output.Options),
+                    output.Mode, output.SchemaPolicy, outputOptionsJson,
                     CanonicalJson.Serialize(output.Keys), output.AcceptDuplicates.ToString(),
                     output.OnDelete ?? "");
                 var id = NodeId.Compute(canonical);
                 nodes.Add(new DagNode(id, NodeKind.SinkWrite, $"{sink.Name}.{output.Name}",
                     [inputNodeId], null, new SinkOutputDef(sink, effectiveOutput, isInlineBound)));
             }
+        }
+
+        if (sinkOptionErrors.Count > 0)
+        {
+            throw new PzValidationException(sinkOptionErrors);
         }
 
         // 10b. Final stage: the (read x write) pairing matrix for an EXPLICITLY declared incremental
@@ -1372,6 +1408,33 @@ public static class DagCompiler
         }
 
         return compiled;
+    }
+
+    /// <summary>Which top-level key in an options bag CanonicalJson.Serialize could not hash -- walked
+    /// lazily, only once serializing the whole bag has already thrown, so the common case (nothing
+    /// unsupported) pays no extra cost. A bad value nested inside a key's own list/mapping still names
+    /// that top-level key, since Serialize(value) recurses into it and throws at the same depth.
+    /// Never returns the value itself (secret hygiene) -- only the key CanonicalJson.Serialize(options)
+    /// as a whole already proved is the problem.</summary>
+    private static string FindUnsupportedOptionKey(IReadOnlyDictionary<string, object?> options)
+    {
+        foreach (var (key, value) in options)
+        {
+            try
+            {
+                CanonicalJson.Serialize(value);
+            }
+            catch (NotSupportedException)
+            {
+                return key;
+            }
+        }
+
+        // Defensive: Serialize(options) threw but no individual top-level entry's re-serialization
+        // does. Not reachable today (every code path that builds an options dictionary uses the same
+        // entry shapes CanonicalJson already walks identically at the top and nested levels), but
+        // this must still name something rather than throw a second, unhandled exception here.
+        return "(unknown)";
     }
 
     /// <summary>The next step for an unresolved ref()/source()/sink() name: a one-edit-or-case-only
