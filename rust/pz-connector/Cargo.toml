@@ -6,9 +6,10 @@ license.workspace = true
 description = "SDK for writing PipelineZ (pz) out-of-process connectors (PCP) in Rust."
 
 [dependencies]
-tonic = "0.12"
-prost = "0.13"
-prost-types = "0.13"
+tonic = "0.14"
+tonic-prost = "0.14"
+prost = "0.14"
+prost-types = "0.14"
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 # arrow-rs treats every release as a new major version, so two different pins never unify in one
@@ -24,14 +25,14 @@ anyhow = "1"
 thiserror = "2"
 
 # Telemetry: the host hands an OTLP endpoint in HostInfo; spans (`tracing`) and meters are exported
-# from this process directly. The otlp crate MUST resolve to the same tonic 0.12 line above -- a
-# second tonic/prost in Cargo.lock means the pins below drifted from each other.
-opentelemetry = "0.27"
-opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
+# from this process directly. The otlp crate's tonic/prost transitive deps MUST resolve to the tonic
+# and prost versions pinned above -- exactly one tonic and one prost may appear in Cargo.lock.
+opentelemetry = "0.32"
+opentelemetry_sdk = "0.32"
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std", "fmt"] }
-tracing-opentelemetry = "0.28"
+tracing-opentelemetry = "0.33"
 tower-http = { version = "0.7", features = ["trace"] }
 http = "1"
 
@@ -44,7 +45,7 @@ tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }
 
 [build-dependencies]
-tonic-build = "0.12"
+tonic-prost-build = "0.14"
 
 [[example]]
 name = "memory_sink"

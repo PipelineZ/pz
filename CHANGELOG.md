@@ -9,6 +9,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- **The Rust SDK (`rust/pz-connector`) now builds on tonic 0.14 (prost codegen moved to the
+  `tonic-prost`/`tonic-prost-build` crates) and opentelemetry/opentelemetry_sdk/opentelemetry-otlp
+  0.32.** A Rust connector crate that pins its own older tonic or opentelemetry line alongside
+  `pz-connector` would get a second, duplicate copy of both in its `Cargo.lock`.
 - **SinkWrite `NodeId` now includes `keys:`/`duplicates:`/`on_delete:`.** These change what a commit
   under that id MEANS (the merge match condition, at-least-once consent, delete routing), so a sink
   whose write semantics changed since a failed run no longer reuses/carries-forward the earlier
