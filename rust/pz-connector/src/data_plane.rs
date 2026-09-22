@@ -1,13 +1,11 @@
 use std::cell::RefCell;
 use std::io::{self, Read};
-use std::os::unix::net::UnixStream as StdUnixStream;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::RecordBatch;
 use arrow::ipc::reader::StreamReader;
 use tokio::io::AsyncReadExt;
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
@@ -15,6 +13,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::error::PzError;
 use crate::server::SessionState;
 use crate::ticket::{TicketEntry, TicketRegistry, TICKET_LENGTH};
+use crate::transport::{self, BlockingStream, DataConn, Listener, Stream};
 
 /// The data-plane half of PCP: a bare accept loop on `<control socket>.data` that speaks Arrow IPC and
 /// nothing else. Nothing on this socket is protobuf-framed and nothing here reads configuration -- a
@@ -22,14 +21,14 @@ use crate::ticket::{TicketEntry, TicketRegistry, TICKET_LENGTH};
 /// control plane when that ticket was minted. The host always dials; this side never has to locate
 /// anything.
 pub(crate) async fn run(
-    listener: UnixListener,
+    listener: Listener,
     tickets: Arc<TicketRegistry>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
         tokio::select! {
             accepted = listener.accept() => {
-                let Ok((stream, _)) = accepted else { continue };
+                let Ok(stream) = accepted else { continue };
                 let tickets = tickets.clone();
                 tokio::spawn(serve_connection(stream, tickets));
             }
@@ -42,7 +41,7 @@ pub(crate) async fn run(
     }
 }
 
-async fn serve_connection(mut stream: UnixStream, tickets: Arc<TicketRegistry>) {
+async fn serve_connection(mut stream: Stream, tickets: Arc<TicketRegistry>) {
     let mut ticket = [0u8; TICKET_LENGTH];
     if stream.read_exact(&mut ticket).await.is_err() {
         return;
@@ -72,11 +71,11 @@ async fn serve_connection(mut stream: UnixStream, tickets: Arc<TicketRegistry>) 
     serve_write(stream, session).instrument(span).await;
 }
 
-async fn serve_write(stream: UnixStream, session: Arc<SessionState>) {
+async fn serve_write(stream: Stream, session: Arc<SessionState>) {
     // Every early-return from here on happens AFTER the ticket resolved to a real session, so every one
     // of them must signal `drained` explicitly -- otherwise a `CommitWrite` awaiting this session's
     // drained receiver would hang on a sender that was silently dropped instead of failing cleanly.
-    let std_stream = match stream.into_std() {
+    let std_stream = match transport::into_blocking(stream) {
         Ok(s) => s,
         Err(e) => {
             session.signal_drained(Err(PzError::new(format!(
@@ -85,12 +84,6 @@ async fn serve_write(stream: UnixStream, session: Arc<SessionState>) {
             return;
         }
     };
-    if let Err(e) = std_stream.set_nonblocking(false) {
-        session.signal_drained(Err(PzError::new(format!(
-            "failed to configure the data connection for blocking reads: {e}"
-        ))));
-        return;
-    }
 
     // arrow-ipc's reader is synchronous (std::io::Read, no async support in this arrow version), so the
     // blocking read loop runs on a dedicated blocking-pool thread and hands each decoded batch to this
@@ -154,19 +147,18 @@ async fn pump_batches(session: &SessionState, mut rx: mpsc::Receiver<PumpMessage
 /// stream in a tail-tracking reader and refuses to call anything short of that marker a drain -- a
 /// truncated write (peer died mid-stream, or `Cancel`/`Shutdown` force-closing the socket) must fail
 /// `CommitWrite`, never commit a partial write as a success.
-fn read_to_end(stream: StdUnixStream, session: Arc<SessionState>, tx: mpsc::Sender<PumpMessage>) {
-    if let Ok(clone) = stream.try_clone() {
-        session.attach_data_conn(clone);
-    }
+fn read_to_end(stream: BlockingStream, session: Arc<SessionState>, tx: mpsc::Sender<PumpMessage>) {
+    let conn = DataConn::new(stream);
+    session.attach_data_conn(conn.clone());
 
-    let result = drain(stream, &tx);
+    let result = drain(conn, &tx);
     // `tx` may already be closed (the pump gave up after a batch failure) -- a failed send here is
     // silently discarded, exactly as it would be if the pump had simply stopped listening a message
     // earlier; `pump_batches`'s own result already reflects the real failure in that case.
     let _ = tx.blocking_send(PumpMessage::Done(result));
 }
 
-fn drain(stream: StdUnixStream, tx: &mpsc::Sender<PumpMessage>) -> Result<(), PzError> {
+fn drain(stream: DataConn, tx: &mpsc::Sender<PumpMessage>) -> Result<(), PzError> {
     let tail = Rc::new(RefCell::new(TailState::default()));
     let tracked = TailTrackingReader {
         inner: stream,
@@ -254,8 +246,6 @@ impl<R: Read> Read for TailTrackingReader<R> {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::net::UnixStream;
-
     use arrow::array::Int64Array;
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::ipc::writer::StreamWriter;
@@ -273,13 +263,16 @@ mod tests {
 
     /// A `PzError` message string is all a test needs to assert on -- deliberately not any richer
     /// matcher, since `drain`'s exact wording is not part of any contract.
-    fn drain_result(reader_side: UnixStream, tx: mpsc::Sender<PumpMessage>) -> Result<(), PzError> {
-        drain(reader_side, &tx)
+    fn drain_result(
+        reader_side: BlockingStream,
+        tx: mpsc::Sender<PumpMessage>,
+    ) -> Result<(), PzError> {
+        drain(DataConn::new(reader_side), &tx)
     }
 
     #[test]
     fn a_stream_missing_the_eos_marker_fails_the_drain() {
-        let (mut writer_side, reader_side) = UnixStream::pair().unwrap();
+        let (mut writer_side, reader_side) = transport::blocking_pair().unwrap();
         let schema = test_schema();
         {
             // WriteStart + one batch, but deliberately never `.finish()` -- no end-of-stream marker is
@@ -306,7 +299,7 @@ mod tests {
 
     #[test]
     fn a_stream_with_the_eos_marker_drains_cleanly() {
-        let (mut writer_side, reader_side) = UnixStream::pair().unwrap();
+        let (mut writer_side, reader_side) = transport::blocking_pair().unwrap();
         let schema = test_schema();
         {
             let mut writer = StreamWriter::try_new(&mut writer_side, &schema).unwrap();

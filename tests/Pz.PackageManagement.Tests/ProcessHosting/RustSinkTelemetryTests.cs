@@ -49,7 +49,7 @@ public sealed class RustSinkTelemetryTests : IDisposable
             return null;
         }
 
-        var path = Path.Combine(dir.FullName, "rust", "target", "debug", "examples", "memory_sink");
+        var path = Path.Combine(dir.FullName, "rust", "target", "debug", "examples", OperatingSystem.IsWindows() ? "memory_sink.exe" : "memory_sink");
         return File.Exists(path) ? path : null;
     }
 
@@ -69,7 +69,6 @@ public sealed class RustSinkTelemetryTests : IDisposable
     [InlineData(true)]
     public async Task Write_spans_and_meters_from_the_rust_sdk_reach_the_collector(bool ownSubscriber)
     {
-        Skip.If(OperatingSystem.IsWindows(), "the Rust SDK listens with tokio::net::UnixListener, which is unix-only");
         var binary = MemorySinkPath();
         Skip.If(binary is null, "rust/target/debug/examples/memory_sink is not built (cargo build --example memory_sink)");
 

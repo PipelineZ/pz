@@ -36,6 +36,13 @@ tracing-opentelemetry = "0.33"
 tower-http = { version = "0.7", features = ["trace"] }
 http = "1"
 
+# The PCP transport is AF_UNIX everywhere; tokio has no AF_UNIX types on Windows, so the socket is
+# created, bound and accepted through socket2 there, and a blocked read is cancelled through
+# CancelIoEx (src/transport.rs). Both are already in the tree via tokio.
+[target.'cfg(windows)'.dependencies]
+socket2 = "0.6"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_IO"] }
+
 [dev-dependencies]
 tempfile = "3"
 # test-util (tokio::time::pause/advance) is deliberately not enabled in [dependencies] -- it changes

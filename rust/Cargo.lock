@@ -1185,6 +1185,7 @@ dependencies = [
  "prost",
  "prost-types",
  "serde_json",
+ "socket2",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1196,6 +1197,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "windows-sys",
 ]
 
 [[package]]

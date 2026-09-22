@@ -27,7 +27,7 @@ under `src/Pz.Cli`, `templates/`, or any packable project's `.csproj`.
 ### The Rust-backed tests
 
 The `Category=RustPcp` facts in `tests/Pz.PackageManagement.Tests` drive the Rust SDK's `memory_sink`
-example and SKIP unless it is built (`rust/target/debug/examples/memory_sink`), so a contributor
+example and SKIP unless it is built (`rust/target/debug/examples/memory_sink`, `.exe` on Windows), so a contributor
 without cargo still gets a green suite. `scripts/rust-conformance.sh` builds the example and runs
 them on their own -- that is the supported way to run them, and what CI's `rust` job does.
 

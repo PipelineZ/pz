@@ -41,8 +41,8 @@ fn memory_sink_passes_every_sink_conformance_vector() {
 
     let work_dir = tempfile::Builder::new()
         .prefix("pzrs.")
-        .tempdir_in(std::env::var_os("TMPDIR").unwrap_or_else(|| "/tmp".into()))
-        .expect("failed to create a short-path scratch dir for the unix sockets this test opens");
+        .tempdir_in(std::env::temp_dir())
+        .expect("failed to create a scratch dir for the conformance probe config");
     let config_path = work_dir.path().join("conformance.yml");
     std::fs::write(
         &config_path,
@@ -96,13 +96,14 @@ fn find_repo_root() -> Option<PathBuf> {
 }
 
 fn locate_example_binary() -> PathBuf {
-    // `cargo build --example` above always places it at <target-dir>/debug/examples/memory_sink; the
+    // `cargo build --example` above always places it at <target-dir>/debug/examples/memory_sink(.exe); the
     // manifest dir's own `../target` is right whether this crate is built standalone or as a workspace
     // member (a workspace shares one target dir at the workspace root, one level up from here).
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_target = manifest_dir.join("../target/debug/examples/memory_sink");
+    let binary = format!("memory_sink{}", std::env::consts::EXE_SUFFIX);
+    let workspace_target = manifest_dir.join("../target/debug/examples").join(&binary);
     if workspace_target.is_file() {
         return workspace_target;
     }
-    manifest_dir.join("target/debug/examples/memory_sink")
+    manifest_dir.join("target/debug/examples").join(binary)
 }

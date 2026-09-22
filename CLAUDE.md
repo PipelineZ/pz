@@ -80,8 +80,9 @@ so the install path a stranger's first five commands depend on cannot silently r
 (ubuntu), which runs the `Category=DuckDbExtension` tests (xlsx/avro, needing network to install
 DuckDB's excel/avro extensions) that `build-test` excludes; `verify-aot` (ubuntu), the Native AOT
 runtime proof, followed in the same job by `scripts/verify-sdk-package.sh` (the connector packaging
-proof, since both need the Native AOT toolchain); and `rust` (ubuntu), the Rust workspace's own
-fmt/clippy/test plus the conformance script. `release.yml` stays tag-triggered.
+proof, since both need the Native AOT toolchain); and `rust` (ubuntu+windows), the Rust workspace's own
+clippy/test plus the conformance script on both (fmt and cargo-audit on ubuntu only; the SDK's AF_UNIX
+transport has a Windows half in `rust/pz-connector/src/transport.rs`). `release.yml` stays tag-triggered.
 
 ## Architecture
 

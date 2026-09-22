@@ -1,7 +1,7 @@
 //! SDK for writing PipelineZ (pz) out-of-process connectors (PCP) in Rust: [`serve_sink`] parses
-//! `--pz-socket`, serves the `PzConnector` gRPC control plane on that Unix socket (mode 0600) and the
-//! raw Arrow IPC data plane on `<socket>.data`, and dispatches every RPC to a [`SinkConnector`]/[`Sink`]/
-//! [`WriteSession`] the connector author implements. Source support is deferred (additive) -- the wire
+//! `--pz-socket`, serves the `PzConnector` gRPC control plane on that owner-only AF_UNIX socket (unix
+//! and Windows alike) and the raw Arrow IPC data plane on `<socket>.data`, and dispatches every RPC to
+//! a [`SinkConnector`]/[`Sink`]/[`WriteSession`] the connector author implements. Source support is deferred (additive) -- the wire
 //! protocol already covers it, only this crate's trait surface does not yet.
 //!
 //! # Telemetry
@@ -50,6 +50,7 @@ mod hostlog;
 mod server;
 mod telemetry;
 mod ticket;
+mod transport;
 
 pub use config::Config;
 pub use error::PzError;
