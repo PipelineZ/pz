@@ -31,6 +31,16 @@ public static class ConnectorConfigValidator
     private const string Hint = "fix the value to match the connector's schema";
     private static readonly Regex QuotedNamePattern = new("\"([^\"]+)\"", RegexOptions.Compiled);
 
+    /// <summary>Applicator keywords whose failure only summarizes failing children ("Some properties
+    /// did not match the required schema"). The failing child is reported at its own instance location
+    /// with the actual cause, so the summary would be a second, vaguer error for the same mistake -- and,
+    /// arriving first, would claim the property in the per-evaluation dedup and hide the real one.</summary>
+    private static readonly HashSet<string> RollUpKeywords = new(StringComparer.Ordinal)
+    {
+        "properties", "additionalProperties", "patternProperties", "propertyNames",
+        "unevaluatedProperties", "items", "unevaluatedItems",
+    };
+
     /// <summary>YAML 1.1 boolean/null spellings the loader deliberately does NOT type (see
     /// <c>YamlMapper.ConvertScalar</c>, which only recognizes a plain, lowercase <c>true</c>/<c>false</c>):
     /// capitalized/other-cased forms, the <c>yes</c>/<c>no</c>/<c>on</c>/<c>off</c> synonyms, and
@@ -307,7 +317,8 @@ public static class ConnectorConfigValidator
 
         foreach (var detail in result.Details ?? [])
         {
-            if (detail.Errors is not { Count: > 0 } detailErrors)
+            if (detail.Errors is not { Count: > 0 } detailErrors ||
+                detailErrors.Keys.All(RollUpKeywords.Contains))
             {
                 continue;
             }
@@ -389,7 +400,7 @@ public static class ConnectorConfigValidator
                 continue;
             }
 
-            var firstError = detailErrors.Values.First();
+            var firstError = detailErrors.First(e => !RollUpKeywords.Contains(e.Key)).Value;
             errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
                 $"{kind} '{name}'{Where(blockLabel)}: {location}{firstError}", filePath, null, Hint));
         }

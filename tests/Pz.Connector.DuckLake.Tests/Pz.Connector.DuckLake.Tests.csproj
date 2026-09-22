@@ -6,7 +6,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
-    <PackageReference Include="JsonSchema.Net" Version="9.2.2" />
+    <PackageReference Include="JsonSchema.Net" Version="9.4.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <!-- Pinned above Testcontainers' unbounded 2025.1.0 floor: that version has a known high-severity
          advisory, and NuGet audit (NU1903, WarningsAsErrors) fails restore otherwise. Test-only
