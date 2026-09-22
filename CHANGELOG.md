@@ -38,6 +38,21 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   tag every packed connector must carry. None of the four new checks needs a Native AOT compile
   (`PzGenerateManifest` only runs the staged binary after they have all already passed), so they run
   even where the AOT toolchain itself is unavailable.
+- **Supply-chain polish**: a `global.json` pins the .NET SDK (`10.0.400`, `rollForward: latestFeature`
+  -- CI's `actions/setup-dotnet@... # v6` with `10.0.x` always installs a feature band at or above
+  this one, which `latestFeature` accepts; it would refuse an OLDER one, so this is not a floor a
+  future CI image can silently drop below) so a new SDK feature band cannot change analyzer behavior
+  under `TreatWarningsAsErrors` and break `main` with no code change of this repo's own. Every
+  third-party GitHub Action in `.github/workflows/*.yml` is now pinned by full commit SHA with its
+  version as a trailing comment (`uses: owner/repo@<sha> # v7`); Dependabot's `github-actions`
+  ecosystem (`.github/dependabot.yml`) already understands that form and will keep opening PRs that
+  update both the SHA and the comment together. `release.yml`'s `release` job now attests build
+  provenance (`actions/attest-build-provenance`, Sigstore-signed SLSA) for every `.nupkg` it
+  publishes -- library packages, the `pz` pointer, and every `pz.<rid>`/`pz.any` sub-package -- scoped
+  to that job alone (`id-token: write`, `attestations: write`); nothing else about the job changed. A
+  separate SBOM is not added here: every option needs tooling this repo does not already carry
+  (a CycloneDX/SPDX generator step, or `dotnet list package` post-processing), which is out of scope
+  for a minimal supply-chain pass.
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
   `123456`, a connector `version: "1.10"` restored package `1.1`, and `"true"`
