@@ -140,6 +140,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **The Rust connector SDK (`pz-connector`) builds and runs on Windows.** It used tokio's
+  `UnixListener`, which exists only on unix, so a Rust connector could not target Windows at all. The
+  transport is still AF_UNIX on every platform (the host dials nothing else). On Windows the sockets
+  are created through `socket2` and polled by tokio's reactor, and a data-plane read that `Cancel`,
+  `AbortWrite` or `Shutdown` must end is cancelled with `CancelIoEx`, because a Windows AF_UNIX `recv`
+  ignores `shutdown`. The socket files are owner-only through the directory DACL the host sets. CI's
+  `rust` job gains a windows leg: clippy, the crate's tests, and `scripts/rust-conformance.sh`
+  (conformance vectors plus the `Category=RustPcp` telemetry facts). `build.rs` now follows git's
+  placeholder file for the proto symlink, which is what a `core.symlinks=false` checkout (the Windows
+  default) contains.
 - **Process-hosted connectors are harder to orphan.** On Windows, a spawned connector is now assigned
   to a Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: if the pz process itself dies ungracefully
   (crash, `taskkill /f`) before its own shutdown ladder can run, the OS kills the connector too, the

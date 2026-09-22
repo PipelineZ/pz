@@ -1,8 +1,5 @@
 use std::collections::HashMap;
 use std::io;
-use std::net::Shutdown;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::UnixStream as StdUnixStream;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
@@ -30,6 +27,7 @@ use crate::pb;
 use crate::pb::pz_connector_server::{PzConnector, PzConnectorServer};
 use crate::telemetry;
 use crate::ticket::{TicketEntry, TicketRegistry, TICKET_LENGTH};
+use crate::transport::{self, DataConn, Listener};
 
 /// Protocol major this SDK speaks, mirrored from `Pz.Connectors.Abstractions.ProtocolVersion.Major`.
 const PROTOCOL_MAJOR: i32 = 1;
@@ -223,7 +221,7 @@ pub(crate) struct SessionState {
     /// A clone of the connected data-plane socket, attached once the pump claims it. `AbortWrite`/
     /// `Cancel`/a `Shutdown`-triggered sweep use it to force a blocking read to fail, unblocking a pump
     /// that would otherwise wait forever for bytes the host is never going to send.
-    data_conn: StdMutex<Option<StdUnixStream>>,
+    data_conn: StdMutex<Option<DataConn>>,
     /// The `BeginWrite` RPC's trace context, captured when the session was created: the data plane
     /// carries no headers, so the write stream served later is parented here.
     pub(crate) parent: opentelemetry::Context,
@@ -292,16 +290,16 @@ impl SessionState {
         }
     }
 
-    pub(crate) fn attach_data_conn(&self, conn: StdUnixStream) {
+    pub(crate) fn attach_data_conn(&self, conn: DataConn) {
         *self.data_conn.lock().unwrap() = Some(conn);
     }
 
-    /// Best-effort: shuts down a live data connection so a blocking read on it fails, unblocking a pump
-    /// that is mid-drain. A pump that never connected has nothing to unblock; one that already finished
+    /// Best-effort: ends a blocking read on a live data connection ([`DataConn::unblock`]), unblocking
+    /// a pump that is mid-drain. A pump that never connected has nothing to unblock; one that already finished
     /// has nothing left to shut down either way -- both are harmless no-ops.
     pub(crate) fn force_unblock(&self) {
         if let Some(conn) = self.data_conn.lock().unwrap().as_ref() {
-            let _ = conn.shutdown(Shutdown::Both);
+            conn.unblock();
         }
     }
 
@@ -1112,33 +1110,33 @@ impl ControlConnectionWatch {
 /// [`ControlConnectionWatch::opened`] fires when this is constructed (right after accept), and
 /// [`ControlConnectionWatch::closed`] fires on drop -- whenever tonic tears the connection down, for
 /// any reason (peer closed, protocol error, or this process's own graceful shutdown).
-struct WatchedUnixStream {
-    inner: tokio::net::UnixStream,
+struct WatchedStream {
+    inner: transport::Stream,
     watch: Arc<ControlConnectionWatch>,
 }
 
-impl WatchedUnixStream {
-    fn new(inner: tokio::net::UnixStream, watch: Arc<ControlConnectionWatch>) -> Self {
+impl WatchedStream {
+    fn new(inner: transport::Stream, watch: Arc<ControlConnectionWatch>) -> Self {
         watch.opened();
         Self { inner, watch }
     }
 }
 
-impl Drop for WatchedUnixStream {
+impl Drop for WatchedStream {
     fn drop(&mut self) {
         self.watch.closed();
     }
 }
 
-impl Connected for WatchedUnixStream {
-    type ConnectInfo = <tokio::net::UnixStream as Connected>::ConnectInfo;
+impl Connected for WatchedStream {
+    type ConnectInfo = <transport::Stream as Connected>::ConnectInfo;
 
     fn connect_info(&self) -> Self::ConnectInfo {
         self.inner.connect_info()
     }
 }
 
-impl AsyncRead for WatchedUnixStream {
+impl AsyncRead for WatchedStream {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -1148,7 +1146,7 @@ impl AsyncRead for WatchedUnixStream {
     }
 }
 
-impl AsyncWrite for WatchedUnixStream {
+impl AsyncWrite for WatchedStream {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -1179,22 +1177,20 @@ impl AsyncWrite for WatchedUnixStream {
 }
 
 /// Wraps the control socket's accept stream so every connection tonic ends up serving is a
-/// [`WatchedUnixStream`] -- the only place in this codebase that turns "a `UnixStream` got accepted"
-/// into an orphan-watch event.
+/// [`WatchedStream`] -- the only place in this codebase that turns "a control connection got
+/// accepted" into an orphan-watch event.
 struct WatchedIncoming {
-    inner: tokio_stream::wrappers::UnixListenerStream,
+    listener: Listener,
     watch: Arc<ControlConnectionWatch>,
 }
 
 impl Stream for WatchedIncoming {
-    type Item = io::Result<WatchedUnixStream>;
+    type Item = io::Result<WatchedStream>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        Pin::new(&mut this.inner).poll_next(cx).map(|item| {
-            item.map(|accepted| {
-                accepted.map(|stream| WatchedUnixStream::new(stream, this.watch.clone()))
-            })
+        this.listener.poll_accept(cx).map(|accepted| {
+            Some(accepted.map(|stream| WatchedStream::new(stream, this.watch.clone())))
         })
     }
 }
@@ -1203,7 +1199,7 @@ impl Stream for WatchedIncoming {
 // Process entry point
 // ---------------------------------------------------------------------------------------------
 
-/// Parses `--pz-socket`, serves the `PzConnector` gRPC control plane on that Unix socket (mode 0600)
+/// Parses `--pz-socket`, serves the `PzConnector` gRPC control plane on that owner-only AF_UNIX socket
 /// and the raw Arrow IPC data plane on `<socket>.data`, and returns once told to stop (the `Shutdown`
 /// RPC).
 ///
@@ -1253,7 +1249,7 @@ async fn serve_sink_inner<C: SinkConnector>(
     let _ = std::fs::remove_file(&socket_path);
     let _ = std::fs::remove_file(&data_socket_path);
 
-    let control_listener = tokio::net::UnixListener::bind(&socket_path).map_err(|e| {
+    let control_listener = Listener::bind(&socket_path).map_err(|e| {
         anyhow::anyhow!(
             "failed to bind control socket '{}': {e}",
             socket_path.display()
@@ -1261,7 +1257,7 @@ async fn serve_sink_inner<C: SinkConnector>(
     })?;
     restrict_to_owner(&socket_path)?;
 
-    let data_listener = tokio::net::UnixListener::bind(&data_socket_path).map_err(|e| {
+    let data_listener = Listener::bind(&data_socket_path).map_err(|e| {
         anyhow::anyhow!(
             "failed to bind data socket '{}': {e}",
             data_socket_path.display()
@@ -1302,7 +1298,7 @@ async fn serve_sink_inner<C: SinkConnector>(
     );
     watch.start();
     let incoming = WatchedIncoming {
-        inner: tokio_stream::wrappers::UnixListenerStream::new(control_listener),
+        listener: control_listener,
         watch: watch.clone(),
     };
 
@@ -1380,10 +1376,9 @@ fn data_socket_path(control: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Both sockets are owner-only: a unix socket's file permissions are the whole access control on this
-/// transport, and the socket carries credentials in one direction and data in the other.
+/// Both sockets are owner-only (see [`transport::restrict_to_owner`] for how, per platform).
 fn restrict_to_owner(path: &Path) -> Result<(), anyhow::Error> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+    transport::restrict_to_owner(path).map_err(|e| {
         anyhow::anyhow!(
             "failed to restrict permissions on socket '{}': {e}",
             path.display()
@@ -1393,6 +1388,8 @@ fn restrict_to_owner(path: &Path) -> Result<(), anyhow::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Shutdown;
+
     use tokio::io::AsyncReadExt;
 
     use super::*;
@@ -1544,7 +1541,7 @@ mod tests {
         );
     }
 
-    /// End-to-end over a real Unix socket: accepts through the same `WatchedUnixStream` production
+    /// End-to-end over a real AF_UNIX socket: accepts through the same `WatchedStream` production
     /// code wraps every control connection in, then proves that connecting, then dropping, the only
     /// client -- with nothing else ever dialing back in -- is what makes the watch's shutdown signal
     /// trip.
@@ -1560,8 +1557,7 @@ mod tests {
     async fn dropping_the_only_real_control_connection_eventually_trips_shutdown() {
         let dir = tempfile::tempdir().expect("failed to create a scratch dir for the test socket");
         let socket_path = dir.path().join("control.sock");
-        let listener =
-            tokio::net::UnixListener::bind(&socket_path).expect("failed to bind test socket");
+        let listener = Listener::bind(&socket_path).expect("failed to bind test socket");
 
         let (watch, shutdown_rx) = test_watch(Duration::from_secs(30), Duration::from_millis(100));
         watch.start();
@@ -1569,8 +1565,8 @@ mod tests {
         let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
         let watch_for_accept = watch.clone();
         let accept_task = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept failed");
-            let mut conn = WatchedUnixStream::new(stream, watch_for_accept);
+            let stream = listener.accept().await.expect("accept failed");
+            let mut conn = WatchedStream::new(stream, watch_for_accept);
             let _ = accepted_tx.send(());
             // Mirrors what the real transport does: block on a read until the peer goes away. The
             // client in this test never writes anything -- it only connects and disconnects.
@@ -1578,7 +1574,7 @@ mod tests {
             let _ = conn.read(&mut buf).await;
         });
 
-        let client = tokio::net::UnixStream::connect(&socket_path)
+        let client = transport::connect(&socket_path)
             .await
             .expect("connect failed");
         accepted_rx
@@ -1610,8 +1606,7 @@ mod tests {
     async fn a_long_idle_but_still_open_connection_is_never_treated_as_orphaned() {
         let dir = tempfile::tempdir().expect("failed to create a scratch dir for the test socket");
         let socket_path = dir.path().join("control.sock");
-        let listener =
-            tokio::net::UnixListener::bind(&socket_path).expect("failed to bind test socket");
+        let listener = Listener::bind(&socket_path).expect("failed to bind test socket");
 
         let (watch, shutdown_rx) = test_watch(Duration::from_secs(30), Duration::from_millis(50));
         watch.start();
@@ -1619,15 +1614,15 @@ mod tests {
         let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
         let watch_for_accept = watch.clone();
         let _accept_task = tokio::spawn(async move {
-            let (stream, _) = listener.accept().await.expect("accept failed");
-            let conn = WatchedUnixStream::new(stream, watch_for_accept);
+            let stream = listener.accept().await.expect("accept failed");
+            let conn = WatchedStream::new(stream, watch_for_accept);
             let _ = accepted_tx.send(());
             // Never reads, never drops -- exactly a live connection sitting idle between RPCs.
             std::future::pending::<()>().await;
             drop(conn);
         });
 
-        let _client = tokio::net::UnixStream::connect(&socket_path)
+        let _client = transport::connect(&socket_path)
             .await
             .expect("connect failed");
         accepted_rx
@@ -2136,8 +2131,8 @@ mod tests {
         // a complete Arrow IPC stream (end-of-stream marker included), half-close.
         let dir = tempfile::tempdir().unwrap();
         let data_path = dir.path().join("c.sock.data");
-        let listener = tokio::net::UnixListener::bind(&data_path).unwrap();
-        let mut host_side = StdUnixStream::connect(&data_path).unwrap();
+        let listener = Listener::bind(&data_path).unwrap();
+        let mut host_side = transport::connect_blocking(&data_path).unwrap();
         host_side.write_all(&begun.ticket).unwrap();
         host_side.write_all(&encode_schema_ipc(&schema)).unwrap();
         host_side.shutdown(Shutdown::Write).unwrap();

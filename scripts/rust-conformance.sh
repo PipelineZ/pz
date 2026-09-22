@@ -27,6 +27,10 @@ echo "building the memory_sink example..."
 cargo build --example memory_sink --manifest-path "${ROOT_DIR}/rust/pz-connector/Cargo.toml"
 
 ENTRYPOINT="${ROOT_DIR}/rust/target/debug/examples/memory_sink"
+# Git Bash on Windows: cargo names the example memory_sink.exe.
+if [[ -f "${ENTRYPOINT}.exe" ]]; then
+  ENTRYPOINT="${ENTRYPOINT}.exe"
+fi
 if [[ ! -x "${ENTRYPOINT}" ]]; then
   echo "error: expected the built example at '${ENTRYPOINT}'" >&2
   exit 1
