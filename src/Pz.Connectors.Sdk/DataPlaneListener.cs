@@ -218,7 +218,19 @@ internal sealed class DataPlaneListener : IAsyncDisposable
 
     private async Task ServeWriteAsync(Stream stream, WriteTicket write)
     {
-        using var activity = _source.StartActivity("pcp.write_stream", ActivityKind.Server, write.Parent);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            _stopping.Token, write.Session.Cancellation.Token);
+        await ServeWriteAsync(stream, write, _source, linked.Token).ConfigureAwait(false);
+    }
+
+    /// <summary>Reads batches off the wire into <see cref="WriteTicket.Session"/> until end-of-stream,
+    /// then releases the session's <see cref="WriteSessionState.Drained"/> gate that CommitWrite
+    /// awaits. Split out from the instance overload (mirroring <see cref="ServeReadAsync(Stream,
+    /// ReadTicket,ActivitySource,CancellationToken)"/>) so a test can drive the pump directly, against
+    /// an in-memory stream, without a live socket.</summary>
+    internal static async Task ServeWriteAsync(Stream stream, WriteTicket write, ActivitySource source, CancellationToken ct)
+    {
+        using var activity = source.StartActivity("pcp.write_stream", ActivityKind.Server, write.Parent);
         var state = write.Session;
         var pump = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!state.TryBeginPump(pump.Task))
@@ -230,9 +242,6 @@ internal sealed class DataPlaneListener : IAsyncDisposable
             return;
         }
 
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
-            _stopping.Token, state.Cancellation.Token);
-        var ct = linked.Token;
         try
         {
             using var reader = new ArrowStreamReader(stream, leaveOpen: true);

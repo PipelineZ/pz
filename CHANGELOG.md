@@ -20,6 +20,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   pending assertion failure from the test body — a cleanup exception thrown from `finally` supersedes
   whatever is already propagating, so a real Azure REST catalog failure would have surfaced as an
   unrelated drop-table error. The drop is now caught and reported to stderr, test-only.
+- `DataPlaneListener`'s write-stream pump is split into a testable `internal static` overload the
+  same way its read-stream pump already was, so a test can drive it against an in-memory stream with
+  no live socket. Behavior is unchanged; this is what let the new write-path coverage below be
+  written at all.
+- **Test coverage: `Pz.Connectors.Sdk`'s write path and multi-open behavior**, gaps a September 2026
+  code audit named. `FakeConnectors.cs` gains a sink counterpart to its existing source fakes
+  (`FakeSinkConnector`/`FakeSink`/`FakeWriteSession`), and a new `WriteRoundTripTests.cs` drives
+  BeginWrite -> the data-plane pump -> CommitWrite/AbortWrite the way `HonestMappingTests` already
+  drives the read side. Two more facts (one per direction) pin that `PcpConnectorService` opens a
+  connector's source/sink at most once per process and reuses it across ops -- the "connector process
+  spawned once per open" contract, not previously exercised for a SECOND op sharing the first one's
+  already-open connector.
 
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
