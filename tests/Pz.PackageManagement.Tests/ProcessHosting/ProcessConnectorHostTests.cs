@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
-using System.Runtime.Versioning;
 using System.Text.Json;
 using Pz.Connector.LocalFiles;
 using Pz.Connectors.Abstractions;
@@ -13,11 +12,7 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 
 /// <summary>Drives <see cref="ProcessConnectorHost"/> over a real materialized package layout whose
 /// entrypoint is the <c>PcpFakeConnector</c> fixture: manifest gate at load, nothing spawned until an
-/// open, and every spawned process reaped by dispose.
-///
-/// <para>Linux only: the package layout stages a <c>#!/bin/sh</c> wrapper as the entrypoint, which
-/// needs a unix exec bit and a shell to run it.</para></summary>
-[SupportedOSPlatform("linux")]
+/// open, and every spawned process reaped by dispose.</summary>
 [Trait("Category", "Pcp")]
 public sealed class ProcessConnectorHostTests : IDisposable
 {
@@ -29,11 +24,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
 
     // ---- load: manifest gate, no spawn ---------------------------------------------------------
 
-    [SkippableFact]
+    [Fact]
     public async Task Load_registers_the_connector_without_spawning_anything()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var packagesRoot = NewPackageLayout();
         var socketRoot = NewTempDir();
 
@@ -52,11 +45,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Empty(Directory.GetDirectories(socketRoot));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Load_with_telemetry_still_spawns_nothing_and_registers_the_connector()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var packagesRoot = NewPackageLayout();
         var socketRoot = NewTempDir();
 
@@ -68,11 +59,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Empty(Directory.GetDirectories(socketRoot));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Unknown_connector_name_is_PZ0305()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         await using var host = ProcessConnectorHost.LoadFromDirectory(
             NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir());
 
@@ -81,11 +70,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Contains(ConnectorName, ex.Hint ?? string.Empty, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public void Package_with_no_binary_for_this_rid_is_PZ0354_at_load()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         // A RID nothing can fall back to: the expansion walks OS ancestry, and this OS is not in it.
         var packagesRoot = NewPackageLayout(rid: "nosuchos-x64");
 
@@ -96,11 +83,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Contains(RuntimeInformation.RuntimeIdentifier, ex.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public void Package_declaring_the_dotnet_runtime_is_PZ0354_at_load()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var packagesRoot = NewPackageLayout(runtime: "dotnet");
 
         var ex = Assert.Throws<ConnectorHostException>(() => ProcessConnectorHost.LoadFromDirectory(
@@ -111,11 +96,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
 
     // Coverage for the reject-before-spawn protocol gate: an out-of-range protocol declaration is
     // refused at load, never spawned.
-    [SkippableFact]
+    [Fact]
     public void Package_outside_the_protocol_range_is_PZ0306_at_load()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var packagesRoot = NewPackageLayout();
         File.WriteAllText(
             Path.Combine(packagesRoot, PackageId, PackageVersion, "pz.connector.json"),
@@ -139,11 +122,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Contains("99", ex.Message);
     }
 
-    [SkippableFact]
+    [Fact]
     public void Missing_package_directory_is_PZ0304()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var ex = Assert.Throws<ConnectorHostException>(() => ProcessConnectorHost.LoadFromDirectory(
             NewTempDir(), [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir()));
 
@@ -152,11 +133,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
 
     // ---- open: lazy spawn, and dispose reaps ---------------------------------------------------
 
-    [SkippableFact]
+    [Fact]
     public async Task First_open_spawns_and_dispose_reaps()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
         var socketRoot = NewTempDir();
@@ -192,11 +171,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
     /// entities on one external connection opens it a few hundred times in a run. Each open is a child
     /// process; disposing what the open returned must end that child, or all of them stay alive (each
     /// possibly holding a remote connection) until the run ends.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task Disposing_an_opened_source_reaps_its_process_so_repeated_opens_do_not_accumulate()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var dataDir = NewTempDir();
         var socketRoot = NewTempDir();
         await using var host = ProcessConnectorHost.LoadFromDirectory(
@@ -213,11 +190,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Disposing_an_opened_sink_reaps_its_process()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var socketRoot = NewTempDir();
         await using var host = ProcessConnectorHost.LoadFromDirectory(
             NewPackageLayout(), [new ConnectorPackageRef(PackageId, PackageVersion)], socketRoot);
@@ -233,11 +208,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
 
     /// <summary>Two live opens of one connection are two processes, and disposing one leaves the other
     /// working: nothing is shared between them that the first dispose could take away.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task Disposing_one_open_leaves_a_concurrent_open_of_the_same_connection_working()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
         var socketRoot = NewTempDir();
@@ -269,11 +242,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
     /// The fixture throws on any config that still carries a host key, so every RPC below doubles as
     /// the strip's proof: Validate and CheckConnection put their config on the wire, Configure is what
     /// Open rides on. The spans that arrive at the collector then say what the instance was called.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task Instance_key_names_the_instance_and_never_reaches_the_connector()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         await using var receiver = await OtlpReceiver.StartAsync();
         var sourceName = "pz-host-" + Guid.NewGuid().ToString("N");
         using var listener = new ActivityListener
@@ -326,11 +297,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
     /// proves names the span -- Configure always logs "connector configured" (see
     /// <c>HostChannelTests.LogEvent_from_Configure_reaches_the_sink_with_fields_intact</c>), so this is
     /// a deterministic signal rather than one the fixture has to be told to emit.</summary>
-    [SkippableFact]
+    [Fact]
     public async Task LogSink_receives_the_connection_name_the_engine_threaded_in()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var logged = new TaskCompletionSource<(string Connection, int Level, string Message)>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         await using var host = ProcessConnectorHost.LoadFromDirectory(
@@ -362,7 +331,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     [SkippableFact]
     public async Task Load_and_spawn_succeed_against_an_entrypoint_restored_without_the_executable_bit()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
+        Skip.If(OperatingSystem.IsWindows(), "Windows has no exec bit for a restore to leave off");
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
@@ -386,11 +355,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
 
     // ---- capability masking --------------------------------------------------------------------
 
-    [SkippableFact]
+    [Fact]
     public async Task Capabilities_the_process_shims_do_not_implement_are_masked_out()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         // The package DECLARES CheckpointableReads and the fixture reports it at handshake, so the two
         // agree -- this is not a misdeclaration the handshake could catch. There is no PCP wiring for
         // ICheckpointingPartition, so surfacing the flag would let the planner accept a checkpointed
@@ -419,11 +386,9 @@ public sealed class ProcessConnectorHostTests : IDisposable
 
     // ---- cancellation, through the host's own wiring --------------------------------------------
 
-    [SkippableFact]
+    [Fact]
     public async Task Host_wired_cancellation_ends_in_OperationCanceledException_and_dispose_reaps()
     {
-        Skip.If(OperatingSystem.IsWindows(), "this test stages a #!/bin/sh wrapper as the package entrypoint, which is POSIX-only");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 200);
         var socketRoot = NewTempDir();
@@ -488,9 +453,10 @@ public sealed class ProcessConnectorHostTests : IDisposable
     }
 
     /// <summary>Materializes <c>&lt;root&gt;/&lt;PackageId&gt;/&lt;Version&gt;/</c> with a manifest and
-    /// an executable entrypoint. The entrypoint is a wrapper script rather than a copy of the fixture
-    /// binary: what is under test is the manifest→RID→spawn path, and a script keeps the layout to two
-    /// files instead of a whole publish tree.</summary>
+    /// an executable entrypoint. On Unix the entrypoint is a wrapper script rather than a copy of the
+    /// fixture binary: what is under test is the manifest→RID→spawn path, and a script keeps the layout
+    /// to two files instead of a whole publish tree. Windows has no script a spawn can exec directly, so
+    /// there the fixture's build output is copied in whole.</summary>
     private string NewPackageLayout(
         string? rid = null, string runtime = "process",
         ConnectorCapabilities? capabilities = null, IReadOnlyList<string>? extraArgs = null,
@@ -501,20 +467,38 @@ public sealed class ProcessConnectorHostTests : IDisposable
         var binDir = Path.Combine(packageDir, "bin");
         Directory.CreateDirectory(binDir);
 
-        var entrypoint = Path.Combine(binDir, "connector");
-        var args = extraArgs is null ? string.Empty : " " + string.Join(' ', extraArgs);
-        File.WriteAllText(entrypoint, $"#!/bin/sh\nexec \"{FixtureExecutablePath()}\"{args} \"$@\"\n");
-        // `executable: false` is what a real restore's extraction leaves behind (see
-        // ManifestReader.ResolveEntrypoint's own doc comment): a .nupkg is a zip archive, and nothing
-        // in the restore path sets the Unix executable bit on the files it extracts. Every other test
-        // in this class writes the bit itself precisely to bypass that -- this is the one that instead
-        // proves the host's real fix (ResolveEntrypoint) covers it.
-        File.SetUnixFileMode(
-            entrypoint,
-            executable
-                ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
-                  UnixFileMode.GroupRead | UnixFileMode.GroupExecute
-                : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        string entrypointRelative;
+        if (OperatingSystem.IsWindows())
+        {
+            // No shebang to wrap with: the fixture's whole build output is the package's bin/, and
+            // the switches a wrapper would have baked in go to the sidecar file the fixture reads.
+            // Windows has no exec bit, so `executable` has nothing to vary.
+            CopyDirectory(Path.GetDirectoryName(FixtureExecutablePath())!, binDir);
+            if (extraArgs is not null)
+            {
+                File.WriteAllLines(Path.Combine(binDir, "fixture-args.txt"), extraArgs);
+            }
+
+            entrypointRelative = "bin/" + Path.GetFileName(FixtureExecutablePath());
+        }
+        else
+        {
+            var entrypoint = Path.Combine(binDir, "connector");
+            var args = extraArgs is null ? string.Empty : " " + string.Join(' ', extraArgs);
+            File.WriteAllText(entrypoint, $"#!/bin/sh\nexec \"{FixtureExecutablePath()}\"{args} \"$@\"\n");
+            // `executable: false` is what a real restore's extraction leaves behind (see
+            // ManifestReader.ResolveEntrypoint's own doc comment): a .nupkg is a zip archive, and nothing
+            // in the restore path sets the Unix executable bit on the files it extracts. Every other test
+            // in this class writes the bit itself precisely to bypass that -- this is the one that instead
+            // proves the host's real fix (ResolveEntrypoint) covers it.
+            File.SetUnixFileMode(
+                entrypoint,
+                executable
+                    ? UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                      UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                    : UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            entrypointRelative = "bin/connector";
+        }
 
         var manifest = new Dictionary<string, object?>
         {
@@ -526,12 +510,22 @@ public sealed class ProcessConnectorHostTests : IDisposable
             ["runtime"] = runtime,
             ["entrypoints"] = new Dictionary<string, string>
             {
-                [rid ?? RuntimeInformation.RuntimeIdentifier] = "bin/connector",
+                [rid ?? RuntimeInformation.RuntimeIdentifier] = entrypointRelative,
             },
         };
         File.WriteAllText(Path.Combine(packageDir, "pz.connector.json"), JsonSerializer.Serialize(manifest));
 
         return root;
+    }
+
+    private static void CopyDirectory(string from, string to)
+    {
+        foreach (var file in Directory.EnumerateFiles(from, "*", SearchOption.AllDirectories))
+        {
+            var target = Path.Combine(to, Path.GetRelativePath(from, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+            File.Copy(file, target);
+        }
     }
 
     private static string FixtureExecutablePath()

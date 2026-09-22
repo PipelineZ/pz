@@ -1,3 +1,6 @@
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Pz.Connector.LocalFiles;
@@ -11,10 +14,7 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 /// <summary>Drives <see cref="PcpClient"/> against the real out-of-process <c>PcpFakeConnector</c>
 /// fixture via <see cref="ConnectorProcess"/> -- these tests are the wire-level proof
 /// that the handshake discipline and error mapping documented on <see cref="PcpClient"/> hold against an
-/// actual peer, not a mock of one.
-///
-/// <para>Every fact skips on Windows: the fixture's AF_UNIX listener fails to initialize there
-/// (Winsock 10106), so the transport this suite proves is not yet available on that runner.</para></summary>
+/// actual peer, not a mock of one.</summary>
 [Trait("Category", "Pcp")]
 public sealed class HandshakeTests : IDisposable
 {
@@ -22,11 +22,9 @@ public sealed class HandshakeTests : IDisposable
 
     private readonly List<string> _socketDirs = [];
 
-    [SkippableFact]
+    [Fact]
     public async Task Handshake_and_configure_succeed()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var manifest = LocalFilesManifest();
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
@@ -38,11 +36,43 @@ public sealed class HandshakeTests : IDisposable
         Assert.Equal((long)new LocalFilesConnector().Capabilities, client.Hello.Capabilities);
     }
 
+    /// <summary>The Windows twin of <c>ConnectorProcessTests</c>' 0700 check: the directory's DACL is
+    /// cut from its parent and names only the current user, and the socket the child bound inside it
+    /// inherited exactly that -- no other principal can open, and so dial, the control socket.</summary>
     [SkippableFact]
+    [SupportedOSPlatform("windows")]
+    public async Task Socket_dir_and_socket_are_owner_only_on_windows()
+    {
+        Skip.IfNot(OperatingSystem.IsWindows(), "the unix mode-bit equivalent is ConnectorProcessTests' own fact");
+
+        var socketDir = NewSocketDir();
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), socketDir, "localfiles-pcp");
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+
+        using var identity = WindowsIdentity.GetCurrent();
+        var dirSecurity = new DirectoryInfo(socketDir).GetAccessControl();
+        Assert.True(dirSecurity.AreAccessRulesProtected, "socket dir still inherits its parent's DACL");
+        AssertOnlyCurrentUser(dirSecurity.GetAccessRules(true, true, typeof(SecurityIdentifier)), identity.User!);
+        AssertOnlyCurrentUser(
+            new FileInfo(process.SocketPath).GetAccessControl().GetAccessRules(true, true, typeof(SecurityIdentifier)),
+            identity.User!);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AssertOnlyCurrentUser(AuthorizationRuleCollection rules, SecurityIdentifier user)
+    {
+        Assert.NotEmpty(rules);
+        foreach (FileSystemAccessRule rule in rules)
+        {
+            Assert.Equal(user, rule.IdentityReference);
+        }
+    }
+
+    [Fact]
     public async Task Hang_is_PZ0356_with_stderr_tail()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--hang-handshake"]);
 
@@ -54,11 +84,9 @@ public sealed class HandshakeTests : IDisposable
         Assert.Contains("handshake", ex.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Wrong_protocol_major_is_PZ0356()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--wrong-protocol-major"]);
 
@@ -68,11 +96,9 @@ public sealed class HandshakeTests : IDisposable
         Assert.Equal("PZ0356", ex.Code);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Capability_mismatch_vs_manifest_is_PZ0356()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--misreport-capabilities"]);
 
@@ -88,11 +114,9 @@ public sealed class HandshakeTests : IDisposable
         Assert.Contains("sdk: Pz.Connectors.Sdk", ex.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Handshake_failure_names_the_childs_exit_code_once_it_has_exited()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         // --die-immediately exits 1 before the socket is ever served. The handshake is only started
         // once the child is known to be gone: on a busy machine a process can take longer to start
         // and die than ShortHandshakeTimeout takes to give up on it.
@@ -108,33 +132,31 @@ public sealed class HandshakeTests : IDisposable
         Assert.Contains("exited with code 1", ex.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task MapRpcException_names_exit_code_and_signal_once_the_child_has_exited()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
         await using var client = await PcpClient.ConnectAndConfigureAsync(
             process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
 
         // Kills the child directly (not through the client's own shutdown ladder), via .NET's
-        // Process.Kill (SIGKILL on Unix) -- deterministically the same 137 exit code an OOM-kill
-        // leaves behind, so the RPC failure below maps against an already-exited process.
+        // Process.Kill -- SIGKILL on Unix, deterministically the same 137 exit code an OOM-kill leaves
+        // behind; TerminateProcess with exit code -1 on Windows, which has no signals to name. Either
+        // way the RPC failure below maps against an already-exited process.
         await process.DisposeAsync();
 
         var mapped = client.MapRpcException(new RpcException(new Status(StatusCode.Unavailable, "channel closed")));
 
         var hostEx = Assert.IsType<ConnectorHostException>(mapped);
         Assert.Equal("PZ0358", hostEx.Code);
-        Assert.Contains("exited with code 137 (signal SIGKILL)", hostEx.Message, StringComparison.Ordinal);
+        var expected = OperatingSystem.IsWindows() ? "exited with code -1" : "exited with code 137 (signal SIGKILL)";
+        Assert.Contains(expected, hostEx.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Unknown_capability_bit_from_a_newer_sdk_does_not_fail_the_handshake()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         // The manifest and the true capability set agree; the fixture's Hello additionally reports one
         // bit outside every ConnectorCapabilities member this build defines, the shape a connector built
         // against a newer SDK sends an older host that has not learned its newest flag yet.
@@ -151,11 +173,9 @@ public sealed class HandshakeTests : IDisposable
         Assert.Contains(warnings, w => w.Contains("capabilit", StringComparison.OrdinalIgnoreCase));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Name_mismatch_vs_manifest_is_PZ0356_and_never_reaches_Configure()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--misreport-name"]);
         var exited = new TaskCompletionSource();
@@ -181,11 +201,9 @@ public sealed class HandshakeTests : IDisposable
         Assert.DoesNotContain("Configure ran", process.StderrTail, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Error_detail_maps_to_PzConnectorException()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--fail-check-transient"]);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
@@ -208,11 +226,9 @@ public sealed class HandshakeTests : IDisposable
         Assert.Contains("hint: retry after the cool-down", connectorEx.Message, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Unhandled_exception_in_a_handler_maps_to_a_non_transient_connector_error_not_a_protocol_violation()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--throw-unhandled"]);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
@@ -235,11 +251,9 @@ public sealed class HandshakeTests : IDisposable
             StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Caller_cancellation_during_handshake_throws_OperationCanceledException()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         // The connector never answers Handshake here, so the only thing that can end this call within
         // the test's lifetime is the caller's own token -- the internal (default, 15s) handshake
         // timeout is never in play. Proves the RpcException(Cancelled) that gRPC gives a cancelled
@@ -253,11 +267,9 @@ public sealed class HandshakeTests : IDisposable
             process, LocalFilesManifest(), "test-instance", ConnectorConfig.Empty, cts.Token));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task MapRpcException_distinguishes_caller_cancellation_from_connector_side_cancel()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = Path.GetTempPath() });
         await using var client = await PcpClient.ConnectAndConfigureAsync(

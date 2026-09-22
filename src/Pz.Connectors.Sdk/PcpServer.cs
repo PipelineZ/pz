@@ -132,6 +132,8 @@ internal static class SocketPermissions
 {
     public static void RestrictToOwner(string path)
     {
+        // Windows has no mode bits to narrow: the socket file inherits the protected owner-only DACL the
+        // host puts on the containing directory before it spawns this process.
         if (OperatingSystem.IsWindows())
         {
             return;

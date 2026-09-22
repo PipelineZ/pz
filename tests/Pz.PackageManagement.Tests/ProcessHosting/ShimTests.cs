@@ -15,10 +15,7 @@ namespace Pz.PackageManagement.Tests.ProcessHosting;
 /// interfaces (<see cref="ISourceConnector"/>/<see cref="ISinkConnector"/>), never the raw
 /// <see cref="PcpClient.Grpc"/> client <see cref="DataPlaneTests"/> and <see cref="HandshakeTests"/>
 /// use -- this is the proof that the shim, not just the wire underneath it, behaves like an in-process
-/// connector.
-///
-/// <para>Every fact skips on Windows: the fixture's AF_UNIX listener fails to initialize there
-/// (Winsock 10106), so the transport this suite proves is not yet available on that runner.</para></summary>
+/// connector.</summary>
 [Trait("Category", "Pcp")]
 public sealed class ShimTests : IDisposable
 {
@@ -26,11 +23,9 @@ public sealed class ShimTests : IDisposable
 
     // ---- Step 1: read path, through the shim end to end -------------------------------------
 
-    [SkippableFact]
+    [Fact]
     public async Task Read_path_round_trips_schema_and_rows_through_the_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         const int rowCount = 150;
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), rowCount);
@@ -86,11 +81,9 @@ public sealed class ShimTests : IDisposable
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Non_prefix_column_pruning_hint_yields_only_the_hinted_columns_through_the_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         const int rowCount = 150;
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), rowCount);
@@ -153,11 +146,9 @@ public sealed class ShimTests : IDisposable
         }
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Native_scan_probe_round_trips_through_the_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 5);
 
@@ -186,11 +177,9 @@ public sealed class ShimTests : IDisposable
         Assert.Contains("small.csv", scan.SqlFragment, StringComparison.Ordinal);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Capabilities_the_shims_do_not_implement_are_masked_out_of_their_surface()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         // Manifest and Hello AGREE that the connector has CheckpointableReads, so the handshake's own
         // set-equality gate is satisfied -- this is not a misdeclaration. The shims still must not
         // surface it: nothing here implements ICheckpointingPartition, and the planner would accept a
@@ -254,11 +243,9 @@ public sealed class ShimTests : IDisposable
         return rows;
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task SyncState_crosses_the_shim_and_the_partition_polls_the_connector_for_its_token()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 7);
 
@@ -294,11 +281,9 @@ public sealed class ShimTests : IDisposable
         Assert.Equal("0+7+7", next);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Stable_ids_and_sync_state_together_build_the_identified_sync_state_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 5);
 
@@ -321,11 +306,9 @@ public sealed class ShimTests : IDisposable
         Assert.Equal("0+5", token);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Partition_without_the_sync_state_flag_is_not_an_ISyncStatePartition()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 3);
 
@@ -344,11 +327,9 @@ public sealed class ShimTests : IDisposable
         Assert.False(partition is ISyncStatePartition);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Unimplemented_natural_read_shape_reads_as_Full_so_a_connector_built_before_the_rpc_keeps_its_behavior()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 3);
 
@@ -371,11 +352,9 @@ public sealed class ShimTests : IDisposable
     // failure out of process can only truncate the stream; the shim asks the still-living connector
     // what it threw rather than reporting a protocol break the engine will never retry.
 
-    [SkippableFact]
+    [Fact]
     public async Task A_transient_failure_raised_mid_read_stays_transient_and_keeps_its_retry_after()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 20);
         await using var process = ConnectorProcess.Spawn(
@@ -398,11 +377,9 @@ public sealed class ShimTests : IDisposable
         Assert.True(again.IsTransient);
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task A_transient_failure_raised_mid_write_stays_transient_and_the_session_is_still_abortable()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(
             FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--fail-write-midstream-transient"]);
@@ -443,11 +420,9 @@ public sealed class ShimTests : IDisposable
 
     // ---- Step 1: write path, through the shim end to end -------------------------------------
 
-    [SkippableFact]
+    [Fact]
     public async Task Write_path_commits_two_batches_through_the_shim()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
@@ -490,11 +465,9 @@ public sealed class ShimTests : IDisposable
             File.Exists(Path.Combine(dataDir, "out", "out.parquet")), "committed write should have landed a file");
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Abort_path_leaves_no_destination_file()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
@@ -528,11 +501,9 @@ public sealed class ShimTests : IDisposable
 
     // ---- Step 1: process death mid-read is a transient PzConnectorException ------------------
 
-    [SkippableFact]
+    [Fact]
     public async Task Killing_the_process_mid_read_surfaces_a_transient_PzConnectorException()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "big.csv"), 20_000);
 
@@ -585,11 +556,9 @@ public sealed class ShimTests : IDisposable
         await process.DisposeAsync();
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Killing_the_process_mid_write_surfaces_a_transient_PzConnectorException()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
@@ -639,11 +608,9 @@ public sealed class ShimTests : IDisposable
 
     // ---- Step 1/7: AbortSemantics genuinely crosses the wire, not the shim's own default -----
 
-    [SkippableFact]
+    [Fact]
     public async Task AbortSemantics_surfaces_the_connectors_reported_value_not_the_shims_default()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         var dataDir = NewTempDir();
         // The wrapped LocalFilesConnector is always DiscardsAll -- the same value ProcessSink defaults
         // to before any session opens -- so asserting DiscardsAll after BeginWriteAsync can't tell "the

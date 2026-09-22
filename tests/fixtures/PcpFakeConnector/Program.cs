@@ -10,8 +10,19 @@ namespace PcpFakeConnector;
 /// through to it untouched.</summary>
 internal static class Program
 {
+    /// <summary>A test staging this binary as a package entrypoint cannot bake switches into argv (the
+    /// host passes only <c>--pz-socket</c>) and on Windows has no wrapper script to put them in either,
+    /// so it writes them one per line into this file beside the binary instead.</summary>
+    internal const string SidecarArgsFileName = "fixture-args.txt";
+
     public static async Task<int> Main(string[] args)
     {
+        var sidecar = Path.Combine(AppContext.BaseDirectory, SidecarArgsFileName);
+        if (File.Exists(sidecar))
+        {
+            args = [.. File.ReadAllLines(sidecar).Where(line => line.Length > 0), .. args];
+        }
+
         FixtureOptions options;
         string[] passthrough;
         try
