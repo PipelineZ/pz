@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Parquet;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
@@ -23,7 +24,7 @@ namespace Pz.Connector.LocalFiles;
 /// without extraction savings. This is deliberate, not a bug -- see
 /// <c>Parquet_incremental_captures_but_does_not_pushdown</c>. A WINDOWED dataset (<see
 /// cref="DatasetSpec.WatermarkUpperBound"/> also set) is different -- see <see cref="TryGetNativeScan"/>.</summary>
-internal sealed class ParquetSource(string baseDir) : ISource
+internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
 {
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
@@ -35,7 +36,7 @@ internal sealed class ParquetSource(string baseDir) : ISource
 
         var footer = await ParquetReader.ReadSchemaAsync(path).ConfigureAwait(false);
         var fields = footer.GetDataFields()
-            .Select(f => TypeNameMap.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f)))
+            .Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f)))
             .ToArray();
         return new DatasetSchema(new Schema(fields, null));
     }
@@ -55,7 +56,7 @@ internal sealed class ParquetSource(string baseDir) : ISource
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", context);
         var absPath = ResolvePath(spec);
         var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
-        var request = new FormatReadRequest(urlArg, 1, null, TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, 1, null);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
@@ -82,7 +83,8 @@ internal sealed class ParquetSource(string baseDir) : ISource
 
     /// <summary>The entity names the file, and <c>path:</c> overrides that when the layout does not
     /// match the name. A source needs the extension its format implies; the sink writes a directory, so
-    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely.</summary>
+    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely — a RELATIVE one
+    /// that escapes <c>root:</c> (a <c>..</c> segment) is refused (PZ0365).</summary>
     private string ResolvePath(DatasetSpec spec)
     {
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", $"dataset '{spec.Dataset}'");
@@ -90,7 +92,11 @@ internal sealed class ParquetSource(string baseDir) : ISource
             ? p
             : $"{spec.Dataset}.{format.Extension}";
 
-        return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
+        return Path.IsPathRooted(relative)
+            ? relative
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'")
+                : Path.Combine(baseDir, relative);
     }
 
     private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");

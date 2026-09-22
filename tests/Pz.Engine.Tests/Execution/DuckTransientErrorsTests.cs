@@ -27,6 +27,10 @@ public sealed class DuckTransientErrorsTests
     [InlineData("connection error")]
     [InlineData("could not establish connection")]
     [InlineData("Could Not Establish Connection to host")]
+    // DuckDB's own real wording for a closed-port / nothing-listening failure (captured from a real
+    // httpfs HEAD against a closed local port, not assumed) -- see
+    // DuckTransientErrorsRealDuckDbTests.Closed_port_produces_a_real_duckdb_error_classified_transient.
+    [InlineData("IO Error: Could not connect to server error for HTTP HEAD to 'http://127.0.0.1:45191/f.parquet'")]
     [InlineData("IO Error: Operation timed out")]
     [InlineData("TIMED OUT")]
     [InlineData("IO Error: Connection Timeout")]

@@ -137,6 +137,17 @@ internal static class IcebergCatalog
                 break;
         }
 
+        // `storage_scope:` becomes the storage secret's DuckDB SCOPE -- without it, two catalog
+        // connections that both configure explicit storage credentials get unscoped secrets, and
+        // DuckDB's matching among several unscoped secrets of the same type is non-deterministic
+        // (see IcebergSql.SetupStatements). Never echoed on failure: like `warehouse`, a URL can
+        // carry embedded credentials.
+        if (config.GetString("storage_scope") is { Length: > 0 } storageScope && !IcebergSql.IsUrl(storageScope))
+        {
+            errors.Add("'storage_scope' must be a URL-shaped prefix, e.g. 's3://bucket/prefix/', " +
+                "'abfss://container@account/prefix/', 'az://bucket/prefix/'");
+        }
+
         var storage = StorageOf(config);
         if (storage is not (StorageS3 or StorageAzure))
         {

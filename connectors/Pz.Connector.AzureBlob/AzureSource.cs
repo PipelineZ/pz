@@ -57,7 +57,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
             // for all three the declared columns: contract IS the schema, so no blob download is needed
             // here at all.
             var columns = GetColumnsContract(spec, format.Name);
-            var fields = columns.Select(kv => AzureTypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+            var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
             return new DatasetSchema(new Schema(fields, null));
         }
 
@@ -71,7 +71,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
                 var header = await ReadCsvHeaderAsync(stream, delimiter, ct).ConfigureAwait(false);
                 var fields = columns
                     .Where(kv => header.Contains(kv.Key))
-                    .Select(kv => AzureTypeNameMap.ToArrowField(kv.Key, kv.Value))
+                    .Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value))
                     .ToArray();
                 return new DatasetSchema(new Schema(fields, null));
             }
@@ -116,7 +116,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Source));
         var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
-        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared, AzureTypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 

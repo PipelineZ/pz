@@ -6,6 +6,7 @@ using Apache.Arrow.Types;
 using Parquet;
 using Parquet.Schema;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
@@ -14,7 +15,7 @@ namespace Pz.Connector.LocalFiles;
 /// shared toolkit codec, all committed via temp-write + atomic move. The native COPY path
 /// (<see cref="TryGetNativeCopy"/>) goes through DuckDB's <c>COPY ... TO</c> — it is also the only
 /// route for decimal128 parquet output, which the universal Parquet.Net path cannot write.</summary>
-internal sealed class LocalFilesSink(string baseDir) : ISink
+internal sealed class LocalFilesSink(string baseDir, bool rootDeclared) : ISink
 {
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
@@ -95,14 +96,19 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
     public ValueTask DisposeAsync() => default;
 
     /// <summary>The entity names the directory this write lands in, and <c>path:</c> overrides that.
-    /// An absolute <c>path:</c> ignores the connection's location entirely.</summary>
+    /// An absolute <c>path:</c> ignores the connection's location entirely — a RELATIVE one that
+    /// escapes <c>root:</c> (a <c>..</c> segment) is refused (PZ0365).</summary>
     private string ResolveOutputDir(OutputSpec spec)
     {
         var relative = spec.Options.TryGetValue("path", out var value) && value?.ToString() is { Length: > 0 } p
             ? p
             : spec.Output;
 
-        return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
+        return Path.IsPathRooted(relative)
+            ? relative
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Sink, $"output '{spec.Output}'")
+                : Path.Combine(baseDir, relative);
     }
 
     internal static FileFormat ResolveFormat(OutputSpec spec) =>
@@ -256,8 +262,12 @@ internal sealed class ParquetSinkWriteSession : LocalFileWriteSessionBase
         BooleanType => new DataField(field.Name, typeof(bool), isNullable: true),
         StringType => new DataField(field.Name, typeof(string), isNullable: true),
         Date32Type => new DateTimeDataField(field.Name, DateTimeFormat.Date, isNullable: true),
-        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTime,
-            isAdjustedToUTC: true, unit: DateTimeTimeUnit.Micros, isNullable: true),
+        // DateAndTimeMicros, not DateAndTime -- Parquet.Net's DateTimeDataField constructor
+        // hardcodes Unit=Millis for DateAndTime regardless of the `unit:` argument (it only
+        // honors a requested unit for the *Micros/*Nanos format constants), so passing
+        // DateAndTime here would silently truncate every timestamp to millisecond precision.
+        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTimeMicros,
+            isAdjustedToUTC: true, isNullable: true),
         Decimal128Type => throw new PzConnectorException(
             $"column '{field.Name}': the universal parquet write path does not support decimal columns; " +
             "the native COPY path writes them", isTransient: false),

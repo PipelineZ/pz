@@ -494,6 +494,16 @@ public static class PzErrorCode
     // that same ValidateAsync call's Errors.
     public const string ConnectorConfigWarning = "PZ0364";
 
+    /// <summary>A relative <c>path:</c>/entity-derived location, once resolved against the
+    /// connection's <c>root:</c>, lands outside it (a <c>..</c> segment escapes). Raised by
+    /// <c>Pz.Connectors.Toolkit.RootContainment</c>, which the localfiles/s3/gcs connectors call from
+    /// their own <c>ResolvePath</c>/<c>ResolveOutputDir</c>/key-building — connector projects
+    /// deliberately do not reference this project (see <see cref="NativePathRequired"/>/PZ0312's
+    /// precedent), so this VALUE is ALSO duplicated there as a bare string literal; nothing enforces the
+    /// two staying in sync. An ABSOLUTE <c>path:</c> is unaffected — it ignores the connection's
+    /// location entirely, by design. Next step: use an absolute path, or fix <c>root:</c>.</summary>
+    public const string RootEscape = "PZ0365";
+
     public const string SqlDryCompile = "PZ0401";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";

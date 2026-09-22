@@ -109,6 +109,106 @@ public sealed class RootAndDefaultPathTests : IDisposable
     }
 
     [Fact]
+    public async Task A_relative_path_escaping_root_via_csv_source_is_refused()
+    {
+        WriteCsv("outside", "o.csv");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await FirstColumnAsync(Config(_work, root: "lake"), Spec("orders", path: "../outside/o.csv")));
+
+        Assert.False(ex.IsTransient);
+        Assert.StartsWith("PZ0365: connection 'files': dataset 'orders' resolves outside 'root:'", ex.Message,
+            StringComparison.Ordinal);
+        // Never echo the attempted value -- root:/path: are locations, not credentials, but the same
+        // "name the option, not the value" hygiene applies.
+        Assert.DoesNotContain(_work, ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("o.csv", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_relative_path_escaping_root_via_parquet_source_is_refused()
+    {
+        var options = new Dictionary<string, object?> { ["format"] = "parquet", ["path"] = "../outside/o.parquet" };
+        var spec = new DatasetSpec("files", "orders", options);
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await FirstColumnAsync(Config(_work, root: "lake"), spec));
+
+        Assert.StartsWith("PZ0365: connection 'files': dataset 'orders' resolves outside 'root:'", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_relative_path_escaping_root_via_native_only_source_is_refused()
+    {
+        var options = new Dictionary<string, object?> { ["format"] = "json", ["path"] = "../outside/o.json" };
+        var spec = new DatasetSpec("files", "orders", options);
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await FirstColumnAsync(Config(_work, root: "lake"), spec));
+
+        Assert.StartsWith("PZ0365: connection 'files': dataset 'orders' resolves outside 'root:'", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task A_relative_path_escaping_root_via_sink_is_refused()
+    {
+        await using var sink = await ((ISinkConnector)new LocalFilesConnector())
+            .OpenAsync(Config(_work, root: "lake"), CancellationToken.None);
+        var spec = new OutputSpec("lake", "curated", "replace", "fail_on_change",
+            new Dictionary<string, object?> { ["format"] = "csv", ["path"] = "../outside" });
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await sink.BeginWriteAsync(spec, IdSchema, CancellationToken.None));
+
+        Assert.False(ex.IsTransient);
+        Assert.StartsWith("PZ0365: connection 'lake': output 'curated' resolves outside 'root:'", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>A sibling directory whose name merely shares the root's name as a TEXT prefix
+    /// ("lake2" against root "lake") must not be mistaken for "inside" -- a naive
+    /// <c>fullCombined.StartsWith(fullRoot)</c> check without a trailing separator would wrongly let
+    /// this one through, since "…/lake2/o.csv" does start with the raw string "…/lake".</summary>
+    [Fact]
+    public async Task A_path_escaping_into_a_root_name_prefixed_sibling_is_still_refused()
+    {
+        WriteCsv("lake2", "o.csv");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await FirstColumnAsync(Config(_work, root: "lake"), Spec("orders", path: "../lake2/o.csv")));
+
+        Assert.StartsWith("PZ0365: connection 'files': dataset 'orders' resolves outside 'root:'", ex.Message,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>A relative path that stays inside root despite using ".." internally (it walks down and
+    /// back up without ever leaving) is NOT refused -- the check is about where the path LANDS, not
+    /// whether it contains the literal characters "..".</summary>
+    [Fact]
+    public async Task A_relative_path_using_dotdot_internally_but_staying_within_root_is_allowed()
+    {
+        WriteCsv("lake", "sub", "o.csv");
+
+        Assert.Equal("id", await FirstColumnAsync(
+            Config(_work, root: "lake"), Spec("orders", path: "sub/../sub/o.csv")));
+    }
+
+    /// <summary>With no <c>root:</c> the connection names no place of its own -- the base is the project
+    /// directory, and a data folder beside the project (<c>../shared/o.csv</c>) is an ordinary layout.
+    /// Only a declared <c>root:</c> is a boundary to escape.</summary>
+    [Fact]
+    public async Task With_no_root_a_relative_path_outside_the_project_is_still_read()
+    {
+        WriteCsv("shared", "o.csv");
+        var project = Path.Combine(_work, "project");
+        Directory.CreateDirectory(project);
+
+        Assert.Equal("id", await FirstColumnAsync(Config(project), Spec("orders", path: "../shared/o.csv")));
+    }
+
+    [Fact]
     public async Task A_sink_with_no_path_writes_under_the_entity_name()
     {
         await using var sink = await ((ISinkConnector)new LocalFilesConnector())

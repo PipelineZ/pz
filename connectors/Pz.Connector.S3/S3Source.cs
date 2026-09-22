@@ -2,6 +2,7 @@ using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.S3;
@@ -28,7 +29,7 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
             isTransient: false);
 
-        var fields = columns.Select(kv => S3TypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+        var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new ValueTask<DatasetSchema>(new DatasetSchema(new Schema(fields, null)));
     }
 
@@ -41,7 +42,7 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
         var urlList = string.Join(", ", keyPatterns.Select(k => $"'s3://{S3Sql.Esc(bucket)}/{S3Sql.Esc(k)}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var declared = ExtractColumns(spec);
-        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared, S3TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 
@@ -81,6 +82,16 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
         var path = spec.Options.TryGetValue("path", out var p) && p?.ToString() is { Length: > 0 } given
             ? given.Trim('/')
             : $"{spec.Dataset}.{GetFormat(spec)}";
+        if (spec.Options.ContainsKey("path"))
+        {
+            // Object-store keys are opaque strings -- a bucket never actually "collapses" a `..`
+            // segment the way a filesystem does -- but `..` can never be a legitimate authored key
+            // component either (pz's own entity-name grammar already forbids one everywhere else --
+            // PZ0344), so this refuses the same mistake here regardless of how any downstream URL
+            // layer might, or might not, normalize it.
+            RootContainment.RefuseParentSegment(path, spec.Source, $"dataset '{spec.Dataset}'");
+        }
+
         var prefix = rootBucket is null || (spec.Options.ContainsKey("bucket") && rootBucket != bucket)
             ? ""
             : rootPrefix;

@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Parquet;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.AzureBlob;
 
@@ -18,7 +19,7 @@ internal static class AzureParquetReader
         try
         {
             var fields = reader.Schema.GetDataFields()
-                .Select(f => AzureTypeNameMap.ToArrowField(f.Name, AzureParquetTypeMap.ToV0TypeName(f)))
+                .Select(f => ColumnTypeCatalog.ToArrowField(f.Name, AzureParquetTypeMap.ToV0TypeName(f)))
                 .ToArray();
             return new Schema(fields, null);
         }

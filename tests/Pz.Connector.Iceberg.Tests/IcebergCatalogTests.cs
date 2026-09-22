@@ -231,13 +231,28 @@ public sealed class IcebergCatalogTests
     }
 
     [Fact]
+    public void Storage_scope_must_be_url_shaped()
+    {
+        Assert.Equal(
+            ["'storage_scope' must be a URL-shaped prefix, e.g. 's3://bucket/prefix/', " +
+             "'abfss://container@account/prefix/', 'az://bucket/prefix/'"],
+            IcebergCatalog.Validate(Config(("endpoint", "http://c"), ("warehouse", "wh"), ("storage_scope", "bucket/prefix"))));
+
+        Assert.Empty(IcebergCatalog.Validate(
+            Config(("endpoint", "http://c"), ("warehouse", "wh"), ("storage_scope", "s3://bucket/prefix/"))));
+        Assert.Empty(IcebergCatalog.Validate(
+            Config(("endpoint", "http://c"), ("warehouse", "wh"), ("storage", "azure"), ("storage_auth", "credential_chain"),
+                ("storage_account_name", "a"), ("storage_scope", "abfss://c@a/prefix/"))));
+    }
+
+    [Fact]
     public void Connection_schema_accepts_every_azure_key()
     {
         var schema = Json.Schema.JsonSchema.FromText(new IcebergConnector().ConnectionConfigSchema);
         var doc = System.Text.Json.JsonDocument.Parse("""
             { "catalog": "rest", "endpoint": "http://c", "storage": "azure", "storage_auth": "service_principal",
               "storage_tenant_id": "t", "storage_client_id": "c", "storage_client_secret": "s", "storage_account_name": "a",
-              "storage_connection_string": "x", "storage_account_key": "k", "storage_chain": "cli" }
+              "storage_connection_string": "x", "storage_account_key": "k", "storage_chain": "cli", "storage_scope": "abfss://c@a/" }
             """);
         Assert.True(schema.Evaluate(doc.RootElement).IsValid);
         var bad = System.Text.Json.JsonDocument.Parse("""{ "storage": "gcs" }""");

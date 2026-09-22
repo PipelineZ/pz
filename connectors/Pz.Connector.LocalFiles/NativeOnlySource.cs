@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
@@ -15,7 +16,7 @@ namespace Pz.Connector.LocalFiles;
 /// at all goes through DuckDB's own typing (json's <c>auto_detect</c>, xlsx/avro's native inference).
 /// The contract IS the schema: <see cref="GetSchemaAsync"/> answers from it or refuses -- none of the
 /// three formats gives schema fetch a header row or footer to read without one.</summary>
-internal sealed class NativeOnlySource(string baseDir) : ISource
+internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISource
 {
     /// <summary>No file bytes are read here at all beyond the existence check -- the declared
     /// `columns:` contract IS the schema (the azure json precedent, generalised to xlsx/avro).</summary>
@@ -30,7 +31,7 @@ internal sealed class NativeOnlySource(string baseDir) : ISource
         }
 
         var columns = GetColumnsContract(spec, format);
-        var fields = columns.Select(kv => TypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+        var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new(new DatasetSchema(new Schema(fields, null)));
     }
 
@@ -41,7 +42,7 @@ internal sealed class NativeOnlySource(string baseDir) : ISource
         var absPath = ResolvePath(spec, format);
         var declared = ExtractColumns(spec);
         var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
-        var request = new FormatReadRequest(urlArg, 1, declared, TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, 1, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
@@ -68,14 +69,19 @@ internal sealed class NativeOnlySource(string baseDir) : ISource
 
     /// <summary>The entity names the file, and <c>path:</c> overrides that when the layout does not
     /// match the name. A source needs the extension its format implies; the sink writes a directory, so
-    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely.</summary>
+    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely — a RELATIVE one
+    /// that escapes <c>root:</c> (a <c>..</c> segment) is refused (PZ0365).</summary>
     private string ResolvePath(DatasetSpec spec, FileFormat format)
     {
         var relative = spec.Options.TryGetValue("path", out var value) && value?.ToString() is { Length: > 0 } p
             ? p
             : $"{spec.Dataset}.{format.Extension}";
 
-        return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
+        return Path.IsPathRooted(relative)
+            ? relative
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'")
+                : Path.Combine(baseDir, relative);
     }
 
     /// <summary>Same lookup pair as <see cref="CsvSource"/>'s: <see cref="ExtractColumns"/> tells

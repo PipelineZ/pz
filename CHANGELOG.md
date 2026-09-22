@@ -57,6 +57,38 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - The lock's `rid` is compared with the host's: a `.pz/packages` restored on
   one platform and run on another is PZ0321 naming both, instead of the
   "Exec format error" spawn failure it used to reach.
+- **A relative `path:`/entity-derived location that escapes a connection's `root:` is now refused
+  (PZ0365)** instead of silently reading or writing outside it. Only a DECLARED `root:` is a boundary:
+  a `localfiles` connection without one resolves relative paths against the project directory exactly
+  as before, so a data folder beside the project (`path: ../shared/x.csv`) keeps working.
+  *Migration:* a connection that declares `root:` and reaches outside it with `..` — give that
+  `path:` as an absolute path, or move `root:` up to a directory that contains both. `localfiles` checks this with real
+  filesystem containment (`Path.GetFullPath`, so a `..` segment lands where it actually lands,
+  compared against the root with a trailing separator to avoid mistaking a same-prefix sibling
+  directory for "inside"); an absolute `path:` is unaffected, unchanged from before. `s3` and `gcs`
+  refuse a `..` segment in a `path:` option the same way, since their keys are opaque
+  slash-delimited strings with no real filesystem resolution to check containment against, and `..`
+  can never be a legitimate authored key component anyway (pz's entity-name grammar already forbids
+  one everywhere else). `azureblob` is unaffected: it has no connection-level `root:` for a `path:`
+  to escape -- container and path are both always author-declared directly on the dataset/output.
+- **The iceberg connector accepts an optional `storage_scope:` connection option**, which becomes
+  the `SCOPE` of the storage secret it creates. Without it, a catalog connection's storage secret
+  (S3 keys, the AWS credential chain, or an Azure auth method) is unscoped, since a catalog's data
+  location is not knowable up front -- and two catalog connections that both configure explicit
+  storage credentials therefore both create unscoped secrets, which DuckDB matches
+  non-deterministically among several of the same type. `storage_scope:` is validated as a
+  URL-shaped prefix (`s3://...`, `abfss://...`, `az://...`) and never logged (setup statements are
+  secrets). A `files` catalog's root already implies its own scope; `storage_scope:` overrides it
+  the same way. No automated cross-connection warning is added: detecting "two connections with
+  different storage credentials" without comparing the credential values themselves (which would
+  leak them) is not a reliable signal, so this is documented instead.
+- **The `columns:` contract's fixed v0 type matrix (int, bigint, double, decimal, varchar, boolean,
+  date, timestamp) is now one shared implementation** (`Pz.Connectors.Toolkit.Formats.ColumnTypeCatalog`)
+  instead of four byte-identical copies (`localfiles`' `TypeNameMap`, `s3`'s `S3TypeNameMap`, `gcs`'s
+  `GcsTypeNameMap`, `azureblob`'s `AzureTypeNameMap`). No behavior change -- the four copies agreed on
+  every mapping and every error message already. `FormatReadRequest` no longer carries a
+  `DuckDbTypeName` delegate: the format catalog calls the shared catalog directly instead of a
+  per-connector strategy that always ended up passing the identical function.
 
 ### Added
 
@@ -270,6 +302,33 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   Byte output is unchanged (proven by the existing byte-stable/golden tests); a new test pins
   `SchemaCacheWriter`'s overlapping-writer behavior the way `PlanWriterTests` already pinned
   `PlanWriter`'s.
+- **`DuckTransientErrors` (the native-tier closed classifier gating retry for a connector's native
+  scan/COPY SQL) missed DuckDB's actual wording for a closed-port connection failure.** A real
+  httpfs HEAD against nothing listening reports `IO Error: Could not connect to server error for
+  HTTP HEAD to '<url>'` -- distinct from the `could not establish connection` phrase already
+  classified transient, so this shape fell through to permanent (no retry) despite being exactly
+  the kind of transient network condition the classifier exists to catch. Found by provoking a real
+  DuckDB httpfs failure (a closed local port) instead of only testing hand-authored fixture
+  strings; `could not connect to server` is now a recognized transient phrase. The classifier
+  itself, the HTTP 429/500/502/503/504 adjacency matching, "connection reset", "timed out" and the
+  false-positive guards (a Parser/Binder/Catalog error's echoed SQL/URL text never reaches the
+  classifier) were already in place and already wired into every native seam (setup statements,
+  native scan, native COPY) -- CONN-8's audit finding did not reproduce against current `main`.
+  Both native scan (read) and native COPY (write) failures are retried on the same classification:
+  the write path's existing temp-write-then-atomic-move finalization and explicit rollback-on-failure
+  already make a failed native COPY attempt safe to retry (it never leaves a partially-visible
+  output, and any open transaction is rolled back before the exception propagates), so there was no
+  case for restricting retry to reads only.
+- **The managed (Parquet.Net) parquet write path silently truncated timestamps to millisecond
+  precision** in the LocalFiles sink, and the AzureBlob and Gcs universal write tiers
+  (`ParquetSinkWriteSession`/`AzureBlobFormat`/`GcsFormat`). Each built its timestamp column with
+  `DateTimeFormat.DateAndTime` plus `unit: DateTimeTimeUnit.Micros`, but Parquet.Net's
+  `DateTimeDataField` constructor hardcodes `Unit = Millis` for `DateAndTime` regardless of the
+  `unit:` argument — it only honors a requested unit for the `*Micros`/`*Nanos` format constants.
+  Every value's sub-millisecond component (down to DuckDB's own microsecond resolution) was
+  dropped on write with no error. Fixed by requesting `DateTimeFormat.DateAndTimeMicros` instead.
+  The native COPY path (DuckDB's own `COPY ... TO parquet`) was never affected.
+
 - **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
   - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
     all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.

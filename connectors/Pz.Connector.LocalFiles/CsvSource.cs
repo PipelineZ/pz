@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 using Sylvan.Data.Csv;
 
@@ -16,7 +17,7 @@ namespace Pz.Connector.LocalFiles;
 /// declared columns. tsv shares this whole reader with csv -- it is the same code with the field
 /// delimiter fixed to a tab (<see cref="FileFormatCatalog.Delimiter"/>) rather than a class of its
 /// own.</summary>
-internal sealed class CsvSource(string baseDir) : ISource
+internal sealed class CsvSource(string baseDir, bool rootDeclared) : ISource
 {
     /// <summary>Sylvan's read buffer defaults to 16KiB and refuses any row wider than it, failing the
     /// node with the library's own "Row N was too large. Try increasing the
@@ -85,7 +86,7 @@ internal sealed class CsvSource(string baseDir) : ISource
         var header = await ReadHeaderAsync(ResolvePath(spec), DelimiterOf(spec), ct).ConfigureAwait(false);
         var fields = columns
             .Where(kv => header.Contains(kv.Key))
-            .Select(kv => TypeNameMap.ToArrowField(kv.Key, kv.Value))
+            .Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value))
             .ToArray();
         return new DatasetSchema(new Schema(fields, null));
     }
@@ -147,7 +148,7 @@ internal sealed class CsvSource(string baseDir) : ISource
         }
 
         var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
-        var request = new FormatReadRequest(urlArg, 1, declared, TypeNameMap.ToDuckDbName);
+        var request = new FormatReadRequest(urlArg, 1, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
         scan = new NativeScan(WrapWindowed(fragment, spec), FileFormatCatalog.SetupStatements(format))
@@ -322,14 +323,19 @@ internal sealed class CsvSource(string baseDir) : ISource
 
     /// <summary>The entity names the file, and <c>path:</c> overrides that when the layout does not
     /// match the name. A source needs the extension its format implies; the sink writes a directory, so
-    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely.</summary>
+    /// it does not. An absolute <c>path:</c> ignores the connection's location entirely — a RELATIVE one
+    /// that escapes <c>root:</c> (a <c>..</c> segment) is refused (PZ0365).</summary>
     private string ResolvePath(DatasetSpec spec)
     {
         var relative = spec.Options.TryGetValue("path", out var value) && value?.ToString() is { Length: > 0 } p
             ? p
             : $"{spec.Dataset}.{GetFormat(spec)}";
 
-        return Path.IsPathRooted(relative) ? relative : Path.Combine(baseDir, relative);
+        return Path.IsPathRooted(relative)
+            ? relative
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'")
+                : Path.Combine(baseDir, relative);
     }
 
     private static string GetFormat(DatasetSpec spec) =>
@@ -383,7 +389,7 @@ internal sealed class CsvPartition(
         var fields = new Field[names.Length];
         for (var i = 0; i < names.Length; i++)
         {
-            fields[i] = TypeNameMap.ToArrowField(names[i], typeNames[i]);
+            fields[i] = ColumnTypeCatalog.ToArrowField(names[i], typeNames[i]);
         }
 
         var schema = new Schema(fields, null);
