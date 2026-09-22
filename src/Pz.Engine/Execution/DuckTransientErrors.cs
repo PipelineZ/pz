@@ -69,6 +69,10 @@ internal static class DuckTransientErrors
         "connection reset",
         "connection error",
         "could not establish connection",
+        // DuckDB's httpfs's own wording for "nothing is listening" / the socket-level connect failing
+        // before any HTTP exchange happens -- verified against a real closed-port failure, not assumed:
+        // "IO Error: Could not connect to server error for HTTP HEAD to '<url>'".
+        "could not connect to server",
         "timed out",
         "timeout",
     ];

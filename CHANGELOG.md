@@ -298,6 +298,23 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   Byte output is unchanged (proven by the existing byte-stable/golden tests); a new test pins
   `SchemaCacheWriter`'s overlapping-writer behavior the way `PlanWriterTests` already pinned
   `PlanWriter`'s.
+- **`DuckTransientErrors` (the native-tier closed classifier gating retry for a connector's native
+  scan/COPY SQL) missed DuckDB's actual wording for a closed-port connection failure.** A real
+  httpfs HEAD against nothing listening reports `IO Error: Could not connect to server error for
+  HTTP HEAD to '<url>'` -- distinct from the `could not establish connection` phrase already
+  classified transient, so this shape fell through to permanent (no retry) despite being exactly
+  the kind of transient network condition the classifier exists to catch. Found by provoking a real
+  DuckDB httpfs failure (a closed local port) instead of only testing hand-authored fixture
+  strings; `could not connect to server` is now a recognized transient phrase. The classifier
+  itself, the HTTP 429/500/502/503/504 adjacency matching, "connection reset", "timed out" and the
+  false-positive guards (a Parser/Binder/Catalog error's echoed SQL/URL text never reaches the
+  classifier) were already in place and already wired into every native seam (setup statements,
+  native scan, native COPY) -- CONN-8's audit finding did not reproduce against current `main`.
+  Both native scan (read) and native COPY (write) failures are retried on the same classification:
+  the write path's existing temp-write-then-atomic-move finalization and explicit rollback-on-failure
+  already make a failed native COPY attempt safe to retry (it never leaves a partially-visible
+  output, and any open transaction is rolled back before the exception propagates), so there was no
+  case for restricting retry to reads only.
 - **The managed (Parquet.Net) parquet write path silently truncated timestamps to millisecond
   precision** in the LocalFiles sink, and the AzureBlob and Gcs universal write tiers
   (`ParquetSinkWriteSession`/`AzureBlobFormat`/`GcsFormat`). Each built its timestamp column with
