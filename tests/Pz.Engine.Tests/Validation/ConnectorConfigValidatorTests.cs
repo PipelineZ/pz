@@ -102,6 +102,24 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
     }
 
+    // A `5432m` kwarg literal evaluates to decimal and one too big for long to BigInteger; the compiler
+    // hashes both into node identity, so the schema converter must take them too.
+    public static TheoryData<object> WideNumericKwargValues => new() { 5432m, new System.Numerics.BigInteger(5432) };
+
+    [Theory]
+    [MemberData(nameof(WideNumericKwargValues))]
+    public async Task A_decimal_or_big_integer_option_written_at_a_call_site_validates(object port)
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("postgres", new StubConnector { ConnectionConfigSchema = PostgresConnectionSchema });
+
+        var source = new ConnectionDef("crm", "postgres",
+            new Dictionary<string, object?> { ["host"] = "db", ["database"] = "crm", ["port"] = port },
+            [], "connections.yml");
+
+        Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+    }
+
     [Fact]
     public async Task Unknown_connection_key_is_PZ0301_naming_file_and_path()
     {
