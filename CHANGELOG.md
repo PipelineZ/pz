@@ -58,7 +58,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   one platform and run on another is PZ0321 naming both, instead of the
   "Exec format error" spawn failure it used to reach.
 - **A relative `path:`/entity-derived location that escapes a connection's `root:` is now refused
-  (PZ0365)** instead of silently reading or writing outside it. `localfiles` checks this with real
+  (PZ0365)** instead of silently reading or writing outside it. Only a DECLARED `root:` is a boundary:
+  a `localfiles` connection without one resolves relative paths against the project directory exactly
+  as before, so a data folder beside the project (`path: ../shared/x.csv`) keeps working.
+  *Migration:* a connection that declares `root:` and reaches outside it with `..` — give that
+  `path:` as an absolute path, or move `root:` up to a directory that contains both. `localfiles` checks this with real
   filesystem containment (`Path.GetFullPath`, so a `..` segment lands where it actually lands,
   compared against the root with a trailing separator to avoid mistaking a same-prefix sibling
   directory for "inside"); an absolute `path:` is unaffected, unchanged from before. `s3` and `gcs`

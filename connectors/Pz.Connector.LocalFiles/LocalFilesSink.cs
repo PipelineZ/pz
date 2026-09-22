@@ -15,7 +15,7 @@ namespace Pz.Connector.LocalFiles;
 /// shared toolkit codec, all committed via temp-write + atomic move. The native COPY path
 /// (<see cref="TryGetNativeCopy"/>) goes through DuckDB's <c>COPY ... TO</c> — it is also the only
 /// route for decimal128 parquet output, which the universal Parquet.Net path cannot write.</summary>
-internal sealed class LocalFilesSink(string baseDir) : ISink
+internal sealed class LocalFilesSink(string baseDir, bool rootDeclared) : ISink
 {
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
@@ -106,7 +106,9 @@ internal sealed class LocalFilesSink(string baseDir) : ISink
 
         return Path.IsPathRooted(relative)
             ? relative
-            : RootContainment.ResolveWithinRoot(baseDir, relative, spec.Sink, $"output '{spec.Output}'");
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Sink, $"output '{spec.Output}'")
+                : Path.Combine(baseDir, relative);
     }
 
     internal static FileFormat ResolveFormat(OutputSpec spec) =>

@@ -24,7 +24,7 @@ namespace Pz.Connector.LocalFiles;
 /// without extraction savings. This is deliberate, not a bug -- see
 /// <c>Parquet_incremental_captures_but_does_not_pushdown</c>. A WINDOWED dataset (<see
 /// cref="DatasetSpec.WatermarkUpperBound"/> also set) is different -- see <see cref="TryGetNativeScan"/>.</summary>
-internal sealed class ParquetSource(string baseDir) : ISource
+internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
 {
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
@@ -94,7 +94,9 @@ internal sealed class ParquetSource(string baseDir) : ISource
 
         return Path.IsPathRooted(relative)
             ? relative
-            : RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'");
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'")
+                : Path.Combine(baseDir, relative);
     }
 
     private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");

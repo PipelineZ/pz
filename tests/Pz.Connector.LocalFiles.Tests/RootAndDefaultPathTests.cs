@@ -195,6 +195,19 @@ public sealed class RootAndDefaultPathTests : IDisposable
             Config(_work, root: "lake"), Spec("orders", path: "sub/../sub/o.csv")));
     }
 
+    /// <summary>With no <c>root:</c> the connection names no place of its own -- the base is the project
+    /// directory, and a data folder beside the project (<c>../shared/o.csv</c>) is an ordinary layout.
+    /// Only a declared <c>root:</c> is a boundary to escape.</summary>
+    [Fact]
+    public async Task With_no_root_a_relative_path_outside_the_project_is_still_read()
+    {
+        WriteCsv("shared", "o.csv");
+        var project = Path.Combine(_work, "project");
+        Directory.CreateDirectory(project);
+
+        Assert.Equal("id", await FirstColumnAsync(Config(project), Spec("orders", path: "../shared/o.csv")));
+    }
+
     [Fact]
     public async Task A_sink_with_no_path_writes_under_the_entity_name()
     {

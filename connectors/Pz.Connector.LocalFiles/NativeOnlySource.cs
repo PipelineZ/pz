@@ -16,7 +16,7 @@ namespace Pz.Connector.LocalFiles;
 /// at all goes through DuckDB's own typing (json's <c>auto_detect</c>, xlsx/avro's native inference).
 /// The contract IS the schema: <see cref="GetSchemaAsync"/> answers from it or refuses -- none of the
 /// three formats gives schema fetch a header row or footer to read without one.</summary>
-internal sealed class NativeOnlySource(string baseDir) : ISource
+internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISource
 {
     /// <summary>No file bytes are read here at all beyond the existence check -- the declared
     /// `columns:` contract IS the schema (the azure json precedent, generalised to xlsx/avro).</summary>
@@ -79,7 +79,9 @@ internal sealed class NativeOnlySource(string baseDir) : ISource
 
         return Path.IsPathRooted(relative)
             ? relative
-            : RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'");
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'")
+                : Path.Combine(baseDir, relative);
     }
 
     /// <summary>Same lookup pair as <see cref="CsvSource"/>'s: <see cref="ExtractColumns"/> tells

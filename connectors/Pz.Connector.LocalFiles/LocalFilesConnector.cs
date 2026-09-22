@@ -55,10 +55,10 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector, IOut
         new(new ConnectionCheck(true));
 
     ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        new(new LocalFilesSource(ResolveBaseDir(config)));
+        new(new LocalFilesSource(ResolveBaseDir(config), DeclaresRoot(config)));
 
     ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        new(new LocalFilesSink(ResolveBaseDir(config)));
+        new(new LocalFilesSink(ResolveBaseDir(config), DeclaresRoot(config)));
 
     /// <summary><c>base_dir</c> is where the PROJECT is (the CLI injects it; never user-written), and
     /// <c>root</c> is where the author says this connection's data lives — relative to the project, or
@@ -68,6 +68,11 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector, IOut
         var baseDir = config.GetString("base_dir") ?? Directory.GetCurrentDirectory();
         return config.GetString("root") is { Length: > 0 } root ? Path.Combine(baseDir, root) : baseDir;
     }
+
+    /// <summary>Only a declared <c>root:</c> is a boundary a relative path may not escape. Without one
+    /// the base is the project directory, which names no place of the connection's own, and a data
+    /// folder beside the project (<c>../shared/x.csv</c>) is an ordinary layout.</summary>
+    private static bool DeclaresRoot(ConnectorConfig config) => config.GetString("root") is { Length: > 0 };
 }
 
 /// <summary>Format dispatcher: <see cref="ISourceConnector.OpenAsync"/> is connector-
@@ -78,11 +83,11 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector, IOut
 /// <c>format: csv</c>/<c>tsv</c> or absent (the default) routes to <see cref="CsvSource"/>; everything
 /// else -- json, xlsx, avro -- routes to <see cref="NativeOnlySource"/>. <see
 /// cref="FileFormatCatalog.Resolve"/> owns the "unsupported format" error for anything else.</summary>
-internal sealed class LocalFilesSource(string baseDir) : ISource
+internal sealed class LocalFilesSource(string baseDir, bool rootDeclared) : ISource
 {
-    private readonly CsvSource _csv = new(baseDir);
-    private readonly ParquetSource _parquet = new(baseDir);
-    private readonly NativeOnlySource _native = new(baseDir);
+    private readonly CsvSource _csv = new(baseDir, rootDeclared);
+    private readonly ParquetSource _parquet = new(baseDir, rootDeclared);
+    private readonly NativeOnlySource _native = new(baseDir, rootDeclared);
 
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
         Resolve(spec).GetSchemaAsync(spec, ct);

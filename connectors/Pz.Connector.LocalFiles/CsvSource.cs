@@ -17,7 +17,7 @@ namespace Pz.Connector.LocalFiles;
 /// declared columns. tsv shares this whole reader with csv -- it is the same code with the field
 /// delimiter fixed to a tab (<see cref="FileFormatCatalog.Delimiter"/>) rather than a class of its
 /// own.</summary>
-internal sealed class CsvSource(string baseDir) : ISource
+internal sealed class CsvSource(string baseDir, bool rootDeclared) : ISource
 {
     /// <summary>Sylvan's read buffer defaults to 16KiB and refuses any row wider than it, failing the
     /// node with the library's own "Row N was too large. Try increasing the
@@ -333,7 +333,9 @@ internal sealed class CsvSource(string baseDir) : ISource
 
         return Path.IsPathRooted(relative)
             ? relative
-            : RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'");
+            : rootDeclared
+                ? RootContainment.ResolveWithinRoot(baseDir, relative, spec.Source, $"dataset '{spec.Dataset}'")
+                : Path.Combine(baseDir, relative);
     }
 
     private static string GetFormat(DatasetSpec spec) =>
