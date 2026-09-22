@@ -16,6 +16,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   governs how this run attempts the write, not what got committed.
   *Migration:* none required, but every `SinkWrite` node id changes once on upgrade — a `pz retry`
   issued against a run from before the upgrade re-runs its sinks instead of reusing them.
+- `IcebergAzureRestTests`' `finally` block no longer lets a failed cleanup `drop table` replace a
+  pending assertion failure from the test body — a cleanup exception thrown from `finally` supersedes
+  whatever is already propagating, so a real Azure REST catalog failure would have surfaced as an
+  unrelated drop-table error. The drop is now caught and reported to stderr, test-only.
 
 - **Quoted YAML scalars are strings.** The loader typed every scalar by its
   text and ignored the quotes, so `password: "0123456"` reached the connector as
