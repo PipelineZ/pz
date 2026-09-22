@@ -30,7 +30,7 @@ public sealed class LsCommandTests : IDisposable
     {
         var output = RunAndCaptureStdout(["ls", "--project", _work]);
 
-        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var lines = output.ReplaceLineEndings("\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
         Assert.Equal($"{"kind",-10} {"name",-40} {"tags"}", lines[0]);
 
         var dataLines = lines.Skip(1).ToArray();
@@ -46,7 +46,7 @@ public sealed class LsCommandTests : IDisposable
     {
         var output = RunAndCaptureStdout(["ls", "--project", _work, "--select", "orders_enriched"]);
 
-        var lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var lines = output.ReplaceLineEndings("\n").Split('\n', StringSplitOptions.RemoveEmptyEntries);
         var dataLines = lines.Skip(1).ToArray();
 
         Assert.Single(dataLines);

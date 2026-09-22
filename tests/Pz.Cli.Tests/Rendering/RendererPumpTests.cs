@@ -5,6 +5,10 @@ namespace Pz.Cli.Tests.Rendering;
 
 public class RendererPumpTests
 {
+    /// <summary>A hang guard, not a latency claim: the pump's continuation runs on the thread pool,
+    /// which a loaded machine running every test assembly at once can leave waiting for seconds.</summary>
+    private static readonly TimeSpan HangGuard = TimeSpan.FromSeconds(30);
+
     private sealed class RecordingRenderer : IEventRenderer
     {
         public readonly List<RunEvent> Received = [];
@@ -32,7 +36,7 @@ public class RendererPumpTests
         bus.Publish(new RunCompletedEvent(DateTimeOffset.UtcNow, "run-1", "success", 1, 0, 0, 5));
         bus.Complete();
 
-        await pump.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await pump.Completion.WaitAsync(HangGuard);
 
         Assert.Equal(2, renderer.Received.Count);
         Assert.IsType<RunStartedEvent>(renderer.Received[0]);
@@ -50,7 +54,7 @@ public class RendererPumpTests
         bus.Publish(new RunCompletedEvent(DateTimeOffset.UtcNow, "run-1", "success", 1, 0, 0, 5));
         bus.Complete();
 
-        await pump.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await pump.Completion.WaitAsync(HangGuard);
 
         Assert.Equal(2, renderer.Calls);
     }
@@ -68,6 +72,6 @@ public class RendererPumpTests
         Assert.False(completedEarly);
 
         bus.Complete();
-        await pump.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        await pump.Completion.WaitAsync(HangGuard);
     }
 }

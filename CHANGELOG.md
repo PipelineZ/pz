@@ -301,6 +301,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **On Windows, overlapping `pz` processes in one project could fail publishing `.pz/target`
+  artifacts** (`plan.json`, `schemas.json`) with "Access to the path is denied". Each artifact is
+  written aside and renamed into place, and a Windows rename refuses to replace a file while another
+  process is replacing it or a reader has it open. Those conflicts last only as long as the other
+  operation, so the rename is now retried for up to about half a second on Windows. A directory
+  that really is read-only still fails the same way as before.
 - **External (process-hosted) connectors could not start on Windows at all.** The host spawns a
   connector with an allowlisted environment, and that list held only POSIX names. Without
   `SystemRoot`, Winsock cannot load its providers, so the connector's first AF_UNIX socket failed with

@@ -11,19 +11,21 @@ namespace Pz.Mcp.Tests;
 /// needing to actually run on it.</summary>
 public class PathGuardCaseSensitivityTests
 {
-    // A value that resolves to the project root itself but with different casing than the projectDir
-    // string carries -- this can legitimately happen (a symlink, an inconsistently-cased projectDir
-    // argument, or simply an agent typing the path differently) and never touches the filesystem to
-    // canonicalize, since Path.GetFullPath is purely lexical.
+    // A value that resolves into the project root but spells it with different casing than the
+    // projectDir string carries -- this can legitimately happen (a symlink, an inconsistently-cased
+    // projectDir argument, or simply an agent typing the path differently) and never touches the
+    // filesystem to canonicalize, since Path.GetFullPath is purely lexical. Spelled out rather than
+    // built with Path.GetRelativePath, which compares case-insensitively on Windows and would return
+    // plain data/orders.csv there, erasing the very casing difference under test.
+    private static readonly string[] DifferentlyCasedValue = ["..", "MyProject", "data", "orders.csv"];
+
     [Fact]
     public void OrdinalIgnoreCase_accepts_a_path_that_differs_only_in_casing_from_the_project_root()
     {
-        var root = Path.Combine(Path.GetTempPath(), "PzCaseTest", "MyProject");
-
         // "myproject" vs "MyProject": same directory on a case-insensitive filesystem, which is what
         // OrdinalIgnoreCase models here.
         var differentlyCasedRoot = Path.Combine(Path.GetTempPath(), "PzCaseTest", "myproject");
-        var value = Path.GetRelativePath(differentlyCasedRoot, Path.Combine(root, "data", "orders.csv"));
+        var value = Path.Combine(DifferentlyCasedValue);
 
         Assert.False(PathGuard.Escapes(differentlyCasedRoot, value, StringComparison.OrdinalIgnoreCase));
     }
@@ -35,9 +37,8 @@ public class PathGuardCaseSensitivityTests
     [Fact]
     public void Ordinal_flags_the_same_casing_only_difference_as_escaping()
     {
-        var root = Path.Combine(Path.GetTempPath(), "PzCaseTest", "MyProject");
         var differentlyCasedRoot = Path.Combine(Path.GetTempPath(), "PzCaseTest", "myproject");
-        var value = Path.GetRelativePath(differentlyCasedRoot, Path.Combine(root, "data", "orders.csv"));
+        var value = Path.Combine(DifferentlyCasedValue);
 
         Assert.True(PathGuard.Escapes(differentlyCasedRoot, value, StringComparison.Ordinal));
     }

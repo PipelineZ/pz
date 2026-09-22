@@ -1642,7 +1642,7 @@ public class ProjectLoaderTests
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public void Pipeline_names_differing_only_by_case_are_PZ0110()
     {
         var dir = TempDir();
@@ -1652,6 +1652,8 @@ public class ProjectLoaderTests
             File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
             File.WriteAllText(Path.Combine(dir, "pipelines", "Orders.sql"), "select 1 as id\n");
             File.WriteAllText(Path.Combine(dir, "pipelines", "orders.sql"), "select 1 as id\n");
+            Skip.If(Directory.GetFiles(Path.Combine(dir, "pipelines")).Length < 2,
+                "the filesystem is case-insensitive, so Orders.sql and orders.sql are one file");
 
             var ex = Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env));
             var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.DuplicateName);

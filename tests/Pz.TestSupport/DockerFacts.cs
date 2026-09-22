@@ -4,13 +4,26 @@ namespace Pz.TestSupport;
 
 public static class DockerFacts
 {
+    /// <summary>Every suite here runs Linux images, so a daemon that answers but runs Windows containers
+    /// (a Windows CI runner's default) counts as no docker: gating on `docker info` alone would send those
+    /// suites into image pulls that can only fail.</summary>
     private static readonly Lazy<bool> DockerAvailable = new(() =>
     {
         try
         {
-            var psi = new ProcessStartInfo("docker", "info") { RedirectStandardOutput = true, RedirectStandardError = true };
+            var psi = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true };
+            psi.ArgumentList.Add("info");
+            psi.ArgumentList.Add("--format");
+            psi.ArgumentList.Add("{{.OSType}}");
             using var process = Process.Start(psi);
-            return process is not null && process.WaitForExit(5000) && process.ExitCode == 0;
+            if (process is null)
+            {
+                return false;
+            }
+
+            var osType = process.StandardOutput.ReadToEndAsync();
+            return process.WaitForExit(5000) && process.ExitCode == 0
+                && osType.Wait(1000) && osType.Result.Trim() == "linux";
         }
         catch
         {

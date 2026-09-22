@@ -1,6 +1,6 @@
-using System.Runtime.Versioning;
 using Pz.Cli;
 using Pz.Cli.Commands;
+using Pz.TestSupport;
 
 namespace Pz.Cli.Tests;
 
@@ -83,12 +83,8 @@ public sealed class EngineFailureMapperTests
 
 /// <summary>Real repro: a read-only project directory makes `pz run` fail creating
 /// <c>.pz/runs/&lt;id&gt;</c>, which used to forward the raw <see cref="UnauthorizedAccessException"/>
-/// text under the generic PZ0500 -- now fingerprinted to PZ0531 with a next step.
-///
-/// Unix permission bits only: <see cref="File.SetUnixFileMode"/> is a no-op fiction on Windows (and the
-/// repo's CI/dev environment is Linux per https://pipelinez.dev/concepts/architecture-overview/), same
-/// reasoning <see cref="RunRetentionFailureTests"/> already uses for the same trick.</summary>
-[SupportedOSPlatform("linux")]
+/// text under the generic PZ0500 -- now fingerprinted to PZ0531 with a next step. The directory is made
+/// read-only for real, per platform, by <see cref="FileSystemBlocks.DenyCreatingChildren"/>.</summary>
 [Collection("console-and-env-serialized")]
 public sealed class RunCommandFailureMappingTests
 {
@@ -97,11 +93,10 @@ public sealed class RunCommandFailureMappingTests
     {
         var work = Path.Combine(Path.GetTempPath(), "pz-engine-failure-tests", Guid.NewGuid().ToString("N"));
         CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
+        // No write permission on the project root itself blocks creating .pz/runs/<id> under it.
+        var block = FileSystemBlocks.DenyCreatingChildren(work);
         try
         {
-            // No write permission on the project root itself blocks creating .pz/runs/<id> under it.
-            File.SetUnixFileMode(work, UnixFileMode.UserRead | UnixFileMode.UserExecute);
-
             var stderr = RunAndCaptureStderr(["run", "--project", work, "--all"]);
 
             Assert.Contains("PZ0531", stderr);
@@ -110,13 +105,7 @@ public sealed class RunCommandFailureMappingTests
         }
         finally
         {
-            try
-            {
-                File.SetUnixFileMode(work,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            }
-            catch { /* best-effort */ }
-
+            block.Dispose();
             try { Directory.Delete(work, recursive: true); } catch { /* best-effort cleanup */ }
         }
     }

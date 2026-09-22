@@ -71,11 +71,11 @@ scripts/verify-sdk-package.sh
 Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-bench.sh`.
 
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
-green. Five jobs: `build-test`, an ubuntu+windows matrix where both legs build but only ubuntu runs
-the full `dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — windows instead
-runs just the `Category=Pcp` filter, which spawns the real SDK fixture over AF_UNIX (only the facts
-needing bash fixtures, `/proc` or a unix exec bit skip there); windows otherwise stays build-only
-because the docker suites can't pull Linux images there; `pack-and-verify` (ubuntu), which runs `scripts/verify-tool-install.sh`
+green. Five jobs: `build-test`, an ubuntu+windows matrix where both legs build and run the full
+`dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — on windows the docker suites
+skip, because `DockerFacts` counts a daemon that can't run Linux containers as no docker, and everything
+else runs for real, including the PCP host over AF_UNIX (only facts needing bash fixtures, `/proc` or
+a unix exec bit skip there); `pack-and-verify` (ubuntu), which runs `scripts/verify-tool-install.sh`
 so the install path a stranger's first five commands depend on cannot silently rot; `format-extensions`
 (ubuntu), which runs the `Category=DuckDbExtension` tests (xlsx/avro, needing network to install
 DuckDB's excel/avro extensions) that `build-test` excludes; `verify-aot` (ubuntu), the Native AOT
