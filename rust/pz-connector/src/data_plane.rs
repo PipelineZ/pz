@@ -62,7 +62,9 @@ async fn serve_connection(mut stream: UnixStream, tickets: Arc<TicketRegistry>) 
     // subscriber would see stray SDK-internal spans it never asked for.
     let span = if crate::telemetry::traces_enabled() {
         let span = tracing::info_span!("pcp", otel.name = "pcp.write_stream", otel.kind = "server");
-        span.set_parent(session.parent.clone());
+        // Only fails when the span was already started or carries no OpenTelemetry layer, neither
+        // of which this fresh, export-checked span can hit -- nothing actionable to do with an error.
+        let _ = span.set_parent(session.parent.clone());
         span
     } else {
         tracing::Span::none()

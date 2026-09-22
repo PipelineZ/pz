@@ -21,7 +21,7 @@ use opentelemetry::{global, KeyValue};
 use opentelemetry_otlp::WithExportConfig;
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{Tracer, TracerProvider};
+use opentelemetry_sdk::trace::{SdkTracerProvider, Tracer};
 use opentelemetry_sdk::Resource;
 use std::any::TypeId;
 use tower_http::classify::{GrpcErrorsAsFailures, SharedClassifier};
@@ -49,7 +49,7 @@ const UNTRACED_RPC: &str = "HostChannel";
 struct Providers {
     /// `None` when a `tracing` subscriber was already installed and the OpenTelemetry layer could
     /// therefore not be: with no layer feeding it, a tracer provider would only ever export nothing.
-    tracer: Option<TracerProvider>,
+    tracer: Option<SdkTracerProvider>,
     meter: SdkMeterProvider,
 }
 
@@ -272,7 +272,7 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
     if !run_id.is_empty() {
         attrs.push(KeyValue::new("pz.run.id", run_id.to_string()));
     }
-    let resource = Resource::new(attrs);
+    let resource = Resource::builder_empty().with_attributes(attrs).build();
 
     let span_exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -280,9 +280,9 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
         .with_timeout(EXPORT_TIMEOUT)
         .build()
         .map_err(|e| e.to_string())?;
-    let tracer = TracerProvider::builder()
+    let tracer = SdkTracerProvider::builder()
         .with_resource(resource.clone())
-        .with_batch_exporter(span_exporter, opentelemetry_sdk::runtime::Tokio)
+        .with_batch_exporter(span_exporter)
         .build();
 
     let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
@@ -291,8 +291,7 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
         .with_timeout(EXPORT_TIMEOUT)
         .build()
         .map_err(|e| e.to_string())?;
-    let reader =
-        PeriodicReader::builder(metric_exporter, opentelemetry_sdk::runtime::Tokio).build();
+    let reader = PeriodicReader::builder(metric_exporter).build();
     let meter = SdkMeterProvider::builder()
         .with_resource(resource)
         .with_reader(reader)
@@ -476,7 +475,9 @@ impl<B> tower_http::trace::MakeSpan<B> for PcpMakeSpan {
                 span.record("pz.instance", instance);
             }
         }
-        span.set_parent(extract_parent(request.headers()));
+        // Only fails when the span was already started or carries no OpenTelemetry layer, neither
+        // of which this fresh, export-checked span can hit -- nothing actionable to do with an error.
+        let _ = span.set_parent(extract_parent(request.headers()));
         span
     }
 }
