@@ -652,8 +652,8 @@ internal static class AuthoringTools
         // The result rides BOTH envelopes, same as the connection/entity overload above: the mutation
         // already applied by this point (the file(s) are written), so a self-verify failure has real
         // facts to report about what it did -- e.g. which pipeline file now exists -- and those facts
-        // are often what explains the errors. Dropping it here used to leave a caller that just failed
-        // self-verify with no way to know what pz actually wrote.
+        // are often what explains the errors; without it a caller that failed self-verify cannot tell
+        // what pz actually wrote.
         return verifyErrors.Count > 0
             ? ToolEnvelope.Errors(verifyErrors, applied: true, writeResult)
             : ToolEnvelope.Ok(writeResult, applied: true);

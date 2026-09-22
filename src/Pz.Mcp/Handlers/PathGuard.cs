@@ -21,9 +21,9 @@ public static class PathGuard
     /// <see cref="StringComparison.OrdinalIgnoreCase"/> on the platforms whose default filesystem is
     /// case-insensitive (Windows' NTFS, macOS's default APFS/HFS+), plain
     /// <see cref="StringComparison.Ordinal"/> everywhere else (Linux's ext4 and most Linux filesystems
-    /// are case-sensitive). Ordinal-only used to false-positive "escapes the project" for a value whose
-    /// resolved casing differed from <c>projectDir</c>'s even though the two name the same directory on
-    /// disk. Going case-insensitive unconditionally would instead be a security regression on a
+    /// are case-sensitive). On a case-insensitive filesystem an Ordinal compare would call a value
+    /// "outside the project" merely because its resolved casing differs from <c>projectDir</c>'s, though
+    /// the two name the same directory on disk. Going case-insensitive unconditionally would instead be a security regression on a
     /// case-sensitive filesystem: a sibling <c>Project2</c> vs <c>project2</c> really are two different
     /// directories there, and Ordinal is what tells them apart. On a genuinely case-insensitive
     /// filesystem that ambiguity cannot arise -- the OS will not let both siblings exist -- so
@@ -133,11 +133,9 @@ public static class PathGuard
         }
     }
 
-    /// <summary>Pure and side-effect-free (takes <paramref name="comparison"/> explicitly rather than
-    /// reading <see cref="PathComparison"/> itself) so a test can exercise both the case-sensitive and
-    /// case-insensitive branch deterministically on one CI machine, independent of the OS it actually
-    /// runs on -- see <see cref="EscapesForTests"/>.</summary>
-    private static bool Escapes(string projectDir, string value, StringComparison comparison)
+    /// <summary>Takes <paramref name="comparison"/> explicitly rather than reading
+    /// <see cref="PathComparison"/>, so both branches are testable on any OS.</summary>
+    internal static bool Escapes(string projectDir, string value, StringComparison comparison)
     {
         try
         {
@@ -153,10 +151,4 @@ public static class PathGuard
             return false; // unresolvable is not this guard's finding — the connector will refuse it itself
         }
     }
-
-    /// <summary>Test-only seam exposing <see cref="Escapes"/> with an explicit comparison, so
-    /// <c>PathGuardCaseSensitivityTests</c> can prove both platform behaviors without depending on (or
-    /// mutating) the real <see cref="PathComparison"/>.</summary>
-    internal static bool EscapesForTests(string projectDir, string value, StringComparison comparison) =>
-        Escapes(projectDir, value, comparison);
 }

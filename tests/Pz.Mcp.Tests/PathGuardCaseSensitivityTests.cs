@@ -3,7 +3,7 @@ using Pz.Mcp.Handlers;
 namespace Pz.Mcp.Tests;
 
 /// <summary>Proves both branches of <see cref="PathGuard"/>'s containment comparison directly, via
-/// <see cref="PathGuard.EscapesForTests"/> -- independent of which OS actually runs this suite, since
+/// <see cref="PathGuard.Escapes"/> -- independent of which OS actually runs this suite, since
 /// production picks the comparison from <see cref="OperatingSystem.IsWindows"/>/<see
 /// cref="OperatingSystem.IsMacOS"/> but the check itself is pure text comparison with no disk I/O
 /// (<see cref="Path.GetFullPath(string)"/> never touches the filesystem or canonicalizes case), so an
@@ -25,7 +25,7 @@ public class PathGuardCaseSensitivityTests
         var differentlyCasedRoot = Path.Combine(Path.GetTempPath(), "PzCaseTest", "myproject");
         var value = Path.GetRelativePath(differentlyCasedRoot, Path.Combine(root, "data", "orders.csv"));
 
-        Assert.False(PathGuard.EscapesForTests(differentlyCasedRoot, value, StringComparison.OrdinalIgnoreCase));
+        Assert.False(PathGuard.Escapes(differentlyCasedRoot, value, StringComparison.OrdinalIgnoreCase));
     }
 
     // Same inputs, but Ordinal (the case-sensitive-filesystem behavior): the casing difference makes
@@ -39,7 +39,7 @@ public class PathGuardCaseSensitivityTests
         var differentlyCasedRoot = Path.Combine(Path.GetTempPath(), "PzCaseTest", "myproject");
         var value = Path.GetRelativePath(differentlyCasedRoot, Path.Combine(root, "data", "orders.csv"));
 
-        Assert.True(PathGuard.EscapesForTests(differentlyCasedRoot, value, StringComparison.Ordinal));
+        Assert.True(PathGuard.Escapes(differentlyCasedRoot, value, StringComparison.Ordinal));
     }
 
     // The security case the coordinator flagged: a genuine sibling directory whose name differs only in
@@ -52,7 +52,7 @@ public class PathGuardCaseSensitivityTests
         var root = Path.Combine(Path.GetTempPath(), "PzCaseTest", "Project2");
         var value = Path.Combine("..", "project2", "secret.csv");
 
-        Assert.True(PathGuard.EscapesForTests(root, value, StringComparison.Ordinal));
+        Assert.True(PathGuard.Escapes(root, value, StringComparison.Ordinal));
     }
 
     // A genuine escape -- an entirely different directory, not merely a casing difference -- must be
@@ -64,8 +64,8 @@ public class PathGuardCaseSensitivityTests
         var root = Path.Combine(Path.GetTempPath(), "PzCaseTest", "Project");
         var value = Path.Combine("..", "..", "etc", "hostname");
 
-        Assert.True(PathGuard.EscapesForTests(root, value, StringComparison.Ordinal));
-        Assert.True(PathGuard.EscapesForTests(root, value, StringComparison.OrdinalIgnoreCase));
+        Assert.True(PathGuard.Escapes(root, value, StringComparison.Ordinal));
+        Assert.True(PathGuard.Escapes(root, value, StringComparison.OrdinalIgnoreCase));
     }
 
     // A path genuinely inside the project, same casing throughout, must stay accepted under either
@@ -76,7 +76,7 @@ public class PathGuardCaseSensitivityTests
         var root = Path.Combine(Path.GetTempPath(), "PzCaseTest", "Project");
         var value = Path.Combine("data", "orders.csv");
 
-        Assert.False(PathGuard.EscapesForTests(root, value, StringComparison.Ordinal));
-        Assert.False(PathGuard.EscapesForTests(root, value, StringComparison.OrdinalIgnoreCase));
+        Assert.False(PathGuard.Escapes(root, value, StringComparison.Ordinal));
+        Assert.False(PathGuard.Escapes(root, value, StringComparison.OrdinalIgnoreCase));
     }
 }
