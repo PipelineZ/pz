@@ -124,11 +124,10 @@ public sealed class CanonicalJsonTests
         Assert.Contains("Guid", ex.Message, StringComparison.Ordinal);
     }
 
-    // -- Exotic kwarg types Scriban can hand a source()/sink() call (#125) -----------------------
+    // -- Exotic kwarg types Scriban can hand a source()/sink() call ------------------------------
     // A huge integer literal (too big for long) evaluates to BigInteger, and an `m`-suffixed literal
     // evaluates to decimal -- both are real values a real source()/sink() kwarg can carry, and both
-    // used to throw NotSupportedException uncaught. Both have an obvious lossless JSON form, so both
-    // are supported outright rather than refused.
+    // have an obvious lossless JSON form, so both are supported rather than refused.
 
     [Fact]
     public void BigInteger_serializes_as_a_raw_json_number_preserving_every_digit()

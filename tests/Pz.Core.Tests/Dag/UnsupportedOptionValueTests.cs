@@ -12,14 +12,13 @@ namespace Pz.Core.Tests.Dag;
 /// named by option key and never by value.</summary>
 public class UnsupportedOptionValueTests
 {
-    // -- Real kwargs that used to crash the compile (now supported outright) ---------------------
+    // -- Real kwargs with a lossless canonical form compile ----------------------------------------
 
     [Fact]
     public void A_huge_integer_source_kwarg_no_longer_crashes_the_compile()
     {
         // 99999999999999999999999999999999999999 overflows long -- Scriban evaluates it as
-        // System.Numerics.BigInteger, which CanonicalJson.Serialize used to throw NotSupportedException
-        // on, uncaught anywhere between here and the raw crash. `crm` declares no datasets in YAML (see
+        // System.Numerics.BigInteger. `crm` declares no datasets in YAML (see
         // TestProjects.Sink's doc comment), so the source() call site's kwargs are the whole story --
         // no PZ0341 read-surface-split.
         var p = Project(
@@ -35,8 +34,7 @@ public class UnsupportedOptionValueTests
     [Fact]
     public void A_decimal_sink_kwarg_no_longer_crashes_the_compile()
     {
-        // 1.5m is a real decimal literal (Scriban's `m` suffix) -- previously an uncaught
-        // NotSupportedException from CanonicalJson.Serialize(output.Options).
+        // 1.5m is a real decimal literal (Scriban's `m` suffix) and evaluates to decimal.
         var p = Project(
             [Pipe("a", "INSERT INTO {{ sink('lake', 'out', strategy: 'replace', format: 'parquet', " +
                 "threshold: 1.5m) }}\nselect 1 as x")],
