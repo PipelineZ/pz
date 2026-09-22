@@ -180,6 +180,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   property rendered through the connector process's current culture instead
   of invariantly, and an exception logged alongside a message carried only its
   type name onto the wire, never its own message.
+- A test walking every `.cs` file under `src/` and `connectors/` for a `"PZ####"` string literal
+  outside `PzErrorCode.cs`, enforcing that the catalog stays the one source of truth for a code's
+  value: a literal in a project that can reference `Pz.Core` (directly or transitively) must instead
+  read `PzErrorCode.SomeName`, and a literal in a project that architecturally cannot (`Pz.PackageManagement`
+  and the connector projects, per CLAUDE.md's layering table) must still match a real catalog value.
+  `src/Pz.Engine/State/StateEdit.cs`'s three literals (`"PZ0513"`/`"PZ0514"`/`"PZ0515"`) now reference
+  `PzErrorCode` instead — the one occurrence the scan found in a project that could already reach the
+  catalog and simply never had. Message text is unchanged.
 
 ### Fixed
 
@@ -192,6 +200,47 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   surfaced as intermittent CI hangs. The ticket now lives as long as the session: burned by the
   data connection the commit waits for, or revoked by `AbortWrite`. Connectors built on the Rust
   SDK pick the fix up by rebuilding against it; the C# SDK never had the early revoke.
+- `pz mcp` minors:
+  - `pz mcp init` refused an existing `.vscode/mcp.json` (and similar) that legally carries comments or
+    trailing commas (JSONC) as "not valid JSON" (PZ0605). It now recognizes JSONC via a tolerant
+    fallback parse, and -- since merging the `pz` entry in and serializing back through
+    `System.Text.Json` would silently delete every comment -- refuses to rewrite that file with a new,
+    distinct PZ0611 whose next step pastes in the exact entry to add by hand, rather than either
+    silently dropping the user's comments or refusing with the same code (and message) as genuinely
+    broken JSON.
+  - `pz_write_pipeline`'s self-verify-failure envelope dropped `result` even though the write had
+    already applied, leaving a caller with `applied:true` but no way to know which file pz actually
+    wrote. It now carries `result` on both the success and failure envelope, matching the connection/
+    entity authoring tools' existing convention. The pipeline/checks-sidecar files are now also written
+    via the same atomic temp+rename helper (`Pz.Core.Artifacts.AtomicFile`) other artifact writers use,
+    instead of `File.WriteAllText` in place.
+  - `PathGuard`'s project-containment check compared resolved paths with `StringComparison.Ordinal`
+    unconditionally, which could false-positive "escapes the project directory" (PZ0606) for a
+    legitimate path whose resolved casing merely differed from `projectDir`'s on a case-insensitive
+    filesystem. The comparison is now `OrdinalIgnoreCase` on Windows/macOS (whose default filesystems
+    are case-insensitive) and stays `Ordinal` on Linux, where a same-named-differently-cased sibling
+    directory is a real, different directory the guard must keep telling apart.
+- The SQL Server state backend stamped `updated_at`/`finished_at` from the ambient wall clock
+  (`DateTime.UtcNow`) instead of the injected `TimeProvider` in `SqlKeyedStateStore`/
+  `SqlRunArtifactStore` — untestable, and inconsistent with `LocalRunArtifactStore`/`RunResultsWriter`,
+  which already thread one through. `RunCommand`'s own retention sweep had the same gap
+  (`DateTimeOffset.UtcNow` passed to `RunSweeper.Sweep` where every sibling call in that method already
+  uses `TimeProvider.System`). Both stores also assigned a key/cursor/name value past the length its
+  `sp_executesql` parameter declares (`@key NVARCHAR(512)`, `@watermark_cursor NVARCHAR(256)`, etc.)
+  silently truncated by SQL Server — no warning, no error — so a state key or watermark longer than
+  the column allows would be stored (and later looked up) truncated instead of failing loudly. Every
+  such parameter is now length-checked client-side and refused with PZ0536, naming the field kind and
+  the limit, never the value. A run-artifact field over its limit costs that run's resume/retry
+  record (the run itself goes on, with the existing "could not write" warning); the hint names the
+  way out — rename what the author controls, or `state.artifacts: false` to keep run artifacts local
+  while watermarks and events stay on SQL Server.
+- `RunResultsWriter` (`run_results.json`) and `KeyedJsonStateStore` (`.pz/state/*.json`) each hand-rolled
+  their own write-aside-and-rename instead of using `Pz.Core.Artifacts.AtomicFile`, the shared helper
+  `PlanWriter`/`SchemaCacheWriter`/`ManifestWriter` already published to. Both now route through it, so
+  there is exactly one temp+rename implementation instead of three independently-maintained copies.
+  Byte output is unchanged (proven by the existing byte-stable/golden tests); a new test pins
+  `SchemaCacheWriter`'s overlapping-writer behavior the way `PlanWriterTests` already pinned
+  `PlanWriter`'s.
 - **`Pz.Connectors.Sdk` hardening sweep** (parked minors from the SDK's final review):
   - A `HostOperationGate`-gated operation whose PCP reverse channel resets (or never attaches at
     all) no longer hangs forever trying to send its best-effort `GateComplete`/log/budget message.

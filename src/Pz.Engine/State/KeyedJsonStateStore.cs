@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
+using Pz.Core.Artifacts;
 using Pz.Core.Validation;
 
 namespace Pz.Engine.State;
@@ -225,43 +226,27 @@ public sealed class KeyedJsonStateStore<T>(
 
     private void WriteAll(IReadOnlyDictionary<string, T> entries, string path)
     {
-        var dir = Path.GetDirectoryName(path)!;
-        Directory.CreateDirectory(dir);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
 
-        var tmpPath = $"{path}.{Guid.NewGuid():N}.tmp";
-        var moved = false;
-        try
+        AtomicFile.Write(path, stream =>
         {
-            using (var stream = File.Create(tmpPath))
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
             {
-                using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
+                writer.WriteStartObject();
+                writer.WriteNumber("version", 1);
+                writer.WriteStartObject(sectionName);
+                foreach (var (key, value) in entries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
                 {
-                    writer.WriteStartObject();
-                    writer.WriteNumber("version", 1);
-                    writer.WriteStartObject(sectionName);
-                    foreach (var (key, value) in entries.OrderBy(kv => kv.Key, StringComparer.Ordinal))
-                    {
-                        writer.WriteStartObject(key);
-                        writeEntry(writer, value);
-                        writer.WriteEndObject();
-                    }
-
-                    writer.WriteEndObject();
+                    writer.WriteStartObject(key);
+                    writeEntry(writer, value);
                     writer.WriteEndObject();
                 }
 
-                stream.WriteByte((byte)'\n');
+                writer.WriteEndObject();
+                writer.WriteEndObject();
             }
 
-            File.Move(tmpPath, path, overwrite: true);
-            moved = true;
-        }
-        finally
-        {
-            if (!moved)
-            {
-                try { File.Delete(tmpPath); } catch { /* best-effort cleanup -- never mask the real exception */ }
-            }
-        }
+            stream.WriteByte((byte)'\n');
+        });
     }
 }

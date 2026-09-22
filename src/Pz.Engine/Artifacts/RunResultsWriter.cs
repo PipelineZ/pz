@@ -1,29 +1,28 @@
 using System.Buffers;
 using System.Globalization;
 using System.Text.Json;
+using Pz.Core.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
 
 namespace Pz.Engine.Artifacts;
 
 /// <summary>
-/// Writes <c>.pz/runs/&lt;runId&gt;/run_results.json</c> crash-safely: every call
-/// serializes to a unique <c>&lt;path&gt;.&lt;guid&gt;.tmp</c> (same directory, so the following
-/// <see cref="File.Move(string, string, bool)"/> stays an atomic same-volume rename) then moves it
-/// into place, so a reader never observes a partially-written file and a crash mid-write leaves only
-/// the previous (complete) snapshot or a stray <c>.tmp</c> — never a corrupt <c>run_results.json</c>.
-/// Call <see cref="WriteSnapshot"/> after every node completion with status <c>"running"</c> and the
-/// accumulated results so far, then once more with the terminal status
+/// Writes <c>.pz/runs/&lt;runId&gt;/run_results.json</c> crash-safely, via <see cref="AtomicFile"/>
+/// (write-aside-and-rename): a reader never observes a partially-written file, and a crash mid-write
+/// leaves only the previous (complete) snapshot or a stray <c>.tmp</c> — never a corrupt
+/// <c>run_results.json</c>. Call <see cref="WriteSnapshot"/> after every node completion with status
+/// <c>"running"</c> and the accumulated results so far, then once more with the terminal status
 /// (<c>"success" | "completed_with_failures" | "fatal"</c>) once the run winds down.
 ///
 /// Concurrency: with <c>engine.threads &gt; 1</c>, two
-/// <c>NodeCompleted</c> callbacks can call <see cref="WriteSnapshot"/> near-simultaneously. Each call
-/// gets its own tmp file (no shared-path race), and the write-then-move is additionally serialized by
-/// a private <see cref="_publishLock"/> so applications never interleave — whichever call is last to
-/// hold the lock is the one whose snapshot survives on disk, never a partial/corrupt mix of two
-/// writers. This lock is internal to this class and intentionally not shared with any caller-side
-/// lock (e.g. <c>ConsoleRunEvents._gate</c>) — callers must not couple their own synchronization to
-/// this writer's.
+/// <c>NodeCompleted</c> callbacks can call <see cref="WriteSnapshot"/> near-simultaneously.
+/// <see cref="AtomicFile.Write"/> already gives each call its own tmp file (no shared-path race), and
+/// the write-then-move is additionally serialized by a private <see cref="_publishLock"/> so
+/// applications never interleave — whichever call is last to hold the lock is the one whose snapshot
+/// survives on disk, never a partial/corrupt mix of two writers. This lock is internal to this class
+/// and intentionally not shared with any caller-side lock (e.g. <c>ConsoleRunEvents._gate</c>) —
+/// callers must not couple their own synchronization to this writer's.
 /// </summary>
 public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimeProvider? time = null)
 {
@@ -62,27 +61,9 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
             writer.WriteEndObject();
         }
 
-        var tmpPath = $"{paths.RunResultsPath}.{Guid.NewGuid():N}.tmp";
-        var moved = false;
-        try
+        lock (_publishLock)
         {
-            lock (_publishLock)
-            {
-                using (var stream = new FileStream(tmpPath, FileMode.Create, FileAccess.Write))
-                {
-                    stream.Write(buffer.WrittenSpan);
-                }
-
-                File.Move(tmpPath, paths.RunResultsPath, overwrite: true);
-                moved = true;
-            }
-        }
-        finally
-        {
-            if (!moved)
-            {
-                try { File.Delete(tmpPath); } catch { /* best-effort cleanup — never mask the real exception */ }
-            }
+            AtomicFile.Write(paths.RunResultsPath, stream => stream.Write(buffer.WrittenSpan));
         }
     }
 

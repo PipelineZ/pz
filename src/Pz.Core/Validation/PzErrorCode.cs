@@ -638,6 +638,14 @@ public static class PzErrorCode
     /// <summary><c>pz completion</c> was given a shell name none of the generators recognize.</summary>
     public const string CompletionShellInvalid = "PZ0535";
 
+    /// <summary>A value bound for the SQL Server state backend exceeds the length its
+    /// <c>sp_executesql</c> parameter is declared with (e.g. a state key past 512 characters, a
+    /// watermark cursor/value past 256) -- SQL Server assigns an over-long input into that declared
+    /// length silently, with no truncation warning, so this is checked client-side and refused before
+    /// the value ever reaches a command. Never a silent truncation: the message names the field kind
+    /// and the limit, never the value itself (it may be a credential or otherwise sensitive).</summary>
+    public const string SqlStateValueTooLong = "PZ0536";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in
@@ -699,4 +707,12 @@ public static class PzErrorCode
     /// unbounded/misconfigured mirror as a connectivity problem. Never a silent truncation: a caller
     /// gets a real error naming the cap, not a corrupt partial document.</summary>
     public const string McpDocsResponseTooLarge = "PZ0610";
+
+    /// <summary>Under `pz mcp init`, an existing client config file (`.vscode/mcp.json` and similar)
+    /// parses only tolerantly -- it legally carries comments/trailing commas (JSONC) -- which
+    /// <see cref="PzErrorCode.McpClientConfigInvalid"/> (PZ0605) used to reject outright as "not valid
+    /// JSON". Distinct from PZ0605: the file is recognized, not broken, but merging the pz entry in and
+    /// serializing back through <c>System.Text.Json</c> would silently delete every comment, so pz
+    /// refuses to rewrite it and instead hands back the exact entry to paste in by hand.</summary>
+    public const string McpClientConfigHasComments = "PZ0611";
 }

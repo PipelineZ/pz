@@ -235,6 +235,26 @@ public class EntityPipelineAuthoringTests
         Assert.Equal("PZ0401", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
         // The file was still written -- applied:true means applied.
         Assert.True(File.Exists(Path.Combine(p.Dir, "pipelines", "broken.sql")));
+
+        // The self-verify failure envelope must still carry `result` -- the write already happened
+        // (applied:true), so a caller told only "PZ0401" with no `result` has no way to know pz wrote
+        // pipelines/broken.sql, which is often exactly what the error is about.
+        Assert.Equal("pipelines/broken.sql", doc.RootElement.GetProperty("result").GetProperty("sql_file").GetString());
+    }
+
+    [Fact]
+    public async Task Write_pipeline_with_a_checks_sidecar_and_broken_sql_carries_both_result_fields_on_failure()
+    {
+        using var p = new TempProject();
+        const string checksYaml = "pipeline: broken2\nchecks: []\n";
+        var doc = JsonDocument.Parse(await AuthoringTools.WritePipelineAsync(
+            p.Dir, "broken2", "select from where;\n", checksYaml, RealServices(), CancellationToken.None));
+        Assert.False(doc.RootElement.GetProperty("ok").GetBoolean());
+        Assert.True(doc.RootElement.GetProperty("applied").GetBoolean());
+
+        var result = doc.RootElement.GetProperty("result");
+        Assert.Equal("pipelines/broken2.sql", result.GetProperty("sql_file").GetString());
+        Assert.Equal("pipelines/configs/broken2.yml", result.GetProperty("checks_file").GetString());
     }
 
     [Theory]

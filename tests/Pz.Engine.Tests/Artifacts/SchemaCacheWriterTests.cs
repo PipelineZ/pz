@@ -60,4 +60,24 @@ public sealed class SchemaCacheWriterTests : IDisposable
 
         Assert.Equal("{\n  \"version\": 1,\n  \"schemas\": {}\n}\n", text);
     }
+
+    /// <summary>Mirrors <c>PlanWriterTests</c>' sibling test: <c>SchemaCacheWriter</c> writes aside and
+    /// renames into place (via <c>AtomicFile</c>) rather than opening <c>schemas.json</c> directly, so
+    /// overlapping `pz validate --connect` runs in one project never collide on the same open handle
+    /// and a reader never observes a partially-written file.</summary>
+    [Fact]
+    public void Overlapping_writers_all_succeed_and_leave_one_complete_file()
+    {
+        Parallel.For(0, 8, _ =>
+        {
+            for (var i = 0; i < 50; i++)
+            {
+                SchemaCacheWriter.Write(Schemas(), _dir);
+            }
+        });
+
+        var text = File.ReadAllText(Path.Combine(_dir, "schemas.json"));
+        Assert.Contains("\"crm.orders\": \"amount: Double, id: Int64\"", text, StringComparison.Ordinal);
+        Assert.Equal(["schemas.json"], Directory.EnumerateFiles(_dir).Select(Path.GetFileName));
+    }
 }

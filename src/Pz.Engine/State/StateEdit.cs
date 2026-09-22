@@ -1,4 +1,5 @@
 using Pz.Core.Incremental;
+using Pz.Core.Validation;
 using Pz.Engine.Artifacts;
 
 namespace Pz.Engine.State;
@@ -63,9 +64,9 @@ public static class StateEdit
     /// the right lifetime for the flag.</summary>
     public const string ManualRunId = "manual";
 
-    private const string NoEntry = "PZ0513";
-    private const string BadTarget = "PZ0514";
-    private const string BadValue = "PZ0515";
+    private const string NoEntry = PzErrorCode.StateKeyNotFound;
+    private const string BadTarget = PzErrorCode.StateRollbackTargetInvalid;
+    private const string BadValue = PzErrorCode.StateValueInvalid;
 
     public static StateEntryHealth Classify(Watermark entry)
     {
