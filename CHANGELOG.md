@@ -58,27 +58,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   one platform and run on another is PZ0321 naming both, instead of the
   "Exec format error" spawn failure it used to reach.
 
-### Fixed
-
-- **A pipeline that renders `run_id`/`run_started_at` into its SQL now gets a compile-time warning
-  (PZ0232),** once per pipeline. Both constants change every run, so embedding either one in rendered
-  SQL changes that Pipeline's NodeId every run too, and `pz retry` (which matches nodes by id against
-  a prior run) can never treat two runs of that pipeline as the same node -- it always re-runs it.
-  The warning is advisory only; NodeId computation is unchanged.
-- **`watermark()` comparisons that name different cursor columns for one dataset are now refused
-  (PZ0231)**, instead of silently taking whichever comparison the SQL AST reader returned first --
-  e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` used to synthesize
-  an incremental cursor off only one of the two columns. Two comparisons that agree on the SAME
-  column (a lower bound plus a recognized ceiling, PZ0351) are unaffected.
-- **A `source()`/`sink()` kwarg (or a YAML read/write option) with a huge integer literal or a
-  decimal literal (Scriban's `BigInteger`/`decimal`) no longer crashes the compile.** `CanonicalJson`,
-  which every node's content-addressed id hashes options through, threw an uncaught
-  `NotSupportedException` for either type -- unlike a render-time mistake, nothing downstream of
-  rendering catches it, so it surfaced as a raw crash instead of a coded error. `CanonicalJson` now
-  supports `BigInteger`, `decimal`, and `DateTime` losslessly (arbitrary-precision digits, the decimal
-  value, and an ISO-8601 string, respectively); whatever value type still has no lossless canonical
-  form is refused as PZ0137, naming the option and the file, never the value.
-
 ### Added
 
 - `.github/dependabot.yml`: weekly, grouped dependency updates for nuget (repo-root `directory`,
@@ -220,6 +199,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **A pipeline that renders `run_id`/`run_started_at` into its SQL now gets a compile-time warning
+  (PZ0232),** once per pipeline. Both constants change every run, so embedding either one in rendered
+  SQL changes that Pipeline's NodeId every run too, and `pz retry` (which matches nodes by id against
+  a prior run) can never treat two runs of that pipeline as the same node -- it always re-runs it.
+  The warning is advisory only; NodeId computation is unchanged.
+- **`watermark()` comparisons that name different cursor columns for one dataset are now refused
+  (PZ0231)**, instead of silently taking whichever comparison the SQL AST reader returned first --
+  e.g. `updated_at > {{ watermark(s, e) }} and created_at < {{ watermark(s, e) }}` used to synthesize
+  an incremental cursor off only one of the two columns. Two comparisons that agree on the SAME
+  column (a lower bound plus a recognized ceiling, PZ0351) are unaffected.
+- **A `source()`/`sink()` kwarg (or a YAML read/write option) with a huge integer literal or a
+  decimal literal (Scriban's `BigInteger`/`decimal`) no longer crashes the compile.** `CanonicalJson`,
+  which every node's content-addressed id hashes options through, threw an uncaught
+  `NotSupportedException` for either type -- unlike a render-time mistake, nothing downstream of
+  rendering catches it, so it surfaced as a raw crash instead of a coded error. `CanonicalJson` now
+  supports `BigInteger`, `decimal`, and `DateTime` losslessly (arbitrary-precision digits, the decimal
+  value, and an ISO-8601 string, respectively); whatever value type still has no lossless canonical
+  form is refused as PZ0137, naming the option and the file, never the value.
 - **A write to a Rust-SDK sink could hang forever at commit.** A small write fits in the kernel's
   socket buffer, so the engine can finish the whole data stream and send `CommitWrite` before the
   connector process has accepted the data connection. The Rust SDK's `CommitWrite` revoked the
