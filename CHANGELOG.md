@@ -291,6 +291,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **External (process-hosted) connectors could not start on Windows at all.** The host spawns a
+  connector with an allowlisted environment, and that list held only POSIX names. Without
+  `SystemRoot`, Winsock cannot load its providers, so the connector's first AF_UNIX socket failed with
+  10106 and every open ended in a handshake failure. The allowlist now also passes the Windows
+  essentials (`SystemRoot`, `windir`, `SystemDrive`, `TEMP`, `TMP`, `USERPROFILE`, `APPDATA`,
+  `LOCALAPPDATA`, `PATHEXT`, `ComSpec`), none of which carries a secret. The CI windows leg now runs
+  the real SDK fixture end to end instead of skipping it.
+- **On Windows, a connector's socket directory is now owner-only.** Previously it inherited the
+  project tree's DACL, which often grants `Authenticated Users` Modify, so another local user could
+  dial the control socket, and that socket carries connection credentials. The directory now gets a
+  protected DACL that grants only the current user, and the sockets inside inherit it. This is the
+  Windows counterpart of the `0700` mode the host already set on Unix.
 - **`Pz.Connectors.TestKit`'s `StubHttpServer` could fail to start under parallel tests.** It probed
   a free port and then bound it, and anything else could take the port in between ("Address already
   in use"). A failed bind now moves on to a freshly probed port, up to ten times.

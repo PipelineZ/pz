@@ -16,12 +16,28 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// nothing here can carry a secret, and the child gets its actual configuration only through the
     /// Configure RPC -- never through the environment. Both-case proxy variants are included because
     /// tooling disagrees on casing and a connector may shell out to something that only honors one.</summary>
-    private static readonly string[] EnvAllowlist =
+    private static readonly string[] CommonEnv =
     [
         "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
         "http_proxy", "https_proxy", "no_proxy",
         "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
     ];
+
+    /// <summary>Windows essentials on top of <see cref="CommonEnv"/>, equally secret-free. Without
+    /// <c>SystemRoot</c> Winsock cannot load its provider catalog, so the child's first socket -- the
+    /// AF_UNIX listener the whole protocol rides on -- fails with WSAEPROVIDERFAILEDINIT (10106);
+    /// without <c>TEMP</c>/<c>TMP</c> the temp path falls back to the Windows directory, which a normal
+    /// user cannot write.</summary>
+    private static readonly string[] WindowsEnv =
+    [
+        "SystemRoot", "windir", "SystemDrive", "TEMP", "TMP",
+        "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATHEXT", "ComSpec",
+    ];
+
+    // After the two lists it concatenates: static initializers run in textual order.
+    private static readonly string[] EnvAllowlist = OperatingSystem.IsWindows()
+        ? [.. CommonEnv, .. WindowsEnv]
+        : CommonEnv;
 
     /// <summary>Ring-buffer cap for captured stderr: enough for a real failure message plus a stack
     /// trace, small enough that a runaway connector logging forever cannot grow this unboundedly.</summary>
@@ -243,7 +259,11 @@ public sealed class ConnectorProcess : IAsyncDisposable
     {
         var alreadyExisted = Directory.Exists(socketDir);
         Directory.CreateDirectory(socketDir);
-        if (!OperatingSystem.IsWindows())
+        if (OperatingSystem.IsWindows())
+        {
+            WindowsSocketDirAcl.RestrictToCurrentUser(socketDir);
+        }
+        else
         {
             File.SetUnixFileMode(
                 socketDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);

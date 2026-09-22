@@ -41,12 +41,10 @@ jobs:
         if: runner.os == 'Linux'
         env:
           PZ_TESTS_OFFLINE: '1'
-      # Windows runs the PCP suites only. The fixture's AF_UNIX listener fails to initialize on this
-      # runner (Winsock 10106), so every direct-spawn fact stays Windows-skipped -- but ShimTests
-      # carries the Pcp trait at class level too, and its ~20 pure-serialization facts (wire message
-      # <-> Abstractions round-trips, no socket involved) genuinely execute here: a real assertion, not
-      # just a skip. Proving the transport itself on windows is a follow-up. Everything else stays
-      # Linux-only for the docker reason above.
+      # Windows runs the PCP suites only: the real SDK fixture spawned over AF_UNIX -- handshake, data
+      # plane, cancellation, host channel, telemetry, and ProcessConnectorHost over a materialized
+      # package layout -- plus the owner-only socket-dir DACL. Only the facts that need bash fixtures,
+      # /proc or a unix exec bit skip. Everything else stays Linux-only for the docker reason above.
       - run: dotnet test Pz.slnx -c Release --no-build --filter "Category=Pcp" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
         if: runner.os == 'Windows'
         env:

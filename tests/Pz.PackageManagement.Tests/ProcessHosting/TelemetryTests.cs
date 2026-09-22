@@ -38,11 +38,9 @@ public sealed class TelemetryTests : IDisposable
         return (listener, new ActivitySource(name));
     }
 
-    [SkippableFact]
+    [Fact]
     public async Task Read_and_write_spans_land_at_the_collector_under_the_host_span()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var receiver = await OtlpReceiver.StartAsync();
         var (listener, source) = HostTracing();
         using var _l = listener;
@@ -138,11 +136,9 @@ public sealed class TelemetryTests : IDisposable
     private static IEnumerable<Metric> Instruments(ResourceMetrics resource) =>
         resource.ScopeMetrics.SelectMany(s => s.Metrics);
 
-    [SkippableFact]
+    [Fact]
     public async Task Without_an_endpoint_the_connector_exports_nothing()
     {
-        Skip.If(OperatingSystem.IsWindows(), "AF_UNIX transport unproven on the windows runner (Winsock 10106)");
-
         await using var receiver = await OtlpReceiver.StartAsync();
         var (listener, source) = HostTracing();
         using var _l = listener;
