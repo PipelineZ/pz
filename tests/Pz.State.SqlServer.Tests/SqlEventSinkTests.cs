@@ -138,7 +138,7 @@ public sealed class SqlEventSinkArtifactStoreIntegrationTests(SqlServerFixture f
 /// before touching the connection or the channel. A <see cref="TimeProvider"/> that throws there faults
 /// the drain task immediately, deterministically, with no timing window and no real SQL Server.
 /// Deliberately outside <see cref="SqlEventSinkTests"/>'s collection: that class's constructor takes
-/// <see cref="SqlServerFixture"/>, whose own constructor skips the whole collection without docker --
+/// <see cref="SqlServerFixture"/>, which starts a SQL Server container whenever docker is available --
 /// this test has no such dependency, so it must not inherit one.</summary>
 public sealed class SqlEventSinkDisposeFaultTests
 {

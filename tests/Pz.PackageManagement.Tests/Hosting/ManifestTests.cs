@@ -158,7 +158,7 @@ public sealed class ManifestTests : IDisposable
         var resolved = ManifestReader.ResolveEntrypoint(manifest, "/packages/deltalake/1.0.0", "linux-x64");
 
         Assert.Equal(
-            Path.Combine("/packages/deltalake/1.0.0", "runtimes/linux-x64/native/pz-deltalake"), resolved);
+            Path.GetFullPath(Path.Combine("/packages/deltalake/1.0.0", "runtimes/linux-x64/native/pz-deltalake")), resolved);
     }
 
     [Fact]
@@ -174,7 +174,7 @@ public sealed class ManifestTests : IDisposable
         var resolved = ManifestReader.ResolveEntrypoint(manifest, "/packages/deltalake/1.0.0", "linux-musl-x64");
 
         Assert.Equal(
-            Path.Combine("/packages/deltalake/1.0.0", "runtimes/linux-x64/native/pz-deltalake"), resolved);
+            Path.GetFullPath(Path.Combine("/packages/deltalake/1.0.0", "runtimes/linux-x64/native/pz-deltalake")), resolved);
     }
 
     [Fact]

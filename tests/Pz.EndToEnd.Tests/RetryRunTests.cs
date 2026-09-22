@@ -1,6 +1,6 @@
-using System.Runtime.Versioning;
 using System.Text.Json;
 using Pz.Cli;
+using Pz.TestSupport;
 
 namespace Pz.EndToEnd.Tests;
 
@@ -11,29 +11,20 @@ namespace Pz.EndToEnd.Tests;
 /// the new run touches exactly branch A's three nodes -- branch B's nodes are entirely absent from the
 /// retry's run_results.json, proving they were never re-executed. The first run passes <c>--all</c>: the
 /// fixture's two branches are independent flows, so bare <c>pz run</c> is a PZ0215 config error by
-/// design.
-///
-/// Unix permission bits only: <see cref="File.SetUnixFileMode"/> is a no-op fiction on Windows (and the
-/// repo's CI/dev environment is Linux per https://pipelinez.dev/concepts/architecture-overview/), hence the platform attribute below.</summary>
-[SupportedOSPlatform("linux")]
+/// design. The directory is made unwritable for real, per platform, by
+/// <see cref="FileSystemBlocks.DenyCreatingChildren"/>.</summary>
 [Collection("console-redirection")]
 public sealed class RetryRunTests : IDisposable
 {
     private readonly string _work = Path.Combine(Path.GetTempPath(), "pz-e2e-retry-tests", Guid.NewGuid().ToString("N"));
+    private IDisposable? _block;
 
     public RetryRunTests() => CopyTree(Path.Combine(AppContext.BaseDirectory, "Fixtures", "retry-two-branches"), _work);
 
     public void Dispose()
     {
-        // Best-effort: restore permissions first so recursive delete of a leftover unwritable dir
-        // doesn't itself fail.
-        var outADir = Path.Combine(_work, "out_a");
-        if (Directory.Exists(outADir))
-        {
-            try { File.SetUnixFileMode(outADir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); }
-            catch { /* best-effort */ }
-        }
-
+        // Lift the block first so the recursive delete of a leftover unwritable dir doesn't itself fail.
+        _block?.Dispose();
         try { Directory.Delete(_work, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
@@ -42,9 +33,9 @@ public sealed class RetryRunTests : IDisposable
     {
         var outADir = Path.Combine(_work, "out_a");
         Directory.CreateDirectory(outADir);
-        // Read+execute but no write: LocalFilesSink can create the outer dir (already exists, no-op) but
-        // fails creating its per-write temp subdirectory inside it.
-        File.SetUnixFileMode(outADir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        // LocalFilesSink can create the outer dir (already exists, no-op) but fails creating its
+        // per-write temp subdirectory inside it.
+        _block = FileSystemBlocks.DenyCreatingChildren(outADir);
 
         var firstExit = CliApp.Build().Parse(["run", "--all", "--project", _work]).Invoke();
         Assert.Equal(ExitCodes.NodeFailures, firstExit);
@@ -63,7 +54,7 @@ public sealed class RetryRunTests : IDisposable
         Assert.Equal("success", firstNodes["lake.totals_b"].Status);
 
         // Fix the sink and retry.
-        File.SetUnixFileMode(outADir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        _block.Dispose();
 
         var retryExit = CliApp.Build().Parse(["retry", "--project", _work]).Invoke();
         Assert.Equal(ExitCodes.Ok, retryExit);

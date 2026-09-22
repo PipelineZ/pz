@@ -7,6 +7,9 @@ namespace Pz.Core.Artifacts;
 /// wins whole, and a reader sees one writer's complete bytes or the previous file — never a mix.</summary>
 public static class AtomicFile
 {
+    /// <summary>Roughly half a second of retrying in all, far longer than one replace takes.</summary>
+    private const int MoveAttempts = 20;
+
     public static void Write(string path, Action<Stream> write)
     {
         // Same directory as the target, so the rename never crosses a volume and stays atomic.
@@ -19,7 +22,7 @@ public static class AtomicFile
                 write(stream);
             }
 
-            File.Move(tmpPath, path, overwrite: true);
+            MoveIntoPlace(tmpPath, path);
             moved = true;
         }
         finally
@@ -27,6 +30,28 @@ public static class AtomicFile
             if (!moved)
             {
                 try { File.Delete(tmpPath); } catch { /* best-effort cleanup — never mask the real exception */ }
+            }
+        }
+    }
+
+    /// <summary>A Windows replace is not free-standing the way a unix rename is: it is refused (access
+    /// denied, or a sharing violation) while another writer is replacing the same file, whose old copy
+    /// is still being deleted, or while a reader holds the file open without delete sharing. Both last
+    /// only as long as that other operation, so the move is retried briefly there. A failure that
+    /// outlasts every attempt — a directory that really is read-only — surfaces unchanged.</summary>
+    private static void MoveIntoPlace(string tmpPath, string path)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                File.Move(tmpPath, path, overwrite: true);
+                return;
+            }
+            catch (Exception ex) when (OperatingSystem.IsWindows() && attempt < MoveAttempts
+                && ex is UnauthorizedAccessException or IOException)
+            {
+                Thread.Sleep(Math.Min(attempt * 2, 50));
             }
         }
     }

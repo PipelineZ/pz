@@ -9,8 +9,9 @@ namespace Pz.State.SqlServer.Tests;
 /// same pattern as Pz.Connector.SqlServer.Tests.MsSqlContainerFixture. `NewConnection()` creates a
 /// fresh, isolated database per call so tests never race each other over shared tables.
 ///
-/// Constructor calls DockerFacts.SkipUnlessDocker before any Testcontainers call, so docker-less
-/// machines SKIP the whole collection cleanly.</summary>
+/// Without docker it starts nothing and throws nothing: a collection fixture that throws fails every
+/// test in the collection, including the length-guard facts that never open a connection. Each test
+/// that needs the container calls DockerFacts.SkipUnlessDocker itself.</summary>
 public sealed class SqlServerFixture : IAsyncLifetime
 {
     public const string CollectionName = "sqlserver-state";
@@ -18,13 +19,13 @@ public sealed class SqlServerFixture : IAsyncLifetime
     private MsSqlContainer? _container;
     private string _masterConnectionString = "";
 
-    public SqlServerFixture()
-    {
-        DockerFacts.SkipUnlessDocker();
-    }
-
     public async Task InitializeAsync()
     {
+        if (!DockerFacts.IsAvailable)
+        {
+            return;
+        }
+
         // MSSQL_AGENT_ENABLED: CdcRemoteSyncStateTests's drop test runs sp_cdc_enable_table, whose
         // capture-job creation needs the agent (same rationale as
         // Pz.Connector.SqlServer.Tests.MsSqlContainerFixture) -- harmless to every other suite here.

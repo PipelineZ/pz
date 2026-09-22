@@ -1,6 +1,6 @@
-using System.Runtime.Versioning;
 using Pz.Cli;
 using Pz.Cli.Commands;
+using Pz.TestSupport;
 
 namespace Pz.Cli.Tests;
 
@@ -16,10 +16,9 @@ namespace Pz.Cli.Tests;
 /// unlike `Fixtures/hello-pz`, which is validation-error-path only) so `pz run --all` actually reaches
 /// finalize/retention instead of failing every node before retention ever runs.
 ///
-/// Unix permission bits only: <see cref="File.SetUnixFileMode"/> is a no-op fiction on Windows (and the
-/// repo's CI/dev environment is Linux per https://pipelinez.dev/concepts/architecture-overview/), hence the platform attribute below --
-/// same reasoning <see cref="Pz.EndToEnd.Tests.RetryRunTests"/> already uses for the same trick.</summary>
-[SupportedOSPlatform("linux")]
+/// The failed deletions are real: <see cref="FileSystemBlocks.BlockDeleting"/> makes the delete fail
+/// the way it fails for a user on each platform (no write on the parent directory on unix, a handle
+/// that does not share delete on Windows).</summary>
 [Collection("console-and-env-serialized")]
 public sealed class RunRetentionFailureTests
 {
@@ -50,6 +49,7 @@ public sealed class RunRetentionFailureTests
         var work = Path.Combine(Path.GetTempPath(), "pz-run-retention-fail-tests", Guid.NewGuid().ToString("N"));
         CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         var undeletableRunDir = string.Empty;
+        IDisposable? block = null;
         try
         {
             // project.yml sets keep_last: 10; 12 priors + the run that's about to happen makes 13 candidates,
@@ -64,12 +64,10 @@ public sealed class RunRetentionFailureTests
                 }
             }
 
-            // Removing write (not read/execute) from the run directory itself blocks unlinking the
-            // staging.duckdb file inside it -- deleting a file needs write permission on its *parent*
-            // directory in POSIX, not on the file. RunSweeper's own File.Delete call surfaces this as
-            // UnauthorizedAccessException, which its catch clause already handles as a per-directory
-            // failure rather than aborting the whole sweep.
-            File.SetUnixFileMode(undeletableRunDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            // RunSweeper's File.Delete surfaces the block as UnauthorizedAccessException (unix) or
+            // IOException (Windows), both of which its catch clause handles as a per-directory failure
+            // rather than aborting the whole sweep.
+            block = FileSystemBlocks.BlockDeleting(Path.Combine(undeletableRunDir, "staging.duckdb"));
 
             var stdout = new StringWriter();
             var original = Console.Out;
@@ -99,16 +97,7 @@ public sealed class RunRetentionFailureTests
         }
         finally
         {
-            if (undeletableRunDir.Length > 0 && Directory.Exists(undeletableRunDir))
-            {
-                try
-                {
-                    File.SetUnixFileMode(undeletableRunDir,
-                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                }
-                catch { /* best-effort */ }
-            }
-
+            block?.Dispose();
             try { Directory.Delete(work, recursive: true); } catch { /* best-effort cleanup */ }
         }
     }
@@ -119,6 +108,7 @@ public sealed class RunRetentionFailureTests
         var work = Path.Combine(Path.GetTempPath(), "pz-run-retention-fail-tests", Guid.NewGuid().ToString("N"));
         CopyTree(Path.Combine(AppContext.BaseDirectory, "TemplatesSample"), work);
         var tmpDir = Path.Combine(work, ".pz", "tmp", "stale-restore");
+        IDisposable? block = null;
         try
         {
             // No prior runs at all -- the only candidate is the run about to happen, which
@@ -128,7 +118,7 @@ public sealed class RunRetentionFailureTests
             // silently dropping the one real failure.
             Directory.CreateDirectory(tmpDir);
             File.WriteAllBytes(Path.Combine(tmpDir, "partial.bin"), new byte[16]);
-            File.SetUnixFileMode(tmpDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+            block = FileSystemBlocks.BlockDeleting(Path.Combine(tmpDir, "partial.bin"));
 
             var stdout = new StringWriter();
             var original = Console.Out;
@@ -151,16 +141,7 @@ public sealed class RunRetentionFailureTests
         }
         finally
         {
-            if (Directory.Exists(tmpDir))
-            {
-                try
-                {
-                    File.SetUnixFileMode(tmpDir,
-                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-                }
-                catch { /* best-effort */ }
-            }
-
+            block?.Dispose();
             try { Directory.Delete(work, recursive: true); } catch { /* best-effort cleanup */ }
         }
     }

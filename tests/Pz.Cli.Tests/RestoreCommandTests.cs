@@ -1,4 +1,3 @@
-using System.Runtime.Versioning;
 using Pz.Cli;
 using Pz.PackageManagement.Restore;
 using Pz.TestSupport;
@@ -245,9 +244,6 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         Assert.DoesNotContain("PZ0500", stderr); // coded, not the generic "internal error" fallback
     }
 
-    // Unix permission bits only: File.SetUnixFileMode is a no-op fiction on Windows (and the repo's
-    // CI/dev environment is Linux), same trick RunRetentionFailureTests already uses.
-    [SupportedOSPlatform("linux")]
     [Fact]
     public void Restore_disk_failure_reinstalling_a_drifted_package_is_PZ0329()
     {
@@ -258,7 +254,7 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         var dll = Path.Combine(idDir, "1.2.3", "lib", "FakeSourceConnector.dll");
         File.WriteAllBytes(dll, [.. File.ReadAllBytes(dll), 0x00]); // drifted: forces a reinstall attempt
 
-        File.SetUnixFileMode(idDir, UnixFileMode.UserRead | UnixFileMode.UserExecute); // no write: reinstall fails
+        var block = FileSystemBlocks.DenyCreatingChildren(idDir); // reinstall cannot write the package back
         try
         {
             var stderr = RunAndCaptureStderr(["restore", "--project", _work, "--feeds", feed.FeedDir]);
@@ -270,7 +266,7 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         }
         finally
         {
-            File.SetUnixFileMode(idDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            block.Dispose();
         }
     }
 
