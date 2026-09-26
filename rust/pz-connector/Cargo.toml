@@ -27,9 +27,9 @@ thiserror = "2"
 # Telemetry: the host hands an OTLP endpoint in HostInfo; spans (`tracing`) and meters are exported
 # from this process directly. The otlp crate's tonic/prost transitive deps MUST resolve to the tonic
 # and prost versions pinned above -- exactly one tonic and one prost may appear in Cargo.lock.
-opentelemetry = "0.32"
-opentelemetry_sdk = "0.32"
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
+opentelemetry = "0.33"
+opentelemetry_sdk = "0.33"
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std", "fmt"] }
 tracing-opentelemetry = "0.33"
