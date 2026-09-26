@@ -34,7 +34,7 @@
     <!-- PcpClient opens the control-plane GrpcChannel directly; flows transitively from
          Pz.Connectors.Protocol's ProjectReference too, but pinned explicitly here since this
          assembly calls into it, not just references generated types. -->
-    <PackageReference Include="Grpc.Net.Client" Version="2.83.0" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.84.0" />
     <!-- DataPlane speaks Arrow IPC directly over the raw data-plane socket; flows transitively from
          Pz.Connectors.Abstractions's ProjectReference too, but pinned explicitly here for the same
          reason as Grpc.Net.Client above. -->
