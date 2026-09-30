@@ -12,6 +12,9 @@ NestedInstallerType: portable
 NestedInstallerFiles:
   - RelativeFilePath: pz.exe
     PortableCommandAlias: pz
+# pz.exe loads duckdb.dll and other native libraries from its own directory, which a symlinked
+# portable command would not be; winget puts the install directory on PATH instead.
+ArchiveBinariesDependOnPath: true
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/PipelineZ/pz/releases/download/v0.7.0/pz-win-x64.zip
