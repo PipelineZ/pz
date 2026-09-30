@@ -94,20 +94,10 @@ jobs:
       - name: Publish standalone win-x64 binary (GitHub Release / winget)
         if: matrix.rid == 'win-x64'
         run: dotnet publish src/Pz.Cli -c Release -r win-x64 -o publish-win-x64
-      # The assembly is Pz.Cli, so the native image is Pz.Cli.exe; it is renamed to the command people
-      # type. The exe loads native libraries (duckdb.dll and others) from its own directory, so the zip
-      # carries every published file except debug symbols, and the renamed exe must run from there
-      # before it is zipped.
       - name: Zip win-x64 binary
         if: matrix.rid == 'win-x64'
         shell: pwsh
-        run: |
-          New-Item -ItemType Directory pz-win-x64 | Out-Null
-          Get-ChildItem publish-win-x64 -File -Exclude *.pdb | Copy-Item -Destination pz-win-x64
-          Rename-Item pz-win-x64/Pz.Cli.exe pz.exe
-          ./pz-win-x64/pz.exe --version
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Compress-Archive -Path pz-win-x64/* -DestinationPath pz-win-x64.zip
+        run: scripts/package-win-zip.ps1 -PublishDir publish-win-x64 -ZipPath pz-win-x64.zip
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: matrix.rid == 'win-x64'
         with:
