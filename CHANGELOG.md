@@ -44,6 +44,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - Windows: connectors are killed with pz (Job Object); socket directory is owner-only.
 - Lock records a per-file sha512 and the RID; tampered installs are PZ0326, a wrong platform PZ0321.
 - TestKit: more sink acceptance facts and a `ColumnPruning` fact (existing subclasses unaffected).
+- Each release publishes a GitHub Release with a standalone `pz-win-x64.zip` (the winget source).
 - Release: changelog-entry check and packaging proofs gate the publish; SHA-pinned actions,
   `global.json`, dependabot, `cargo audit`, build provenance.
 
