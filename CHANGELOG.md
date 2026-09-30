@@ -7,7 +7,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
-## [0.7.0] - 2026-09-23
+## [0.7.0] - 2026-09-30
 
 ### Breaking
 
