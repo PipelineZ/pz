@@ -15,7 +15,7 @@
 
   <ItemGroup>
     <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-    <PackageReference Include="Grpc.AspNetCore" Version="2.83.0" />
+    <PackageReference Include="Grpc.AspNetCore" Version="2.84.0" />
     <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="All" />
     <PackageReference Include="OpenTelemetry" Version="1.16.0" />
     <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
