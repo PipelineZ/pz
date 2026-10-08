@@ -251,13 +251,50 @@ public sealed class SqlBoundEvaluationTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task A_ceiling_above_the_watermark_reports_not_caught_up()
+    public async Task A_capped_ceiling_below_its_stop_reports_not_caught_up()
     {
         await RunAsync("events_behind",
-            [Bound(inclusive: false, SentinelExpr), UpperBound(inclusive: true, $"{SentinelExpr} + interval 7 day")],
+            [
+                Bound(inclusive: false, SentinelExpr),
+                UpperBound(inclusive: true, $"least({SentinelExpr} + interval 7 day, TIMESTAMP '2026-08-01')"),
+            ],
             ConnectorCapabilities.BoundedWindow, StoredValue);
 
         Assert.False(_lastResult!.CaughtUp);
+    }
+
+    [Fact]
+    public async Task A_rolling_ceiling_has_no_stop_and_reports_no_flag()
+    {
+        // watermark() + 7 day moves with the watermark: "behind" would be true forever, so nothing is said.
+        await RunAsync("events_rolling",
+            [Bound(inclusive: false, SentinelExpr), UpperBound(inclusive: true, $"{SentinelExpr} + interval 7 day")],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.Null(_lastResult!.CaughtUp);
+    }
+
+    [Fact]
+    public async Task An_exclusive_stop_is_caught_up_once_its_final_window_comes_back_empty()
+    {
+        // c < 09:00 never lets the watermark reach 09:00; an empty (08:00, 09:00) window is the end.
+        await RunAsync("events_exclusive",
+            [Bound(inclusive: false, SentinelExpr), UpperBound(inclusive: false, "TIMESTAMP '2026-07-15T09:00:00'")],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.True(_lastResult!.CaughtUp);
+    }
+
+    [Fact]
+    public async Task A_dropped_inclusive_floor_still_compares_the_stored_watermark()
+    {
+        // Without InclusiveWatermarkBound the floor is not pushed down, so the window has no lower bound; the
+        // stored watermark is what has reached the stop.
+        await RunAsync("events_dropped_floor",
+            [Bound(inclusive: true, SentinelExpr), UpperBound(inclusive: true, "TIMESTAMP '2026-07-15T08:00:00'")],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.True(_lastResult!.CaughtUp);
     }
 
     [Fact]

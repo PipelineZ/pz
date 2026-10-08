@@ -102,6 +102,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         var caughtUp = false;
         // What run_results/node_completed report: only a window with a stopping point can be caught up.
         bool? reportedCaughtUp = null;
+        SqlStop? sqlStop = null;
         string? windowLower = null;
         // YAML max_window's ceiling is always inclusive, so `true` preserves that path byte-for-byte; a
         // SQL-declared `c < e` sets it false and the staging trim below cuts at >= instead of >.
@@ -189,7 +190,16 @@ public sealed class SourceLoadExecutor : INodeExecutor
                         $"(watermark {windowLower} has reached the SQL-declared ceiling {bounds.Upper})");
                 }
 
-                reportedCaughtUp = caughtUp;
+                // The flag needs a stopping point that does not move with the watermark: the ceiling as it
+                // evaluates once the watermark is far past any real data. A rolling ceiling (watermark() +
+                // interval 7 day) has none, so it reports nothing rather than "behind" forever. Compared with
+                // the STORED watermark, not the pushed-down floor, which a connector may have dropped.
+                if (await EvaluateSqlStopAsync(ctx, def, sqlIncremental, declaredType!, ct).ConfigureAwait(false) is { } stop)
+                {
+                    sqlStop = stop;
+                    reportedCaughtUp = caughtUp
+                        || (stored is not null && WindowMath.Compare(declaredType!, stored.Value, stop.Value) >= 0);
+                }
             }
 
             spec = SpecBuilder.ForSourceLoad(def, bounds.Lower, bounds.Upper, bounds.LowerInclusive);
@@ -200,10 +210,23 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
 
         // Every success below leaves through SchemaDriftGate or partition mode; stamp the flag on the way out.
-        NodeResult Stamp(NodeResult result) =>
-            reportedCaughtUp is { } flag && result.Status == NodeStatus.Success
-                ? result with { CaughtUp = flag }
-                : result;
+        NodeResult Stamp(NodeResult result)
+        {
+            if (reportedCaughtUp is not { } flag || result.Status != NodeStatus.Success)
+            {
+                return result;
+            }
+
+            // The watermark never reaches an exclusive stop (no row sits at it), so the final window coming
+            // back empty is what says nothing is left below it.
+            if (!flag && sqlStop is { Inclusive: false } exclusiveStop && windowUpper is not null
+                && WindowMath.Compare(declaredType!, windowUpper, exclusiveStop.Value) == 0 && result.RowsMoved == 0)
+            {
+                flag = true;
+            }
+
+            return result with { CaughtUp = flag };
+        }
 
         if (priorSync is not null)
         {
@@ -839,6 +862,66 @@ public sealed class SourceLoadExecutor : INodeExecutor
         var lowerWm = lower is null ? null : new Watermark(incremental.Cursor, cursorType, lower, "sql-bound");
         return new SqlBounds(lowerWm, lowerInclusive, upper, upperInclusive, cursorType);
     }
+
+    /// <summary>Where a SQL-declared window stops: its tightest ceiling.</summary>
+    private readonly record struct SqlStop(string Value, bool Inclusive);
+
+    /// <summary>The ceiling a SQL-declared window converges to, evaluated as if the watermark were far past any
+    /// real data. <c>least(watermark() + 500, 2000)</c> stops at 2000; <c>watermark() + interval 7 day</c> and
+    /// <c>watermark()</c> itself follow the watermark and have no stop (null). Null too when the probe cannot be
+    /// evaluated: the caught-up flag is then absent, never wrong.</summary>
+    private static async Task<SqlStop?> EvaluateSqlStopAsync(RunContext ctx, SourceDatasetDef def,
+        IncrementalDef incremental, string cursorType, CancellationToken ct)
+    {
+        if (FarWatermark(cursorType) is not { } far)
+        {
+            return null;
+        }
+
+        var probe = new Watermark(incremental.Cursor, cursorType, far, "stop-probe");
+        string? stop = null;
+        var inclusive = false;
+        foreach (var bound in incremental.SqlBounds!)
+        {
+            if (!bound.IsUpper)
+            {
+                continue;
+            }
+
+            string? value;
+            try
+            {
+                value = await EvaluateOneAsync(ctx, def, bound, cursorType, probe, ct).ConfigureAwait(false);
+            }
+            catch (PzConnectorException)
+            {
+                return null;
+            }
+
+            if (value is null)
+            {
+                continue;
+            }
+
+            var cmp = stop is null ? -1 : WindowMath.Compare(cursorType, value, stop);
+            if (cmp < 0) { stop = value; inclusive = bound.Inclusive; }
+            else if (cmp == 0) { inclusive &= bound.Inclusive; }
+        }
+
+        return stop is null || WindowMath.Compare(cursorType, stop, far) >= 0 ? null : new SqlStop(stop, inclusive);
+    }
+
+    /// <summary>A canonical cursor value beyond any real data that still leaves headroom for a window to be
+    /// added to it without overflowing the type.</summary>
+    private static string? FarWatermark(string cursorType) => cursorType switch
+    {
+        "int" => "1000000000",
+        "bigint" => "4000000000000000000",
+        "decimal" => "100000000000000",
+        "date" => "9000-01-01",
+        "timestamp" => "9000-01-01T00:00:00.000000",
+        _ => null,
+    };
 
     /// <summary>Evaluates one bound expression in DuckDB and canonicalizes it. Returns null when the
     /// expression evaluates to NULL — a bare watermark() on a first run, which means "no bound" rather
