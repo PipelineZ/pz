@@ -7,6 +7,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **`caughtUp` on `node_completed` and in `run_results.json`.** A windowed source with `until` (or a SQL-declared
+  ceiling) now says whether it has caught up, so a platform or a shell loop can repeat `pz run` until every
+  backfill is done instead of reading the `note:` line or comparing watermarks.
+
 ## [0.8.0] - 2026-10-08
 
 ### Added

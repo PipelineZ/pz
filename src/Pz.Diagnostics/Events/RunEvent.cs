@@ -48,12 +48,14 @@ public sealed record BreakerStateChangedEvent(DateTimeOffset At, string RunId, s
 /// <see cref="Delivery"/> is additive (also defaulted): honest-abort/delivery-resume
 /// stats, null unless a non-DiscardsAll sink failed or a checkpoint resume was accepted.
 /// <see cref="Cdc"/> is additive (also defaulted): raw per-op change
-/// counts for a cdc-shaped SourceLoad's successful collapse, null for every non-cdc dataset.</summary>
+/// counts for a cdc-shaped SourceLoad's successful collapse, null for every non-cdc dataset.
+/// <see cref="CaughtUp"/> is additive (also defaulted): whether a windowed source with a stopping point
+/// (<c>until</c>, or a SQL-declared ceiling) has caught up; null for every other node.</summary>
 public sealed record NodeCompletedEvent(DateTimeOffset At, string RunId, string NodeId, string Kind,
     string Name, string Status, long Rows, long DurationMs, string? ErrorCode, string? ErrorMessage,
     NodeTimingsPayload? Timings, string? Provenance = null, OpStatsPayload? Ops = null,
     PartitionStatsPayload? Partitions = null, DeliveryPayload? Delivery = null,
-    CdcPayload? Cdc = null) : RunEvent(At, RunId);
+    CdcPayload? Cdc = null, bool? CaughtUp = null) : RunEvent(At, RunId);
 
 public sealed record RunCompletedEvent(DateTimeOffset At, string RunId, string Status, int Succeeded,
     int Failed, int Skipped, long DurationMs) : RunEvent(At, RunId);

@@ -203,6 +203,12 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
             writer.WriteEndObject();
         }
 
+        // Whether a windowed source with a stopping point has caught up. Absent for every other node.
+        if (node.CaughtUp is { } caughtUp)
+        {
+            writer.WriteBoolean("caughtUp", caughtUp);
+        }
+
         writer.WriteEndObject();
     }
 

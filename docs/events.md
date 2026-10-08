@@ -216,6 +216,7 @@ and recorded into this retry's results) even though such nodes lie outside the e
 | `partitions` | object \| null | Partition-mode extraction stats `{total, completed, reused, resumed}`; omitted for non-partition-mode nodes and for failed nodes. Counts only — never partition identifiers. |
 | `delivery` | object \| null | `{abortSemantics, rowsVisible, resumedRows}` — honest-abort / delivery-resume stats. Omitted for nodes without delivery semantics: only present on a failed sink node whose connector declares non-DiscardsAll abort semantics, or a successful sink node that resumed past a delivery checkpoint. |
 | `cdc` | object \| null | `{inserts, updates, deletes, position}` — raw per-op change counts from the last-event-per-key collapse, never net counts. Omitted for every non-cdc dataset; present only on a successful cdc-shaped SourceLoad. |
+| `caughtUp` | boolean | Optional (append-only addition). Present only on a successful `SourceLoad` of a windowed dataset that has a stopping point (`until`, or a SQL-declared ceiling): `true` when the watermark had already reached it (nothing moved, the watermark did not move), `false` while the dataset is still behind. A caller driving a backfill repeats `pz run` while any node reports `false`. The same value is written to `run_results.json`'s `nodes[].caughtUp`. |
 
 A failed `Check` node's `errorMessage` records up to 5 offending row values verbatim (mirrored in
 `run_results.json`) — do not enable checks on columns holding sensitive/PII values if that isn't

@@ -405,4 +405,30 @@ public class JsonRendererTests
             CultureInfo.CurrentCulture = original;
         }
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Node_completed_writes_caught_up_when_set(bool caughtUp)
+    {
+        var at = new DateTimeOffset(2026, 10, 9, 10, 0, 0, TimeSpan.Zero);
+        var evt = new NodeCompletedEvent(at, "run-1", "node-a", "SourceLoad", "src_pg__orders", "success", 10, 5,
+            null, null, null, CaughtUp: caughtUp);
+
+        var actual = Encoding.UTF8.GetString(Render([evt]));
+        using var doc = System.Text.Json.JsonDocument.Parse(actual.TrimEnd('\n'));
+        Assert.Equal(caughtUp, doc.RootElement.GetProperty("caughtUp").GetBoolean());
+    }
+
+    [Fact]
+    public void Node_completed_omits_caught_up_when_null()
+    {
+        var at = new DateTimeOffset(2026, 10, 9, 10, 0, 0, TimeSpan.Zero);
+        var evt = new NodeCompletedEvent(at, "run-1", "node-a", "Pipeline", "orders_clean", "success", 10, 5,
+            null, null, null);
+
+        var actual = Encoding.UTF8.GetString(Render([evt]));
+        using var doc = System.Text.Json.JsonDocument.Parse(actual.TrimEnd('\n'));
+        Assert.False(doc.RootElement.TryGetProperty("caughtUp", out _));
+    }
 }

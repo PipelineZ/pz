@@ -220,4 +220,34 @@ public sealed class RunResultsReaderTests : IDisposable
         File.WriteAllText(Path.Combine(runDir, "run_results.json"),
             $$"""{"version":1,"runId":"{{runId}}","status":"{{status}}","startedAt":"2026-01-01T00:00:00.000Z","nodes":[{{nodesJson}}]}""");
     }
+
+    [Fact]
+    public void Writer_records_caught_up_only_where_the_engine_set_it()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var paths = new RunPaths(dir, "20261009T000000000Z-0001");
+            var writer = new RunResultsWriter(paths, "2026-10-09T00:00:00.000Z");
+            writer.WriteSnapshot([
+                new NodeResult(new NodeId("s1"), NodeKind.SourceLoad, "src_a", NodeStatus.Success, 7,
+                    TimeSpan.Zero, null, CaughtUp: false),
+                new NodeResult(new NodeId("s2"), NodeKind.SourceLoad, "src_b", NodeStatus.Success, 0,
+                    TimeSpan.Zero, null, CaughtUp: true),
+                new NodeResult(new NodeId("p1"), NodeKind.Pipeline, "clean", NodeStatus.Success, 7,
+                    TimeSpan.Zero, null),
+            ], "success");
+
+            var file = Directory.GetFiles(dir, "run_results.json", SearchOption.AllDirectories).Single();
+            using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(file));
+            var nodes = doc.RootElement.GetProperty("nodes").EnumerateArray().ToList();
+            Assert.False(nodes[0].GetProperty("caughtUp").GetBoolean());
+            Assert.True(nodes[1].GetProperty("caughtUp").GetBoolean());
+            Assert.False(nodes[2].TryGetProperty("caughtUp", out _));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort */ }
+        }
+    }
 }

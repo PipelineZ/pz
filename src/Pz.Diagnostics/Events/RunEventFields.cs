@@ -143,6 +143,11 @@ public static class RunEventFields
                     json.WriteEndObject();
                 }
 
+                if (e.CaughtUp is { } caughtUp)
+                {
+                    json.WriteBoolean("caughtUp", caughtUp);
+                }
+
                 break;
 
             case RunCompletedEvent e:
