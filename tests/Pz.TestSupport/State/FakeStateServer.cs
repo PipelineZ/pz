@@ -2,9 +2,11 @@ using System.Globalization;
 using System.Text.Json;
 using Pz.Connectors.TestKit;
 
-namespace Pz.State.Http.Tests;
+using Pz.State.Http;
 
-using TestEntry = Pz.TestSupport.State.KeyedStateStoreContract.TestEntry;
+namespace Pz.TestSupport.State;
+
+using TestEntry = KeyedStateStoreContract.TestEntry;
 
 /// <summary>The server half of the wire contract, in-proc: the four run-scoped state
 /// endpoints, scripted on the <see cref="StubHttpServer"/> the connector suites already use (so this
@@ -15,7 +17,7 @@ using TestEntry = Pz.TestSupport.State.KeyedStateStoreContract.TestEntry;
 /// removed key lands at version+2, not at 1. A fake that restarted versions at 1 would let pz's store
 /// get away with computing the next version locally instead of reading the ETag the server
 /// returned — so the harder legal behavior is the one modeled.</summary>
-internal sealed class FakeStateServer : IAsyncDisposable
+public sealed class FakeStateServer : IAsyncDisposable
 {
     private static readonly string[] Scopes = ["watermarks", "sync-state"];
     private const int MaxKeyLength = 512;

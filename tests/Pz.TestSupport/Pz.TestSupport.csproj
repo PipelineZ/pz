@@ -15,6 +15,9 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/Pz.Engine/Pz.Engine.csproj" />
+    <ProjectReference Include="../../src/Pz.State.Http/Pz.State.Http.csproj" />
+    <!-- StubHttpServer, which State/FakeStateServer scripts the state wire contract on. -->
+    <ProjectReference Include="../../src/Pz.Connectors.TestKit/Pz.Connectors.TestKit.csproj" />
   </ItemGroup>
 
   <ItemGroup>

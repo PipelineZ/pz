@@ -95,6 +95,48 @@ public sealed class CdcRemoteSyncStateTests(SqlServerFixture fixture) : IDisposa
         }
     }
 
+    [SkippableFact]
+    public async Task Cdc_drop_with_state_url_clears_the_http_store_and_reports_json()
+    {
+        DockerFacts.SkipUnlessDocker();
+
+        var connectionString = fixture.NewRawConnectionString();
+        EnableTableCdc(connectionString);
+        WriteSqlServerCdcProject(connectionString);
+        await using var server = new Pz.TestSupport.State.FakeStateServer();
+        var http = new SyncStateStore(new Pz.State.Http.HttpKeyedStateStore<SyncState>(
+            new Pz.State.Http.HttpStateEndpoint(server.Url, null), "sync-state",
+            SyncStateStore.ReadEntry, SyncStateStore.WriteEntry));
+        http.Set("ops.orders", new SyncState("tok-http", "run-0"));
+        // A token in the ambient configured store too: --state-url must leave it alone.
+        SeedRemoteSyncState(connectionString, "ops.orders", "tok-sql");
+
+        Environment.SetEnvironmentVariable("PZ_STATE_BACKEND", "sqlserver");
+        Environment.SetEnvironmentVariable("PZ_STATE_CONNECTION_STRING", connectionString);
+        try
+        {
+            var stdout = CaptureOut(
+                () => CliApp.Build().Parse(["cdc", "drop", "--project", _work, "ops.orders",
+                    "--log-format", "json", "--state-url", server.Url]).Invoke(),
+                out var exit, out var stderr);
+
+            Assert.True(exit == ExitCodes.Ok, $"expected exit 0, got {exit}; stderr: {stderr}");
+            Assert.Null(http.Get("ops.orders"));
+            Assert.Equal("tok-sql", ReadRemoteSyncState(connectionString, "ops.orders"));
+            using var doc = System.Text.Json.JsonDocument.Parse(stdout.Trim());
+            Assert.Equal("cdc_dropped", doc.RootElement.GetProperty("event").GetString());
+            Assert.False(doc.RootElement.GetProperty("serverSideDropped").GetBoolean());
+            Assert.Equal("remote", doc.RootElement.GetProperty("stateCleared").GetString());
+            Assert.Contains("sp_cdc_disable_table",
+                doc.RootElement.GetProperty("remediation")[0].GetString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PZ_STATE_BACKEND", null);
+            Environment.SetEnvironmentVariable("PZ_STATE_CONNECTION_STRING", null);
+        }
+    }
+
     /// <summary>Writes through the same composition StateBackendFactory uses (scope "sync-state"), so
     /// the seeded entry is byte-identical to one a real run would have advanced.</summary>
     private static SyncStateStore RemoteSyncStateStore(string connectionString)
