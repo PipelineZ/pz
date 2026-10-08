@@ -505,6 +505,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.Null(sourceResult.CaughtUp); // max_window without until: no caught-up state exists
         Assert.Equal(10, sourceResult.RowsMoved); // lower=10, upper=20 -> ids 11..20
         Assert.Equal("20", sourceResult.WatermarkCandidate!.Value);
 
@@ -526,6 +527,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.Null(sourceResult.CaughtUp); // still no until, even with 0 rows
         Assert.Equal(0, sourceResult.RowsMoved);
         // An empty slice on a windowed, non-caught-up dataset still advances the watermark to the
         // window's upper bound (40 = 30 + max_window 10), unlike the unwindowed rule.
@@ -551,6 +553,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.Null(sourceResult.CaughtUp); // not windowed at all
         Assert.Equal(0, sourceResult.RowsMoved);
         Assert.Null(sourceResult.WatermarkCandidate);
 
@@ -571,6 +574,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.False(sourceResult.CaughtUp); // until=15 not reached at lower=10
         Assert.Equal(5, sourceResult.RowsMoved); // upper = min(10+10, 15) = 15 -> ids 11..15
         Assert.Equal("15", sourceResult.WatermarkCandidate!.Value);
 
@@ -596,6 +600,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.True(sourceResult.CaughtUp); // lower=15 has reached until=15
         Assert.Equal(0, sourceResult.RowsMoved);
         Assert.Null(sourceResult.WatermarkCandidate); // caught up -> no advancement, unlike test 3's empty slice
         Assert.Contains(notices, n => n.Contains("caught up", StringComparison.Ordinal));

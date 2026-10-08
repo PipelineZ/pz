@@ -100,6 +100,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
         string? windowUpper = null;
         string? declaredType = null;
         var caughtUp = false;
+        // What run_results/node_completed report: only a window with a stopping point can be caught up.
+        bool? reportedCaughtUp = null;
         string? windowLower = null;
         // YAML max_window's ceiling is always inclusive, so `true` preserves that path byte-for-byte; a
         // SQL-declared `c < e` sets it false and the staging trim below cuts at >= instead of >.
@@ -144,6 +146,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     $"source '{def.Source.Name}.{def.Dataset.Name}' is caught up (watermark {lowerWm.Value} has reached until {incremental.Until})");
             }
 
+            if (incremental.Until is not null)
+            {
+                reportedCaughtUp = caughtUp;
+            }
+
             windowUpper = upper;
             windowLower = lowerWm.Value;
         }
@@ -181,6 +188,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
                         $"source '{def.Source.Name}.{def.Dataset.Name}' is caught up " +
                         $"(watermark {windowLower} has reached the SQL-declared ceiling {bounds.Upper})");
                 }
+
+                reportedCaughtUp = caughtUp;
             }
 
             spec = SpecBuilder.ForSourceLoad(def, bounds.Lower, bounds.Upper, bounds.LowerInclusive);
@@ -189,6 +198,12 @@ public sealed class SourceLoadExecutor : INodeExecutor
         {
             spec = SpecBuilder.ForSourceLoad(def, stored);
         }
+
+        // Every success below leaves through SchemaDriftGate or partition mode; stamp the flag on the way out.
+        NodeResult Stamp(NodeResult result) =>
+            reportedCaughtUp is { } flag && result.Status == NodeStatus.Success
+                ? result with { CaughtUp = flag }
+                : result;
 
         if (priorSync is not null)
         {
@@ -259,8 +274,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // table, and that materialized table is the gate's only input. HintsFor (not the
             // universal branch's ProjectToHints-reconciled `hints`, which requires a queried logical
             // schema this tier never resolves) is the native tier's own stable read-shape hash input.
-            return await SchemaDriftGate.ApplyAsync(nativeSuccess, node, def, HintsFor(def, connector.Capabilities),
-                nativeTable, ctx, ct).ConfigureAwait(false);
+            return Stamp(await SchemaDriftGate.ApplyAsync(nativeSuccess, node, def, HintsFor(def, connector.Capabilities),
+                nativeTable, ctx, ct).ConfigureAwait(false));
         }
 
         var schema = (await source.GetSchemaAsync(spec, ct).ConfigureAwait(false)).Schema;
@@ -309,9 +324,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // into partition mode (which knows nothing about __changes/collapse) -- keep it on the channel path.
         if (connector.Capabilities.HasFlag(ConnectorCapabilities.StablePartitionIds) && shape != ResolvedReadShape.Cdc)
         {
-            return await ExecutePartitionModeAsync(node, def, ctx, source, partitions, streamingSource,
+            return Stamp(await ExecutePartitionModeAsync(node, def, ctx, source, partitions, streamingSource,
                 spec, hints, schema, gate, windowLower, windowUpper, upperInclusive, declaredType, caughtUp, shape,
-                ct).ConfigureAwait(false);
+                ct).ConfigureAwait(false));
         }
 
         var channel = Channel.CreateBounded<RecordBatch>(4);
@@ -444,8 +459,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             var legacySuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
                 stall.ToTimings(), watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats, Cdc: cdcStats);
-            return await SchemaDriftGate.ApplyAsync(legacySuccess, node, def, hints, tableName, ctx, ct)
-                .ConfigureAwait(false);
+            return Stamp(await SchemaDriftGate.ApplyAsync(legacySuccess, node, def, hints, tableName, ctx, ct)
+                .ConfigureAwait(false));
         }
         catch
         {

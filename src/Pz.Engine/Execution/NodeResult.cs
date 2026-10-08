@@ -67,12 +67,19 @@ public sealed record DeliveryStats(string AbortSemantics, long RowsVisible, long
 /// <c>on_source_drift: warn|fail</c> — null for `ignore` (the default; the gate never runs the DESCRIBE),
 /// a contract dataset (<c>columns:</c> governs the read instead), or any non-SourceLoad node. Engine-owned
 /// like <paramref name="Ops"/> — IS serialized, into <c>run_results.json</c>'s <c>observed_schema:</c>
-/// field.</summary>
+/// field.
+///
+/// <paramref name="CaughtUp"/>: for a successful SourceLoad on a windowed dataset that has a stopping
+/// point (a YAML <c>until</c>, or a SQL-declared ceiling), whether the window was already empty before
+/// extraction (true) or the dataset is still behind (false). Null for every other node, and for a
+/// windowed dataset without <c>until</c>, which has no caught-up state. Serialized as <c>caughtUp</c>
+/// into <c>run_results.json</c> and the NDJSON <c>NodeCompletedEvent</c>.</summary>
 public sealed record NodeResult(NodeId Id, NodeKind Kind, string Name, NodeStatus Status,
     long RowsMoved, TimeSpan Duration, PzError? Error, NodeTimings? Timings = null,
     Watermark? WatermarkCandidate = null, NodeProvenance? Provenance = null,
     SyncState? SyncStateCandidate = null, OpStats? Ops = null, PartitionStats? Partitions = null,
-    DeliveryStats? Delivery = null, CdcStats? Cdc = null, ObservedSchema? Observed = null)
+    DeliveryStats? Delivery = null, CdcStats? Cdc = null, ObservedSchema? Observed = null,
+    bool? CaughtUp = null)
 {
     public static NodeResult Skipped(DagNode node) =>
         new(node.Id, node.Kind, node.Name, NodeStatus.Skipped, 0, TimeSpan.Zero, null);
