@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-08
+
 ### Added
 
 - **`pz cdc status` and `pz cdc drop` take `--state-url` and `--log-format json`.** A platform can run them
