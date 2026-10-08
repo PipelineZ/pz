@@ -101,6 +101,53 @@ public sealed class CdcCommandTests : IDisposable
     }
 
     [Fact]
+    public void Status_json_with_no_cdc_datasets_writes_nothing_to_stdout()
+    {
+        var stdout = CaptureOut(() => CliApp.Build()
+            .Parse(["cdc", "status", "--project", _work, "--log-format", "json"]).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.Equal("", stdout);
+    }
+
+    [Fact]
+    public void Status_accepts_upper_case_log_format()
+    {
+        CaptureOut(() => CliApp.Build()
+            .Parse(["cdc", "status", "--project", _work, "--log-format", "JSON"]).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("drop")]
+    public void Invalid_log_format_is_a_config_error(string verb)
+    {
+        string[] args = verb == "drop"
+            ? ["cdc", "drop", "--project", _work, "files.orders", "--log-format", "yaml"]
+            : ["cdc", "status", "--project", _work, "--log-format", "yaml"];
+        var stderr = Capture(() => CliApp.Build().Parse(args).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("invalid --log-format value 'yaml'", stderr);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("drop")]
+    public void Invalid_state_url_is_a_config_error(string verb)
+    {
+        string[] args = verb == "drop"
+            ? ["cdc", "drop", "--project", _work, "files.orders", "--state-url", "ftp://x/state"]
+            : ["cdc", "status", "--project", _work, "--state-url", "ftp://x/state"];
+        var stderr = Capture(() => CliApp.Build().Parse(args).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("invalid --state-url value 'ftp://x/state'", stderr);
+    }
+
+    [Fact]
     public void Unknown_cdc_subverb_is_the_app_wide_unrecognized_command_behavior()
     {
         var stderr = Capture(() => CliApp.Build().Parse(["cdc", "bogus"]).Invoke(), out var exit);

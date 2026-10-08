@@ -46,8 +46,13 @@ internal static class CdcCommand
             "Report server-side change-capture state for every cdc dataset in the project. " +
             "Exit 0 when every reported dataset is healthy, 1 when any is unhealthy.");
         command.Options.Add(projectOption);
+        command.Options.Add(SharedOptions.LogFormat);
+        command.Options.Add(SharedOptions.StateUrl);
         command.SetAction((parseResult, ct) => Status(
-            parseResult.GetValue(projectOption) ?? Directory.GetCurrentDirectory(), ct));
+            parseResult.GetValue(projectOption) ?? Directory.GetCurrentDirectory(),
+            parseResult.GetValue(SharedOptions.LogFormat),
+            parseResult.GetValue(SharedOptions.StateUrl),
+            ct));
         return command;
     }
 
@@ -63,41 +68,32 @@ internal static class CdcCommand
             "Drop server-side change-capture state for ONE cdc dataset and clear pz's sync-state " +
             "entry for it (in whichever store `state:` resolved to), so the next run re-snapshots.");
         command.Options.Add(projectOption);
+        command.Options.Add(SharedOptions.LogFormat);
+        command.Options.Add(SharedOptions.StateUrl);
         command.Arguments.Add(targetArgument);
         command.SetAction((parseResult, ct) => Drop(
             parseResult.GetValue(projectOption) ?? Directory.GetCurrentDirectory(),
             parseResult.GetValue(targetArgument) ?? [],
+            parseResult.GetValue(SharedOptions.LogFormat),
+            parseResult.GetValue(SharedOptions.StateUrl),
             ct));
         return command;
     }
 
     // ---- status ----
 
-    internal static async Task<int> Status(string projectDir, CancellationToken ct)
+    internal static async Task<int> Status(string projectDir, string? logFormatRaw, string? stateUrlRaw, CancellationToken ct)
     {
-        PzProject project;
-        ConnectorRegistry registry;
-        Pz.PackageManagement.Hosting.ConnectorHosts? host;
-        StateBackends backends;
-        try
+        if (!RunCommand.TryParseLogFormat(logFormatRaw, out var logFormat))
         {
-            project = ProjectLoader.Load(projectDir, SharedInputHelpers.SnapshotEnvironment());
-            (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck: false, ct);
-            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System, ct: ct);
+            Console.Error.WriteLine($"error: invalid --log-format value '{logFormatRaw}' (expected 'text' or 'json')");
+            return ExitCodes.ConfigError;
         }
-        catch (PzValidationException ex)
-        {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
 
-            return ExitCodes.ConfigError;
-        }
-        catch (PzConfigException ex)
+        var (loadExit, project, registry, host, backends) = await LoadAsync(projectDir, stateUrlRaw, ct);
+        if (loadExit is { } exit)
         {
-            Console.Error.WriteLine($"error {ex.Error}");
-            return ExitCodes.ConfigError;
+            return exit;
         }
 
         await using var connectorHost = host;
@@ -105,7 +101,11 @@ internal static class CdcCommand
         var cdcDatasets = CdcDatasets(project).ToList();
         if (cdcDatasets.Count == 0)
         {
-            Console.WriteLine("no cdc datasets in this project");
+            if (logFormat == "text")
+            {
+                Console.WriteLine("no cdc datasets in this project");
+            }
+
             return ExitCodes.Ok;
         }
 
@@ -175,6 +175,43 @@ internal static class CdcCommand
         return anyUnhealthy ? ExitCodes.NodeFailures : ExitCodes.Ok;
     }
 
+    /// <summary>The load phase both verbs share. `--state-url` is applied before the state backends are
+    /// composed, so status reads and drop clears the store a platform's runs use, the same precedence
+    /// `pz run` has (it outranks project.yml's state: and PZ_STATE_*).</summary>
+    private static async Task<(int? Exit, PzProject Project, ConnectorRegistry Registry,
+        Pz.PackageManagement.Hosting.ConnectorHosts? Host, StateBackends Backends)> LoadAsync(
+        string projectDir, string? stateUrlRaw, CancellationToken ct)
+    {
+        try
+        {
+            var env = SharedInputHelpers.SnapshotEnvironment();
+            var project = ProjectLoader.Load(projectDir, env);
+            if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
+            {
+                Console.Error.WriteLine($"error: {stateUrlError}");
+                return (ExitCodes.ConfigError, null!, null!, null, null!);
+            }
+
+            var (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck: false, ct);
+            var backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System, ct: ct);
+            return (null, project, registry, host, backends);
+        }
+        catch (PzValidationException ex)
+        {
+            foreach (var error in ex.Errors)
+            {
+                Console.Error.WriteLine($"error {error}");
+            }
+
+            return (ExitCodes.ConfigError, null!, null!, null, null!);
+        }
+        catch (PzConfigException ex)
+        {
+            Console.Error.WriteLine($"error {ex.Error}");
+            return (ExitCodes.ConfigError, null!, null!, null, null!);
+        }
+    }
+
     private static string? StoredToken(SyncStateStore syncState, string source, string dataset) =>
         syncState.Get(SyncStateStore.Key(source, dataset))?.Token;
 
@@ -188,7 +225,8 @@ internal static class CdcCommand
 
     // ---- drop ----
 
-    internal static async Task<int> Drop(string projectDir, string[] targets, CancellationToken ct)
+    internal static async Task<int> Drop(string projectDir, string[] targets, string? logFormatRaw, string? stateUrlRaw,
+        CancellationToken ct)
     {
         if (targets.Length != 1)
         {
@@ -205,29 +243,16 @@ internal static class CdcCommand
             return ExitCodes.ConfigError;
         }
 
-        PzProject project;
-        ConnectorRegistry registry;
-        Pz.PackageManagement.Hosting.ConnectorHosts? host;
-        StateBackends backends;
-        try
+        if (!RunCommand.TryParseLogFormat(logFormatRaw, out var logFormat))
         {
-            project = ProjectLoader.Load(projectDir, SharedInputHelpers.SnapshotEnvironment());
-            (registry, host) = await ConnectorRegistryFactory.CreateAsync(project, projectDir, noLockCheck: false, ct);
-            backends = StateBackendFactory.Create(project, projectDir, TimeProvider.System, ct: ct);
+            Console.Error.WriteLine($"error: invalid --log-format value '{logFormatRaw}' (expected 'text' or 'json')");
+            return ExitCodes.ConfigError;
         }
-        catch (PzValidationException ex)
-        {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
 
-            return ExitCodes.ConfigError;
-        }
-        catch (PzConfigException ex)
+        var (loadExit, project, registry, host, backends) = await LoadAsync(projectDir, stateUrlRaw, ct);
+        if (loadExit is { } exit)
         {
-            Console.Error.WriteLine($"error {ex.Error}");
-            return ExitCodes.ConfigError;
+            return exit;
         }
 
         await using var connectorHost = host;
