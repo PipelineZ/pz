@@ -7,6 +7,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **`pz cdc status` and `pz cdc drop` take `--state-url` and `--log-format json`.** A platform can run them
+  against the state store its runs use and read `cdc_status` / `cdc_dropped` NDJSON events.
+
+### Fixed
+
+- **`pz cdc drop` accepts a schema-qualified entity** (`erp.dbo.orders`). The target splits on its first dot,
+  so a SQL Server cdc dataset `pz cdc status` reports can also be dropped.
+
 ## [0.7.0] - 2026-09-30
 
 ### Breaking

@@ -20,9 +20,11 @@
     <ProjectReference Include="..\..\src\Pz.State.Http\Pz.State.Http.csproj" />
     <ProjectReference Include="..\Pz.TestSupport\Pz.TestSupport.csproj" />
     <!-- StubHttpServer: the in-proc HttpListener fixture the connector suites already use. FakeStateServer
-         scripts the state wire contract on top of it, so this suite needs no docker and no new
-         dependency. -->
+         (in Pz.TestSupport) scripts the state wire contract on top of it, so this suite needs no docker
+         and no new dependency. -->
     <ProjectReference Include="..\..\src\Pz.Connectors.TestKit\Pz.Connectors.TestKit.csproj" />
+    <!-- CdcStateUrlTests drives the cdc status verb with a state url, end to end against FakeStateServer. -->
+    <ProjectReference Include="..\..\src\Pz.Cli\Pz.Cli.csproj" />
   </ItemGroup>
 
 </Project>

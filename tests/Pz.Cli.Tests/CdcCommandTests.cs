@@ -91,6 +91,19 @@ public sealed class CdcCommandTests : IDisposable
     }
 
     [Fact]
+    public void Drop_splits_the_target_on_the_first_dot_so_schema_qualified_entities_are_reachable()
+    {
+        // A sqlserver entity is named schema.table (dbo.orders), so its target is files.dbo.orders. It must
+        // reach the dataset lookup (PZ0508 here, the fixture has no such dataset), not fail the shape check.
+        var stderr = Capture(() => CliApp.Build()
+            .Parse(["cdc", "drop", "--project", _work, "files.dbo.orders"]).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0508", stderr);
+        Assert.Contains("'files.dbo.orders' is not a cdc dataset", stderr);
+    }
+
+    [Fact]
     public void Drop_on_an_unknown_source_is_refused()
     {
         var stderr = Capture(() => CliApp.Build()
@@ -98,6 +111,53 @@ public sealed class CdcCommandTests : IDisposable
 
         Assert.Equal(ExitCodes.ConfigError, exit);
         Assert.Contains("PZ0508", stderr);
+    }
+
+    [Fact]
+    public void Status_json_with_no_cdc_datasets_writes_nothing_to_stdout()
+    {
+        var stdout = CaptureOut(() => CliApp.Build()
+            .Parse(["cdc", "status", "--project", _work, "--log-format", "json"]).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.Equal("", stdout);
+    }
+
+    [Fact]
+    public void Status_accepts_upper_case_log_format()
+    {
+        CaptureOut(() => CliApp.Build()
+            .Parse(["cdc", "status", "--project", _work, "--log-format", "JSON"]).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("drop")]
+    public void Invalid_log_format_is_a_config_error(string verb)
+    {
+        string[] args = verb == "drop"
+            ? ["cdc", "drop", "--project", _work, "files.orders", "--log-format", "yaml"]
+            : ["cdc", "status", "--project", _work, "--log-format", "yaml"];
+        var stderr = Capture(() => CliApp.Build().Parse(args).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("invalid --log-format value 'yaml'", stderr);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("drop")]
+    public void Invalid_state_url_is_a_config_error(string verb)
+    {
+        string[] args = verb == "drop"
+            ? ["cdc", "drop", "--project", _work, "files.orders", "--state-url", "ftp://x/state"]
+            : ["cdc", "status", "--project", _work, "--state-url", "ftp://x/state"];
+        var stderr = Capture(() => CliApp.Build().Parse(args).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("invalid --state-url value 'ftp://x/state'", stderr);
     }
 
     [Fact]
