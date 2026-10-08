@@ -220,7 +220,9 @@ internal static class CdcCommand
             return ExitCodes.ConfigError;
         }
 
-        var parts = targets[0].Split('.');
+        // Split on the FIRST dot only: a connection name is a plain identifier, but an entity may itself be
+        // dotted (sqlserver's schema.table), and `pz cdc status` reports it as <connection>.<schema>.<table>.
+        var parts = targets[0].Split('.', 2);
         if (parts is not [{ Length: > 0 } sourceName, { Length: > 0 } datasetName])
         {
             Console.Error.WriteLine(

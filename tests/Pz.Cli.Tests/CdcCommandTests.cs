@@ -91,6 +91,19 @@ public sealed class CdcCommandTests : IDisposable
     }
 
     [Fact]
+    public void Drop_splits_the_target_on_the_first_dot_so_schema_qualified_entities_are_reachable()
+    {
+        // A sqlserver entity is named schema.table (dbo.orders), so its target is files.dbo.orders. It must
+        // reach the dataset lookup (PZ0508 here, the fixture has no such dataset), not fail the shape check.
+        var stderr = Capture(() => CliApp.Build()
+            .Parse(["cdc", "drop", "--project", _work, "files.dbo.orders"]).Invoke(), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0508", stderr);
+        Assert.Contains("'files.dbo.orders' is not a cdc dataset", stderr);
+    }
+
+    [Fact]
     public void Drop_on_an_unknown_source_is_refused()
     {
         var stderr = Capture(() => CliApp.Build()
