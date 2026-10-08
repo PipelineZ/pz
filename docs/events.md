@@ -347,6 +347,39 @@ When `state.artifacts` resolves to a SQL Server store,
 files, and those runs contribute nothing to `bytesFreed` (a row count is not a byte count) — only stale
 `.pz/tmp` bytes do. Field meanings for the local backend are unchanged.
 
+## CDC admin stream
+
+`pz cdc status --log-format json` and `pz cdc drop --log-format json` write their own NDJSON stream with
+the same envelope (`event`, `at`) and no `runId`. These events never appear in a `pz run` stream.
+
+### `cdc_status`
+
+One per `mode: cdc` dataset. A project with no cdc datasets writes no lines.
+
+| Field | Type | Description |
+|---|---|---|
+| `dataset` | string | `<connection>.<entity>`. |
+| `connector` | string | The connection's connector, e.g. `postgres`, `sqlserver`. |
+| `adminSupported` | boolean | False when the connector is not registered or has no cdc admin surface; `healthy`, `positionName` and `retainedBytes` are then null. |
+| `healthy` | boolean or null | False on an unmet prerequisite, a lost slot or a retention gap; `detail` then carries the remediation. |
+| `positionName` | string or null | The replication slot (Postgres) or capture instance (SQL Server). |
+| `hasStoredToken` | boolean | Whether pz holds a sync token for this dataset. The token itself is never written. |
+| `retainedBytes` | number or null | WAL retained by the slot (Postgres); null on SQL Server. |
+| `detail` | string[] | Human-facing lines, no connection config. |
+
+### `cdc_dropped`
+
+Written once when `pz cdc drop` succeeds.
+
+| Field | Type | Description |
+|---|---|---|
+| `dataset` | string | `<connection>.<entity>`. |
+| `connector` | string | |
+| `positionName` | string or null | The slot or capture instance as it was before the drop. |
+| `serverSideDropped` | boolean | True when server-side state was dropped (Postgres drops the slot). False on SQL Server, where pz never disables cdc. |
+| `remediation` | string[] | SQL Server: the `sys.sp_cdc_disable_table` statement to run yourself. Empty otherwise. |
+| `stateCleared` | string | `local` or `remote`: which sync-state store the entry was cleared from. |
+
 ## Persisting this stream (`state.events: true`)
 
 **Stdout NDJSON remains the contractual surface described by this whole document, unconditionally.**
