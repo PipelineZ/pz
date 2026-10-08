@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.Globalization;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
 using Pz.Core.Loading;
@@ -98,13 +97,11 @@ internal static class CdcCommand
 
         await using var connectorHost = host;
 
+        var output = CdcOutput.For(logFormat, TimeProvider.System);
         var cdcDatasets = CdcDatasets(project).ToList();
         if (cdcDatasets.Count == 0)
         {
-            if (logFormat == "text")
-            {
-                Console.WriteLine("no cdc datasets in this project");
-            }
+            output.NoCdcDatasets();
 
             return ExitCodes.Ok;
         }
@@ -113,13 +110,13 @@ internal static class CdcCommand
         // the untouched default stays silent.
         if (project.State.BackendSource != "default")
         {
-            Console.WriteLine($"note: state backend: {backends.Description}");
+            output.Note($"note: state backend: {backends.Description}");
         }
 
         var syncState = backends.SyncState;
         var anyUnhealthy = false;
 
-        PrintHeader();
+        output.StatusHeader();
 
         foreach (var group in cdcDatasets.GroupBy(d => d.Source.Name, StringComparer.Ordinal))
         {
@@ -128,8 +125,7 @@ internal static class CdcCommand
             {
                 foreach (var (_, dataset) in group)
                 {
-                    PrintRow($"{source.Name}.{dataset.Name}", null, StoredToken(syncState, source.Name, dataset.Name),
-                        null, "admin unsupported");
+                    output.Status(Unsupported(source, dataset, StoredToken(syncState, source.Name, dataset.Name)));
                 }
 
                 continue;
@@ -144,7 +140,7 @@ internal static class CdcCommand
                     var storedToken = StoredToken(syncState, source.Name, dataset.Name);
                     if (opened is not IChangeCaptureAdmin admin)
                     {
-                        PrintRow(key, null, storedToken, null, "admin unsupported");
+                        output.Status(Unsupported(source, dataset, storedToken));
                         continue;
                     }
 
@@ -154,16 +150,9 @@ internal static class CdcCommand
                     var spec = SpecBuilder.ForSourceLoad(new SourceDatasetDef(source, dataset))
                         with { PriorSyncState = storedToken };
                     var status = await admin.GetChangeCaptureStatusAsync(spec, ct);
-                    PrintRow(key, status.PositionName, storedToken, status.RetainedBytes,
-                        status.Healthy ? "healthy" : "unhealthy");
-                    if (!status.Healthy)
-                    {
-                        anyUnhealthy = true;
-                        foreach (var line in status.Detail)
-                        {
-                            Console.WriteLine($"    {line}");
-                        }
-                    }
+                    output.Status(new CdcStatusRow(key, source.Connector, AdminSupported: true, status.Healthy,
+                        status.PositionName, storedToken, status.RetainedBytes, status.Detail));
+                    anyUnhealthy |= !status.Healthy;
                 }
             }
             finally
@@ -215,13 +204,9 @@ internal static class CdcCommand
     private static string? StoredToken(SyncStateStore syncState, string source, string dataset) =>
         syncState.Get(SyncStateStore.Key(source, dataset))?.Token;
 
-    private static void PrintHeader() =>
-        Console.WriteLine($"{"dataset",-28} {"position",-20} {"stored token",-20} {"retained",-12} health");
-
-    private static void PrintRow(string key, string? position, string? storedToken, long? retainedBytes, string health) =>
-        Console.WriteLine(
-            $"{key,-28} {position ?? "-",-20} {storedToken ?? "-",-20} " +
-            $"{retainedBytes?.ToString(CultureInfo.InvariantCulture) ?? "-",-12} {health}");
+    private static CdcStatusRow Unsupported(ConnectionDef source, DatasetDef dataset, string? storedToken) =>
+        new($"{source.Name}.{dataset.Name}", source.Connector, AdminSupported: false, Healthy: null,
+            PositionName: null, storedToken, RetainedBytes: null, Detail: []);
 
     // ---- drop ----
 
@@ -302,58 +287,33 @@ internal static class CdcCommand
 
         // The seam this verb exists for: the entry must vanish from the SAME store the next run reads
         // (backends.SyncState), or the drop is a silent no-op under a remote backend.
+        var output = CdcOutput.For(logFormat, TimeProvider.System);
         if (project.State.BackendSource != "default")
         {
-            Console.WriteLine($"note: state backend: {backends.Description}");
+            output.Note($"note: state backend: {backends.Description}");
         }
 
         backends.SyncState.Remove(SyncStateStore.Key(sourceName, datasetName));
 
-        PrintDropSummary(source, spec, sourceName, datasetName, positionName, project.State.IsLocal);
-        return ExitCodes.Ok;
-    }
-
-    /// <summary>Postgres actually drops the replication slot server-side; SQL Server's admin drop is a
-    /// deliberate no-op (server-side cdc disablement is the DBA's call) -- print the exact
-    /// `sp_cdc_disable_table` statement instead of pretending anything server-side changed.
-    /// <paramref name="positionName"/> is the pre-drop <see cref="ChangeCaptureStatus.PositionName"/>
-    /// (the slot name for postgres, the capture instance for sqlserver); schema/table for the sqlserver
-    /// remediation text come from the dataset's own entity NAME, split here rather than through a
-    /// connector-internal helper the CLI cannot reference.</summary>
-    private static void PrintDropSummary(ConnectionDef source, DatasetSpec spec, string sourceName, string datasetName,
-        string? positionName, bool localState)
-    {
-        // Under a remote backend the cleared entry lives in the configured store, not .pz/state/, so
-        // the summary must not call it "local".
-        var entry = localState ? "pz's local sync-state entry" : "pz's sync-state entry in the configured state store";
-
-        if (string.Equals(source.Connector, "sqlserver", StringComparison.Ordinal))
+        // SQL Server's admin drop is a deliberate no-op (server-side cdc disablement is the DBA's call),
+        // so the summary carries the exact `sp_cdc_disable_table` statement instead of pretending anything
+        // server-side changed. Schema/table come from the dataset's own entity NAME, split here rather
+        // than through a connector-internal helper the CLI cannot reference.
+        var isSqlServer = string.Equals(source.Connector, "sqlserver", StringComparison.Ordinal);
+        var remediation = new List<string>();
+        if (isSqlServer)
         {
             var dot = datasetName.LastIndexOf('.');
             var schema = dot < 0 ? "dbo" : datasetName[..dot];
             var table = dot < 0 ? datasetName : datasetName[(dot + 1)..];
-            Console.WriteLine(
-                $"{sourceName}.{datasetName}: cleared {entry} (the next run will re-snapshot).");
-            Console.WriteLine(
-                "SQL Server cdc was NOT disabled server-side -- pz never runs sp_cdc_disable_table. " +
-                "To disable it yourself:");
-            Console.WriteLine(
-                $"  EXEC sys.sp_cdc_disable_table @source_schema = N'{schema}', @source_name = N'{table}', " +
+            remediation.Add(
+                $"EXEC sys.sp_cdc_disable_table @source_schema = N'{schema}', @source_name = N'{table}', " +
                 $"@capture_instance = N'{positionName}';");
-            return;
         }
 
-        if (string.Equals(source.Connector, "postgres", StringComparison.Ordinal))
-        {
-            Console.WriteLine(
-                $"{sourceName}.{datasetName}: dropped replication slot '{positionName}' and cleared {entry} " +
-                "(the next run will re-snapshot).");
-            return;
-        }
-
-        Console.WriteLine(
-            $"{sourceName}.{datasetName}: dropped server-side change-capture state and cleared {entry} " +
-            "(the next run will re-snapshot).");
+        output.Dropped(new CdcDropSummary($"{sourceName}.{datasetName}", source.Connector, positionName,
+            ServerSideDropped: !isSqlServer, remediation, project.State.IsLocal));
+        return ExitCodes.Ok;
     }
 
     private static IEnumerable<(ConnectionDef Source, DatasetDef Dataset)> CdcDatasets(PzProject project) =>
