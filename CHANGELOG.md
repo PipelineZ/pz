@@ -13,7 +13,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 - **`pz run`, `pz test` and `pz retry` join a caller's trace.** With telemetry on, a W3C `TRACEPARENT` (and
   `TRACESTATE`) in the environment makes the `run` span a child in that trace, so an orchestrator can link a run
-  to its trace before it starts. An invalid value is ignored with a `note:` line.
+  to its trace before it starts. The caller's sampling decision is honored: an unsampled parent (flags `00`) means
+  pz exports no spans for that run, while metrics still flow. An invalid value is ignored with a `note:` line.
 
 ## [0.8.0] - 2026-10-08
 

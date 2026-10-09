@@ -752,7 +752,8 @@ internal static class RunCommand
 
     /// <summary>The caller's trace context from <c>TRACEPARENT</c> / <c>TRACESTATE</c> (the OpenTelemetry
     /// environment-carrier convention), so a run started by an orchestrator joins that orchestrator's trace
-    /// instead of opening one of its own. Null when unset. An unparseable value comes back through
+    /// instead of opening one of its own. The caller's sampling decision is honored: an unsampled parent (flags
+    /// <c>00</c>) means pz exports no spans for the run, metrics still flow. Null when unset. An unparseable value comes back through
     /// <paramref name="invalidNote"/> and is ignored: a malformed header must never fail a run.</summary>
     internal static ActivityContext? ResolveTraceParent(string? traceparent, string? tracestate, out string? invalidNote)
     {
