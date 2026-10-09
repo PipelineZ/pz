@@ -108,4 +108,78 @@ public class WindowMathTests
         Assert.Equal("2026-07-01", WindowMath.Min("date", "2026-07-04", "2026-07-01"));
         Assert.Equal("100", WindowMath.Min("int", "100", "150"));
     }
+
+    // --- ComputeWindow: one run's slice and whether it reaches the stop ---
+
+    private static readonly DateTimeOffset RunStart = new(2026, 10, 9, 2, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void A_window_short_of_until_is_behind_and_inclusive()
+    {
+        var w = WindowMath.ComputeWindow("bigint", "10", "10", "25", RunStart);
+        Assert.Equal("20", w.Upper);
+        Assert.True(w.UpperInclusive);
+        Assert.False(w.Empty);
+        Assert.False(w.ReachesStop);
+    }
+
+    [Fact]
+    public void A_window_clamped_to_until_reaches_the_stop()
+    {
+        // The run that loads the last slice is the caught-up one: no extra empty run.
+        var w = WindowMath.ComputeWindow("bigint", "10", "10", "15", RunStart);
+        Assert.Equal("15", w.Upper);
+        Assert.True(w.UpperInclusive);
+        Assert.True(w.ReachesStop);
+    }
+
+    [Fact]
+    public void A_watermark_already_at_until_is_an_empty_window_at_the_stop()
+    {
+        var w = WindowMath.ComputeWindow("bigint", "15", "10", "15", RunStart);
+        Assert.True(w.Empty);
+        Assert.True(w.ReachesStop);
+    }
+
+    [Fact]
+    public void No_until_has_no_stop()
+    {
+        var w = WindowMath.ComputeWindow("bigint", "10", "10", null, RunStart);
+        Assert.Equal("20", w.Upper);
+        Assert.Null(w.ReachesStop);
+    }
+
+    [Fact]
+    public void Until_now_stops_just_before_the_run_started_on_a_timestamp_cursor()
+    {
+        var w = WindowMath.ComputeWindow("timestamp", "2026-10-08T23:30:00.000000", "1h", WindowMath.UntilNow, RunStart);
+        Assert.Equal("2026-10-09T00:30:00.000000", w.Upper);   // an intermediate window: inclusive, behind
+        Assert.True(w.UpperInclusive);
+        Assert.False(w.ReachesStop);
+
+        var last = WindowMath.ComputeWindow("timestamp", "2026-10-09T01:30:00.000000", "1h", WindowMath.UntilNow, RunStart);
+        Assert.Equal("2026-10-09T02:00:00.000000", last.Upper);
+        Assert.False(last.UpperInclusive);                       // c < run start
+        Assert.True(last.ReachesStop);
+    }
+
+    [Fact]
+    public void Until_now_on_a_date_cursor_loads_up_to_yesterday()
+    {
+        var w = WindowMath.ComputeWindow("date", "2026-10-07", "7d", WindowMath.UntilNow, RunStart);
+        Assert.Equal("2026-10-09", w.Upper);
+        Assert.False(w.UpperInclusive);                          // < 2026-10-09: today is never half-loaded
+        Assert.True(w.ReachesStop);
+    }
+
+    [Theory]
+    [InlineData("date", true)]
+    [InlineData("timestamp", true)]
+    [InlineData("int", false)]
+    [InlineData("bigint", false)]
+    [InlineData("decimal", false)]
+    public void Until_now_needs_a_time_cursor(string type, bool supported)
+    {
+        Assert.Equal(supported, WindowMath.SupportsNow(type));
+    }
 }

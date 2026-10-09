@@ -469,7 +469,15 @@ public static class DagCompiler
                         windowErrors.Add($"'initial' value '{incremental.Initial}' is not a canonical {declaredType} value");
                     }
 
-                    if (incremental.Until is not null &&
+                    if (string.Equals(incremental.Until, WindowMath.UntilNow, StringComparison.Ordinal))
+                    {
+                        // Resolved per run to the time it started (SourceLoadExecutor), so nothing to canonicalize.
+                        if (!WindowMath.SupportsNow(declaredType))
+                        {
+                            windowErrors.Add($"'until: now' needs a date or timestamp cursor, not {declaredType}");
+                        }
+                    }
+                    else if (incremental.Until is not null &&
                         !WindowMath.TryCanonicalize(declaredType, incremental.Until, out canonicalUntil))
                     {
                         canonicalUntil = null;

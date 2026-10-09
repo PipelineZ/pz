@@ -164,4 +164,48 @@ public static class WindowMath
 
     public static string Min(string typeName, string canonicalA, string canonicalB) =>
         Compare(typeName, canonicalA, canonicalB) <= 0 ? canonicalA : canonicalB;
+
+    /// <summary>The <c>until</c> value that stops at the moment the run started, for a job that keeps a windowed
+    /// source current rather than backfilling to a fixed point.</summary>
+    public const string UntilNow = "now";
+
+    /// <summary>Only a time can be "now": a numeric cursor has no relation to the clock.</summary>
+    public static bool SupportsNow(string typeName) => typeName is "date" or "timestamp";
+
+    /// <summary>One run's slice. <see cref="Upper"/> is <c>lower + max_window</c> clamped to the stop;
+    /// <see cref="UpperInclusive"/> is false only for the last window of <c>until: now</c>, which stops just before
+    /// the run started so a date cursor never loads half of today. <see cref="Empty"/> means the watermark is
+    /// already at or past the stop. <see cref="ReachesStop"/> says whether this slice reaches the stop (the source is
+    /// caught up once it loads), and is null when there is no stop at all.</summary>
+    public sealed record Window(string Upper, bool UpperInclusive, bool Empty, bool? ReachesStop, string? Stop);
+
+    /// <summary>Computes the slice a windowed run loads from <paramref name="canonicalLower"/>.
+    /// <paramref name="until"/> is canonical, <see cref="UntilNow"/>, or null; <paramref name="runStartedAt"/>
+    /// resolves <c>now</c> (UTC; its date for a date cursor).</summary>
+    public static Window ComputeWindow(string typeName, string canonicalLower, string rawWindow, string? until,
+        DateTimeOffset runStartedAt)
+    {
+        var stop = until;
+        var stopExclusive = false;
+        if (string.Equals(until, UntilNow, StringComparison.Ordinal))
+        {
+            stop = typeName switch
+            {
+                "date" => DateOnly.FromDateTime(runStartedAt.UtcDateTime).ToString(DateFormat, CultureInfo.InvariantCulture),
+                "timestamp" => runStartedAt.UtcDateTime.ToString(TimestampFormat, CultureInfo.InvariantCulture),
+                _ => throw new ArgumentException($"'until: now' needs a date or timestamp cursor, not '{typeName}'", nameof(until)),
+            };
+            stopExclusive = true;
+        }
+
+        var upper = AddWindow(typeName, canonicalLower, rawWindow);
+        if (stop is not null)
+        {
+            upper = Min(typeName, upper, stop);
+        }
+
+        var reachesStop = stop is null ? (bool?)null : Compare(typeName, upper, stop) >= 0;
+        return new Window(upper, UpperInclusive: !(stopExclusive && reachesStop == true),
+            Empty: Compare(typeName, upper, canonicalLower) <= 0, reachesStop, stop);
+    }
 }

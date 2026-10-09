@@ -12,6 +12,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **`caughtUp` on `node_completed` and in `run_results.json`.** A windowed source with `until` (or a SQL-declared
   ceiling) now says whether it has caught up, so a platform or a shell loop can repeat `pz run` until every
   backfill is done instead of reading the `note:` line or comparing watermarks.
+- **`until: now`.** A windowed dataset with a date or timestamp cursor can stop at the time the run started instead of
+  a fixed value, so a scheduled job keeps the source current one window at a time. The last window stops just before
+  the run's start: a date cursor loads up to yesterday, never half of today.
 
 ## [0.8.0] - 2026-10-08
 

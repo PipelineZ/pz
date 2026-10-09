@@ -574,12 +574,27 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
-        Assert.False(sourceResult.CaughtUp); // until=15 not reached at lower=10
+        Assert.True(sourceResult.CaughtUp); // the window (10, 15] reaches until=15: this run loads the last slice
         Assert.Equal(5, sourceResult.RowsMoved); // upper = min(10+10, 15) = 15 -> ids 11..15
         Assert.Equal("15", sourceResult.WatermarkCandidate!.Value);
 
         WatermarkAdvancement.Advance(dag, result.Nodes, _store);
         Assert.Equal("15", _store.Get(key)!.Value);
+    }
+
+    [Fact]
+    public async Task A_window_short_of_until_reports_behind()
+    {
+        var sourceId = new NodeId("a8a8a8a8a8a8a8a8");
+        _store.Set(WatermarkStore.Key("mem", "w8"), new Watermark("id", "bigint", "10", "prior-run"));
+
+        var dag = new CompiledDag(
+            [WindowedSourceLoadNode(sourceId, "mem", "w8", 25, maxWindow: "5", initial: "0", until: "24")]);
+        var result = await new RunOrchestrator(new KindDispatchingExecutor(), Ctx()).ExecuteAsync(dag, new RunOptions(), default);
+
+        var sourceResult = Assert.Single(result.Nodes);
+        Assert.Equal(5, sourceResult.RowsMoved); // (10, 15]
+        Assert.False(sourceResult.CaughtUp);
     }
 
     [Fact]

@@ -102,7 +102,6 @@ public sealed class SourceLoadExecutor : INodeExecutor
         var caughtUp = false;
         // What run_results/node_completed report: only a window with a stopping point can be caught up.
         bool? reportedCaughtUp = null;
-        SqlStop? sqlStop = null;
         string? windowLower = null;
         // YAML max_window's ceiling is always inclusive, so `true` preserves that path byte-for-byte; a
         // SQL-declared `c < e` sets it false and the staging trim below cuts at >= instead of >.
@@ -134,25 +133,19 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             lowerWm ??= new Watermark(incremental.Cursor, declaredType, incremental.Initial!, "initial");
 
-            var upper = WindowMath.AddWindow(declaredType, lowerWm.Value, incremental.MaxWindow);
-            if (incremental.Until is not null)
-            {
-                upper = WindowMath.Min(declaredType, upper, incremental.Until);
-            }
-
-            if (WindowMath.Compare(declaredType, upper, lowerWm.Value) <= 0)
+            var window = WindowMath.ComputeWindow(declaredType, lowerWm.Value, incremental.MaxWindow, incremental.Until,
+                ctx.StartedAt);
+            if (window.Empty)
             {
                 caughtUp = true;
                 ctx.Notice?.Invoke(
-                    $"source '{def.Source.Name}.{def.Dataset.Name}' is caught up (watermark {lowerWm.Value} has reached until {incremental.Until})");
+                    $"source '{def.Source.Name}.{def.Dataset.Name}' is caught up (watermark {lowerWm.Value} has reached until {window.Stop})");
             }
 
-            if (incremental.Until is not null)
-            {
-                reportedCaughtUp = caughtUp;
-            }
-
-            windowUpper = upper;
+            // Caught up once this slice loads: it reaches the stop. Null without one (no until).
+            reportedCaughtUp = window.ReachesStop;
+            upperInclusive = window.UpperInclusive;
+            windowUpper = window.Upper;
             windowLower = lowerWm.Value;
         }
 
@@ -192,13 +185,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
                 // The flag needs a stopping point that does not move with the watermark: the ceiling as it
                 // evaluates once the watermark is far past any real data. A rolling ceiling (watermark() +
-                // interval 7 day) has none, so it reports nothing rather than "behind" forever. Compared with
-                // the STORED watermark, not the pushed-down floor, which a connector may have dropped.
+                // interval 7 day) has none, so it reports nothing rather than "behind" forever. Caught up once
+                // this run's window reaches that stop, the same rule as a YAML until.
                 if (await EvaluateSqlStopAsync(ctx, def, sqlIncremental, declaredType!, ct).ConfigureAwait(false) is { } stop)
                 {
-                    sqlStop = stop;
-                    reportedCaughtUp = caughtUp
-                        || (stored is not null && WindowMath.Compare(declaredType!, stored.Value, stop.Value) >= 0);
+                    reportedCaughtUp = WindowMath.Compare(declaredType!, bounds.Upper, stop.Value) >= 0;
                 }
             }
 
@@ -210,23 +201,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
 
         // Every success below leaves through SchemaDriftGate or partition mode; stamp the flag on the way out.
-        NodeResult Stamp(NodeResult result)
-        {
-            if (reportedCaughtUp is not { } flag || result.Status != NodeStatus.Success)
-            {
-                return result;
-            }
-
-            // The watermark never reaches an exclusive stop (no row sits at it), so the final window coming
-            // back empty is what says nothing is left below it.
-            if (!flag && sqlStop is { Inclusive: false } exclusiveStop && windowUpper is not null
-                && WindowMath.Compare(declaredType!, windowUpper, exclusiveStop.Value) == 0 && result.RowsMoved == 0)
-            {
-                flag = true;
-            }
-
-            return result with { CaughtUp = flag };
-        }
+        NodeResult Stamp(NodeResult result) =>
+            reportedCaughtUp is { } flag && result.Status == NodeStatus.Success
+                ? result with { CaughtUp = flag }
+                : result;
 
         if (priorSync is not null)
         {
