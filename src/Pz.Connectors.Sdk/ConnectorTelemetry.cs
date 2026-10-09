@@ -1,10 +1,12 @@
 using System.Diagnostics;
 using System.Diagnostics.Metrics;
 using OpenTelemetry;
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk;
 
@@ -52,27 +54,34 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
 
     public bool IsExporting
     {
-        get { lock (_gate) { return _tracer is not null; } }
+        get { lock (_gate) { return _tracer is not null || _meter is not null; } }
     }
 
-    /// <summary>Builds and registers the providers once. A second call, or an endpoint that is not an
-    /// absolute http(s) URL, changes nothing: the host validated the endpoint, and a connector must not
-    /// fail its handshake over telemetry. An endpoint that could not be used is reported on stderr --
-    /// silence would leave an operator staring at a collector that never receives anything -- matching
-    /// what the Rust SDK prints. The endpoint is the host's own address, not a secret.</summary>
-    public void Start(string endpoint, ConnectorInfo info, string runId)
+    /// <summary>The pre-0.9.1 entry point: a gRPC endpoint for both signals.</summary>
+    public void Start(string endpoint, ConnectorInfo info, string runId) =>
+        Start(new TelemetryTarget(endpoint, null, null, null), info, runId);
+
+    /// <summary>Builds and registers the providers once. A second call, or a URL that is not an absolute
+    /// http(s) URL, changes nothing for that signal: the host validated it, and a connector must not fail
+    /// its handshake over telemetry. A URL that could not be used is reported on stderr -- silence would
+    /// leave an operator staring at a backend that never receives anything -- matching what the Rust SDK
+    /// prints. URLs are the host's own addresses, not secrets; the headers file's content never reaches
+    /// stderr. gRPC exports both signals to one endpoint (cumulative metrics, as before 0.9.1);
+    /// http/protobuf exports each signal to its own URL with the file's headers, delta temporality and
+    /// base-2 exponential histograms.</summary>
+    public void Start(TelemetryTarget target, ConnectorInfo info, string runId)
     {
-        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        var http = target.GrpcEndpoint is null;
+        var traces = Usable(http ? target.TracesEndpoint : target.GrpcEndpoint);
+        var metrics = Usable(http ? target.MetricsEndpoint : target.GrpcEndpoint);
+        if (traces is null && metrics is null)
         {
-            Console.Error.WriteLine(
-                $"pz connector: telemetry: otel endpoint is not an absolute http(s) URL: {endpoint}");
             return;
         }
 
         lock (_gate)
         {
-            if (_tracer is not null)
+            if (_tracer is not null || _meter is not null)
             {
                 return;
             }
@@ -90,36 +99,88 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
                 .AddService("pz-connector", serviceVersion: info.Version)
                 .AddAttributes(attributes);
 
-            var tracerBuilder = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
-                .SetResourceBuilder(resource)
-                .AddSource(SourceName)
-                .AddOtlpExporter(o =>
-                {
-                    o.Endpoint = uri;
-                    o.TimeoutMilliseconds = (int)ExportTimeout.TotalMilliseconds;
-                });
-            foreach (var source in options.ActivitySources)
+            // One stderr note per process, not one per signal: each exporter owns its own handler.
+            var noted = 0;
+            void NoteOnce(string text)
             {
-                tracerBuilder.AddSource(source);
+                if (Interlocked.Exchange(ref noted, 1) == 0) Console.Error.WriteLine($"pz connector: telemetry: {text}");
             }
 
-            var meterBuilder = OpenTelemetry.Sdk.CreateMeterProviderBuilder()
-                .SetResourceBuilder(resource)
-                .AddMeter(SourceName)
-                .AddOtlpExporter(o =>
-                {
-                    o.Endpoint = uri;
-                    o.TimeoutMilliseconds = (int)ExportTimeout.TotalMilliseconds;
-                });
-            foreach (var meter in options.Meters)
+            void Exporter(OtlpExporterOptions o, Uri url)
             {
-                meterBuilder.AddMeter(meter);
+                o.Endpoint = url;
+                o.TimeoutMilliseconds = (int)ExportTimeout.TotalMilliseconds;
+                o.Protocol = http ? OtlpExportProtocol.HttpProtobuf : OtlpExportProtocol.Grpc;
+                if (http)
+                {
+                    // OTel 1.16 bounds an HTTP export by the client's own Timeout, not TimeoutMilliseconds.
+                    o.HttpClientFactory = () => new HttpClient(
+                        new HeadersFileHandler(target.HeadersFile, NoteOnce) { InnerHandler = new HttpClientHandler() })
+                    {
+                        Timeout = ExportTimeout,
+                    };
+                }
             }
 
-            _tracer = tracerBuilder.Build();
-            _meter = meterBuilder.Build();
+            if (traces is not null)
+            {
+                var tracerBuilder = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
+                    .SetResourceBuilder(resource)
+                    .AddSource(SourceName)
+                    .AddOtlpExporter(o => Exporter(o, traces));
+                foreach (var source in options.ActivitySources)
+                {
+                    tracerBuilder.AddSource(source);
+                }
+
+                _tracer = tracerBuilder.Build();
+            }
+
+            if (metrics is not null)
+            {
+                var meterBuilder = OpenTelemetry.Sdk.CreateMeterProviderBuilder()
+                    .SetResourceBuilder(resource)
+                    .AddMeter(SourceName)
+                    .AddOtlpExporter((o, reader) =>
+                    {
+                        Exporter(o, metrics);
+                        reader.TemporalityPreference = http
+                            ? MetricReaderTemporalityPreference.Delta
+                            : MetricReaderTemporalityPreference.Cumulative;
+                    });
+                if (http)
+                {
+                    meterBuilder.AddView(instrument => IsHistogram(instrument) ? new Base2ExponentialBucketHistogramConfiguration() : null);
+                }
+
+                foreach (var meter in options.Meters)
+                {
+                    meterBuilder.AddMeter(meter);
+                }
+
+                _meter = meterBuilder.Build();
+            }
         }
     }
+
+    private static Uri? Usable(string? url)
+    {
+        if (url is null)
+        {
+            return null;
+        }
+
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        {
+            return uri;
+        }
+
+        Console.Error.WriteLine($"pz connector: telemetry: otel endpoint is not an absolute http(s) URL: {url}");
+        return null;
+    }
+
+    private static bool IsHistogram(Instrument instrument) =>
+        instrument.GetType() is { IsGenericType: true } type && type.GetGenericTypeDefinition() == typeof(Histogram<>);
 
     /// <summary>Shutdown -- which performs a final flush itself, so no separate ForceFlush is needed --
     /// bounded by <see cref="FlushBound"/> IN AGGREGATE across both providers, then tear down. The two

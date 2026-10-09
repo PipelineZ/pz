@@ -83,12 +83,12 @@ internal sealed class PcpConnectorService(
         };
         hello.Transports.Add(ProtocolConstants.TransportPipe);
 
-        // The endpoint is the host's own; absent means the host is not exporting either. Built here
+        // The endpoints are the host's own; absent means the host is not exporting either. Built here
         // rather than at Configure so Validate/CheckConnection (which `pz connector test` calls
         // without Configure) are covered too.
-        if (request.HostInfo is { HasOtelEndpoint: true } hostInfo)
+        if (request.HostInfo is { } hostInfo && TelemetryTarget.FromHostInfo(hostInfo) is { } target)
         {
-            telemetry.Start(hostInfo.OtelEndpoint, connector.Info, hostInfo.RunId);
+            telemetry.Start(target, connector.Info, hostInfo.RunId);
         }
 
         _handshaken = true;
