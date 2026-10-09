@@ -1,6 +1,7 @@
 using Pz.Connectors.Abstractions;
 using Pz.Core.Model;
 using Pz.Core.Validation;
+using Pz.Cli.Otel;
 using Pz.Engine.Execution;
 using Pz.PackageManagement.Hosting;
 using Pz.PackageManagement.ProcessHosting;
@@ -22,8 +23,8 @@ internal static class ConnectorRegistryFactory
     /// a verb with no run (validate/plan/connectors/mcp) passes none and gets a temp root the returned
     /// <see cref="ConnectorHosts"/> owns and deletes. See <see cref="ProcessSocketRoot"/>.</para>
     ///
-    /// <para><paramref name="otelEndpoint"/> is the same OTLP endpoint the engine exports to;
-    /// out-of-process connectors receive it in their handshake and export their own spans there. Null
+    /// <para><paramref name="otel"/> is where the engine exports telemetry (gRPC endpoint or http/protobuf URLs);
+    /// out-of-process connectors receive it in their handshake and export their own spans there. Off
     /// keeps every child telemetry-free.</para>
     ///
     /// <para><paramref name="connectorLog"/> receives every process-hosted connector's <c>ILogger</c>
@@ -37,7 +38,7 @@ internal static class ConnectorRegistryFactory
     /// can fire before the caller is ready for it.</para></summary>
     public static async Task<(ConnectorRegistry Registry, ConnectorHosts? Hosts)> CreateAsync(
         PzProject project, string projectDir, bool noLockCheck, CancellationToken ct, string? runId = null,
-        Uri? otelEndpoint = null, Action<string, string, string>? connectorLog = null)
+        OtelOptions? otel = null, Action<string, string, string>? connectorLog = null)
     {
         ct.ThrowIfCancellationRequested();
 
@@ -129,7 +130,7 @@ internal static class ConnectorRegistryFactory
                     packagesDir, outOfProcessRefs, socketRoot, warn: Warn,
                     logSink: connectorLog is null ? null : (connection, level, message, fields) =>
                         connectorLog(connection, LevelName(level), MessageRedaction.Redact(FoldException(message, fields))),
-                    telemetry: new HostTelemetry(runId, otelEndpoint));
+                    telemetry: (otel ?? OtelOptions.Off).ToHostTelemetry(runId));
             }
         }
         catch (Exception ex)

@@ -422,9 +422,16 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         // covered. A telemetry failure is reported on stderr and never fails the handshake -- it can
         // mean traces are off while metrics still work, which is why it does not say "disabled".
         if let Some(host) = msg.host_info.as_ref() {
-            if let Some(endpoint) = host.otel_endpoint.as_deref() {
+            let target = telemetry::Target::from_host(
+                host.otel_protocol.as_deref(),
+                host.otel_endpoint.as_deref(),
+                host.otel_traces_endpoint.as_deref(),
+                host.otel_metrics_endpoint.as_deref(),
+                host.otel_headers_file.as_deref(),
+            );
+            if let Some(target) = target {
                 if let Err(e) =
-                    telemetry::start(endpoint, self.decl.name, self.decl.version, &host.run_id)
+                    telemetry::start(&target, self.decl.name, self.decl.version, &host.run_id)
                 {
                     eprintln!("pz-connector: telemetry: {e}");
                 }

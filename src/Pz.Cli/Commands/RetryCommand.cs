@@ -47,14 +47,14 @@ internal static class RetryCommand
         command.Options.Add(fullRefreshOption);
         command.Options.Add(SharedOptions.NoLockCheck);
         command.Options.Add(SharedOptions.LogFormat);
-        command.Options.Add(SharedOptions.OtelEndpoint);
+        SharedOptions.AddOtel(command);
         command.Options.Add(SharedOptions.StateUrl);
         command.SetAction((parseResult, ct) => Execute(
             parseResult.GetValue(projectOption) ?? Directory.GetCurrentDirectory(),
             parseResult.GetValue(failFastOption),
             parseResult.GetValue(SharedOptions.NoLockCheck),
             parseResult.GetValue(SharedOptions.LogFormat),
-            parseResult.GetValue(SharedOptions.OtelEndpoint),
+            SharedOptions.ReadOtel(parseResult),
             parseResult.GetValue(SharedOptions.StateUrl),
             parseResult.GetValue(fullRefreshOption),
             ct));
@@ -62,7 +62,7 @@ internal static class RetryCommand
     }
 
     internal static async Task<int> Execute(
-        string projectDir, bool failFast, bool noLockCheck, string? logFormatRaw, string? otelEndpointRaw,
+        string projectDir, bool failFast, bool noLockCheck, string? logFormatRaw, RunCommand.OtelRaw? otelRaw,
         string? stateUrlRaw, bool fullRefresh, CancellationToken ct)
     {
         if (!RunCommand.TryParseLogFormat(logFormatRaw, out var logFormat))
@@ -72,7 +72,7 @@ internal static class RetryCommand
             return ExitCodes.ConfigError;
         }
 
-        if (!RunCommand.TryResolveOtelEndpoint(otelEndpointRaw, out var otelEndpoint, out var otelError))
+        if (!RunCommand.TryResolveOtel(otelRaw ?? new(null, null, null, null, null), Environment.GetEnvironmentVariable, out var otel, out var otelError))
         {
             Console.Error.WriteLine($"error: {otelError}");
             return ExitCodes.ConfigError;
@@ -156,7 +156,7 @@ internal static class RetryCommand
 
             return await RunCommand.ExecuteRun(
                 project, fullDag, projectDir, plan.Selection, failFast, noLockCheck, logFormat, ct,
-                otelEndpoint: otelEndpoint, fullRefresh: fullRefresh, reuse: plan.Reuse, carriedForward: plan.CarriedForward);
+                otel: otel, fullRefresh: fullRefresh, reuse: plan.Reuse, carriedForward: plan.CarriedForward);
         }
         catch (PzConfigException ex)
         {

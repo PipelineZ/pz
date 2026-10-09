@@ -32,14 +32,44 @@ public static class SharedOptions
     /// <summary>An absolute http(s) OTLP/grpc collector endpoint. Falls back to the
     /// <c>PZ_OTEL_ENDPOINT</c> environment variable when unset (this option
     /// wins over the env var when both are present); validated in
-    /// <see cref="RunCommand.TryResolveOtelEndpoint"/> (an unparseable value is a clean CLI usage error,
+    /// <see cref="RunCommand.TryResolveOtel"/> (an unparseable value is a clean CLI usage error,
     /// not a crash). Unset (and no env var) means OTel stays fully off — no listener is ever registered,
     /// so span/meter emission in Pz.Engine remains the documented zero-cost no-op.</summary>
     public static Option<string?> OtelEndpoint { get; } =
         new("--otel-endpoint")
         {
-            Description = "OTLP/grpc collector endpoint (absolute http(s) URL); falls back to PZ_OTEL_ENDPOINT",
+            Description = "OTLP/grpc endpoint (absolute http(s) URL); falls back to PZ_OTEL_ENDPOINT",
         };
+
+    public static Option<string?> OtelProtocol { get; } =
+        new("--otel-protocol") { Description = "OTLP protocol: grpc (default) or http/protobuf; falls back to PZ_OTEL_PROTOCOL" };
+
+    public static Option<string?> OtelTracesEndpoint { get; } =
+        new("--otel-traces-endpoint") { Description = "http/protobuf: full traces URL, used as-is; falls back to PZ_OTEL_TRACES_ENDPOINT" };
+
+    public static Option<string?> OtelMetricsEndpoint { get; } =
+        new("--otel-metrics-endpoint") { Description = "http/protobuf: full metrics URL, used as-is; falls back to PZ_OTEL_METRICS_ENDPOINT" };
+
+    public static Option<string?> OtelHeadersFile { get; } =
+        new("--otel-headers-file") { Description = "http/protobuf: file of Name=value header lines, re-read before every export; falls back to PZ_OTEL_HEADERS_FILE" };
+
+    /// <summary>Registers every OTLP option on <paramref name="command"/>; shared by run, test and retry.</summary>
+    public static void AddOtel(Command command)
+    {
+        command.Options.Add(OtelEndpoint);
+        command.Options.Add(OtelProtocol);
+        command.Options.Add(OtelTracesEndpoint);
+        command.Options.Add(OtelMetricsEndpoint);
+        command.Options.Add(OtelHeadersFile);
+    }
+
+    /// <summary>The raw OTLP flag values, resolved later by <see cref="RunCommand.TryResolveOtel"/>.</summary>
+    internal static RunCommand.OtelRaw ReadOtel(ParseResult parseResult) => new(
+        parseResult.GetValue(OtelProtocol),
+        parseResult.GetValue(OtelEndpoint),
+        parseResult.GetValue(OtelTracesEndpoint),
+        parseResult.GetValue(OtelMetricsEndpoint),
+        parseResult.GetValue(OtelHeadersFile));
 
     /// <summary>See <see cref="StateUrlOverride"/>: the explicit, argv-visible spelling of "this run's
     /// state lives on the server". Outranks project.yml's

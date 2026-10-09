@@ -1,5 +1,5 @@
 //! The connector process's own OpenTelemetry composition root. Providers exist only after the host's
-//! `HostInfo.otel_endpoint` arrived in `Handshake`; until then no subscriber is installed and every
+//! `HostInfo` named a target in `Handshake` (`otel_endpoint` for gRPC, or the http/protobuf per-signal URLs); until then no subscriber is installed and every
 //! `tracing` span is disabled. Trace context comes in as W3C `traceparent` metadata on every RPC;
 //! the data plane carries none, so a write stream inherits the `BeginWrite` RPC's context through
 //! its `SessionState`.
@@ -18,10 +18,12 @@ use std::time::Duration;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry::{global, KeyValue};
-use opentelemetry_otlp::WithExportConfig;
-use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+use opentelemetry_otlp::{Compression, Protocol, WithExportConfig, WithHttpConfig};
+use opentelemetry_sdk::metrics::{
+    Aggregation, Instrument, InstrumentKind, PeriodicReader, SdkMeterProvider, Stream, Temporality,
+};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
-use opentelemetry_sdk::trace::{SdkTracerProvider, Tracer};
+use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider, Tracer};
 use opentelemetry_sdk::Resource;
 use std::any::TypeId;
 use tower_http::classify::{GrpcErrorsAsFailures, SharedClassifier};
@@ -34,9 +36,14 @@ use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
 use tracing_subscriber::registry::LookupSpan;
 
+mod headers_file;
+use headers_file::HeadersFileClient;
+
 /// Upper bound on flushing at shutdown: inside the host's ten-second shutdown grace.
 pub(crate) const FLUSH_BOUND: Duration = Duration::from_secs(3);
 const EXPORT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Spans per OTLP/HTTP request: a full batch gzips to far below Azure Monitor's 1 MB request limit.
+const MAX_HTTP_SPAN_BATCH: usize = 256;
 /// The instrumentation scope every span and instrument this SDK emits is attributed to -- the same
 /// name the C# SDK uses, so one backend query finds both SDKs' spans.
 const SCOPE_NAME: &str = "Pz.Connector";
@@ -50,7 +57,65 @@ struct Providers {
     /// `None` when a `tracing` subscriber was already installed and the OpenTelemetry layer could
     /// therefore not be: with no layer feeding it, a tracer provider would only ever export nothing.
     tracer: Option<SdkTracerProvider>,
-    meter: SdkMeterProvider,
+    /// `None` when the host named a traces URL only (http/protobuf).
+    meter: Option<SdkMeterProvider>,
+}
+
+/// Where the host told this connector to export: one gRPC endpoint, or http/protobuf per-signal URLs (used as-is)
+/// plus an optional headers file read before every export. Built from the handshake's `HostInfo`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct Target {
+    pub(crate) grpc: Option<String>,
+    pub(crate) traces: Option<String>,
+    pub(crate) metrics: Option<String>,
+    pub(crate) headers_file: Option<String>,
+}
+
+impl Target {
+    /// `None` when the host is not exporting. A host older than 0.9.1 only ever sends `otel_endpoint`.
+    pub(crate) fn from_host(
+        protocol: Option<&str>,
+        endpoint: Option<&str>,
+        traces: Option<&str>,
+        metrics: Option<&str>,
+        headers_file: Option<&str>,
+    ) -> Option<Target> {
+        if protocol == Some("http/protobuf") {
+            if traces.is_none() && metrics.is_none() {
+                return None;
+            }
+            return Some(Target {
+                grpc: None,
+                traces: traces.map(str::to_string),
+                metrics: metrics.map(str::to_string),
+                headers_file: headers_file.map(str::to_string),
+            });
+        }
+        endpoint.map(|e| Target {
+            grpc: Some(e.to_string()),
+            ..Target::default()
+        })
+    }
+}
+
+fn is_http_url(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
+/// Every histogram becomes base-2 exponential, the shape Application Insights' views expect (http/protobuf only).
+fn exponential_histograms(instrument: &Instrument) -> Option<Stream> {
+    (instrument.kind() == InstrumentKind::Histogram)
+        .then(|| {
+            Stream::builder()
+                .with_aggregation(Aggregation::Base2ExponentialHistogram {
+                    max_size: 160,
+                    max_scale: 20,
+                    record_min_max: true,
+                })
+                .build()
+                .ok()
+        })
+        .flatten()
 }
 
 static PROVIDERS: OnceLock<Providers> = OnceLock::new();
@@ -248,20 +313,40 @@ pub fn meter() -> opentelemetry::metrics::Meter {
 
 /// Builds and installs providers once; a second call changes nothing. The exporting layer goes into
 /// the subscriber the author composed [`layer`] into when there is one still alive, else into a
-/// subscriber this crate installs as the global default. The two failures it reports -- an endpoint
+/// subscriber this crate installs as the global default. The two failures it reports -- a URL
 /// that is not an absolute http(s) URL, and a `tracing` subscriber the connector author installed
 /// before `serve_sink` ran without composing [`layer`] into it -- are told to the caller rather than
 /// swallowed, but neither is fatal: the caller prints them and completes the handshake. Metrics
 /// survive the second failure (they need no subscriber); traces do not, and [`traces_enabled`]
 /// reports that for the rest of the process's life so no span is ever built only to be dropped.
-pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> Result<(), String> {
+///
+/// gRPC exports both signals to one endpoint with cumulative metrics, as before 0.9.1. http/protobuf
+/// exports each signal to its own URL, gzipped, with the headers file's headers, delta temporality and
+/// base-2 exponential histograms; a signal with no URL is not exported.
+pub(crate) fn start(
+    target: &Target,
+    name: &str,
+    version: &str,
+    run_id: &str,
+) -> Result<(), String> {
     if PROVIDERS.get().is_some() {
         return Ok(());
     }
-    if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
-        return Err(format!(
-            "otel endpoint is not an absolute http(s) URL: {endpoint}"
-        ));
+    let http = target.grpc.is_none();
+    let (traces_url, metrics_url) = if http {
+        (target.traces.as_deref(), target.metrics.as_deref())
+    } else {
+        (target.grpc.as_deref(), target.grpc.as_deref())
+    };
+    for url in [traces_url, metrics_url].into_iter().flatten() {
+        if !is_http_url(url) {
+            return Err(format!(
+                "otel endpoint is not an absolute http(s) URL: {url}"
+            ));
+        }
+    }
+    if traces_url.is_none() && metrics_url.is_none() {
+        return Ok(());
     }
 
     let mut attrs = vec![
@@ -274,31 +359,102 @@ pub(crate) fn start(endpoint: &str, name: &str, version: &str, run_id: &str) -> 
     }
     let resource = Resource::builder_empty().with_attributes(attrs).build();
 
-    let span_exporter = opentelemetry_otlp::SpanExporter::builder()
-        .with_tonic()
-        .with_endpoint(endpoint)
-        .with_timeout(EXPORT_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let tracer = SdkTracerProvider::builder()
-        .with_resource(resource.clone())
-        .with_batch_exporter(span_exporter)
-        .build();
+    // One client for both signals, so a bad headers file is reported once per process.
+    let client: Option<Arc<dyn opentelemetry_http::HttpClient>> = if http {
+        Some(Arc::new(HeadersFileClient::new(
+            target.headers_file.as_ref().map(std::path::PathBuf::from),
+            EXPORT_TIMEOUT,
+        )?))
+    } else {
+        None
+    };
 
-    let metric_exporter = opentelemetry_otlp::MetricExporter::builder()
-        .with_tonic()
-        .with_endpoint(endpoint)
-        .with_timeout(EXPORT_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let reader = PeriodicReader::builder(metric_exporter).build();
-    let meter = SdkMeterProvider::builder()
-        .with_resource(resource)
-        .with_reader(reader)
-        .build();
+    let tracer = match traces_url {
+        None => None,
+        Some(url) => Some(match &client {
+            Some(client) => {
+                let exporter = opentelemetry_otlp::SpanExporter::builder()
+                    .with_http()
+                    .with_protocol(Protocol::HttpBinary)
+                    .with_endpoint(url)
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .with_compression(Compression::Gzip)
+                    .with_shared_http_client(client.clone())
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let processor = BatchSpanProcessor::builder(exporter)
+                    .with_batch_config(
+                        BatchConfigBuilder::default()
+                            .with_max_export_batch_size(MAX_HTTP_SPAN_BATCH)
+                            .build(),
+                    )
+                    .build();
+                SdkTracerProvider::builder()
+                    .with_resource(resource.clone())
+                    .with_span_processor(processor)
+                    .build()
+            }
+            None => {
+                let exporter = opentelemetry_otlp::SpanExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(url)
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                SdkTracerProvider::builder()
+                    .with_resource(resource.clone())
+                    .with_batch_exporter(exporter)
+                    .build()
+            }
+        }),
+    };
+
+    let meter = match metrics_url {
+        None => None,
+        Some(url) => Some(match &client {
+            Some(client) => {
+                let exporter = opentelemetry_otlp::MetricExporter::builder()
+                    .with_http()
+                    .with_protocol(Protocol::HttpBinary)
+                    .with_endpoint(url)
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .with_compression(Compression::Gzip)
+                    .with_shared_http_client(client.clone())
+                    .with_temporality(Temporality::Delta)
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                SdkMeterProvider::builder()
+                    .with_resource(resource)
+                    .with_reader(PeriodicReader::builder(exporter).build())
+                    .with_view(exponential_histograms)
+                    .build()
+            }
+            None => {
+                let exporter = opentelemetry_otlp::MetricExporter::builder()
+                    .with_tonic()
+                    .with_endpoint(url)
+                    .with_timeout(EXPORT_TIMEOUT)
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                SdkMeterProvider::builder()
+                    .with_resource(resource)
+                    .with_reader(PeriodicReader::builder(exporter).build())
+                    .build()
+            }
+        }),
+    };
 
     global::set_text_map_propagator(TraceContextPropagator::new());
-    global::set_meter_provider(meter.clone());
+    if let Some(meter) = meter.as_ref() {
+        global::set_meter_provider(meter.clone());
+    }
+    let Some(tracer) = tracer else {
+        let _ = PROVIDERS.set(Providers {
+            tracer: None,
+            meter,
+        });
+        return Ok(());
+    };
 
     // The author's own subscriber, when they composed `layer()` into it and it is still alive. Taken,
     // not borrowed: one install per process, and a reload that fails because the subscriber was
@@ -388,7 +544,9 @@ pub(crate) async fn flush_and_shutdown() {
     let metrics = {
         let done = metrics_done.clone();
         tokio::task::spawn_blocking(move || {
-            let _ = providers.meter.shutdown();
+            if let Some(meter) = providers.meter.as_ref() {
+                let _ = meter.shutdown();
+            }
             done.store(true, Ordering::Release);
         })
     };
@@ -551,12 +709,60 @@ mod tests {
         assert_eq!(span_name("/"), None);
     }
 
+    fn grpc(endpoint: &str) -> Target {
+        Target {
+            grpc: Some(endpoint.to_string()),
+            ..Target::default()
+        }
+    }
+
+    #[test]
+    fn host_info_maps_to_a_target_per_protocol() {
+        assert_eq!(
+            Target::from_host(None, Some("http://c:4317"), None, None, None),
+            Some(grpc("http://c:4317"))
+        );
+        assert_eq!(
+            Target::from_host(
+                Some("http/protobuf"),
+                None,
+                Some("https://t/x"),
+                None,
+                Some("/h")
+            ),
+            Some(Target {
+                grpc: None,
+                traces: Some("https://t/x".into()),
+                metrics: None,
+                headers_file: Some("/h".into())
+            })
+        );
+        assert_eq!(
+            Target::from_host(Some("http/protobuf"), None, None, None, Some("/h")),
+            None
+        );
+        assert_eq!(Target::from_host(None, None, None, None, None), None);
+    }
+
     /// One test, not four, because `PROVIDERS` and the `tracing` global dispatcher are per-process
     /// and xunit-style parallel tests would race on them: the whole ordered story of what `start`
     /// installs -- and what it refuses to install -- has to be told in a single test body.
     #[tokio::test]
     async fn start_reports_a_bad_endpoint_and_a_pre_installed_subscriber() {
-        assert!(start("not-a-url", "x", "0", "").is_err());
+        // Nothing named: nothing built, and no global state touched.
+        assert!(start(&Target::default(), "x", "0", "").is_ok());
+        assert!(PROVIDERS.get().is_none());
+        assert!(start(&grpc("not-a-url"), "x", "0", "").is_err());
+        assert!(start(
+            &Target {
+                traces: Some("ftp://t".into()),
+                ..Target::default()
+            },
+            "x",
+            "0",
+            ""
+        )
+        .is_err());
         assert!(PROVIDERS.get().is_none());
         assert!(!traces_enabled());
 
@@ -569,7 +775,7 @@ mod tests {
         tracing::subscriber::set_global_default(tracing_subscriber::registry())
             .expect("no other test installs a global subscriber");
 
-        let err = start("http://127.0.0.1:1", "x", "0", "run-1")
+        let err = start(&grpc("http://127.0.0.1:1"), "x", "0", "run-1")
             .expect_err("an already-installed subscriber must be reported, not swallowed");
         assert!(err.contains("already installed"), "unexpected error: {err}");
 
@@ -579,7 +785,7 @@ mod tests {
         assert!(!traces_enabled());
 
         // Idempotent: a second call neither rebuilds anything nor reports the failure again.
-        assert!(start("http://127.0.0.1:1", "x", "0", "run-1").is_ok());
+        assert!(start(&grpc("http://127.0.0.1:1"), "x", "0", "run-1").is_ok());
         assert!(!traces_enabled());
 
         // With traces off, the layer opens nothing at all.

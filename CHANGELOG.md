@@ -7,6 +7,33 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-09
+
+### Added
+
+- **OTLP over HTTP.** `pz run`, `pz test` and `pz retry` take `--otel-protocol http/protobuf` with
+  `--otel-traces-endpoint` and `--otel-metrics-endpoint` (full URLs, used as-is; either alone is fine), so a run can
+  export straight to a backend that only takes OTLP/HTTP, such as Azure Monitor. Bodies are gzipped and span batches
+  are capped at 256 so a request stays under 1 MB. Metrics over HTTP are delta, with base-2 exponential histograms.
+- **`--otel-headers-file`.** Header lines (`Name=value`) re-read before every export, so the caller can refresh a
+  token while the run is going. A missing or malformed file sends without it and prints one `note:`; the content is
+  never printed.
+- **`pz.run.id` on every metric point**, so one run's metrics can be filtered where resource attributes are dropped.
+- Connectors receive the HTTP settings through `HostInfo` (`otel_protocol`, `otel_traces_endpoint`,
+  `otel_metrics_endpoint`, `otel_headers_file`); both SDKs export over HTTP. Connectors built on an older SDK export
+  nothing under `http/protobuf` (gRPC is unchanged).
+
+### Changed
+
+- **`--otel-*` flags win over `PZ_OTEL_*` variables as a set.** When any `--otel-*` flag is given, every `PZ_OTEL_*`
+  variable is ignored, so a stray variable on the host cannot turn an explicit flag set into a usage error. With no
+  flag, the variables apply as before.
+- pz no longer follows ambient `OTEL_EXPORTER_OTLP_PROTOCOL` or endpoint variables: every exporter option comes from
+  its flag or `PZ_OTEL_*` variable. `OTEL_EXPORTER_OTLP_HEADERS` is still honoured.
+- The Rust connector SDK adds the OTLP/HTTP transport (reqwest's blocking client with rustls and aws-lc-rs, the
+  provider rustls defaults to, so a connector's own rustls code is unaffected), which adds about 7 MB to a release
+  connector binary.
+
 ## [0.9.0] - 2026-10-09
 
 ### Added
