@@ -259,8 +259,12 @@ internal static class RunCommand
 
         // Root span for the whole run, from here through finalize. Opened before the connector hosts
         // spawn so every RPC the plan phase issues (handshake, configure, plan) joins this trace rather
-        // than starting one of its own; RunOrchestrator parents each node span on it.
-        using var runActivity = PzActivitySource.Instance.StartActivity("run");
+        // than starting one of its own; RunOrchestrator parents each node span on it. A caller's
+        // TRACEPARENT makes this span a child in the caller's trace (see ResolveTraceParent).
+        var traceParent = ResolveTraceParent(
+            Environment.GetEnvironmentVariable("TRACEPARENT"), Environment.GetEnvironmentVariable("TRACESTATE"),
+            out var traceParentNote);
+        using var runActivity = StartRunActivity(traceParent);
         runActivity?.SetTag("pz.run.id", runId);
         runActivity?.SetTag("pz.run.project", project.Name);
 
@@ -288,6 +292,9 @@ internal static class RunCommand
                 noticeWriter.WriteLine($"note: {text}");
             }
         }
+
+        // Only worth saying when telemetry is on: with no endpoint, TRACEPARENT changes nothing.
+        if (traceParentNote is not null && otelEndpoint is not null) Notice(traceParentNote);
 
         // Resolve the configured backend (local files or SQL Server) and — for SQL Server — ensure the
         // state schema is at the version this build expects, BEFORE any node executes: PZ0518
@@ -743,5 +750,27 @@ internal static class RunCommand
         return false;
     }
 
+    /// <summary>The caller's trace context from <c>TRACEPARENT</c> / <c>TRACESTATE</c> (the OpenTelemetry
+    /// environment-carrier convention), so a run started by an orchestrator joins that orchestrator's trace
+    /// instead of opening one of its own. The caller's sampling decision is honored: an unsampled parent (flags
+    /// <c>00</c>) means pz exports no spans for the run, metrics still flow. Null when unset. An unparseable value comes back through
+    /// <paramref name="invalidNote"/> and is ignored: a malformed header must never fail a run.</summary>
+    internal static ActivityContext? ResolveTraceParent(string? traceparent, string? tracestate, out string? invalidNote)
+    {
+        invalidNote = null;
+        if (string.IsNullOrWhiteSpace(traceparent)) return null;
+        var state = string.IsNullOrWhiteSpace(tracestate) ? null : tracestate.Trim();
+        if (ActivityContext.TryParse(traceparent.Trim(), state, isRemote: true, out var context))
+            return context;
+        invalidNote = $"ignoring TRACEPARENT '{traceparent}': not a W3C traceparent, so this run starts its own trace";
+        return null;
+    }
+
+    /// <summary>The run's root span, parented on the caller's context when there is one. A no-op null when no
+    /// listener is registered (OTel not configured), like every other span in the engine.</summary>
+    internal static Activity? StartRunActivity(ActivityContext? parent) =>
+        parent is { } context
+            ? PzActivitySource.Instance.StartActivity("run", ActivityKind.Internal, context)
+            : PzActivitySource.Instance.StartActivity("run");
 
 }
