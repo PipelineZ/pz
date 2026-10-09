@@ -6,8 +6,10 @@
 //!
 //! # Telemetry
 //!
-//! Providers are built only when the host passes an OTLP endpoint in the handshake (`pz run
-//! --otel-endpoint`, or `PZ_OTEL_ENDPOINT`); with none, nothing is installed and nothing is exported.
+//! Providers are built only when the host passes a target in the handshake: the gRPC endpoint (`pz run
+//! --otel-endpoint`), or with `--otel-protocol http/protobuf` the per-signal URLs and a headers file the SDK
+//! re-reads before every export (gzipped, delta metrics, exponential histograms). With none, nothing is
+//! installed and nothing is exported.
 //! When there is one, this crate opens a `pcp.<Rpc>` server span per control-plane RPC and a
 //! `pcp.write_stream` span per data-plane transfer, each parented on the engine's node span through
 //! the W3C `traceparent` the host sends -- so a connector's work shows up inside the run's own trace.

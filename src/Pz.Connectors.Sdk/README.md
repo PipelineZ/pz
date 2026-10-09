@@ -90,13 +90,16 @@ https://pipelinez.dev/how-to/author-a-connector/ for the full guide and a releas
 
 ## Telemetry
 
-When `pz run` is given `--otel-endpoint` (or `PZ_OTEL_ENDPOINT`), the host passes that endpoint and
-the run id to your process in the handshake, and puts a W3C `traceparent` on every RPC it issues while
-one of its own spans is current. The SDK then:
+When `pz run` exports telemetry, the host passes its target and the run id to your process in the handshake,
+and puts a W3C `traceparent` on every RPC it issues while one of its own spans is current. The target is either
+the gRPC endpoint (`--otel-endpoint`) or, with `--otel-protocol http/protobuf`, the per-signal URLs and the path
+of a headers file. The SDK then:
 
-- builds an OpenTelemetry tracer and meter provider exporting OTLP/grpc to that endpoint, with
-  resource `service.name=pz-connector`, `service.version=<your ConnectorInfo.Version>`,
-  `pz.connector.name`, `pz.run.id`;
+- builds an OpenTelemetry tracer and meter provider exporting there, with resource `service.name=pz-connector`,
+  `service.version=<your ConnectorInfo.Version>`, `pz.connector.name`, `pz.run.id`. Over gRPC metrics are
+  cumulative, as before 0.9.1; over HTTP each signal goes to its own URL, gzipped, with delta metrics and base-2
+  exponential histograms, and the headers file is re-read before every export so a token the host refreshes
+  mid-run is used (its content is never written to stderr). A signal with no URL is not exported;
 - opens a `pcp.<Rpc>` server span per RPC — every RPC but `HostChannel`, which lives as long as the
   process — under the engine's node span, tagged `pz.instance` (the host's id for this connector
   instance: the connection name for an open the engine drives, or `<connector name>#<n>` for one it
