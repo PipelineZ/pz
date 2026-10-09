@@ -116,4 +116,7 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// <summary><see cref="Time"/> when set, else <see cref="TimeProvider.System"/> — mirrors
     /// <see cref="EffectiveBatch"/>.</summary>
     public TimeProvider EffectiveTime => Time ?? TimeProvider.System;
+
+    /// <summary>When the run started: what <c>until: now</c> resolves to, the same for every node of the run.</summary>
+    public DateTimeOffset StartedAt { get; init; } = (Time ?? TimeProvider.System).GetUtcNow();
 }

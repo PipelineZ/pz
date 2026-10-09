@@ -22,6 +22,7 @@ public sealed class SqlBoundEvaluationTests : IAsyncLifetime
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pz-sqlbound-tests", Guid.NewGuid().ToString("N"));
     private DuckSession _duck = null!;
     private WatermarkStore _store = null!;
+    private NodeResult? _lastResult;
 
     private const string Cursor = "ts";
     private const string StoredValue = "2026-07-15T08:00:00.000000";
@@ -83,6 +84,7 @@ public sealed class SqlBoundEvaluationTests : IAsyncLifetime
             Watermarks: _store, FullRefresh: fullRefresh, Notice: notices.Add);
 
         var result = await new SourceLoadExecutor().ExecuteAsync(node, ctx, default);
+        _lastResult = result;
         Assert.Equal(NodeStatus.Success, result.Status);
         Assert.NotNull(source.Received);
         return (source.Received!, notices);
@@ -246,6 +248,73 @@ public sealed class SqlBoundEvaluationTests : IAsyncLifetime
 
         Assert.Equal("2026-01-01T00:00:00.000000", spec.WatermarkValue);
         Assert.Equal("2026-01-08T00:00:00.000000", spec.WatermarkUpperBound);
+    }
+
+    [Fact]
+    public async Task A_capped_ceiling_below_its_stop_reports_not_caught_up()
+    {
+        await RunAsync("events_behind",
+            [
+                Bound(inclusive: false, SentinelExpr),
+                UpperBound(inclusive: true, $"least({SentinelExpr} + interval 7 day, TIMESTAMP '2026-08-01')"),
+            ],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.False(_lastResult!.CaughtUp);
+    }
+
+    [Fact]
+    public async Task A_rolling_ceiling_has_no_stop_and_reports_no_flag()
+    {
+        // watermark() + 7 day moves with the watermark: "behind" would be true forever, so nothing is said.
+        await RunAsync("events_rolling",
+            [Bound(inclusive: false, SentinelExpr), UpperBound(inclusive: true, $"{SentinelExpr} + interval 7 day")],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.Null(_lastResult!.CaughtUp);
+    }
+
+    [Fact]
+    public async Task An_exclusive_stop_is_caught_up_once_its_final_window_comes_back_empty()
+    {
+        // c < 09:00 never lets the watermark reach 09:00; an empty (08:00, 09:00) window is the end.
+        await RunAsync("events_exclusive",
+            [Bound(inclusive: false, SentinelExpr), UpperBound(inclusive: false, "TIMESTAMP '2026-07-15T09:00:00'")],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.True(_lastResult!.CaughtUp);
+    }
+
+    [Fact]
+    public async Task A_dropped_inclusive_floor_still_compares_the_stored_watermark()
+    {
+        // Without InclusiveWatermarkBound the floor is not pushed down, so the window has no lower bound; the
+        // stored watermark is what has reached the stop.
+        await RunAsync("events_dropped_floor",
+            [Bound(inclusive: true, SentinelExpr), UpperBound(inclusive: true, "TIMESTAMP '2026-07-15T08:00:00'")],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.True(_lastResult!.CaughtUp);
+    }
+
+    [Fact]
+    public async Task A_ceiling_at_the_watermark_reports_caught_up()
+    {
+        var (_, notices) = await RunAsync("events_caught_up",
+            [Bound(inclusive: false, SentinelExpr), UpperBound(inclusive: true, "TIMESTAMP '2026-07-15T08:00:00'")],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.True(_lastResult!.CaughtUp);
+        Assert.Contains(notices, n => n.Contains("caught up", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_floor_without_a_ceiling_reports_no_flag()
+    {
+        await RunAsync("events_floor_only", [Bound(inclusive: false, SentinelExpr)],
+            ConnectorCapabilities.BoundedWindow, StoredValue);
+
+        Assert.Null(_lastResult!.CaughtUp);
     }
 
     [Fact]

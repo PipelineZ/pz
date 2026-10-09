@@ -505,6 +505,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.Null(sourceResult.CaughtUp); // max_window without until: no caught-up state exists
         Assert.Equal(10, sourceResult.RowsMoved); // lower=10, upper=20 -> ids 11..20
         Assert.Equal("20", sourceResult.WatermarkCandidate!.Value);
 
@@ -526,6 +527,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.Null(sourceResult.CaughtUp); // still no until, even with 0 rows
         Assert.Equal(0, sourceResult.RowsMoved);
         // An empty slice on a windowed, non-caught-up dataset still advances the watermark to the
         // window's upper bound (40 = 30 + max_window 10), unlike the unwindowed rule.
@@ -551,6 +553,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.Null(sourceResult.CaughtUp); // not windowed at all
         Assert.Equal(0, sourceResult.RowsMoved);
         Assert.Null(sourceResult.WatermarkCandidate);
 
@@ -571,11 +574,27 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.True(sourceResult.CaughtUp); // the window (10, 15] reaches until=15: this run loads the last slice
         Assert.Equal(5, sourceResult.RowsMoved); // upper = min(10+10, 15) = 15 -> ids 11..15
         Assert.Equal("15", sourceResult.WatermarkCandidate!.Value);
 
         WatermarkAdvancement.Advance(dag, result.Nodes, _store);
         Assert.Equal("15", _store.Get(key)!.Value);
+    }
+
+    [Fact]
+    public async Task A_window_short_of_until_reports_behind()
+    {
+        var sourceId = new NodeId("a8a8a8a8a8a8a8a8");
+        _store.Set(WatermarkStore.Key("mem", "w8"), new Watermark("id", "bigint", "10", "prior-run"));
+
+        var dag = new CompiledDag(
+            [WindowedSourceLoadNode(sourceId, "mem", "w8", 25, maxWindow: "5", initial: "0", until: "24")]);
+        var result = await new RunOrchestrator(new KindDispatchingExecutor(), Ctx()).ExecuteAsync(dag, new RunOptions(), default);
+
+        var sourceResult = Assert.Single(result.Nodes);
+        Assert.Equal(5, sourceResult.RowsMoved); // (10, 15]
+        Assert.False(sourceResult.CaughtUp);
     }
 
     [Fact]
@@ -596,6 +615,7 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         Assert.Equal(RunStatus.Success, result.Status);
         var sourceResult = Assert.Single(result.Nodes);
+        Assert.True(sourceResult.CaughtUp); // lower=15 has reached until=15
         Assert.Equal(0, sourceResult.RowsMoved);
         Assert.Null(sourceResult.WatermarkCandidate); // caught up -> no advancement, unlike test 3's empty slice
         Assert.Contains(notices, n => n.Contains("caught up", StringComparison.Ordinal));
@@ -641,6 +661,36 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
         Assert.Equal(3, result.RowsMoved); // all 3 rows still land in staging -- scoping affects the MAX probe, not the CTAS
         Assert.NotNull(result.WatermarkCandidate);
         Assert.Equal("2", result.WatermarkCandidate!.Value); // window-scoped MAX never sees id=22; still <= upper (20)
+    }
+
+    private sealed class FixedTime(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    [Fact]
+    public async Task Until_now_on_the_native_tier_never_lands_today()
+    {
+        // A file connector applies the window as `cursor <= upper`, so today's rows come back for an exclusive
+        // `until: now` stop. They must be trimmed before the sink sees them, or tomorrow loads them again.
+        var node = SourceLoadNode(new NodeId("a9a9a9a9a9a9a9a9"), "files", "daily", 0, "day",
+            incremental: new IncrementalDef("day", MaxWindow: "7d", Initial: "2026-10-05", Until: "now"), // (10-05, 10-09)
+            columns: new Dictionary<string, string> { ["day"] = "date" });
+        var registry = new ConnectorRegistry();
+        registry.AddSource("inmemory", new ConfigurableNativeSource(
+            "(values (date '2026-10-08', 'a'), (date '2026-10-09', 'b')) t(day, name)"));
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1, "test")],
+            MemoryBudget.Compute(new Pz.Core.Model.EngineConfig()));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "native-now-run"), NullRunEvents.Instance, plan,
+            Time: new FixedTime(new DateTimeOffset(2026, 10, 9, 2, 0, 0, TimeSpan.Zero)));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, result.RowsMoved);                       // 2026-10-09 trimmed
+        Assert.Equal("2026-10-08", result.WatermarkCandidate!.Value);
+        Assert.True(result.CaughtUp);
     }
 
     [Fact]

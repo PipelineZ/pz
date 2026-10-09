@@ -420,4 +420,22 @@ public class RunEventPublisherTests
         Assert.Equal(1, observed);
         Assert.Equal("completed_with_failures", statusTag);
     }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    [InlineData(null)]
+    public async Task NodeCompleted_maps_caught_up(bool? caughtUp)
+    {
+        var bus = new RunEventBus();
+        var publisher = new RunEventPublisher(bus, "run-1", TimeProvider.System);
+        var node = Node("orders");
+        var result = new NodeResult(node.Id, NodeKind.SourceLoad, "orders", NodeStatus.Success, 10,
+            TimeSpan.FromMilliseconds(5), null, CaughtUp: caughtUp);
+
+        publisher.NodeCompleted(result);
+
+        var evt = Assert.IsType<NodeCompletedEvent>(await ReadOneAsync(bus));
+        Assert.Equal(caughtUp, evt.CaughtUp);
+    }
 }

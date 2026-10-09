@@ -828,4 +828,23 @@ public class DagCompilerTests
         Assert.Same(checks[2], byName["check_a_not_null_a_b"]);
         Assert.Same(checks[3], byName["check_a_not_null_a_b_2"]);
     }
+
+    [Fact]
+    public void Until_now_compiles_on_a_timestamp_cursor_and_stays_now()
+    {
+        var p = WindowedProject(new IncrementalDef("updated_at", "1d", "2020-01-01", "now"));
+        var dag = DagCompiler.Compile(p, Ctx(p));
+        var def = (SourceDatasetDef)dag.Nodes.Single(n => n.Kind == NodeKind.SourceLoad).Definition;
+        Assert.Equal("now", def.Dataset.SyncMode!.Incremental!.Until);
+    }
+
+    [Fact]
+    public void Until_now_on_a_numeric_cursor_is_PZ0213()
+    {
+        var p = WindowedProject(new IncrementalDef("updated_at", "1000", "0", "now"),
+            columns: new Dictionary<string, string> { ["updated_at"] = "bigint" });
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+        var error = Assert.Single(ex.Errors, e => e.Code == "PZ0213");
+        Assert.Contains("'until: now' needs a date or timestamp cursor", error.ToString());
+    }
 }
