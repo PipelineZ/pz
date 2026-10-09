@@ -250,24 +250,6 @@ internal static class RunCommand
         // `pz retry` reaches this same seam through ExecuteRun, so both verbs are covered here.
         using var runDirLock = RunDirLock.Acquire(paths.RunDir);
 
-        // The ONLY place OTel providers get wired up — a no-op when otelOptions is off (OTel not
-        // configured), so PzActivitySource/PzMeters emission in the engine stays the documented
-        // zero-cost no-op. Wired this early so the run span below covers every phase, and disposed
-        // (flushed) at this method's natural exit, which is AFTER the run summary is printed below and
-        // after the connector hosts (declared later, so disposed earlier) have shut down.
-        await using var otel = OtelProviders.Create(otelOptions.Protocol == OtelProtocol.Grpc ? otelOptions.Endpoint : null);
-
-        // Root span for the whole run, from here through finalize. Opened before the connector hosts
-        // spawn so every RPC the plan phase issues (handshake, configure, plan) joins this trace rather
-        // than starting one of its own; RunOrchestrator parents each node span on it. A caller's
-        // TRACEPARENT makes this span a child in the caller's trace (see ResolveTraceParent).
-        var traceParent = ResolveTraceParent(
-            Environment.GetEnvironmentVariable("TRACEPARENT"), Environment.GetEnvironmentVariable("TRACESTATE"),
-            out var traceParentNote);
-        using var runActivity = StartRunActivity(traceParent);
-        runActivity?.SetTag("pz.run.id", runId);
-        runActivity?.SetTag("pz.run.project", project.Name);
-
         // Every run-time "note: " line routes through this one seam instead of a bare Console.WriteLine
         // per site, for two reasons. (1) json mode's "every stdout line parses as JSON" contract (spelled
         // out at the summary line below) must hold for every note -- the state-backend note, the
@@ -292,6 +274,24 @@ internal static class RunCommand
                 noticeWriter.WriteLine($"note: {text}");
             }
         }
+
+        // The ONLY place OTel providers get wired up — a no-op when otelOptions is off (OTel not
+        // configured), so PzActivitySource/PzMeters emission in the engine stays the documented
+        // zero-cost no-op. Wired this early so the run span below covers every phase, and disposed
+        // (flushed) at this method's natural exit, which is AFTER the run summary is printed below and
+        // after the connector hosts (declared later, so disposed earlier) have shut down.
+        await using var otel = OtelProviders.Create(otelOptions, Notice);
+
+        // Root span for the whole run, from here through finalize. Opened before the connector hosts
+        // spawn so every RPC the plan phase issues (handshake, configure, plan) joins this trace rather
+        // than starting one of its own; RunOrchestrator parents each node span on it. A caller's
+        // TRACEPARENT makes this span a child in the caller's trace (see ResolveTraceParent).
+        var traceParent = ResolveTraceParent(
+            Environment.GetEnvironmentVariable("TRACEPARENT"), Environment.GetEnvironmentVariable("TRACESTATE"),
+            out var traceParentNote);
+        using var runActivity = StartRunActivity(traceParent);
+        runActivity?.SetTag("pz.run.id", runId);
+        runActivity?.SetTag("pz.run.project", project.Name);
 
         // Only worth saying when telemetry is on: with no endpoint, TRACEPARENT changes nothing.
         if (traceParentNote is not null && otelOptions.IsOn) Notice(traceParentNote);

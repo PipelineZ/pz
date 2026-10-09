@@ -7,6 +7,7 @@ namespace Pz.Cli.Tests.Otel;
 
 /// <summary>A caller that hands pz a W3C <c>TRACEPARENT</c> gets pz's <c>run</c> span inside its own trace.
 /// The listener here is process-global BCL state, so each test identifies its spans by a trace id it chose.</summary>
+[Collection(OtelGlobalCollection.Name)]
 public sealed class TraceParentTests
 {
     private const string TraceId = "4bf92f3577b34da6a3ce929d0e0e4736";

@@ -1,3 +1,4 @@
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -8,8 +9,8 @@ namespace Pz.Cli.Otel;
 /// <summary>The ONLY place the OpenTelemetry SDK and OTLP exporter packages are referenced —
 /// Pz.Engine/Pz.Diagnostics stay package-free (BCL-only), so this composition
 /// root is where <see cref="PzActivitySource"/>/<see cref="PzMeters"/> actually get wired up to an
-/// exporter, and ONLY when <c>--otel-endpoint</c>/<c>PZ_OTEL_ENDPOINT</c> resolves to something. When
-/// <paramref name="endpoint"/> (see <see cref="Create"/>) is null, <see cref="NoOp"/> is returned: no
+/// exporter, and ONLY when the resolved <see cref="OtelOptions"/> are on. When they are off
+/// (see <see cref="Create"/>), <see cref="NoOp"/> is returned: no
 /// listener is ever registered anywhere, so every <c>StartActivity</c>/<c>Counter.Add</c> call in the
 /// engine stays the documented zero-cost BCL no-op <see cref="PzActivitySource"/> relies on.</summary>
 public sealed class OtelProviders : IAsyncDisposable
@@ -25,30 +26,65 @@ public sealed class OtelProviders : IAsyncDisposable
         _meterProvider = meterProvider;
     }
 
-    /// <summary>Builds real, exporting providers for <paramref name="endpoint"/> (already validated by
-    /// <see cref="Pz.Cli.Commands.RunCommand.TryResolveOtel"/>, an absolute http/https URL), or
-    /// <see cref="NoOp"/> when <paramref name="endpoint"/> is null (the common case: OTel not
-    /// configured).</summary>
-    public static OtelProviders Create(Uri? endpoint)
+    /// <summary>Spans per OTLP/HTTP request: a full batch of pz's spans gzips to far below Azure Monitor's 1 MB cap.</summary>
+    public const int MaxSpanBatch = 256;
+
+    /// <summary>Real exporting providers for <paramref name="options"/>, or <see cref="NoOp"/> when telemetry is off.
+    /// gRPC keeps the pre-0.9.1 shape (one endpoint, cumulative metrics, explicit histograms). http/protobuf sends each
+    /// signal to its own full URL through <see cref="HeadersFileHandler"/>, with delta temporality and a base-2
+    /// exponential <c>pz.node.duration</c> (the shape Application Insights' views expect), and caps span batches so a
+    /// gzipped request stays under Azure Monitor's 1 MB limit. A signal with no URL is not exported. Every option is set
+    /// here, so ambient OTEL_EXPORTER_OTLP_* protocol/endpoint variables cannot change it.</summary>
+    public static OtelProviders Create(OtelOptions options, Action<string> notice)
     {
-        if (endpoint is null)
+        if (!options.IsOn) return NoOp;
+        var resourceBuilder = ResourceBuilder.CreateDefault().AddService("pz");
+        var http = options.Protocol == OtelProtocol.HttpProtobuf;
+        HttpClient Client() => new(new HeadersFileHandler(options.HeadersFile, notice) { InnerHandler = new HttpClientHandler() });
+
+        void Exporter(OtlpExporterOptions o, Uri? signalUrl)
         {
-            return NoOp;
+            if (http)
+            {
+                o.Protocol = OtlpExportProtocol.HttpProtobuf;
+                o.Endpoint = signalUrl!;
+                o.HttpClientFactory = Client;
+            }
+            else
+            {
+                o.Protocol = OtlpExportProtocol.Grpc;
+                o.Endpoint = options.Endpoint!;
+            }
         }
 
-        var resourceBuilder = ResourceBuilder.CreateDefault().AddService("pz");
+        TracerProvider? tracerProvider = null;
+        if (!http || options.TracesEndpoint is not null)
+        {
+            tracerProvider = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
+                .SetResourceBuilder(resourceBuilder)
+                .AddSource(PzActivitySource.Name)
+                .AddOtlpExporter(o =>
+                {
+                    Exporter(o, options.TracesEndpoint);
+                    o.BatchExportProcessorOptions = new() { MaxExportBatchSize = MaxSpanBatch };
+                })
+                .Build();
+        }
 
-        var tracerProvider = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
-            .SetResourceBuilder(resourceBuilder)
-            .AddSource(PzActivitySource.Name)
-            .AddOtlpExporter(o => o.Endpoint = endpoint)
-            .Build();
-
-        var meterProvider = OpenTelemetry.Sdk.CreateMeterProviderBuilder()
-            .SetResourceBuilder(resourceBuilder)
-            .AddMeter(PzMeters.Name)
-            .AddOtlpExporter(o => o.Endpoint = endpoint)
-            .Build();
+        MeterProvider? meterProvider = null;
+        if (!http || options.MetricsEndpoint is not null)
+        {
+            var meters = OpenTelemetry.Sdk.CreateMeterProviderBuilder()
+                .SetResourceBuilder(resourceBuilder)
+                .AddMeter(PzMeters.Name)
+                .AddOtlpExporter((o, reader) =>
+                {
+                    Exporter(o, options.MetricsEndpoint);
+                    reader.TemporalityPreference = http ? MetricReaderTemporalityPreference.Delta : MetricReaderTemporalityPreference.Cumulative;
+                });
+            if (http) meters.AddView("pz.node.duration", new Base2ExponentialBucketHistogramConfiguration());
+            meterProvider = meters.Build();
+        }
 
         return new OtelProviders(tracerProvider, meterProvider);
     }
