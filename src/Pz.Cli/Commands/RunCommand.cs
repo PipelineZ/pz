@@ -240,6 +240,8 @@ internal static class RunCommand
         // else. Invoked once, before anything can fail, so a caller that wants it always gets it even
         // if the run itself then fails partway through.
         onRunId?.Invoke(runId);
+        // Every metric point this run records carries pz.run.id (Azure Monitor drops resource attributes on metrics).
+        using var runMetrics = PzMeters.BeginRun(runId);
         var startedAt = DateTimeOffset.UtcNow;
         var paths = new RunPaths(projectDir, runId);
         Directory.CreateDirectory(paths.RunDir);
