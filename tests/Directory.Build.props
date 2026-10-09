@@ -1,0 +1,16 @@
+<Project>
+  <!-- Everything under tests/ still gets the repo-wide settings: MSBuild only reads the nearest
+       Directory.Build.props, so this one imports the root file first. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+
+  <!-- Test assemblies run their classes in parallel, and several of them block thread-pool threads
+       (process waits, synchronous connects, Task.WaitAll in shutdown paths). On a 4-vCPU Windows runner the
+       pool starts at 4 threads and adds about one a second, so a 200 ms timer has fired six seconds late.
+       Starting the pool wider removes that starvation without loosening what any test asserts. (It does not
+       explain the first-wave connector handshake timeouts: those still happen with it, see the dial report
+       in PcpClient's handshake errors.) Test projects only: fixtures and benchmarks keep the runtime
+       default. -->
+  <ItemGroup Condition="$(MSBuildProjectName.EndsWith('.Tests'))">
+    <RuntimeHostConfigurationOption Include="System.Threading.ThreadPool.MinThreads" Value="32" />
+  </ItemGroup>
+</Project>

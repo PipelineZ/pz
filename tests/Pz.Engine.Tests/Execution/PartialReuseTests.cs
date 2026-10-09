@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
 using Pz.Core.Model;
@@ -156,11 +157,12 @@ public sealed class PartialReuseTests : IAsyncLifetime
         }
 
         var notices = new List<string>();
-        var reads = new List<string>();
+        // Concurrent: PartitionModeLoader reads both partitions at once, so a plain List can lose one Add.
+        var reads = new ConcurrentQueue<string>();
         var source = new ListStubSource(
         [
-            new IdentifiedStubPartition("a", [1, 2], onRead: () => reads.Add("a")),
-            new IdentifiedStubPartition("b", [3], onRead: () => reads.Add("b")),
+            new IdentifiedStubPartition("a", [1, 2], onRead: () => reads.Enqueue("a")),
+            new IdentifiedStubPartition("b", [3], onRead: () => reads.Enqueue("b")),
         ]);
         var ctx = Context(new ListStubConnector(source,
             ConnectorCapabilities.PartitionedRead | ConnectorCapabilities.StablePartitionIds)) with
