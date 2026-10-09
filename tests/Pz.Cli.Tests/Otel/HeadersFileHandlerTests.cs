@@ -78,6 +78,19 @@ public sealed class HeadersFileHandlerTests : IDisposable
         Assert.DoesNotContain("secret-value", note, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task A_content_header_line_is_skipped_with_a_note_and_the_rest_still_sent()
+    {
+        var path = Path.Combine(_dir, "h");
+        await File.WriteAllTextAsync(path, "Content-Type=text/plain\nAuthorization=Bearer kept\n");
+        using var client = Client(path);
+        await client.PostAsync("http://x/v1/traces", new ByteArrayContent([1]));
+
+        Assert.Equal("Bearer kept", _seen[0].Headers.GetValues("Authorization").Single());
+        var note = Assert.Single(_notes);
+        Assert.Contains("Content-Type", note, StringComparison.Ordinal);
+    }
+
     private sealed class Capture(List<HttpRequestMessage> seen) : HttpMessageHandler
     {
         protected override HttpResponseMessage Send(HttpRequestMessage request, CancellationToken ct)

@@ -127,7 +127,15 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
                 var tracerBuilder = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
                     .SetResourceBuilder(resource)
                     .AddSource(SourceName)
-                    .AddOtlpExporter(o => Exporter(o, traces));
+                    .AddOtlpExporter(o =>
+                    {
+                        Exporter(o, traces);
+                        // Over HTTP, at most 256 spans a request keeps a gzipped body under Azure Monitor's 1 MB limit.
+                        if (http)
+                        {
+                            o.BatchExportProcessorOptions = new() { MaxExportBatchSize = 256 };
+                        }
+                    });
                 foreach (var source in options.ActivitySources)
                 {
                     tracerBuilder.AddSource(source);

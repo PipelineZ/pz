@@ -67,6 +67,23 @@ public sealed class ConnectorTelemetryHttpTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Http_span_batches_stay_at_256_for_the_1_mb_limit()
+    {
+        using (var telemetry = new ConnectorTelemetry(new PzConnectorHostOptions()))
+        {
+            telemetry.Start(Http(metrics: false), Info, "");
+            for (var i = 0; i < 600; i++)
+                using (telemetry.ActivitySource.StartActivity("connector.page")) { }
+            telemetry.FlushAndDispose();
+        }
+
+        var counts = _receiver.Requests.Where(r => r.Traces is not null)
+            .Select(r => r.Traces!.ResourceSpans.SelectMany(x => x.ScopeSpans).Sum(x => x.Spans.Count)).ToList();
+        Assert.Equal(600, counts.Sum());
+        Assert.All(counts, c => Assert.True(c <= 256, $"{c} spans in one request"));
+    }
+
+    [Fact]
     public void Http_with_no_url_starts_nothing()
     {
         using var telemetry = new ConnectorTelemetry(new PzConnectorHostOptions());

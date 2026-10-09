@@ -30,8 +30,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   flag, the variables apply as before.
 - pz no longer follows ambient `OTEL_EXPORTER_OTLP_PROTOCOL` or endpoint variables: every exporter option comes from
   its flag or `PZ_OTEL_*` variable. `OTEL_EXPORTER_OTLP_HEADERS` is still honoured.
-- The Rust connector SDK adds the OTLP/HTTP transport (reqwest's blocking client with rustls and the ring crypto
-  provider), which adds about 4 MB to a release connector binary.
+- The Rust connector SDK adds the OTLP/HTTP transport (reqwest's blocking client with rustls and aws-lc-rs, the
+  provider rustls defaults to, so a connector's own rustls code is unaffected), which adds about 7 MB to a release
+  connector binary.
 
 ## [0.9.0] - 2026-10-09
 

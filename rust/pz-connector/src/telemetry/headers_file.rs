@@ -27,9 +27,6 @@ impl std::fmt::Debug for HeadersFileClient {
 
 impl HeadersFileClient {
     pub(crate) fn new(path: Option<PathBuf>, timeout: Duration) -> Result<Self, String> {
-        // reqwest is built without a bundled crypto provider (ring is far smaller than aws-lc-rs in every connector
-        // binary); install ring as the process default unless the connector already chose one.
-        let _ = rustls::crypto::ring::default_provider().install_default();
         // reqwest's blocking client panics when it is built inside an async runtime, and the handshake runs in one.
         let inner = std::thread::spawn(move || {
             reqwest::blocking::Client::builder()
@@ -158,5 +155,13 @@ mod tests {
         let path = dir.path().join("absent");
         let note = client(&path).apply(&mut request()).unwrap();
         assert!(note.contains("absent"), "{note}");
+    }
+
+    /// rustls picks its implicit provider from crate features only when exactly one is on. A connector author
+    /// who uses rustls with its default features (aws-lc-rs) must not find it ambiguous because of this SDK.
+    #[test]
+    fn an_authors_default_rustls_still_has_an_implicit_provider() {
+        let _ = rustls::ClientConfig::builder();
+        let _ = client(Path::new("/nonexistent"));
     }
 }

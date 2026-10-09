@@ -29,8 +29,16 @@ internal sealed class HeadersFileHandler(string? path, Action<string> notice) : 
         if (path is null) return;
         foreach (var (name, value) in Read())
         {
-            request.Headers.Remove(name);
-            request.Headers.TryAddWithoutValidation(name, value);
+            // A content-header name (Content-Type, ...) is not a request header: HttpRequestHeaders throws on it.
+            try
+            {
+                request.Headers.Remove(name);
+                request.Headers.TryAddWithoutValidation(name, value);
+            }
+            catch (InvalidOperationException)
+            {
+                Note($"telemetry headers file '{path}' names '{name}', which is not a request header; skipping it");
+            }
         }
     }
 
@@ -38,7 +46,7 @@ internal sealed class HeadersFileHandler(string? path, Action<string> notice) : 
     {
         string[] lines;
         try { lines = File.ReadAllLines(path!); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             Note($"telemetry headers file '{path}' could not be read ({ex.GetType().Name}); exporting without it");
             return [];
