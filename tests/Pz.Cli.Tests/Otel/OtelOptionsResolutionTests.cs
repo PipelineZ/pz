@@ -35,7 +35,7 @@ public sealed class OtelOptionsResolutionTests
         Assert.Equal(OtelProtocol.HttpProtobuf, o.Protocol);
         Assert.Equal("https://t/v1/traces", o.TracesEndpoint!.AbsoluteUri);
         Assert.Equal("https://m/v1/metrics", o.MetricsEndpoint!.AbsoluteUri);
-        Assert.Equal("/tmp/h", o.HeadersFile);
+        Assert.Equal(Path.GetFullPath("/tmp/h"), o.HeadersFile);
     }
 
     [Fact]
@@ -48,14 +48,39 @@ public sealed class OtelOptionsResolutionTests
     }
 
     [Fact]
-    public void A_flag_outranks_its_env_but_keeps_the_other_env_fallbacks()
+    public void Env_fills_every_option_when_no_flag_is_given()
     {
         var env = Env(("PZ_OTEL_PROTOCOL", "http/protobuf"), ("PZ_OTEL_TRACES_ENDPOINT", "https://env-t/x"),
             ("PZ_OTEL_METRICS_ENDPOINT", "https://env-m/x"), ("PZ_OTEL_HEADERS_FILE", "/env/h"));
-        Assert.True(RunCommand.TryResolveOtel(NoFlags with { TracesEndpoint = "https://flag-t/x" }, env, out var o, out _));
-        Assert.Equal("https://flag-t/x", o.TracesEndpoint!.AbsoluteUri);
+        Assert.True(RunCommand.TryResolveOtel(NoFlags, env, out var o, out _));
+        Assert.Equal(OtelProtocol.HttpProtobuf, o.Protocol);
         Assert.Equal("https://env-m/x", o.MetricsEndpoint!.AbsoluteUri);
-        Assert.Equal("/env/h", o.HeadersFile);
+        Assert.Equal(Path.GetFullPath("/env/h"), o.HeadersFile);
+    }
+
+    /// <summary>Explicit flags outrank ambient configuration as a set: a stray PZ_OTEL_* variable on the host must
+    /// never turn an explicit, consistent flag set into a usage error.</summary>
+    [Fact]
+    public void Any_flag_ignores_every_PZ_OTEL_variable()
+    {
+        var env = Env(("PZ_OTEL_ENDPOINT", "http://ambient:4317"), ("PZ_OTEL_PROTOCOL", "grpc"), ("PZ_OTEL_HEADERS_FILE", "/env/h"));
+        var flags = NoFlags with { Protocol = "http/protobuf", TracesEndpoint = "https://flag-t/x" };
+        Assert.True(RunCommand.TryResolveOtel(flags, env, out var o, out var e), e);
+        Assert.Equal(OtelProtocol.HttpProtobuf, o.Protocol);
+        Assert.Null(o.Endpoint);
+        Assert.Null(o.HeadersFile);
+
+        Assert.True(RunCommand.TryResolveOtel(NoFlags with { Endpoint = "http://c:4317" },
+            Env(("PZ_OTEL_PROTOCOL", "http/protobuf")), out var g, out var ge), ge);
+        Assert.Equal(OtelProtocol.Grpc, g.Protocol);
+    }
+
+    [Fact]
+    public void A_relative_headers_file_becomes_absolute_for_connectors()
+    {
+        var flags = new RunCommand.OtelRaw("http/protobuf", null, "https://t/x", null, "rel/h");
+        Assert.True(RunCommand.TryResolveOtel(flags, Env(), out var o, out _));
+        Assert.Equal(Path.GetFullPath("rel/h"), o.HeadersFile);
     }
 
     [Theory]

@@ -48,6 +48,9 @@ public sealed class HeadersFileHandlerTests : IDisposable
         using var client = Client(null);
         await client.PostAsync("http://x/v1/traces", new ByteArrayContent(new byte[4096]));
         Assert.Equal("gzip", _seen[0].Content!.Headers.ContentEncoding.Single());
+        var sent = await _seen[0].Content!.ReadAsByteArrayAsync();
+        Assert.Equal(sent.Length, _seen[0].Content!.Headers.ContentLength);
+        Assert.True(sent.Length < 4096);
     }
 
     [Fact]

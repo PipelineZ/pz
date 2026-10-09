@@ -73,10 +73,16 @@ public sealed class HeadersFileHandler(string? path, Action<string> notice) : De
         using var buffer = new MemoryStream();
         using (var gzip = new GZipStream(buffer, CompressionLevel.Fastest, leaveOpen: true))
             content.CopyTo(gzip, null, CancellationToken.None);
-        var zipped = new ByteArrayContent(buffer.ToArray());
-        foreach (var header in content.Headers) zipped.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        var bytes = buffer.ToArray();
+        var zipped = new ByteArrayContent(bytes);
+        foreach (var header in content.Headers)
+        {
+            if (!header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                zipped.Headers.TryAddWithoutValidation(header.Key, header.Value);
+        }
         zipped.Headers.ContentEncoding.Add("gzip");
-        zipped.Headers.ContentLength = null;
+        // An explicit length, never chunked: Azure Monitor checks Content-Length against its 1 MB limit.
+        zipped.Headers.ContentLength = bytes.Length;
         return zipped;
     }
 }

@@ -18,7 +18,7 @@ namespace Pz.Cli.Tests.Otel;
 internal sealed class OtlpHttpReceiver : IAsyncDisposable
 {
     internal sealed record Received(
-        string Path, string? Authorization, string? Encoding, long BodyBytes,
+        string Path, string? Authorization, string? Encoding, long BodyBytes, long? ContentLength,
         ExportTraceServiceRequest? Traces, ExportMetricsServiceRequest? Metrics);
 
     private readonly Lock _gate = new();
@@ -30,6 +30,9 @@ internal sealed class OtlpHttpReceiver : IAsyncDisposable
     public Uri MetricsUrl { get; private set; } = null!;
 
     public Func<int> StatusCode { get; set; } = () => 200;
+
+    /// <summary>When set, every request waits on this before answering, so a test can play a backend that never does.</summary>
+    public Task? Hold { get; set; }
 
     public IReadOnlyList<Received> Requests { get { lock (_gate) { return [.. _requests]; } } }
 
@@ -49,6 +52,7 @@ internal sealed class OtlpHttpReceiver : IAsyncDisposable
 
     private async Task Accept(HttpContext context, bool traces)
     {
+        if (Hold is { } hold) await hold.WaitAsync(context.RequestAborted);
         using var raw = new MemoryStream();
         await context.Request.Body.CopyToAsync(raw);
         var encoding = context.Request.Headers.ContentEncoding.ToString();
@@ -65,6 +69,7 @@ internal sealed class OtlpHttpReceiver : IAsyncDisposable
             context.Request.Headers.Authorization.Count == 0 ? null : context.Request.Headers.Authorization.ToString(),
             encoding.Length == 0 ? null : encoding,
             raw.Length,
+            context.Request.ContentLength,
             traces ? ExportTraceServiceRequest.Parser.ParseFrom(body) : null,
             traces ? null : ExportMetricsServiceRequest.Parser.ParseFrom(body));
         lock (_gate) _requests.Add(received);

@@ -40,6 +40,7 @@ public sealed class OtlpHttpExportTests : IAsyncLifetime
         var traces = Assert.Single(_receiver.Requests, r => r.Path == "/traces");
         Assert.Equal("Bearer abc", traces.Authorization);
         Assert.Equal("gzip", traces.Encoding);
+        Assert.Equal(traces.BodyBytes, traces.ContentLength);
         Assert.Contains(traces.Traces!.ResourceSpans.SelectMany(r => r.ScopeSpans).SelectMany(s => s.Spans), s => s.Name == "run");
         var metrics = Assert.Single(_receiver.Requests, r => r.Path == "/metrics");
         Assert.Equal("Bearer abc", metrics.Authorization);
@@ -99,5 +100,46 @@ public sealed class OtlpHttpExportTests : IAsyncLifetime
         }
         Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15), $"flush took {watch.Elapsed}");
         Assert.Contains(_receiver.Requests, r => r.Path == "/traces");
+    }
+
+    [Fact]
+    public async Task A_backend_that_never_answers_cannot_stall_the_flush_past_the_export_timeout()
+    {
+        var never = new TaskCompletionSource();
+        _receiver.Hold = never.Task;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var flush = Task.Run(async () =>
+        {
+            await using (OtelProviders.Create(Options(), _ => { }, exportTimeout: TimeSpan.FromMilliseconds(500)))
+            {
+                using (PzActivitySource.Instance.StartActivity("run")) { }
+                PzMeters.RowsMoved.Add(5);
+            }
+        });
+        await flush.WaitAsync(TimeSpan.FromSeconds(30));
+        never.TrySetResult();
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(10), $"flush took {watch.Elapsed}");
+    }
+
+    [Fact]
+    public async Task A_missing_headers_file_is_noted_once_per_run_not_once_per_signal()
+    {
+        File.Delete(_headers);
+        var notes = new List<string>();
+        await using (OtelProviders.Create(Options(), notes.Add))
+        {
+            using (PzActivitySource.Instance.StartActivity("run")) { }
+            PzMeters.RowsMoved.Add(5);
+        }
+        Assert.Single(notes);
+    }
+
+    [Fact]
+    public async Task Grpc_keeps_the_sdk_default_span_batch()
+    {
+        // The 256 cap is for Azure Monitor's 1 MB HTTP limit; gRPC stays as before 0.9.1.
+        Assert.Equal(512, OtelProviders.SpanBatchSize(OtelProtocol.Grpc));
+        Assert.Equal(OtelProviders.MaxSpanBatch, OtelProviders.SpanBatchSize(OtelProtocol.HttpProtobuf));
+        await Task.CompletedTask;
     }
 }

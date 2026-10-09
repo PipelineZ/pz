@@ -277,7 +277,7 @@ internal static class RunCommand
             }
         }
 
-        // The ONLY place OTel providers get wired up — a no-op when otelOptions is off (OTel not
+        // The ONLY place OTel providers get wired up: a no-op when otelOptions is off (OTel not
         // configured), so PzActivitySource/PzMeters emission in the engine stays the documented
         // zero-cost no-op. Wired this early so the run span below covers every phase, and disposed
         // (flushed) at this method's natural exit, which is AFTER the run summary is printed below and
@@ -727,20 +727,24 @@ internal static class RunCommand
 
     internal sealed record OtelRaw(string? Protocol, string? Endpoint, string? TracesEndpoint, string? MetricsEndpoint, string? HeadersFile);
 
-    /// <summary>Shared by `pz run`/`pz test`/`pz retry`. Each option takes its flag, else its PZ_OTEL_* variable;
-    /// ambient OTEL_EXPORTER_OTLP_* protocol/endpoint variables are never read (every exporter option is set in code).
-    /// Mixed settings are usage errors, never silently ignored.</summary>
+    /// <summary>Shared by `pz run`/`pz test`/`pz retry`. The flags win as a set: when any --otel-* flag is given, every
+    /// PZ_OTEL_* variable is ignored, so a stray variable on the host can never turn an explicit, consistent flag set
+    /// into a usage error; with no flag, the variables are read instead. Ambient OTEL_EXPORTER_OTLP_* protocol/endpoint
+    /// variables are never read (every exporter option is set in code). Mixed settings are usage errors, never
+    /// silently ignored. A relative headers file is made absolute, since connectors run in their own directories.</summary>
     internal static bool TryResolveOtel(OtelRaw flags, Func<string, string?> env, out OtelOptions options, out string? error)
     {
         options = OtelOptions.Off;
         static string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
-        static string? Pick(string? flag, string? fallback) => string.IsNullOrWhiteSpace(flag) ? Blank(fallback) : flag.Trim();
+        var anyFlag = new[] { flags.Protocol, flags.Endpoint, flags.TracesEndpoint, flags.MetricsEndpoint, flags.HeadersFile }
+            .Any(v => !string.IsNullOrWhiteSpace(v));
+        string? Pick(string? flag, string variable) => anyFlag ? Blank(flag) : Blank(env(variable));
 
-        var protocolRaw = Pick(flags.Protocol, env("PZ_OTEL_PROTOCOL"));
-        var endpointRaw = Pick(flags.Endpoint, env("PZ_OTEL_ENDPOINT"));
-        var tracesRaw = Pick(flags.TracesEndpoint, env("PZ_OTEL_TRACES_ENDPOINT"));
-        var metricsRaw = Pick(flags.MetricsEndpoint, env("PZ_OTEL_METRICS_ENDPOINT"));
-        var headersFile = Pick(flags.HeadersFile, env("PZ_OTEL_HEADERS_FILE"));
+        var protocolRaw = Pick(flags.Protocol, "PZ_OTEL_PROTOCOL");
+        var endpointRaw = Pick(flags.Endpoint, "PZ_OTEL_ENDPOINT");
+        var tracesRaw = Pick(flags.TracesEndpoint, "PZ_OTEL_TRACES_ENDPOINT");
+        var metricsRaw = Pick(flags.MetricsEndpoint, "PZ_OTEL_METRICS_ENDPOINT");
+        var headersFile = Pick(flags.HeadersFile, "PZ_OTEL_HEADERS_FILE") is { } h ? Path.GetFullPath(h) : null;
 
         OtelProtocol protocol;
         switch (protocolRaw)
