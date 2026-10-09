@@ -217,7 +217,10 @@ public sealed class SqlEventSinkResilienceTests
         stopwatch.Stop();
 
         Assert.Equal(count, sink.Dropped);
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5),
+        // Returning at all proves the deadline fired (the gate never opens). The bound only has to tell the
+        // 200 ms override from the 30 s production deadline; a starved Windows runner has delayed the timer
+        // by six seconds, so it sits at half the production value rather than near the override.
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromMilliseconds(SqlEventSink.DisposeDeadlineMs / 2),
             $"DisposeAsync took {stopwatch.Elapsed} against a 200ms deadline");
 
         // The abandoned drain task still runs once it is let go; the events dispose already counted
