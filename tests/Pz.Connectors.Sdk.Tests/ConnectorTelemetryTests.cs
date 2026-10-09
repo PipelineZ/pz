@@ -80,9 +80,11 @@ public sealed class ConnectorTelemetryTests
         // A listener that accepts the TCP connection but never writes an HTTP/gRPC response is the
         // case a sequential shutdown would double-charge: each provider's own send blocks for its
         // full ExportTimeout waiting on a reply that never comes. What is proven is the concurrency
-        // itself, by the elapsed time: run in parallel the pair costs about one ExportTimeout (2 s),
-        // in sequence about two (4 s), so an elapsed time under FlushBound (3 s) separates them. The
-        // outer WaitAsync stays a hang guard, not the claim -- 6 s passes either way.
+        // itself, by the elapsed time. In sequence the pair can never finish before two ExportTimeouts
+        // (2 s each, so 4 s). In parallel it ends within one FlushBound (3 s), and it can reach that
+        // bound exactly: on a loaded Windows runner an export may outlive its own 2 s timeout and its
+        // Shutdown then runs to the 3 s cap, which is why the line sits at 4 s and not at FlushBound.
+        // The outer WaitAsync stays a hang guard, not the claim.
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         _ = Task.Run(async () =>
@@ -113,8 +115,9 @@ public sealed class ConnectorTelemetryTests
             await flush.WaitAsync(ConnectorTelemetry.FlushBound * 2);
             stopwatch.Stop();
 
+            var sequentialFloor = TimeSpan.FromSeconds(4); // two of ConnectorTelemetry's 2 s ExportTimeouts
             Assert.True(
-                stopwatch.Elapsed < ConnectorTelemetry.FlushBound,
+                stopwatch.Elapsed < sequentialFloor,
                 $"the two provider Shutdowns did not overlap: flush took {stopwatch.Elapsed}");
         }
         finally

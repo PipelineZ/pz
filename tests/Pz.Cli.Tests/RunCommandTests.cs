@@ -292,11 +292,13 @@ public class RunCommandTests : IDisposable
 
         stopwatch.Stop();
 
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(5),
-            $"expected the injected drain timeout to bound wall time; the run took {stopwatch.Elapsed}");
+        // The warning names the timeout that fired, so it proves the injected 50 ms bounded the drain and
+        // not the 5 s default. The wall clock is only a hang guard: it also covers the whole run, which a
+        // loaded Windows runner has taken more than 5 s to finish.
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(60), $"the run hung: it took {stopwatch.Elapsed}");
         Assert.Equal(ExitCodes.Ok, exit);
         Assert.Equal(1,
-            CountOccurrences(stderr.ToString(), "warning: renderer did not finish draining run events within"));
+            CountOccurrences(stderr.ToString(), "warning: renderer did not finish draining run events within 0.05s"));
     }
 
     /// <summary>Golden-adjacent — values are timing-dependent, so shape only, never byte-golden: a

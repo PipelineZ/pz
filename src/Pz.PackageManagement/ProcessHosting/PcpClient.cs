@@ -203,6 +203,9 @@ public sealed class PcpClient : IAsyncDisposable
         // this is unambiguous. See _controlSocket's own doc for why PcpClient keeps this reference at
         // all rather than trusting GrpcChannel.Dispose() to tear the transport down.
         Socket? controlSocket = null;
+        // How far the dial got, for a handshake that times out (see DialReport).
+        var dials = 0;
+        SocketError? lastDialError = null;
         var channel = GrpcChannel.ForAddress("http://localhost", new GrpcChannelOptions
         {
             HttpHandler = new SocketsHttpHandler
@@ -220,13 +223,15 @@ public sealed class PcpClient : IAsyncDisposable
                         var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
                         try
                         {
+                            Interlocked.Increment(ref dials);
                             await socket.ConnectAsync(new UnixDomainSocketEndPoint(process.SocketPath), cancellationToken)
                                 .ConfigureAwait(false);
                             controlSocket = socket;
                             return new NetworkStream(socket, ownsSocket: true);
                         }
-                        catch (SocketException) when (!process.HasExited)
+                        catch (SocketException ex) when (!process.HasExited)
                         {
+                            lastDialError = ex.SocketErrorCode;
                             socket.Dispose();
                             await Task.Delay(TimeSpan.FromMilliseconds(20), cancellationToken).ConfigureAwait(false);
                         }
@@ -269,7 +274,7 @@ public sealed class PcpClient : IAsyncDisposable
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
                 channel.Dispose();
-                throw HandshakeFailed(process, "handshake timed out waiting for Hello");
+                throw HandshakeFailed(process, $"handshake timed out waiting for Hello ({Dial()})");
             }
             catch (RpcException ex) when (IsCallerCancellation(ex, ct))
             {
@@ -279,9 +284,12 @@ public sealed class PcpClient : IAsyncDisposable
             catch (RpcException ex)
             {
                 channel.Dispose();
-                throw HandshakeFailed(process, $"handshake RPC failed: {ex.Status.Detail}");
+                throw HandshakeFailed(process, $"handshake RPC failed: {ex.Status.Detail} ({Dial()})");
             }
         }
+
+        string Dial() => DialReport(controlSocket is not null, Volatile.Read(ref dials), lastDialError,
+            File.Exists(process.SocketPath));
 
         if (hello.Info.ProtocolMajor != ProtocolVersion.Major)
         {
@@ -578,6 +586,17 @@ public sealed class PcpClient : IAsyncDisposable
     /// <summary><paramref name="hello"/> is passed only from the gates that run AFTER a Hello was
     /// actually received (protocol major, name, capabilities) -- a timeout or a transport-level RPC
     /// failure has none to name an SDK from.</summary>
+    /// <summary>How far a timed-out handshake's dial got: a connector that never served its socket and one
+    /// that accepted the connection but never sent Hello fail with the same timeout, and only this tells
+    /// them apart.</summary>
+    internal static string DialReport(bool connected, int dials, SocketError? lastError, bool socketFileExists)
+    {
+        if (connected) return "connected, no Hello";
+        var report = $"never connected after {dials} dial{(dials == 1 ? "" : "s")}";
+        if (lastError is { } error) report += $", last error {error}";
+        return report + $", socket file {(socketFileExists ? "present" : "absent")}";
+    }
+
     private static ConnectorHostException HandshakeFailed(ConnectorProcess process, string reason, Hello? hello = null)
     {
         process.SettleExitDetails();
