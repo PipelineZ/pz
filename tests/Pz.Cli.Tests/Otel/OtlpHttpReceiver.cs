@@ -34,7 +34,39 @@ internal sealed class OtlpHttpReceiver : IAsyncDisposable
     /// <summary>When set, every request waits on this before answering, so a test can play a backend that never does.</summary>
     public Task? Hold { get; set; }
 
+    private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     public IReadOnlyList<Received> Requests { get { lock (_gate) { return [.. _requests]; } } }
+
+    /// <summary>Waits until <paramref name="ready"/> accepts what has arrived (gate-based, never a sleep loop). A
+    /// timeout throws naming the paths received so far plus <paramref name="diagnostics"/>.</summary>
+    public async Task<IReadOnlyList<Received>> WaitForAsync(
+        Func<IReadOnlyList<Received>, bool> ready, TimeSpan timeout, Func<string>? diagnostics = null)
+    {
+        using var cts = new CancellationTokenSource(timeout);
+        while (true)
+        {
+            Task changed;
+            IReadOnlyList<Received> snapshot;
+            lock (_gate)
+            {
+                changed = _changed.Task;
+                snapshot = [.. _requests];
+            }
+
+            if (ready(snapshot)) return snapshot;
+            try
+            {
+                await changed.WaitAsync(cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new TimeoutException(
+                    $"no matching OTLP/HTTP export within {timeout}; received: [{string.Join(", ", snapshot.Select(r => r.Path))}]"
+                    + (diagnostics is null ? "" : Environment.NewLine + diagnostics()));
+            }
+        }
+    }
 
     public async Task StartAsync()
     {
@@ -72,7 +104,13 @@ internal sealed class OtlpHttpReceiver : IAsyncDisposable
             context.Request.ContentLength,
             traces ? ExportTraceServiceRequest.Parser.ParseFrom(body) : null,
             traces ? null : ExportMetricsServiceRequest.Parser.ParseFrom(body));
-        lock (_gate) _requests.Add(received);
+        lock (_gate)
+        {
+            _requests.Add(received);
+            var previous = _changed;
+            _changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            previous.TrySetResult();
+        }
         context.Response.StatusCode = StatusCode();
     }
 

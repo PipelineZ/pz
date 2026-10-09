@@ -7,6 +7,7 @@ using OpenTelemetry.Proto.Trace.V1;
 using Pz.Connectors.Abstractions;
 using Pz.PackageManagement.Hosting;
 using Pz.PackageManagement.ProcessHosting;
+using Pz.Cli.Tests.Otel;
 using Pz.PackageManagement.Tests.Otlp;
 
 namespace Pz.PackageManagement.Tests.ProcessHosting;
@@ -160,6 +161,50 @@ public sealed class RustSinkTelemetryTests : IDisposable
             a => a.Key == "pz.run.id" && a.Value.StringValue == "run-rs");
         var counter = Assert.Single(Instruments(metricResource), i => i.Name == ExampleCounter);
         Assert.Equal(1, Assert.Single(counter.Sum.DataPoints).AsInt);
+    }
+
+    /// <summary>OTLP/HTTP from the Rust SDK: each signal reaches its own URL, gzipped, carrying the header the host's
+    /// headers file holds when the export happens (the file is rewritten after the handshake, before the flush).</summary>
+    [SkippableFact]
+    public async Task Over_http_the_rust_sdk_exports_each_signal_to_its_url_with_the_files_header()
+    {
+        var binary = MemorySinkPath();
+        Skip.If(binary is null, "rust/target/debug/examples/memory_sink is not built (cargo build --example memory_sink)");
+
+        await using var receiver = new OtlpHttpReceiver();
+        await receiver.StartAsync();
+        var headers = Path.Combine(NewSocketDir() + "-h");
+        _tempDirs.Add(headers);
+        await File.WriteAllTextAsync(headers, "Authorization=Bearer first\n");
+
+        await using var process = ConnectorProcess.Spawn(binary!, NewSocketDir(), "memory-sink", null);
+        var config = new ConnectorConfig(new Dictionary<string, object?>());
+        var telemetry = new HostTelemetry("run-rs-http", null, "http/protobuf", receiver.TracesUrl, receiver.MetricsUrl, headers);
+        await using (var client = await PcpClient.ConnectAndConfigureAsync(process, null, "mem", config, telemetry, CancellationToken.None))
+        {
+            await File.WriteAllTextAsync(headers, "Authorization=Bearer second\n");
+            var connector = new ProcessSinkConnector(client, process);
+            await using var sink = await connector.OpenAsync(config, CancellationToken.None);
+            var schema = BuildSchema();
+            var spec = new OutputSpec("mem", "out", "replace", "match", new Dictionary<string, object?>());
+            await using var session = await sink.BeginWriteAsync(spec, schema, CancellationToken.None);
+            using (var batch = BuildBatch(schema, 0, 3))
+            {
+                await session.WriteBatchAsync(batch, CancellationToken.None);
+            }
+
+            await session.CommitAsync(CancellationToken.None);
+        }
+
+        var requests = await receiver.WaitForAsync(
+            r => r.Any(x => x.Path == "/traces") && r.Any(x => x.Path == "/metrics"), WaitTimeout, () => process.StderrTail);
+        Assert.All(requests, r => Assert.Equal("Bearer second", r.Authorization));
+        Assert.All(requests, r => Assert.Equal("gzip", r.Encoding));
+        Assert.Contains(requests.Where(r => r.Traces is not null)
+            .SelectMany(r => r.Traces!.ResourceSpans).SelectMany(x => x.ScopeSpans).SelectMany(x => x.Spans), sp => sp.Name == "pcp.BeginWrite");
+        var counter = requests.Where(r => r.Metrics is not null).SelectMany(r => r.Metrics!.ResourceMetrics)
+            .SelectMany(Instruments).Single(i => i.Name == ExampleCounter);
+        Assert.Equal(AggregationTemporality.Delta, counter.Sum.AggregationTemporality);
     }
 
     private string NewSocketDir()

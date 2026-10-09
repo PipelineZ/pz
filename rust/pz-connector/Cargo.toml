@@ -29,7 +29,12 @@ thiserror = "2"
 # and prost versions pinned above -- exactly one tonic and one prost may appear in Cargo.lock.
 opentelemetry = "0.33"
 opentelemetry_sdk = "0.33"
-opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
+# http-proto: OTLP/HTTP (protobuf) for backends that only take HTTP, such as Azure Monitor; the exporter runs on
+# its own thread, so reqwest's blocking client is the transport, with rustls for https.
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["grpc-tonic", "http-proto", "reqwest-blocking-client", "gzip-http", "trace", "metrics"] }
+opentelemetry-http = { version = "0.33", default-features = false, features = ["reqwest-blocking"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std", "fmt"] }
 tracing-opentelemetry = "0.34"
