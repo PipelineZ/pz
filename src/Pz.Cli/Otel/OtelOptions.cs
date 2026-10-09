@@ -1,3 +1,5 @@
+using Pz.PackageManagement.ProcessHosting;
+
 namespace Pz.Cli.Otel;
 
 public enum OtelProtocol { Grpc, HttpProtobuf }
@@ -10,4 +12,12 @@ public sealed record OtelOptions(OtelProtocol Protocol, Uri? Endpoint, Uri? Trac
     public static readonly OtelOptions Off = new(OtelProtocol.Grpc, null, null, null, null);
 
     public bool IsOn => Protocol == OtelProtocol.Grpc ? Endpoint is not null : TracesEndpoint is not null || MetricsEndpoint is not null;
+}
+
+internal static class OtelOptionsExtensions
+{
+    /// <summary>The settings a spawned connector gets in its handshake, so it exports where pz does.</summary>
+    internal static HostTelemetry ToHostTelemetry(this OtelOptions o, string? runId) => o.Protocol == OtelProtocol.Grpc
+        ? new HostTelemetry(runId, o.Endpoint)
+        : new HostTelemetry(runId, null, "http/protobuf", o.TracesEndpoint, o.MetricsEndpoint, o.HeadersFile);
 }

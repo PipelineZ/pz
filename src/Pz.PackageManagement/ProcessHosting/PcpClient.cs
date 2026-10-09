@@ -57,6 +57,20 @@ public sealed class PcpClient : IAsyncDisposable
         typeof(PcpClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()
             ?.InformationalVersion ?? "unknown";
 
+    /// <summary>The handshake's <c>HostInfo</c>: the run, the transports and where telemetry goes (gRPC endpoint, or
+    /// the http/protobuf protocol, per-signal URLs and the headers file path).</summary>
+    internal static HostInfo BuildHostInfo(HostTelemetry telemetry)
+    {
+        var info = new HostInfo { RunId = telemetry.RunId ?? string.Empty, PzVersion = PzInformationalVersion };
+        info.Transports.Add(ProtocolConstants.TransportPipe);
+        if (telemetry.OtelEndpoint is { } endpoint) info.OtelEndpoint = endpoint.AbsoluteUri;
+        if (telemetry.OtelProtocol is { } protocol) info.OtelProtocol = protocol;
+        if (telemetry.OtelTracesEndpoint is { } traces) info.OtelTracesEndpoint = traces.AbsoluteUri;
+        if (telemetry.OtelMetricsEndpoint is { } metrics) info.OtelMetricsEndpoint = metrics.AbsoluteUri;
+        if (telemetry.OtelHeadersFile is { } headers) info.OtelHeadersFile = headers;
+        return info;
+    }
+
     private PcpClient(
         ConnectorProcess process, GrpcChannel channel, Socket? controlSocket, Hello hello,
         PzConnector.PzConnectorClient grpc)
@@ -262,13 +276,8 @@ public sealed class PcpClient : IAsyncDisposable
                 var request = new HandshakeRequest
                 {
                     ProtocolMajor = ProtocolVersion.Major,
-                    HostInfo = new HostInfo { RunId = telemetry.RunId ?? string.Empty, PzVersion = PzInformationalVersion },
+                    HostInfo = BuildHostInfo(telemetry),
                 };
-                request.HostInfo.Transports.Add(ProtocolConstants.TransportPipe);
-                if (telemetry.OtelEndpoint is { } endpoint)
-                {
-                    request.HostInfo.OtelEndpoint = endpoint.AbsoluteUri;
-                }
                 hello = await grpc.HandshakeAsync(request, cancellationToken: handshakeCts.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
