@@ -7,6 +7,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--full-refresh` resets the watermark on the HTTP and SQL Server state backends.** A full refresh skipped reading the
+  stored watermark (and a feed's or CDC source's sync state), so a versioned store saw its advancement as a write by
+  another run and refused it: the run printed `PZ0527 … PZ0520` and kept the old value, and the next run went on from
+  there instead of from `initial`. The run now reads the entry and ignores it, so its own advancement replaces it. The
+  local file store was not affected.
+
 ## [0.9.1] - 2026-10-09
 
 ### Added

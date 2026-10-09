@@ -288,6 +288,29 @@ public sealed class SqlWatermarkFlowTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Full_refresh_resets_a_sql_declared_watermark_held_by_a_versioned_remote_store()
+    {
+        const string ds = "s4r";
+        var key = WatermarkStore.Key("mem", ds);
+        var backend = new VersionedBackend<Watermark>();
+        new WatermarkStore(new VersionedStateStore<Watermark>(backend)).Set(key, Wm("99"));
+        var store = new WatermarkStore(new VersionedStateStore<Watermark>(backend)); // this run's own instance
+        var (bounds, guard) = Exclusive(ds, $"{ds}_out");
+        var (dag, sourceId, _, _) = BuildDag(ds, rows: 15, bounds, guard);
+
+        await using var duck = DuckSession.Open(Path.Combine(_dir, "run-fr-remote.duckdb"));
+        await duck.ExecuteAsync("create schema if not exists staging");
+        var ctx = new RunContext(duck, _registry, new RunPaths(_dir, "run-fr-remote"), NullRunEvents.Instance,
+            Watermarks: store, FullRefresh: true);
+        var result = await new RunOrchestrator(new KindDispatchingExecutor(), ctx).ExecuteAsync(dag, new RunOptions(), default);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        Assert.Equal(15, NodeOf(result.Nodes, sourceId).RowsMoved);
+        Assert.Empty(WatermarkAdvancement.Advance(dag, result.Nodes, store));
+        Assert.Equal("14", backend.Rows[key].Value.Value); // reset from the stale 99, not refused as a lost race
+    }
+
+    [Fact]
     public async Task Failed_sink_does_not_advance_the_watermark()
     {
         const string ds = "s5";

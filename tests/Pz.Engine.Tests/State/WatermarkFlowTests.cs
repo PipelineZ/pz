@@ -733,6 +733,28 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Full_refresh_resets_a_watermark_held_by_a_versioned_remote_store()
+    {
+        // The hosted case: state lives on a server that compares versions. A full refresh ignores the stored
+        // watermark, but its advancement must still replace it, not lose to it as if another run had written it.
+        var sourceId = new NodeId("f0f0f0f0a1a1a1a1");
+        var key = WatermarkStore.Key("mem", "w_remote");
+        var backend = new VersionedBackend<Watermark>();
+        new WatermarkStore(new VersionedStateStore<Watermark>(backend)).Set(key, new Watermark("id", "bigint", "20", "prior-run"));
+
+        var store = new WatermarkStore(new VersionedStateStore<Watermark>(backend)); // this run's own instance
+        var dag = new CompiledDag([WindowedSourceLoadNode(sourceId, "mem", "w_remote", 25, maxWindow: "10", initial: "0")]);
+        var ctx = new RunContext(_duck, _registry, new RunPaths(_dir, "remote-run"), NullRunEvents.Instance,
+            Watermarks: store, FullRefresh: true);
+        var result = await new RunOrchestrator(new KindDispatchingExecutor(), ctx).ExecuteAsync(dag, new RunOptions(), default);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        Assert.Equal(10, Assert.Single(result.Nodes).RowsMoved);
+        Assert.Empty(WatermarkAdvancement.Advance(dag, result.Nodes, store));
+        Assert.Equal("10", backend.Rows[key].Value.Value);
+    }
+
+    [Fact]
     public async Task Caught_up_never_regresses_watermark_even_when_connector_over_extracts()
     {
         // Stored watermark 20, `until: 15` (legal -- DagCompiler cannot see stored state at compile
