@@ -244,7 +244,12 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     innerException: ex);
             }
 
-            var nativeRows = await ctx.Duck.ScalarAsync<long>($"select count(*) from {nativeTable}", ct).ConfigureAwait(false);
+            // Connectors apply a window as `cursor <= upper`. An exclusive upper (`until: now`, a SQL `<` ceiling) would
+            // land rows sitting at it, which the next run loads again, so they are cut here. An inclusive window is
+            // left as the connector returned it, as before.
+            var nativeRows = windowUpper is not null && !upperInclusive
+                ? await TrimToWindowAsync(ctx, def, nativeTable, windowLower, windowUpper, upperInclusive, ct).ConfigureAwait(false)
+                : await ctx.Duck.ScalarAsync<long>($"select count(*) from {nativeTable}", ct).ConfigureAwait(false);
 
             var (nativeWatermarkError, nativeWatermarkCandidate) =
                 await CaptureWatermarkAsync(ctx, def, nativeTable, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);

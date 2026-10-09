@@ -663,6 +663,36 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
         Assert.Equal("2", result.WatermarkCandidate!.Value); // window-scoped MAX never sees id=22; still <= upper (20)
     }
 
+    private sealed class FixedTime(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    [Fact]
+    public async Task Until_now_on_the_native_tier_never_lands_today()
+    {
+        // A file connector applies the window as `cursor <= upper`, so today's rows come back for an exclusive
+        // `until: now` stop. They must be trimmed before the sink sees them, or tomorrow loads them again.
+        var node = SourceLoadNode(new NodeId("a9a9a9a9a9a9a9a9"), "files", "daily", 0, "day",
+            incremental: new IncrementalDef("day", MaxWindow: "7d", Initial: "2026-10-05", Until: "now"), // (10-05, 10-09)
+            columns: new Dictionary<string, string> { ["day"] = "date" });
+        var registry = new ConnectorRegistry();
+        registry.AddSource("inmemory", new ConfigurableNativeSource(
+            "(values (date '2026-10-08', 'a'), (date '2026-10-09', 'b')) t(day, name)"));
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1, "test")],
+            MemoryBudget.Compute(new Pz.Core.Model.EngineConfig()));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "native-now-run"), NullRunEvents.Instance, plan,
+            Time: new FixedTime(new DateTimeOffset(2026, 10, 9, 2, 0, 0, TimeSpan.Zero)));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, result.RowsMoved);                       // 2026-10-09 trimmed
+        Assert.Equal("2026-10-08", result.WatermarkCandidate!.Value);
+        Assert.True(result.CaughtUp);
+    }
+
     [Fact]
     public async Task Windowed_raw_mode_dataset_resolves_cursor_type_from_dataset_options()
     {
