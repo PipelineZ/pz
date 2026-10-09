@@ -60,7 +60,7 @@ internal static class RunCommand
         command.Options.Add(SharedOptions.All);
         command.Options.Add(SharedOptions.NoLockCheck);
         command.Options.Add(SharedOptions.LogFormat);
-        command.Options.Add(SharedOptions.OtelEndpoint);
+        SharedOptions.AddOtel(command);
         command.Options.Add(SharedOptions.StateUrl);
         command.SetAction((parseResult, ct) => Execute(
             parseResult.GetValue(projectOption) ?? Directory.GetCurrentDirectory(),
@@ -71,7 +71,7 @@ internal static class RunCommand
             parseResult.GetValue(failFastOption),
             parseResult.GetValue(SharedOptions.NoLockCheck),
             parseResult.GetValue(SharedOptions.LogFormat),
-            parseResult.GetValue(SharedOptions.OtelEndpoint),
+            SharedOptions.ReadOtel(parseResult),
             parseResult.GetValue(SharedOptions.StateUrl),
             parseResult.GetValue(fullRefreshOption),
             ct));
@@ -80,7 +80,7 @@ internal static class RunCommand
 
     internal static async Task<int> Execute(
         string projectDir, string? varsJson, string[] names, string? select, bool all, bool failFast,
-        bool noLockCheck, string? logFormatRaw, string? otelEndpointRaw, string? stateUrlRaw,
+        bool noLockCheck, string? logFormatRaw, OtelRaw? otelRaw, string? stateUrlRaw,
         bool fullRefresh, CancellationToken ct)
     {
         if (!TryParseLogFormat(logFormatRaw, out var logFormat))
@@ -90,7 +90,7 @@ internal static class RunCommand
             return ExitCodes.ConfigError;
         }
 
-        if (!TryResolveOtelEndpoint(otelEndpointRaw, out var otelEndpoint, out var otelError))
+        if (!TryResolveOtel(otelRaw ?? new(null, null, null, null, null), Environment.GetEnvironmentVariable, out var otel, out var otelError))
         {
             Console.Error.WriteLine($"error: {otelError}");
             return ExitCodes.ConfigError;
@@ -167,7 +167,7 @@ internal static class RunCommand
 
             return await ExecuteRun(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, ct,
-                otelEndpoint: otelEndpoint, fullRefresh: fullRefresh);
+                otel: otel, fullRefresh: fullRefresh);
         }
         catch (Exception ex)
         {
@@ -198,7 +198,7 @@ internal static class RunCommand
     internal static async Task<int> ExecuteRun(
         PzProject project, CompiledDag fullDag, string projectDir, IReadOnlySet<NodeId>? selection, bool failFast,
         bool noLockCheck, string logFormat, CancellationToken ct,
-        TimeSpan? drainTimeout = null, Func<IEventRenderer>? rendererFactory = null, Uri? otelEndpoint = null,
+        TimeSpan? drainTimeout = null, Func<IEventRenderer>? rendererFactory = null, OtelOptions? otel = null,
         bool fullRefresh = false, ReuseManifest? reuse = null, IReadOnlyList<NodeResult>? carriedForward = null,
         ICollection<string>? runtimeNotices = null, Action<string>? onRunId = null)
     {
@@ -213,7 +213,7 @@ internal static class RunCommand
         {
             return await ExecuteRunCore(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, stop.Token, drainTimeout,
-                rendererFactory, otelEndpoint, fullRefresh, reuse, carriedForward, runtimeNotices, onRunId);
+                rendererFactory, otel ?? OtelOptions.Off, fullRefresh, reuse, carriedForward, runtimeNotices, onRunId);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -226,7 +226,7 @@ internal static class RunCommand
     private static async Task<int> ExecuteRunCore(
         PzProject project, CompiledDag fullDag, string projectDir, IReadOnlySet<NodeId>? selection, bool failFast,
         bool noLockCheck, string logFormat, CancellationToken ct,
-        TimeSpan? drainTimeout, Func<IEventRenderer>? rendererFactory, Uri? otelEndpoint,
+        TimeSpan? drainTimeout, Func<IEventRenderer>? rendererFactory, OtelOptions otelOptions,
         bool fullRefresh, ReuseManifest? reuse, IReadOnlyList<NodeResult>? carriedForward,
         ICollection<string>? runtimeNotices, Action<string>? onRunId = null)
     {
@@ -250,12 +250,12 @@ internal static class RunCommand
         // `pz retry` reaches this same seam through ExecuteRun, so both verbs are covered here.
         using var runDirLock = RunDirLock.Acquire(paths.RunDir);
 
-        // The ONLY place OTel providers get wired up — a no-op when otelEndpoint is null (OTel not
+        // The ONLY place OTel providers get wired up — a no-op when otelOptions is off (OTel not
         // configured), so PzActivitySource/PzMeters emission in the engine stays the documented
         // zero-cost no-op. Wired this early so the run span below covers every phase, and disposed
         // (flushed) at this method's natural exit, which is AFTER the run summary is printed below and
         // after the connector hosts (declared later, so disposed earlier) have shut down.
-        await using var otel = OtelProviders.Create(otelEndpoint);
+        await using var otel = OtelProviders.Create(otelOptions.Protocol == OtelProtocol.Grpc ? otelOptions.Endpoint : null);
 
         // Root span for the whole run, from here through finalize. Opened before the connector hosts
         // spawn so every RPC the plan phase issues (handshake, configure, plan) joins this trace rather
@@ -294,7 +294,7 @@ internal static class RunCommand
         }
 
         // Only worth saying when telemetry is on: with no endpoint, TRACEPARENT changes nothing.
-        if (traceParentNote is not null && otelEndpoint is not null) Notice(traceParentNote);
+        if (traceParentNote is not null && otelOptions.IsOn) Notice(traceParentNote);
 
         // Resolve the configured backend (local files or SQL Server) and — for SQL Server — ensure the
         // state schema is at the version this build expects, BEFORE any node executes: PZ0518
@@ -335,7 +335,7 @@ internal static class RunCommand
         try
         {
             (registry, host) = await ConnectorRegistryFactory.CreateAsync(
-                project, projectDir, noLockCheck, ct, runId, otelEndpoint, connectorLog.Log);
+                project, projectDir, noLockCheck, ct, runId, otelOptions.Endpoint, connectorLog.Log);
         }
         catch (PzValidationException ex)
         {
@@ -723,30 +723,63 @@ internal static class RunCommand
         return false;
     }
 
-    /// <summary>Shared by `pz run`/`pz test`/`pz retry`: resolves <c>--otel-endpoint</c> (wins) or the
-    /// <c>PZ_OTEL_ENDPOINT</c> environment variable into an absolute http(s) <see cref="Uri"/>, or
-    /// <c>null</c> when neither is set (OTel stays fully off). An unparseable value (bad scheme, not an
-    /// absolute URL, etc.) is a clean CLI usage error via <paramref name="error"/> — never a crash.</summary>
-    internal static bool TryResolveOtelEndpoint(string? optionValue, out Uri? endpoint, out string? error)
+    internal sealed record OtelRaw(string? Protocol, string? Endpoint, string? TracesEndpoint, string? MetricsEndpoint, string? HeadersFile);
+
+    /// <summary>Shared by `pz run`/`pz test`/`pz retry`. Each option takes its flag, else its PZ_OTEL_* variable;
+    /// ambient OTEL_EXPORTER_OTLP_* protocol/endpoint variables are never read (every exporter option is set in code).
+    /// Mixed settings are usage errors, never silently ignored.</summary>
+    internal static bool TryResolveOtel(OtelRaw flags, Func<string, string?> env, out OtelOptions options, out string? error)
     {
-        var raw = optionValue ?? Environment.GetEnvironmentVariable("PZ_OTEL_ENDPOINT");
-        if (string.IsNullOrWhiteSpace(raw))
+        options = OtelOptions.Off;
+        static string? Blank(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+        static string? Pick(string? flag, string? fallback) => string.IsNullOrWhiteSpace(flag) ? Blank(fallback) : flag.Trim();
+
+        var protocolRaw = Pick(flags.Protocol, env("PZ_OTEL_PROTOCOL"));
+        var endpointRaw = Pick(flags.Endpoint, env("PZ_OTEL_ENDPOINT"));
+        var tracesRaw = Pick(flags.TracesEndpoint, env("PZ_OTEL_TRACES_ENDPOINT"));
+        var metricsRaw = Pick(flags.MetricsEndpoint, env("PZ_OTEL_METRICS_ENDPOINT"));
+        var headersFile = Pick(flags.HeadersFile, env("PZ_OTEL_HEADERS_FILE"));
+
+        OtelProtocol protocol;
+        switch (protocolRaw)
         {
-            endpoint = null;
-            error = null;
-            return true;
+            case null or "grpc": protocol = OtelProtocol.Grpc; break;
+            case "http/protobuf": protocol = OtelProtocol.HttpProtobuf; break;
+            default: error = $"invalid --otel-protocol value '{protocolRaw}' (expected 'grpc' or 'http/protobuf')"; return false;
         }
 
-        if (Uri.TryCreate(raw, UriKind.Absolute, out var uri) &&
-            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
+        if (!TryUrl("--otel-endpoint", endpointRaw, out var endpoint, out error)
+            || !TryUrl("--otel-traces-endpoint", tracesRaw, out var traces, out error)
+            || !TryUrl("--otel-metrics-endpoint", metricsRaw, out var metrics, out error)) return false;
+
+        if (protocol == OtelProtocol.HttpProtobuf && endpoint is not null)
         {
-            endpoint = uri;
-            error = null;
-            return true;
+            error = "--otel-endpoint is for grpc; with --otel-protocol http/protobuf set --otel-traces-endpoint and/or --otel-metrics-endpoint";
+            return false;
+        }
+        if (protocol == OtelProtocol.Grpc)
+        {
+            if (traces is not null) { error = "--otel-traces-endpoint needs --otel-protocol http/protobuf"; return false; }
+            if (metrics is not null) { error = "--otel-metrics-endpoint needs --otel-protocol http/protobuf"; return false; }
+            if (headersFile is not null) { error = "--otel-headers-file needs --otel-protocol http/protobuf"; return false; }
         }
 
-        endpoint = null;
-        error = $"invalid --otel-endpoint value '{raw}' (expected an absolute http(s) URL)";
+        options = new OtelOptions(protocol, endpoint, traces, metrics, headersFile);
+        error = null;
+        return true;
+    }
+
+    private static bool TryUrl(string flag, string? raw, out Uri? uri, out string? error)
+    {
+        uri = null;
+        error = null;
+        if (raw is null) return true;
+        if (Uri.TryCreate(raw, UriKind.Absolute, out var parsed) && (parsed.Scheme == Uri.UriSchemeHttp || parsed.Scheme == Uri.UriSchemeHttps))
+        {
+            uri = parsed;
+            return true;
+        }
+        error = $"invalid {flag} value '{raw}' (expected an absolute http(s) URL)";
         return false;
     }
 

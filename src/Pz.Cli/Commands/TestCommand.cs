@@ -29,7 +29,7 @@ internal static class TestCommand
         command.Options.Add(SharedOptions.Select);
         command.Options.Add(SharedOptions.NoLockCheck);
         command.Options.Add(SharedOptions.LogFormat);
-        command.Options.Add(SharedOptions.OtelEndpoint);
+        SharedOptions.AddOtel(command);
         command.Options.Add(SharedOptions.StateUrl);
         command.SetAction((parseResult, ct) => Execute(
             parseResult.GetValue(projectOption) ?? Directory.GetCurrentDirectory(),
@@ -37,7 +37,7 @@ internal static class TestCommand
             parseResult.GetValue(SharedOptions.Select),
             parseResult.GetValue(SharedOptions.NoLockCheck),
             parseResult.GetValue(SharedOptions.LogFormat),
-            parseResult.GetValue(SharedOptions.OtelEndpoint),
+            SharedOptions.ReadOtel(parseResult),
             parseResult.GetValue(SharedOptions.StateUrl),
             ct));
         return command;
@@ -45,7 +45,7 @@ internal static class TestCommand
 
     internal static async Task<int> Execute(
         string projectDir, string? varsJson, string? select, bool noLockCheck, string? logFormatRaw,
-        string? otelEndpointRaw, string? stateUrlRaw, CancellationToken ct)
+        RunCommand.OtelRaw? otelRaw, string? stateUrlRaw, CancellationToken ct)
     {
         if (!RunCommand.TryParseLogFormat(logFormatRaw, out var logFormat))
         {
@@ -54,7 +54,7 @@ internal static class TestCommand
             return ExitCodes.ConfigError;
         }
 
-        if (!RunCommand.TryResolveOtelEndpoint(otelEndpointRaw, out var otelEndpoint, out var otelError))
+        if (!RunCommand.TryResolveOtel(otelRaw ?? new(null, null, null, null, null), Environment.GetEnvironmentVariable, out var otel, out var otelError))
         {
             Console.Error.WriteLine($"error: {otelError}");
             return ExitCodes.ConfigError;
@@ -136,7 +136,7 @@ internal static class TestCommand
 
             return await RunCommand.ExecuteRun(
                 project, fullDag, projectDir, checkIds, failFast: false, noLockCheck, logFormat, ct,
-                otelEndpoint: otelEndpoint);
+                otel: otel);
         }
         catch (Exception ex)
         {

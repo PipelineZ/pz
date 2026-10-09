@@ -76,7 +76,7 @@ public sealed class RetryReuseEndToEndTests : IDisposable
         // No process-wide env var to restore here (see the class doc comment on why a connection-root
         // env toggle isn't used) -- _work's cleanup in Dispose() is enough.
         var retryExit = await RetryCommand.Execute(
-            _work, failFast: false, noLockCheck: true, logFormatRaw: "text", otelEndpointRaw: null, stateUrlRaw: null,
+            _work, failFast: false, noLockCheck: true, logFormatRaw: "text", otelRaw: null, stateUrlRaw: null,
             fullRefresh: false, CancellationToken.None);
         Assert.Equal(ExitCodes.Ok, retryExit);
 

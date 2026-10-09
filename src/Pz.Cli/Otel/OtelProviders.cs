@@ -26,7 +26,7 @@ public sealed class OtelProviders : IAsyncDisposable
     }
 
     /// <summary>Builds real, exporting providers for <paramref name="endpoint"/> (already validated by
-    /// <see cref="Pz.Cli.Commands.RunCommand.TryResolveOtelEndpoint"/> — an absolute http/https URL), or
+    /// <see cref="Pz.Cli.Commands.RunCommand.TryResolveOtel"/>, an absolute http/https URL), or
     /// <see cref="NoOp"/> when <paramref name="endpoint"/> is null (the common case: OTel not
     /// configured).</summary>
     public static OtelProviders Create(Uri? endpoint)
