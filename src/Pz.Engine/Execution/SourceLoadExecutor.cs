@@ -72,22 +72,25 @@ public sealed class SourceLoadExecutor : INodeExecutor
         var shape = ReadShapeResolver.Resolve(def.Dataset, source, SpecBuilder.ForSourceLoad(def));
 
         // The watermark rides a SpecBuilder overload used only here, at execution time (the planner keeps
-        // probing with the watermark-free one) -- and only when this is an incremental dataset, not a
-        // full-refresh run: --full-refresh skips only this read side; capture + advancement below still
-        // run either way.
+        // probing with the watermark-free one) -- and only when this is an incremental dataset. A full-refresh
+        // run still reads it and then ignores the value: a versioned store (HTTP, SQL Server) only lets this
+        // run's advancement replace an entry it has read, so skipping the read would make the reset lose to
+        // the very watermark it means to replace (PZ0520). Capture + advancement below run either way.
         Watermark? stored = null;
-        if (def.Dataset.SyncMode is { Mode: SyncMode.Incremental } && !ctx.FullRefresh)
+        if (def.Dataset.SyncMode is { Mode: SyncMode.Incremental })
         {
             stored = ctx.Watermarks?.Get(WatermarkStore.Key(def.Source.Name, def.Dataset.Name), ctx.Notice);
+            if (ctx.FullRefresh) { stored = null; }
         }
 
         // A Feed-shaped dataset replays its stored opaque token (unless --full-refresh) so the
-        // connector can resume the change feed. Mirrors the watermark read-side gate: --full-refresh
-        // skips only this read; capture + advancement still run.
+        // connector can resume the change feed. Mirrors the watermark read: --full-refresh reads it only so
+        // its own advancement may replace it, then starts the feed over; capture + advancement still run.
         SyncState? priorSync = null;
-        if (shape is ResolvedReadShape.Feed or ResolvedReadShape.Cdc && !ctx.FullRefresh)
+        if (shape is ResolvedReadShape.Feed or ResolvedReadShape.Cdc)
         {
             priorSync = ctx.SyncState?.Get(SyncStateStore.Key(def.Source.Name, def.Dataset.Name), ctx.Notice);
+            if (ctx.FullRefresh) { priorSync = null; }
         }
 
         // A windowed dataset (incremental.MaxWindow present -- DagCompiler

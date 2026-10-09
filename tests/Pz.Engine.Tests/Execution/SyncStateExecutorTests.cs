@@ -10,6 +10,7 @@ using Pz.Engine.Execution;
 using Pz.Engine.Dispatch;
 using Pz.Engine.Planning;
 using Pz.Engine.State;
+using Pz.Engine.Tests.State;
 
 namespace Pz.Engine.Tests.Execution;
 
@@ -94,6 +95,29 @@ public sealed class SyncStateExecutorTests : IAsyncLifetime
         // over a second time.
         Assert.NotNull(result.SyncStateCandidate);
         Assert.Equal("new-token", result.SyncStateCandidate!.Token);
+    }
+
+    [Fact]
+    public async Task Full_refresh_replaces_a_sync_state_held_by_a_versioned_remote_store()
+    {
+        var key = SyncStateStore.Key("src", "orders");
+        var backend = new VersionedBackend<SyncState>();
+        new SyncStateStore(new VersionedStateStore<SyncState>(backend)).Set(key, new SyncState("seed-token", "seed-run"));
+        var store = new SyncStateStore(new VersionedStateStore<SyncState>(backend)); // this run's own instance
+
+        var source = new SyncStubSource(partitionCount: 1, candidate: "new-token");
+        var reg = new ConnectorRegistry();
+        reg.AddSource("syncstub", new SyncStubConnector(source));
+        var ctx = new RunContext(_duck, reg, new RunPaths(_dir, "test-run"), NullRunEvents.Instance,
+            SyncState: store, FullRefresh: true);
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(SourceLoadNode(), ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Null(source.ObservedPriorSyncState); // the feed still starts over
+        // What advancement does with the candidate: the run's own store must be allowed to replace the token.
+        store.Set(key, result.SyncStateCandidate!);
+        Assert.Equal("new-token", backend.Rows[key].Value.Token);
     }
 
     [Fact]
