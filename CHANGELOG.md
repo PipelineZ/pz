@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-09
+
 ### Fixed
 
 - **`--full-refresh` resets the watermark on the HTTP and SQL Server state backends.** A full refresh skipped reading the
