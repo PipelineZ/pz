@@ -82,7 +82,19 @@ public sealed class HandshakeTests : IDisposable
 
         Assert.Equal("PZ0356", ex.Code);
         Assert.Contains("handshake", ex.Message, StringComparison.Ordinal);
+        // A timeout says how far the dial got, so a CI failure can tell a connector that never served its
+        // socket from one that accepted and never answered.
+        Assert.Matches("(connected, no Hello|never connected after [0-9]+ dial)", ex.Message);
     }
+
+    [Theory]
+    [InlineData(true, 3, null, true, "connected, no Hello")]
+    [InlineData(false, 750, System.Net.Sockets.SocketError.ConnectionRefused, true,
+        "never connected after 750 dials, last error ConnectionRefused, socket file present")]
+    [InlineData(false, 1, null, false, "never connected after 1 dial, socket file absent")]
+    public void Dial_report_names_how_far_the_dial_got(bool connected, int dials,
+        System.Net.Sockets.SocketError? lastError, bool socketFileExists, string expected) =>
+        Assert.Equal(expected, PcpClient.DialReport(connected, dials, lastError, socketFileExists));
 
     [Fact]
     public async Task Wrong_protocol_major_is_PZ0356()
