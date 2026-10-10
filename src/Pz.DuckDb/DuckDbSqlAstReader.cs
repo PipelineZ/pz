@@ -553,9 +553,23 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
 
     private static bool IsSentinelConstant(JsonObject node, string sentinel) =>
         ClassOf(node) == "CONSTANT"
-        && node["value"]?["value"] is JsonValue v
-        && v.TryGetValue(out string? s)
-        && s == sentinel;
+        && StringConstant(node) == sentinel;
+
+    /// <summary>A string CONSTANT's text in either serializer shape: 1.x nests a typed
+    /// <c>value.value</c>, 2.0 a <c>literal { kind, text }</c>.</summary>
+    private static string? StringConstant(JsonObject node)
+    {
+        if (node["value"]?["value"] is JsonValue v && v.TryGetValue(out string? s))
+        {
+            return s;
+        }
+
+        return node["literal"] is JsonObject literal
+            && literal["kind"]?.GetValue<string>() == "STRING"
+            && literal["text"] is JsonValue t && t.TryGetValue(out string? text)
+            ? text
+            : null;
+    }
 
     /// <summary>Every CONSTANT node in <paramref name="node"/>'s subtree whose literal equals
     /// <paramref name="sentinel"/>, by reference — used to detect sentinel occurrences that fall
