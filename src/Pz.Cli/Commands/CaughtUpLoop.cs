@@ -3,7 +3,7 @@ using Pz.Engine.Execution;
 namespace Pz.Cli.Commands;
 
 /// <summary>Why `pz run --until-caught-up` stopped repeating the run.</summary>
-internal enum CaughtUpStop { CaughtUp, RunFailed, NoStoppingSource, MaxRuns }
+internal enum CaughtUpStop { CaughtUp, RunFailed, NoStoppingSource, MaxRuns, Cancelled }
 
 /// <summary>The stop rule behind `pz run --until-caught-up`. A pass's <see cref="NodeResult.CaughtUp"/> is
 /// true when that run's window reached its stop, so the loop ends on the pass that loads the final slice —
@@ -42,6 +42,7 @@ internal static class CaughtUpLoop
         {
             CaughtUpStop.CaughtUp => "caught up",
             CaughtUpStop.RunFailed => "run failed",
+            CaughtUpStop.Cancelled => "cancelled",
             CaughtUpStop.NoStoppingSource =>
                 "no windowed source with a stop (`until` or a SQL ceiling) in this run",
             CaughtUpStop.MaxRuns =>

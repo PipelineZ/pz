@@ -36,6 +36,27 @@ public sealed class StopSignalsTests
         Assert.True(cts.IsCancellationRequested);
     }
 
+    /// <summary>`pz run --until-caught-up` holds a registration for the whole loop while each pass holds
+    /// its own; one signal must stop both, or a pass would end and the loop start another.</summary>
+    [SkippableFact]
+    public async Task One_signal_cancels_every_nested_registration()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "delivers a POSIX signal to the test process");
+
+        using var loop = new CancellationTokenSource();
+        using var pass = new CancellationTokenSource();
+        var loopCancelled = new TaskCompletionSource();
+        var passCancelled = new TaskCompletionSource();
+        using var onLoop = loop.Token.Register(() => loopCancelled.TrySetResult());
+        using var onPass = pass.Token.Register(() => passCancelled.TrySetResult());
+        using var loopSignals = StopSignals.Register(loop);
+        using var passSignals = StopSignals.Register(pass);
+
+        Assert.Equal(0, Kill(Environment.ProcessId, SigTerm));
+
+        await Task.WhenAll(loopCancelled.Task, passCancelled.Task).WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
     [Fact]
     public void Disposing_unregisters_without_cancelling()
     {

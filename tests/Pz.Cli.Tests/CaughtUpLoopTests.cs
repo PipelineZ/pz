@@ -79,6 +79,7 @@ public sealed class CaughtUpLoopTests
     [Theory]
     [InlineData((int)CaughtUpStop.CaughtUp, 3, "until-caught-up: 3 passes, stopped: caught up")]
     [InlineData((int)CaughtUpStop.RunFailed, 2, "until-caught-up: 2 passes, stopped: run failed")]
+    [InlineData((int)CaughtUpStop.Cancelled, 2, "until-caught-up: 2 passes, stopped: cancelled")]
     [InlineData((int)CaughtUpStop.MaxRuns, 5,
         "until-caught-up: 5 passes, stopped: max runs (5) reached before every source caught up -- " +
         "run again to continue from the stored watermarks")]

@@ -57,6 +57,9 @@
          actually wires RunCommand's WatermarkStore/WatermarkAdvancement end-to-end (a real localfiles
          CSV source, not the engine-level InMemory/stub fixtures). -->
     <Content Include="Fixtures\watermark-basic\**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- A windowed incremental source (initial 0, max_window 2, until 6) over ids 1..6: exactly three
+         slices to catch up, for the until-caught-up run tests. -->
+    <Content Include="Fixtures\windowed-basic\**" CopyToOutputDirectory="PreserveNewest" />
     <!-- Real, working project with an incremental source and two sinks (one deliberately flaky) for
          RetryReuseEndToEndTests: the regression net proving `pz retry`'s staging-reuse and
          sink carry-forward end to end against a genuine failed-then-retried run. -->
