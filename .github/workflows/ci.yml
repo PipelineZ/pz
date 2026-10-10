@@ -12,6 +12,8 @@ concurrency:
 jobs:
   build-test:
     strategy:
+      # Spike only: the known ubuntu failure must not cancel the windows leg's DuckDB 2.0 result.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
