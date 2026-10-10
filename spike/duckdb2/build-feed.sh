@@ -16,8 +16,9 @@ git -C "$work/DuckDB.NET" checkout -q "$sha"
 export DuckDbArtifactRoot=https://artifacts.duckdb.org/v2.0-cyanoptera
 export NightlyBuild=true
 cd "$work/DuckDB.NET"
+# CI=true (set on every GitHub runner) makes DuckDB.NET reference GitVersion, which overrides Version.
 pack() {
-  dotnet pack "$1" -c Release -p:BuildType=Full -p:Version=2.0.0-spike.1 -o "$feed" >/dev/null
+  env -u CI dotnet pack "$1" -c Release -p:BuildType=Full -p:Version=2.0.0-spike.1 -o "$feed" | tail -3
 }
 # The native library is packed through a glob evaluated before the build step downloads it, so the
 # first pack only fetches it; the bindings package is packed again once the file is on disk.
