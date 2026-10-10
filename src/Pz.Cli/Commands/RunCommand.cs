@@ -42,6 +42,17 @@ internal static class RunCommand
             Description = "Ignore stored watermarks and sync state when reading incremental/sync datasets " +
                 "this run -- capture and advancement still run, re-establishing them from the full extract.",
         };
+        var untilCaughtUpOption = new Option<bool>("--until-caught-up")
+        {
+            Description = "Repeat the run while any windowed source with a stop (`until`, or a SQL ceiling) " +
+                "is still behind. Each pass is a full run that commits and advances the watermark before the " +
+                "next starts; stops when every such source has caught up, when a run fails (with its exit " +
+                "code), or at --max-runs.",
+        };
+        var maxRunsOption = new Option<int?>("--max-runs")
+        {
+            Description = $"With --until-caught-up: the most passes to run (default {CaughtUpLoop.DefaultMaxRuns}).",
+        };
         var namesArgument = new Argument<string[]>("names")
         {
             Description = "Flow name(s): each runs that node plus every ancestor and descendant (the whole flow through it)",
@@ -56,6 +67,8 @@ internal static class RunCommand
         command.Options.Add(varsOption);
         command.Options.Add(failFastOption);
         command.Options.Add(fullRefreshOption);
+        command.Options.Add(untilCaughtUpOption);
+        command.Options.Add(maxRunsOption);
         command.Options.Add(SharedOptions.Select);
         command.Options.Add(SharedOptions.All);
         command.Options.Add(SharedOptions.NoLockCheck);
@@ -74,6 +87,8 @@ internal static class RunCommand
             SharedOptions.ReadOtel(parseResult),
             parseResult.GetValue(SharedOptions.StateUrl),
             parseResult.GetValue(fullRefreshOption),
+            parseResult.GetValue(untilCaughtUpOption),
+            parseResult.GetValue(maxRunsOption),
             ct));
         return command;
     }
@@ -81,8 +96,20 @@ internal static class RunCommand
     internal static async Task<int> Execute(
         string projectDir, string? varsJson, string[] names, string? select, bool all, bool failFast,
         bool noLockCheck, string? logFormatRaw, OtelRaw? otelRaw, string? stateUrlRaw,
-        bool fullRefresh, CancellationToken ct)
+        bool fullRefresh, bool untilCaughtUp, int? maxRuns, CancellationToken ct)
     {
+        if (maxRuns is not null && !untilCaughtUp)
+        {
+            Console.Error.WriteLine("error: --max-runs needs --until-caught-up");
+            return ExitCodes.ConfigError;
+        }
+
+        if (maxRuns < 1)
+        {
+            Console.Error.WriteLine($"error: --max-runs must be at least 1 (got {maxRuns})");
+            return ExitCodes.ConfigError;
+        }
+
         if (!TryParseLogFormat(logFormatRaw, out var logFormat))
         {
             Console.Error.WriteLine(
@@ -96,6 +123,51 @@ internal static class RunCommand
             return ExitCodes.ConfigError;
         }
 
+        if (!untilCaughtUp)
+        {
+            return await ExecutePass(projectDir, varsJson, names, select, all, failFast, noLockCheck, logFormat, otel,
+                stateUrlRaw, fullRefresh, onResults: null, ct);
+        }
+
+        // Each pass is a whole run -- load and compile included -- so `until: now` and the stored watermarks
+        // are re-read every time. --full-refresh applies to the first pass only: on every later pass it would
+        // reload the first window again and never catch up.
+        //
+        // The loop owns stop signals for its whole lifetime, alongside each pass's own registration: a signal
+        // that lands while a pass finalizes leaves that pass's exit code at 0, and one between passes has no
+        // run to cancel -- either way, no further pass may start.
+        using var loopStop = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var loopSignals = StopSignals.Register(loopStop);
+        var limit = maxRuns ?? CaughtUpLoop.DefaultMaxRuns;
+        for (var pass = 1; ; pass++)
+        {
+            IReadOnlyList<NodeResult> results = [];
+            var exitCode = await ExecutePass(projectDir, varsJson, names, select, all, failFast, noLockCheck,
+                logFormat, otel, stateUrlRaw, fullRefresh && pass == 1, onResults: nodes => results = nodes,
+                loopStop.Token);
+            var stop = CaughtUpLoop.Decide(exitCode, results, pass, limit);
+            if (stop is not CaughtUpStop.RunFailed && loopStop.IsCancellationRequested)
+            {
+                stop = CaughtUpStop.Cancelled;
+                exitCode = ExitCodes.Fatal;
+            }
+
+            if (stop is { } reason)
+            {
+                // Same routing as the run's own notes: json mode keeps stdout NDJSON-only.
+                var summaryWriter = logFormat == "json" ? Console.Error : Console.Out;
+                summaryWriter.WriteLine($"note: {CaughtUpLoop.Summary(reason, pass, limit)}");
+                return exitCode;
+            }
+        }
+    }
+
+    /// <summary>One `pz run`: load, compile, dry-compile, select, then <see cref="ExecuteRun"/>.</summary>
+    private static async Task<int> ExecutePass(
+        string projectDir, string? varsJson, string[] names, string? select, bool all, bool failFast,
+        bool noLockCheck, string logFormat, OtelOptions otel, string? stateUrlRaw, bool fullRefresh,
+        Action<IReadOnlyList<NodeResult>>? onResults, CancellationToken ct)
+    {
         PzProject project;
         CompiledDag fullDag;
         var compileNotices = new List<string>();
@@ -167,7 +239,7 @@ internal static class RunCommand
 
             return await ExecuteRun(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, ct,
-                otel: otel, fullRefresh: fullRefresh);
+                otel: otel, fullRefresh: fullRefresh, onResults: onResults);
         }
         catch (Exception ex)
         {
@@ -200,7 +272,8 @@ internal static class RunCommand
         bool noLockCheck, string logFormat, CancellationToken ct,
         TimeSpan? drainTimeout = null, Func<IEventRenderer>? rendererFactory = null, OtelOptions? otel = null,
         bool fullRefresh = false, ReuseManifest? reuse = null, IReadOnlyList<NodeResult>? carriedForward = null,
-        ICollection<string>? runtimeNotices = null, Action<string>? onRunId = null)
+        ICollection<string>? runtimeNotices = null, Action<string>? onRunId = null,
+        Action<IReadOnlyList<NodeResult>>? onResults = null)
     {
         // Stop signals are owned here, for the whole of the run and not only while nodes execute. Setup
         // already spawns connector processes, and an unhandled SIGTERM there would kill pz and orphan
@@ -213,7 +286,8 @@ internal static class RunCommand
         {
             return await ExecuteRunCore(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, stop.Token, drainTimeout,
-                rendererFactory, otel ?? OtelOptions.Off, fullRefresh, reuse, carriedForward, runtimeNotices, onRunId);
+                rendererFactory, otel ?? OtelOptions.Off, fullRefresh, reuse, carriedForward, runtimeNotices, onRunId,
+                onResults);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -228,7 +302,8 @@ internal static class RunCommand
         bool noLockCheck, string logFormat, CancellationToken ct,
         TimeSpan? drainTimeout, Func<IEventRenderer>? rendererFactory, OtelOptions otelOptions,
         bool fullRefresh, ReuseManifest? reuse, IReadOnlyList<NodeResult>? carriedForward,
-        ICollection<string>? runtimeNotices, Action<string>? onRunId = null)
+        ICollection<string>? runtimeNotices, Action<string>? onRunId = null,
+        Action<IReadOnlyList<NodeResult>>? onResults = null)
     {
         // Sortable, unique-enough-for-a-local-tool run identity. Runtime identity, not
         // compile output — golden/determinism rules do not apply here.
@@ -686,6 +761,7 @@ internal static class RunCommand
         // by the try/catch discipline immediately above (a persist failure prints a note and falls
         // through to the status-derived exit code), NOT by writing run_results first.
         snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped);
+        onResults?.Invoke(result.Nodes);
 
         return result.Status switch
         {

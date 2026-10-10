@@ -7,6 +7,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **`pz run --until-caught-up [--max-runs N]`.** Repeats the run while any windowed source with a stop (`until`,
+  `until: now`, or a SQL ceiling) reports `caughtUp: false`, so a backfill in slices no longer needs a shell loop.
+  Each pass is a full run that writes its sinks and advances the watermark before the next starts. The loop stops when
+  every such source has caught up (exit 0), when a run fails (that run's exit code), on a stop signal (exit 3), or
+  after `--max-runs` passes (default 100; exit 0 — the next invocation continues from the stored watermarks). With no
+  windowed source that has a stop, it runs once. A final `note: until-caught-up: …` line gives the pass count and why
+  it stopped (stderr under `--log-format json`). `--full-refresh` applies to the first pass only.
+
 ## [0.9.2] - 2026-10-09
 
 ### Fixed
