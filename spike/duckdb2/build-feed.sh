@@ -26,7 +26,9 @@ rm -f "$feed"/DuckDB.NET.Bindings.Full.*.nupkg
 pack DuckDB.NET.Bindings/Bindings.csproj
 pack DuckDB.NET.Data/Data.csproj
 
-unzip -l "$feed"/DuckDB.NET.Bindings.Full.2.0.0-spike.1.nupkg | grep -q 'runtimes/.*/native/' \
+# A nupkg is a zip; python is on every runner image, unzip is not (windows Git Bash).
+py="$(command -v python3 || command -v python)"
+"$py" -I -m zipfile -l "$feed"/DuckDB.NET.Bindings.Full.2.0.0-spike.1.nupkg | grep -q 'runtimes/.*/native/' \
   || { echo "native library missing from the bindings package" >&2; exit 1; }
 # A cached copy of the same version would shadow the freshly built one.
 rm -rf "${NUGET_PACKAGES:-$HOME/.nuget/packages}"/duckdb.net.{data,bindings}.full/2.0.0-spike.1
