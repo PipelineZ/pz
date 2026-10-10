@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-10
+
 ### Added
 
 - **`pz run --until-caught-up [--max-runs N]`.** Repeats the run while any windowed source with a stop (`until`,
