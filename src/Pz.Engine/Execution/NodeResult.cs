@@ -76,7 +76,8 @@ public sealed record DeliveryStats(string AbortSemantics, long RowsVisible, long
 /// into <c>run_results.json</c> and the NDJSON <c>NodeCompletedEvent</c>.
 ///
 /// <paramref name="Facts"/>: see <see cref="NodeFacts"/>; null for nodes that never reached the executor
-/// (skipped, reused, carried forward).</summary>
+/// (skipped, carried forward, refused by the breaker). A SourceLoad reused from a prior run went through the
+/// executor, so it carries connector, connection and attempts but no strategy or stages.</summary>
 public sealed record NodeResult(NodeId Id, NodeKind Kind, string Name, NodeStatus Status,
     long RowsMoved, TimeSpan Duration, PzError? Error, NodeTimings? Timings = null,
     Watermark? WatermarkCandidate = null, NodeProvenance? Provenance = null,

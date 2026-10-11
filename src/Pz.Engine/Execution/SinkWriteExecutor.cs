@@ -17,7 +17,6 @@ public sealed class SinkWriteExecutor : INodeExecutor
     {
         var def = (SinkOutputDef)node.Definition;
         var facts = ctx.FactsFor(node.Id);
-        facts.Strategy = NodeFacts.Arrow;
 
         if (!ctx.Connectors.TryGetSink(def.Sink.Connector, out var connector))
         {
@@ -304,6 +303,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
             // record below it — so Activity.Current is back to the node span by the time the
             // completion-only pz.rows_moved increment runs, matching SourceLoadExecutor's "ingest" span
             // being scoped tightly around just the IngestArrowAsync call.
+            facts.Strategy = NodeFacts.Arrow;
             var egressStage = facts.Stage("egress");
             Activity.Current = nodeActivity;
             var writeStage = facts.Stage("write");
