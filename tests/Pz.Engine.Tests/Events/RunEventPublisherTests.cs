@@ -386,6 +386,35 @@ public class RunEventPublisherTests
         Assert.IsType<NodeCompletedEvent>(events[3]);
     }
 
+    private static async Task<RunCompletedEvent> CompleteOnce(Pz.Diagnostics.Otel.RunPhaseClock? clock)
+    {
+        var bus = new RunEventBus();
+        var publisher = new RunEventPublisher(bus, "run-1", TimeProvider.System, clock);
+        publisher.RunCompleted("run-1", RunStatus.Success, 1, 0, 0, TimeSpan.FromSeconds(1));
+        bus.Complete();
+        var events = new List<RunEvent>();
+        await foreach (var evt in bus.ReadAllAsync()) events.Add(evt);
+        return Assert.IsType<RunCompletedEvent>(Assert.Single(events));
+    }
+
+    [Fact]
+    public async Task RunCompleted_carries_phases_when_a_clock_is_given()
+    {
+        var clock = new Pz.Diagnostics.Otel.RunPhaseClock(TimeProvider.System);
+        using (clock.Begin(Pz.Diagnostics.Otel.RunPhaseClock.Load)) { }
+
+        var evt = await CompleteOnce(clock);
+
+        Assert.NotNull(evt.Phases!.LoadMs);
+        Assert.Null(evt.Phases.FinalizeMs);
+    }
+
+    [Fact]
+    public async Task RunCompleted_without_a_clock_has_no_phases()
+    {
+        Assert.Null((await CompleteOnce(null)).Phases);
+    }
+
     [Fact]
     public async Task RunStarted_and_RunCompleted_map_fields()
     {

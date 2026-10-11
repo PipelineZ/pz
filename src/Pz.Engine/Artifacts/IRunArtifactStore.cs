@@ -1,3 +1,4 @@
+using Pz.Diagnostics.Events;
 using Pz.Engine.Execution;
 
 namespace Pz.Engine.Artifacts;
@@ -25,8 +26,9 @@ public interface IRunArtifactStore
     /// makes exactly one call with a real count, after disposing the event sink, and it must win
     /// regardless of how many null-valued calls preceded it. <see cref="LocalRunArtifactStore"/> ignores
     /// the parameter entirely: the local backend has no persisted event stream to count drops for.</summary>
+    /// <remarks>Phases for the terminal snapshot; implementations without a place for them ignore it.</remarks>
     void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed, string status,
-        long? eventsDropped = null);
+        long? eventsDropped = null, RunPhasesPayload? phases = null);
 
     PriorRun? ReadLatest();
 

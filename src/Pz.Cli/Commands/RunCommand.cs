@@ -168,22 +168,31 @@ internal static class RunCommand
         bool noLockCheck, string logFormat, OtelOptions otel, string? stateUrlRaw, bool fullRefresh,
         Action<IReadOnlyList<NodeResult>>? onResults, CancellationToken ct)
     {
+        var phases = new RunPhaseClock(TimeProvider.System);
         PzProject project;
         CompiledDag fullDag;
         var compileNotices = new List<string>();
         try
         {
-            var env = SharedInputHelpers.SnapshotEnvironment();
-            var overrides = SharedInputHelpers.ParseVars(varsJson);
-            project = ProjectLoader.Load(projectDir, env, overrides);
-            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
-            if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
+            Dictionary<string, string> env;
+            using (phases.Begin(RunPhaseClock.Load))
             {
-                Console.Error.WriteLine($"error: {stateUrlError}");
-                return ExitCodes.ConfigError;
+                env = SharedInputHelpers.SnapshotEnvironment();
+                var overrides = SharedInputHelpers.ParseVars(varsJson);
+                project = ProjectLoader.Load(projectDir, env, overrides);
+                project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
+                if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
+                {
+                    Console.Error.WriteLine($"error: {stateUrlError}");
+                    return ExitCodes.ConfigError;
+                }
             }
-            var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new DuckDbSqlAstReader());
+
+            using (phases.Begin(RunPhaseClock.Compile))
+            {
+                var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
+                fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new DuckDbSqlAstReader());
+            }
         }
         catch (PzValidationException ex)
         {
@@ -211,35 +220,38 @@ internal static class RunCommand
             // tables in a throwaway DuckDB session, run before the real staging session ever opens (so
             // a rejection here creates no `.pz/runs/` directory). Quiet on success -- unlike `pz
             // validate`, `pz run` prints only errors, never the undeclared-dataset/skip notices.
-            var dry = await SqlDryCompiler.RunAsync(fullDag, ct);
-            if (dry.Errors.Count > 0)
-            {
-                foreach (var error in dry.Errors)
-                {
-                    Console.Error.WriteLine($"error {error}");
-                }
-
-                return ExitCodes.ConfigError;
-            }
-
             IReadOnlySet<NodeId>? selection;
-            try
+            using (phases.Begin(RunPhaseClock.Validate))
             {
-                selection = RunSelection.Resolve(fullDag, names, select, all, gateBareMultiFlow: true);
-            }
-            catch (PzValidationException ex)
-            {
-                foreach (var error in ex.Errors)
+                var dry = await SqlDryCompiler.RunAsync(fullDag, ct);
+                if (dry.Errors.Count > 0)
                 {
-                    Console.Error.WriteLine($"error {error}");
+                    foreach (var error in dry.Errors)
+                    {
+                        Console.Error.WriteLine($"error {error}");
+                    }
+
+                    return ExitCodes.ConfigError;
                 }
 
-                return ExitCodes.ConfigError;
+                try
+                {
+                    selection = RunSelection.Resolve(fullDag, names, select, all, gateBareMultiFlow: true);
+                }
+                catch (PzValidationException ex)
+                {
+                    foreach (var error in ex.Errors)
+                    {
+                        Console.Error.WriteLine($"error {error}");
+                    }
+
+                    return ExitCodes.ConfigError;
+                }
             }
 
             return await ExecuteRun(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, ct,
-                otel: otel, fullRefresh: fullRefresh, onResults: onResults);
+                otel: otel, fullRefresh: fullRefresh, onResults: onResults, phases: phases);
         }
         catch (Exception ex)
         {
@@ -266,14 +278,16 @@ internal static class RunCommand
     /// <see cref="RendererDrainTimeout"/> and the real logFormat-selected renderer) — a stuck-renderer
     /// regression test injects a near-zero timeout and a renderer whose <c>Render</c> never returns, so
     /// the test proves the drain race actually bounds wall-clock time instead of waiting out the real
-    /// 5-second default.</summary>
+    /// 5-second default. <paramref name="phases"/> carries load/compile/validate timings from callers that ran
+    /// those phases (`pz run`); callers that omit it (`pz retry`, `pz test`, `pz mcp`) get a clock created here,
+    /// so their load and compile are not timed.</summary>
     internal static async Task<int> ExecuteRun(
         PzProject project, CompiledDag fullDag, string projectDir, IReadOnlySet<NodeId>? selection, bool failFast,
         bool noLockCheck, string logFormat, CancellationToken ct,
         TimeSpan? drainTimeout = null, Func<IEventRenderer>? rendererFactory = null, OtelOptions? otel = null,
         bool fullRefresh = false, ReuseManifest? reuse = null, IReadOnlyList<NodeResult>? carriedForward = null,
         ICollection<string>? runtimeNotices = null, Action<string>? onRunId = null,
-        Action<IReadOnlyList<NodeResult>>? onResults = null)
+        Action<IReadOnlyList<NodeResult>>? onResults = null, RunPhaseClock? phases = null)
     {
         // Stop signals are owned here, for the whole of the run and not only while nodes execute. Setup
         // already spawns connector processes, and an unhandled SIGTERM there would kill pz and orphan
@@ -287,7 +301,7 @@ internal static class RunCommand
             return await ExecuteRunCore(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, stop.Token, drainTimeout,
                 rendererFactory, otel ?? OtelOptions.Off, fullRefresh, reuse, carriedForward, runtimeNotices, onRunId,
-                onResults);
+                onResults, phases);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -303,7 +317,7 @@ internal static class RunCommand
         TimeSpan? drainTimeout, Func<IEventRenderer>? rendererFactory, OtelOptions otelOptions,
         bool fullRefresh, ReuseManifest? reuse, IReadOnlyList<NodeResult>? carriedForward,
         ICollection<string>? runtimeNotices, Action<string>? onRunId = null,
-        Action<IReadOnlyList<NodeResult>>? onResults = null)
+        Action<IReadOnlyList<NodeResult>>? onResults = null, RunPhaseClock? phases = null)
     {
         // Sortable, unique-enough-for-a-local-tool run identity. Runtime identity, not
         // compile output — golden/determinism rules do not apply here.
@@ -366,7 +380,11 @@ internal static class RunCommand
         var traceParent = ResolveTraceParent(
             Environment.GetEnvironmentVariable("TRACEPARENT"), Environment.GetEnvironmentVariable("TRACESTATE"),
             out var traceParentNote);
-        using var runActivity = StartRunActivity(traceParent);
+        phases ??= new RunPhaseClock(TimeProvider.System);
+        using var runActivity = StartRunActivity(traceParent, phases.StartedAt);
+        // Declared after the run span so it disposes first, while the span is still open.
+        using var runSpan = new RunSpanGuard(runActivity, phases);
+        phases.AttachRunSpan(runActivity);
         runActivity?.SetTag("pz.run.id", runId);
         runActivity?.SetTag("pz.run.project", project.Name);
 
@@ -411,8 +429,11 @@ internal static class RunCommand
         ConnectorHosts? host;
         try
         {
-            (registry, host) = await ConnectorRegistryFactory.CreateAsync(
-                project, projectDir, noLockCheck, ct, runId, otelOptions, connectorLog.Log);
+            using (phases.Begin(RunPhaseClock.RestoreCheck))
+            {
+                (registry, host) = await ConnectorRegistryFactory.CreateAsync(
+                    project, projectDir, noLockCheck, ct, runId, otelOptions, connectorLog.Log);
+            }
         }
         catch (PzValidationException ex)
         {
@@ -429,9 +450,12 @@ internal static class RunCommand
         ExecutionPlan plan;
         try
         {
-            plan = await new ExecutionPlanner(registry)
-                .PlanAsync(fullDag, project.Engine.ForceUniversal, ct, project.Engine,
-                    RunOrchestrator.EffectiveNodeIds(fullDag, selection));
+            using (phases.Begin(RunPhaseClock.Plan))
+            {
+                plan = await new ExecutionPlanner(registry)
+                    .PlanAsync(fullDag, project.Engine.ForceUniversal, ct, project.Engine,
+                        RunOrchestrator.EffectiveNodeIds(fullDag, selection));
+            }
         }
         catch (PzValidationException ex)
         {
@@ -453,7 +477,7 @@ internal static class RunCommand
         var startedAtIso = startedAt.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
         var snapshotEvents = new SnapshotRunEvents(backends.Artifacts, runId, startedAtIso);
         var bus = new RunEventBus();
-        var publisher = new RunEventPublisher(bus, runId, TimeProvider.System);
+        var publisher = new RunEventPublisher(bus, runId, TimeProvider.System, phases);
         var events = new CompositeRunEvents(snapshotEvents, publisher);
         connectorLog.Events = events;
 
@@ -491,7 +515,17 @@ internal static class RunCommand
         var breakers = project.Engine.Breaker is { } breakerConfig
             ? new BreakerRegistry(breakerConfig, TimeProvider.System,
                 (instance, oldState, newState, trigger, coolDown) =>
-                    events.SafeBreakerStateChanged(instance, oldState, newState, trigger, coolDown))
+                {
+                    events.SafeBreakerStateChanged(instance, oldState, newState, trigger, coolDown);
+                    runActivity?.AddEvent(new ActivityEvent("breaker.state_changed", tags: new ActivityTagsCollection
+                    {
+                        ["instance"] = instance,
+                        ["old_state"] = oldState,
+                        ["new_state"] = newState,
+                        ["trigger"] = trigger,
+                        ["cool_down_ms"] = (long)coolDown.TotalMilliseconds,
+                    }));
+                })
             : null;
 
         // ALWAYS constructed, unlike breakers -- budget-hint pacing must
@@ -507,10 +541,20 @@ internal static class RunCommand
 
         var options = new RunOptions(project.Engine.Threads, failFast, selection, project.Name, carriedForward,
             runActivity);
-        var result = await new RunOrchestrator(new KindDispatchingExecutor(), runCtx)
-            .ExecuteAsync(fullDag, options, ct);
+        RunResult result;
+        using (phases.Begin(RunPhaseClock.Execute))
+        {
+            result = await new RunOrchestrator(new KindDispatchingExecutor(), runCtx)
+                .ExecuteAsync(fullDag, options, ct);
+        }
 
+        // Closed explicitly before the terminal snapshot; the using also closes it on any early exit.
+        using var finalize = phases.Begin(RunPhaseClock.Finalize);
         var terminalStatus = StatusName(result.Status);
+        runSpan.Complete(terminalStatus,
+            result.Nodes.Count(n => n.Status == NodeStatus.Success),
+            result.Nodes.Count(n => n.Status == NodeStatus.Failed),
+            result.Nodes.Count(n => n.Status == NodeStatus.Skipped));
 
         // This snapshot deliberately persists the run's node results but NOT its terminal status: the
         // terminal write is the last thing this method does, after watermark and sync-state advancement
@@ -760,7 +804,8 @@ internal static class RunCommand
         // "never block or be blocked by" the run_results artifact; that non-blocking property is supplied
         // by the try/catch discipline immediately above (a persist failure prints a note and falls
         // through to the status-derived exit code), NOT by writing run_results first.
-        snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped);
+        finalize.Dispose();
+        snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped, phases.Snapshot());
         onResults?.Invoke(result.Nodes);
 
         return result.Status switch
@@ -882,10 +927,12 @@ internal static class RunCommand
     }
 
     /// <summary>The run's root span, parented on the caller's context when there is one. A no-op null when no
-    /// listener is registered (OTel not configured), like every other span in the engine.</summary>
-    internal static Activity? StartRunActivity(ActivityContext? parent) =>
+    /// listener is registered (OTel not configured), like every other span in the engine. Back-dated to the run's
+    /// first phase when a start time is given.</summary>
+    internal static Activity? StartRunActivity(ActivityContext? parent, DateTimeOffset startTime = default) =>
         parent is { } context
-            ? PzActivitySource.Instance.StartActivity("run", ActivityKind.Internal, context)
-            : PzActivitySource.Instance.StartActivity("run");
+            ? PzActivitySource.Instance.StartActivity("run", ActivityKind.Internal, context, startTime: startTime)
+            : PzActivitySource.Instance.StartActivity("run", ActivityKind.Internal, default(ActivityContext),
+                startTime: startTime);
 
 }

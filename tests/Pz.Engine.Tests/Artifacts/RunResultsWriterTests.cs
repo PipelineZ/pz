@@ -57,6 +57,21 @@ public sealed class RunResultsWriterTests : IDisposable
     }
 
     [Fact]
+    public void Phases_are_written_after_finished_at_on_the_terminal_snapshot_only()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+        var phases = new Pz.Diagnostics.Events.RunPhasesPayload(1, 2, 3, 4, 5, 6, 7);
+
+        writer.WriteSnapshot([], "running", phases);
+        Assert.DoesNotContain("phases", File.ReadAllText(Paths.RunResultsPath));
+
+        writer.WriteSnapshot([], "success", phases);
+        var text = File.ReadAllText(Paths.RunResultsPath);
+        Assert.Contains("\"phases\":{\"loadMs\":1,\"compileMs\":2,\"validateMs\":3,\"restoreCheckMs\":4,\"planMs\":5," +
+            "\"executeMs\":6,\"finalizeMs\":7},\"nodes\":[]", text);
+    }
+
+    [Fact]
     public void WriteSnapshot_fields_match_schema()
     {
         var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");

@@ -17,7 +17,8 @@ namespace Pz.Engine.Events;
 /// them with the runId it was constructed for; <see cref="RunStarted"/>/<see cref="RunCompleted"/>
 /// already receive their own runId argument (in practice always equal to the constructor's) and use
 /// that one directly.</summary>
-public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvider clock) : IRunEvents
+public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvider clock, RunPhaseClock? phases = null)
+    : IRunEvents
 {
     public void RunStarted(string startedRunId, string projectName, int nodeCount) =>
         bus.Publish(new RunStartedEvent(clock.GetUtcNow(), startedRunId, projectName, nodeCount));
@@ -117,13 +118,15 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
         ? null
         : new CdcPayload(cdc.Inserts, cdc.Updates, cdc.Deletes, syncState?.Token);
 
+    /// <summary>The event carries the phase timings so far: <c>executeMs</c> is measured up to this event and
+    /// <c>finalizeMs</c> is absent (finalize runs after it).</summary>
     public void RunCompleted(string completedRunId, RunStatus status, int succeeded, int failed, int skipped,
         TimeSpan duration)
     {
         var statusName = RunStatusName(status);
         PzMeters.RunsCompleted.Add(1, new KeyValuePair<string, object?>("pz.run.status", statusName));
         bus.Publish(new RunCompletedEvent(clock.GetUtcNow(), completedRunId, statusName, succeeded,
-            failed, skipped, (long)duration.TotalMilliseconds));
+            failed, skipped, (long)duration.TotalMilliseconds, phases?.Snapshot()));
     }
 
     public void ConnectorLog(string connection, string level, string message) =>
