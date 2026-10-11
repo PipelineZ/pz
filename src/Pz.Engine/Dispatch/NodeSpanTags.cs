@@ -5,7 +5,7 @@ using Pz.Engine.Execution;
 namespace Pz.Engine.Dispatch;
 
 /// <summary>The node span's attributes, from the node's result. Names and counts only: never SQL, connection
-/// config, watermark values, sync tokens or CDC positions. Error text is sanitized, first line, capped.</summary>
+/// config, watermark values, sync tokens or CDC positions. Error text is sanitized, cut before any check sample, first line, capped.</summary>
 internal static class NodeSpanTags
 {
     private const int MaxDescription = 200;
@@ -87,6 +87,9 @@ internal static class NodeSpanTags
     public static string Describe(string message)
     {
         var sanitized = NativeStatementRedactor.SanitizeEngineMessage(message);
+        // A failed check appends sampled row values after this marker; row data never goes on a span.
+        var sample = sanitized.IndexOf("; sample:", StringComparison.Ordinal);
+        if (sample >= 0) sanitized = sanitized[..sample];
         var newline = sanitized.IndexOfAny(['\r', '\n']);
         var firstLine = (newline >= 0 ? sanitized[..newline] : sanitized).Trim();
         return firstLine.Length <= MaxDescription ? firstLine : firstLine[..MaxDescription];

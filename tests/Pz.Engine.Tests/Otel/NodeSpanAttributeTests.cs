@@ -77,6 +77,22 @@ public sealed class NodeSpanAttributeTests : IDisposable
     }
 
     [Fact]
+    public void Failed_check_span_never_carries_sampled_row_values()
+    {
+        using var span = _source.StartActivity("node.Check")!;
+        var message = "check not_null failed on staging.orders: 2 violation(s); sample: {id=17; email=jane@example.com}";
+        var error = new PzError("PZ0510", message, null, null, null);
+
+        NodeSpanTags.Apply(span, Result(NodeStatus.Failed, error));
+
+        Assert.Equal("check not_null failed on staging.orders: 2 violation(s)", span.StatusDescription);
+        var ex = Assert.Single(span.Events);
+        var exceptionMessage = (string)ex.Tags.Single(t => t.Key == "exception.message").Value!;
+        Assert.DoesNotContain("jane@example.com", exceptionMessage);
+        Assert.DoesNotContain("sample", exceptionMessage);
+    }
+
+    [Fact]
     public void Description_is_capped_at_200_chars()
     {
         Assert.Equal(200, NodeSpanTags.Describe(new string('a', 500)).Length);
