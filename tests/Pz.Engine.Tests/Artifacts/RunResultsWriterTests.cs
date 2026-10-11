@@ -45,7 +45,8 @@ public sealed class RunResultsWriterTests : IDisposable
         {
             Id = new NodeId("2222222222222222"),
             Facts = new NodeFacts("s3", "lake", NodeFacts.Arrow,
-                new StageTimings(null, null, TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(40)), 2),
+                new StageTimings(null, null, TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(40),
+                    EgressStart: TimeSpan.FromMilliseconds(2), WriteStart: TimeSpan.FromMilliseconds(3)), 2),
         };
 
         writer.WriteSnapshot([plain, withFacts], "running");
@@ -53,7 +54,7 @@ public sealed class RunResultsWriterTests : IDisposable
 
         Assert.Contains("\"name\":\"p\",\"status\":\"success\",\"rows\":1,\"durationMs\":5,\"error\":null}", text);
         Assert.Contains("\"connector\":\"s3\",\"connection\":\"lake\",\"strategy\":\"arrow\"," +
-            "\"stages\":{\"egressMs\":30,\"writeMs\":40},\"attempts\":2}", text);
+            "\"stages\":{\"egressMs\":30,\"writeMs\":40,\"egressStartMs\":2,\"writeStartMs\":3},\"attempts\":2}", text);
     }
 
     [Fact]

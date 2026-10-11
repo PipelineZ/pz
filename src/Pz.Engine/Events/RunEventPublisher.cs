@@ -81,7 +81,8 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
 
     private static StageTimingsPayload? ToStagesPayload(StageTimings? stages) => stages is null
         ? null
-        : new StageTimingsPayload(Ms(stages.Extract), Ms(stages.Ingest), Ms(stages.Egress), Ms(stages.Write));
+        : new StageTimingsPayload(Ms(stages.Extract), Ms(stages.Ingest), Ms(stages.Egress), Ms(stages.Write),
+            Ms(stages.ExtractStart), Ms(stages.IngestStart), Ms(stages.EgressStart), Ms(stages.WriteStart));
 
     private static long? Ms(TimeSpan? value) => value is { } v ? (long)v.TotalMilliseconds : null;
 

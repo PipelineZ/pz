@@ -2,9 +2,12 @@ using Pz.Core.Dag;
 
 namespace Pz.Engine.Execution;
 
-/// <summary>Each stage's own wall time in the node's last attempt. On the arrow tier producer and consumer run
-/// concurrently, so the stages overlap and do not sum to the node's duration.</summary>
-public sealed record StageTimings(TimeSpan? Extract, TimeSpan? Ingest, TimeSpan? Egress, TimeSpan? Write);
+/// <summary>Each stage's own wall time in the node's last attempt, and when it began counted from the node's start.
+/// On the arrow tier producer and consumer run concurrently, so the stages overlap and do not sum to the node's
+/// duration.</summary>
+public sealed record StageTimings(TimeSpan? Extract, TimeSpan? Ingest, TimeSpan? Egress, TimeSpan? Write,
+    TimeSpan? ExtractStart = null, TimeSpan? IngestStart = null, TimeSpan? EgressStart = null,
+    TimeSpan? WriteStart = null);
 
 /// <summary>What a node ran through and how it got there. Names only, never connection config.
 /// <see cref="Attempts"/> is the number of executor invocations; 0 when a breaker refused the node before any

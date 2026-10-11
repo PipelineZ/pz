@@ -11,7 +11,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 - **Node facts on every completed node.** `node_completed` and `run_results.json`'s `nodes[]` carry `connector`,
   `connection`, `strategy` (`native_scan`, `native_copy` or `arrow` — the tier that actually moved the data),
-  `stages` (`extractMs`, `ingestMs`, `egressMs`, `writeMs`, each stage's own wall time in the last attempt) and
+  `stages` (`extractMs`, `ingestMs`, `egressMs`, `writeMs`, each stage's own wall time in the last attempt, plus
+  `extractStartMs`…`writeStartMs`, when it began counted from the node's start) and
   `attempts`. All optional; a node that carries none writes exactly what it wrote before.
 - **Run phase timings.** `run_completed` carries `phases` (`loadMs`, `compileMs`, `validateMs`, `restoreCheckMs`,
   `planMs`, `executeMs`); the terminal `run_results.json` adds `finalizeMs`.

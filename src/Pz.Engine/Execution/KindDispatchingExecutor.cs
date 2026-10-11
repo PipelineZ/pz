@@ -102,6 +102,7 @@ public sealed class KindDispatchingExecutor(
     {
         var nodeSpan = Activity.Current;
         ctx.Events.SafeNodeStarted(node);
+        ctx.FactsFor(node.Id).MarkNodeStart();
         var stopwatch = Stopwatch.StartNew();
         var executor = ExecutorOverride?.Invoke(node.Kind) ?? Resolve(node.Kind);
 

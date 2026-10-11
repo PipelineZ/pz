@@ -128,10 +128,12 @@ public sealed record ConnectorLogEvent(DateTimeOffset At, string RunId, string L
 
 public sealed record NodeTimingsPayload(long ProducerStallMs, long ConsumerStallMs);
 
-/// <summary>Per-stage wall time of a node's last attempt. Durations only; every member is nullable and
-/// omitted when null. Each value is that stage's own wall time, and on the Arrow path producer and consumer
-/// overlap, so the stages do not sum to the node's <c>durationMs</c>.</summary>
-public sealed record StageTimingsPayload(long? ExtractMs, long? IngestMs, long? EgressMs, long? WriteMs);
+/// <summary>Per-stage wall time of a node's last attempt, and each stage's start in ms from the node's start
+/// (its <c>node_started</c>). Every member is nullable and omitted when null. Each duration is that stage's own
+/// wall time, and on the Arrow path producer and consumer overlap, so the stages do not sum to the node's
+/// <c>durationMs</c>.</summary>
+public sealed record StageTimingsPayload(long? ExtractMs, long? IngestMs, long? EgressMs, long? WriteMs,
+    long? ExtractStartMs = null, long? IngestStartMs = null, long? EgressStartMs = null, long? WriteStartMs = null);
 
 /// <summary>Per-phase wall time of a run. Durations only; every member is nullable and omitted when null
 /// (a phase that did not run). Phases are sequential, but a phase measured up to an event may be partial.</summary>

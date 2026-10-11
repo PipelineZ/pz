@@ -23,6 +23,10 @@ public static class NodeFactsJson
             WriteMs(writer, "ingestMs", stages.Ingest);
             WriteMs(writer, "egressMs", stages.Egress);
             WriteMs(writer, "writeMs", stages.Write);
+            WriteMs(writer, "extractStartMs", stages.ExtractStart);
+            WriteMs(writer, "ingestStartMs", stages.IngestStart);
+            WriteMs(writer, "egressStartMs", stages.EgressStart);
+            WriteMs(writer, "writeStartMs", stages.WriteStart);
             writer.WriteEndObject();
         }
 

@@ -35,7 +35,8 @@ public class RunEventPublisherTests
     public async Task NodeCompleted_maps_facts_and_omits_zero_attempts()
     {
         var facts = new NodeFacts("postgres", "warehouse", NodeFacts.NativeScan,
-            new StageTimings(null, TimeSpan.FromMilliseconds(700), null, null), 1);
+            new StageTimings(null, TimeSpan.FromMilliseconds(700), null, null,
+                IngestStart: TimeSpan.FromMilliseconds(12)), 1);
         var withFacts = new NodeResult(new NodeId("1111111111111111"), NodeKind.SourceLoad, "src", NodeStatus.Success,
             5, TimeSpan.FromSeconds(1), null, Facts: facts);
         var noAttempt = withFacts with { Facts = facts with { Attempts = 0 } };
@@ -55,6 +56,8 @@ public class RunEventPublisherTests
         Assert.Equal("native_scan", first.Strategy);
         Assert.Equal(700, first.Stages!.IngestMs);
         Assert.Null(first.Stages.ExtractMs);
+        Assert.Equal(12, first.Stages.IngestStartMs);
+        Assert.Null(first.Stages.ExtractStartMs);
         Assert.Equal(1, first.Attempts);
         Assert.Null(second.Attempts);
     }

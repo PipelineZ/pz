@@ -220,7 +220,7 @@ and recorded into this retry's results) even though such nodes lie outside the e
 | `connector` | string | Optional (append-only addition). The connector type the node read or wrote through (`postgres`, `s3`, …). `SourceLoad`/`SinkWrite` that ran through the executor only. |
 | `connection` | string | Optional (append-only addition). The connection name from `connections.yml`. Same presence as `connector`. |
 | `strategy` | string | Optional (append-only addition). The data-plane tier that actually moved the data: `native_scan`, `native_copy` or `arrow`. Present only when a tier ran: absent for a node reused from a prior run, one that failed before a tier began, and one a breaker refused. |
-| `stages` | object | Optional (append-only addition). `{extractMs?, ingestMs?, egressMs?, writeMs?}` — each stage's own wall time in the node's last attempt. On the `arrow` tier producer and consumer run concurrently, so stages overlap and do not sum to `durationMs`; `timings` says which side waited. `native_scan` reports only `ingestMs`, `native_copy` only `writeMs`. |
+| `stages` | object | Optional (append-only addition). `{extractMs?, ingestMs?, egressMs?, writeMs?, extractStartMs?, ingestStartMs?, egressStartMs?, writeStartMs?}` — each stage's own wall time in the node's last attempt, and when it began counted from the node's start. On the `arrow` tier producer and consumer run concurrently, so stages overlap and do not sum to `durationMs`; `timings` says which side waited. `native_scan` reports only `ingestMs`, `native_copy` only `writeMs`. |
 | `attempts` | number | Optional (append-only addition). How many times the node was executed (1 + retries). Absent when no attempt ran (a breaker refused it, or the node was skipped or carried forward). |
 
 A failed `Check` node's `errorMessage` records up to 5 offending row values verbatim (mirrored in
@@ -297,8 +297,14 @@ object, just camelCase field names instead of snake_case.
 | `ingestMs` | number | Optional. Wall time of the stage landing data in the staging database. |
 | `egressMs` | number | Optional. Wall time of the stage reading the result out of staging. |
 | `writeMs` | number | Optional. Wall time of the stage writing to the sink. |
+| `extractStartMs` | number | Optional. When the extraction stage began, in ms after the node started (its `node_started`). |
+| `ingestStartMs` | number | Optional. When the ingest stage began, in ms after the node started. |
+| `egressStartMs` | number | Optional. When the egress stage began, in ms after the node started. |
+| `writeStartMs` | number | Optional. When the write stage began, in ms after the node started. |
 
-Each member is omitted when that stage did not run for the node's tier.
+Each member is omitted when that stage did not run for the node's tier. A stage's start is present exactly when
+its duration is. Offsets count from the node's start, not the last attempt's, so on a retried node they include the
+earlier attempts and their backoff: `node_started` time + `<stage>StartMs` is when the stage began.
 
 ## `run_completed`
 

@@ -112,13 +112,14 @@ public class JsonRendererTests
         var at = new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero);
         var evt = new NodeCompletedEvent(at, "r1", "n1", "SourceLoad", "src_pg__orders", "success", 42, 1500,
             null, null, null, CaughtUp: true, Connector: "postgres", Connection: "warehouse", Strategy: "arrow",
-            Stages: new StageTimingsPayload(900, 1100, null, null), Attempts: 2);
+            Stages: new StageTimingsPayload(900, 1100, null, null, ExtractStartMs: 3, IngestStartMs: 4), Attempts: 2);
 
         var line = Encoding.UTF8.GetString(Render([evt])).TrimEnd('\n');
 
         Assert.EndsWith(
             "\"caughtUp\":true,\"connector\":\"postgres\",\"connection\":\"warehouse\",\"strategy\":\"arrow\"," +
-            "\"stages\":{\"extractMs\":900,\"ingestMs\":1100},\"attempts\":2}", line);
+            "\"stages\":{\"extractMs\":900,\"ingestMs\":1100,\"extractStartMs\":3,\"ingestStartMs\":4},\"attempts\":2}",
+            line);
     }
 
     [Fact]

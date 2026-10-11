@@ -101,6 +101,9 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
         Assert.NotNull(result.Facts.Stages!.Extract);
         Assert.NotNull(result.Facts.Stages.Ingest);
         Assert.Null(result.Facts.Stages.Write);
+        Assert.True(result.Facts.Stages.ExtractStart >= TimeSpan.Zero);
+        Assert.True(result.Facts.Stages.IngestStart >= TimeSpan.Zero);
+        Assert.Null(result.Facts.Stages.WriteStart);
     }
 
     [Fact]

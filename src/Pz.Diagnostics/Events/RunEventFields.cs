@@ -158,6 +158,10 @@ public static class RunEventFields
                     WriteOptionalNumber(json, "ingestMs", stages.IngestMs);
                     WriteOptionalNumber(json, "egressMs", stages.EgressMs);
                     WriteOptionalNumber(json, "writeMs", stages.WriteMs);
+                    WriteOptionalNumber(json, "extractStartMs", stages.ExtractStartMs);
+                    WriteOptionalNumber(json, "ingestStartMs", stages.IngestStartMs);
+                    WriteOptionalNumber(json, "egressStartMs", stages.EgressStartMs);
+                    WriteOptionalNumber(json, "writeStartMs", stages.WriteStartMs);
                     json.WriteEndObject();
                 }
 
