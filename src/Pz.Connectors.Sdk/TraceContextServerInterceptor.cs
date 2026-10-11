@@ -25,6 +25,11 @@ internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry
         {
             return await continuation(request, context).ConfigureAwait(false);
         }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
+        }
         finally
         {
             activity?.Stop();
@@ -41,6 +46,11 @@ internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry
         try
         {
             await continuation(request, responseStream, context).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
         }
         finally
         {
@@ -59,6 +69,11 @@ internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry
         {
             return await continuation(requestStream, context).ConfigureAwait(false);
         }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
+        }
         finally
         {
             activity?.Stop();
@@ -76,10 +91,33 @@ internal sealed class TraceContextServerInterceptor(ConnectorTelemetry telemetry
         {
             await continuation(requestStream, responseStream, context).ConfigureAwait(false);
         }
+        catch (Exception ex)
+        {
+            MarkFailed(activity, ex);
+            throw;
+        }
         finally
         {
             activity?.Stop();
             Activity.Current = ambient;
+        }
+    }
+
+    /// <summary>A failed RPC's span says it failed and how, never why in the connector's words: an exception
+    /// message can carry connection details, so only the gRPC code or the exception type is recorded.</summary>
+    internal static void MarkFailed(Activity? activity, Exception ex)
+    {
+        if (activity is null) return;
+        if (ex is RpcException rpc)
+        {
+            activity.SetTag("rpc.grpc.status_code", (int)rpc.StatusCode);
+            activity.SetTag("error.type", rpc.StatusCode.ToString());
+            activity.SetStatus(ActivityStatusCode.Error, rpc.StatusCode.ToString());
+        }
+        else
+        {
+            activity.SetTag("error.type", ex.GetType().Name);
+            activity.SetStatus(ActivityStatusCode.Error, ex.GetType().Name);
         }
     }
 
