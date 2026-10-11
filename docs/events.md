@@ -219,7 +219,7 @@ and recorded into this retry's results) even though such nodes lie outside the e
 | `caughtUp` | boolean | Optional (append-only addition). Present only on a successful `SourceLoad` of a windowed dataset with a stop: a YAML `until` (a value, or `now` for the time the run started), or a SQL-declared ceiling that stops at a constant (`least(watermark() + 500, 2000)` stops at 2000; a rolling `watermark() + interval 7 day` has no stop and reports nothing). `true` when the window this run loaded reaches the stop, so the source is caught up once the run commits; `false` while the window falls short. Absent on a `pz retry` node reused from the failed run. A caller driving a backfill repeats `pz run` while any node reports `false`. The same value is written to `run_results.json`'s `nodes[].caughtUp`. |
 | `connector` | string | Optional (append-only addition). The connector type the node read or wrote through (`postgres`, `s3`, …). `SourceLoad`/`SinkWrite` that ran through the executor only. |
 | `connection` | string | Optional (append-only addition). The connection name from `connections.yml`. Same presence as `connector`. |
-| `strategy` | string | Optional (append-only addition). The data-plane tier that actually moved the data: `native_scan`, `native_copy` or `arrow`. Same presence as `connector`. |
+| `strategy` | string | Optional (append-only addition). The data-plane tier that actually moved the data: `native_scan`, `native_copy` or `arrow`. Present only when a tier ran: absent for a node reused from a prior run, one that failed before a tier began, and one a breaker refused. |
 | `stages` | object | Optional (append-only addition). `{extractMs?, ingestMs?, egressMs?, writeMs?}` — each stage's own wall time in the node's last attempt. On the `arrow` tier producer and consumer run concurrently, so stages overlap and do not sum to `durationMs`; `timings` says which side waited. `native_scan` reports only `ingestMs`, `native_copy` only `writeMs`. |
 | `attempts` | number | Optional (append-only addition). How many times the node was executed (1 + retries). Absent when no attempt ran (a breaker refused it, or the node was skipped or carried forward). |
 
@@ -320,7 +320,7 @@ Fired exactly once, after every node in the effective set has reached a terminal
 | `loadMs` | number | Optional. Milliseconds in the `load` phase. |
 | `compileMs` | number | Optional. Milliseconds in the `compile` phase. |
 | `validateMs` | number | Optional. Milliseconds in the `validate` phase. |
-| `restoreCheckMs` | number | Optional. Milliseconds in the `restore-check` phase. |
+| `restoreCheckMs` | number | Optional. Milliseconds in the `restore_check` phase. |
 | `planMs` | number | Optional. Milliseconds in the `plan` phase. |
 | `executeMs` | number | Optional. Milliseconds in the `execute` phase, measured up to this event. |
 | `finalizeMs` | number | Optional. Never present on this event (finalize runs after it). |

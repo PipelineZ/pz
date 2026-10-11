@@ -212,12 +212,16 @@ public sealed class ProcessHostParityTests : IDisposable
 
     private static string Quoted(string value) => JsonEncodedText.Encode($"'{value}'").ToString();
 
-    /// <summary>run_results.json. Four entries, all run identity or wall clock:
+    /// <summary>run_results.json. Run identity, the connector alias and wall clock:
     /// <list type="bullet">
     /// <item><c>runId</c> — one per run, minted from the clock plus randomness.</item>
+    /// <item>the node fact <c>connector</c> — the name the host registered the connector under, which the two
+    /// hosts choose differently; the fact itself (present, same position) is still compared.</item>
     /// <item><c>startedAt</c> — wall clock.</item>
     /// <item><c>finishedAt</c> — wall clock.</item>
     /// <item><c>durationMs</c> — measured elapsed time per node.</item>
+    /// <item>every number inside <c>phases</c> and <c>stages</c> — wall-clock timings (see
+    /// <see cref="ZeroTimings"/>).</item>
     /// </list></summary>
     private static string NormalizeResults(string json, string runId, string connectorName) =>
         DurationPattern.Replace(
@@ -228,9 +232,6 @@ public sealed class ProcessHostParityTests : IDisposable
                     "\"startedAt\":\"<started-at>\""),
                 "\"finishedAt\":\"<finished-at>\""),
             "\"durationMs\":0");
-
-    // The node fact "connector" is the name the host registered the connector under, which the two
-    // hosts choose differently; the fact itself (present, same position) is still compared.
 
     /// <summary>Zeroes every number inside the <c>phases</c> and <c>stages</c> objects (wall-clock
     /// timings) while keeping their keys, so the shape is still compared.</summary>
