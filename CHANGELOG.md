@@ -7,6 +7,23 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **Node facts on every completed node.** `node_completed` and `run_results.json`'s `nodes[]` carry `connector`,
+  `connection`, `strategy` (`native_scan`, `native_copy` or `arrow` — the tier that actually moved the data),
+  `stages` (`extractMs`, `ingestMs`, `egressMs`, `writeMs`, each stage's own wall time in the last attempt) and
+  `attempts`. All optional; a node that carries none writes exactly what it wrote before.
+- **Run phase timings.** `run_completed` carries `phases` (`loadMs`, `compileMs`, `validateMs`, `restoreCheckMs`,
+  `planMs`, `executeMs`); the terminal `run_results.json` adds `finalizeMs`.
+- **Richer OpenTelemetry.** Node spans carry the node facts plus rows, ops, stall timings, provenance, caught-up,
+  partition, delivery and CDC counts; failed nodes get an error status with a sanitized one-line description and an
+  `exception` event; retries are `retry_scheduled` span events whose reason is sanitized to one line. The `run` span
+  is back-dated to the run's first phase, has a `phase.<name>` child per phase, carries status and node counts, ends
+  in error when a run fails or stops early (naming the phase: "run ended during <phase>" / "run ended after
+  <phase>"), and records `breaker.state_changed` events. Failing `pcp.*` RPC spans in both connector SDKs carry an
+  error status, `rpc.grpc.status_code` and `error.type` (the gRPC code name), never the message. Never on a span: SQL
+  text, connection config, watermark values, sync tokens or CDC positions.
+
 ## [0.9.3] - 2026-10-10
 
 ### Added
