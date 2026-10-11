@@ -73,13 +73,16 @@ public sealed record DeliveryStats(string AbortSemantics, long RowsVisible, long
 /// point (a YAML <c>until</c>, or a SQL-declared ceiling), whether the window was already empty before
 /// extraction (true) or the dataset is still behind (false). Null for every other node, and for a
 /// windowed dataset without <c>until</c>, which has no caught-up state. Serialized as <c>caughtUp</c>
-/// into <c>run_results.json</c> and the NDJSON <c>NodeCompletedEvent</c>.</summary>
+/// into <c>run_results.json</c> and the NDJSON <c>NodeCompletedEvent</c>.
+///
+/// <paramref name="Facts"/>: see <see cref="NodeFacts"/>; null for nodes that never reached the executor
+/// (skipped, reused, carried forward).</summary>
 public sealed record NodeResult(NodeId Id, NodeKind Kind, string Name, NodeStatus Status,
     long RowsMoved, TimeSpan Duration, PzError? Error, NodeTimings? Timings = null,
     Watermark? WatermarkCandidate = null, NodeProvenance? Provenance = null,
     SyncState? SyncStateCandidate = null, OpStats? Ops = null, PartitionStats? Partitions = null,
     DeliveryStats? Delivery = null, CdcStats? Cdc = null, ObservedSchema? Observed = null,
-    bool? CaughtUp = null)
+    bool? CaughtUp = null, NodeFacts? Facts = null)
 {
     public static NodeResult Skipped(DagNode node) =>
         new(node.Id, node.Kind, node.Name, NodeStatus.Skipped, 0, TimeSpan.Zero, null);

@@ -91,6 +91,12 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// loop).</summary>
     public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, int> Attempts { get; } = new();
 
+    /// <summary>Per-node <see cref="NodeFactsRecorder"/>s, shared by `with`-clones like <see cref="Attempts"/>.
+    /// Executors record the tier and stage times here; <see cref="KindDispatchingExecutor"/> attaches them.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, NodeFactsRecorder> Facts { get; } = new();
+
+    public NodeFactsRecorder FactsFor(Pz.Core.Dag.NodeId id) => Facts.GetOrAdd(id, static _ => new NodeFactsRecorder());
+
     /// <summary><c>engine.node_timeout</c>: the longest one attempt of one node may run before
     /// <see cref="KindDispatchingExecutor"/> cancels it. Null is unbounded.</summary>
     public TimeSpan? NodeTimeout { get; init; }

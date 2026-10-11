@@ -577,7 +577,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     internal static string? SerializePayload(NodeResult node)
     {
         if (node.Timings is null && node.Ops is null && node.Partitions is null &&
-            node.Delivery is null && node.Cdc is null && node.Observed is null)
+            node.Delivery is null && node.Cdc is null && node.Observed is null && node.Facts is null)
         {
             return null;
         }
@@ -657,6 +657,8 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 writer.WriteString("hintsHash", observed.HintsHash);
                 writer.WriteEndObject();
             }
+
+            NodeFactsJson.Write(writer, node.Facts);
 
             writer.WriteEndObject();
         }

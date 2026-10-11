@@ -209,6 +209,9 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
             writer.WriteBoolean("caughtUp", caughtUp);
         }
 
+        // Appended after every older key so documents without facts stay byte-identical.
+        NodeFactsJson.Write(writer, node.Facts);
+
         writer.WriteEndObject();
     }
 

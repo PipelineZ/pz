@@ -36,6 +36,27 @@ public sealed class RunResultsWriterTests : IDisposable
     }
 
     [Fact]
+    public void Facts_are_appended_after_caught_up_and_omitted_when_null()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+        var plain = new NodeResult(new NodeId("1111111111111111"), NodeKind.Pipeline, "p", NodeStatus.Success, 1,
+            TimeSpan.FromMilliseconds(5), null);
+        var withFacts = plain with
+        {
+            Id = new NodeId("2222222222222222"),
+            Facts = new NodeFacts("s3", "lake", NodeFacts.Arrow,
+                new StageTimings(null, null, TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(40)), 2),
+        };
+
+        writer.WriteSnapshot([plain, withFacts], "running");
+        var text = File.ReadAllText(Paths.RunResultsPath);
+
+        Assert.Contains("\"name\":\"p\",\"status\":\"success\",\"rows\":1,\"durationMs\":5,\"error\":null}", text);
+        Assert.Contains("\"connector\":\"s3\",\"connection\":\"lake\",\"strategy\":\"arrow\"," +
+            "\"stages\":{\"egressMs\":30,\"writeMs\":40},\"attempts\":2}", text);
+    }
+
+    [Fact]
     public void WriteSnapshot_fields_match_schema()
     {
         var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");

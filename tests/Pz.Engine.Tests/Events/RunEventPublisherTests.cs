@@ -32,6 +32,34 @@ public class RunEventPublisherTests
     }
 
     [Fact]
+    public async Task NodeCompleted_maps_facts_and_omits_zero_attempts()
+    {
+        var facts = new NodeFacts("postgres", "warehouse", NodeFacts.NativeScan,
+            new StageTimings(null, TimeSpan.FromMilliseconds(700), null, null), 1);
+        var withFacts = new NodeResult(new NodeId("1111111111111111"), NodeKind.SourceLoad, "src", NodeStatus.Success,
+            5, TimeSpan.FromSeconds(1), null, Facts: facts);
+        var noAttempt = withFacts with { Facts = facts with { Attempts = 0 } };
+        var bus = new RunEventBus();
+        var publisher = new RunEventPublisher(bus, "run-1", TimeProvider.System);
+
+        publisher.NodeCompleted(withFacts);
+        publisher.NodeCompleted(noAttempt);
+        bus.Complete();
+        var events = new List<RunEvent>();
+        await foreach (var evt in bus.ReadAllAsync()) events.Add(evt);
+        var first = Assert.IsType<NodeCompletedEvent>(events[0]);
+        var second = Assert.IsType<NodeCompletedEvent>(events[1]);
+
+        Assert.Equal("postgres", first.Connector);
+        Assert.Equal("warehouse", first.Connection);
+        Assert.Equal("native_scan", first.Strategy);
+        Assert.Equal(700, first.Stages!.IngestMs);
+        Assert.Null(first.Stages.ExtractMs);
+        Assert.Equal(1, first.Attempts);
+        Assert.Null(second.Attempts);
+    }
+
+    [Fact]
     public async Task NodeCompleted_maps_all_fields()
     {
         var bus = new RunEventBus();

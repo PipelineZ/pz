@@ -74,6 +74,54 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
         new(policy, jitter ?? new FixedRandom(0.5), delay: (_, _) => Task.CompletedTask);
 
     [Fact]
+    public async Task Successful_load_reports_connector_connection_and_one_attempt()
+    {
+        var result = await NoDelayExecutor().ExecuteAsync(SourceLoadNode(100), _ctx, default);
+
+        var facts = Assert.IsType<NodeFacts>(result.Facts);
+        Assert.Equal("inmemory", facts.Connector);
+        Assert.Equal("mem", facts.Connection);
+        Assert.Equal(1, facts.Attempts);
+    }
+
+    [Fact]
+    public async Task Retried_node_reports_attempts_and_last_attempt_stages()
+    {
+        var node = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+            ["fail_read_retry_limit"] = new RetryCounter(2),
+        });
+
+        var result = await NoDelayExecutor().ExecuteAsync(node, _ctx, default);
+
+        Assert.Equal(3, result.Facts!.Attempts);
+    }
+
+    [Fact]
+    public async Task Breaker_open_before_any_attempt_reports_no_attempts()
+    {
+        var registry = new BreakerRegistry(new BreakerConfig(2, TimeSpan.FromMinutes(1)), new ManualTimeProvider(),
+            (_, _, _, _, _) => { });
+        var nodeA = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+        });
+        await NoDelayExecutor(new RetryPolicy(2, TimeSpan.Zero, TimeSpan.Zero))
+            .ExecuteAsync(nodeA, _ctx with { Breakers = registry }, default);
+
+        var resultB = await NoDelayExecutor().ExecuteAsync(SourceLoadNode(500), _ctx with { Breakers = registry }, default);
+
+        Assert.Equal("PZ0506", resultB.Error!.Code);
+        Assert.Equal(0, resultB.Facts!.Attempts);
+        Assert.Null(resultB.Facts.Stages);
+        Assert.Null(resultB.Facts.Strategy);
+        Assert.Equal("inmemory", resultB.Facts.Connector);
+    }
+
+    [Fact]
     public async Task Transient_fails_twice_then_succeeds()
     {
         var node = SourceLoadNode(1_000, new Dictionary<string, object?>

@@ -73,7 +73,16 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
             (long)result.Duration.TotalMilliseconds, result.Error?.Code, result.Error?.Message,
             ToPayload(result.Timings), ProvenanceName(result.Provenance), ToOpsPayload(result.Ops),
             ToPartitionsPayload(result.Partitions), ToDeliveryPayload(result.Delivery),
-            ToCdcPayload(result.Cdc, result.SyncStateCandidate), result.CaughtUp));
+            ToCdcPayload(result.Cdc, result.SyncStateCandidate), result.CaughtUp,
+            Connector: result.Facts?.Connector, Connection: result.Facts?.Connection,
+            Strategy: result.Facts?.Strategy, Stages: ToStagesPayload(result.Facts?.Stages),
+            Attempts: result.Facts is { Attempts: > 0 } f ? f.Attempts : null));
+
+    private static StageTimingsPayload? ToStagesPayload(StageTimings? stages) => stages is null
+        ? null
+        : new StageTimingsPayload(Ms(stages.Extract), Ms(stages.Ingest), Ms(stages.Egress), Ms(stages.Write));
+
+    private static long? Ms(TimeSpan? value) => value is { } v ? (long)v.TotalMilliseconds : null;
 
     private static NodeTimingsPayload? ToPayload(NodeTimings? timings) => timings is null
         ? null
