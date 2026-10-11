@@ -68,8 +68,56 @@ public sealed class RunSpanTests
 
             var runSpan = stopped.Single(a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == id);
             Assert.Equal(ActivityStatusCode.Error, runSpan.Status);
-            Assert.Equal("run ended during plan", runSpan.StatusDescription);
+            Assert.Equal("run ended after plan", runSpan.StatusDescription);
             Assert.Contains(stopped, a => a.OperationName == "phase.plan" && a.ParentSpanId == runSpan.SpanId);
+        }
+    }
+
+    [Fact]
+    public void Run_span_guard_names_the_open_phase_when_disposed_mid_phase()
+    {
+        var (listener, stopped) = Listen();
+        using (listener)
+        {
+            var clock = new RunPhaseClock(TimeProvider.System);
+            var id = Guid.NewGuid().ToString("N");
+            using (var run = RunCommand.StartRunActivity(null, clock.StartedAt)!)
+            {
+                run.SetTag("pz.run.id", id);
+                clock.AttachRunSpan(run);
+                var guard = new RunSpanGuard(run, clock);
+                var plan = clock.Begin(RunPhaseClock.Plan);
+                guard.Dispose();
+                plan.Dispose();
+            }
+
+            var runSpan = stopped.Single(a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == id);
+            Assert.Equal(ActivityStatusCode.Error, runSpan.Status);
+            Assert.Equal("run ended during plan", runSpan.StatusDescription);
+        }
+    }
+
+    [Fact]
+    public void Run_span_guard_marks_a_completed_run_error_when_finalize_did_not_finish()
+    {
+        var (listener, stopped) = Listen();
+        using (listener)
+        {
+            var clock = new RunPhaseClock(TimeProvider.System);
+            var id = Guid.NewGuid().ToString("N");
+            using (var run = RunCommand.StartRunActivity(null, clock.StartedAt)!)
+            {
+                run.SetTag("pz.run.id", id);
+                var guard = new RunSpanGuard(run, clock);
+                var finalize = clock.Begin(RunPhaseClock.Finalize);
+                guard.Complete("success", 1, 0, 0);
+                guard.Dispose();
+                finalize.Dispose();
+            }
+
+            var runSpan = stopped.Single(a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == id);
+            Assert.Equal(ActivityStatusCode.Error, runSpan.Status);
+            Assert.Equal("run ended during finalize", runSpan.StatusDescription);
         }
     }
 

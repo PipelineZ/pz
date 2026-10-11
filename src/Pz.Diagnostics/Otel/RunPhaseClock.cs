@@ -52,16 +52,19 @@ public sealed class RunPhaseClock
         if (Array.IndexOf(Known, phase) < 0)
             throw new ArgumentOutOfRangeException(nameof(phase), phase, "unknown run phase");
 
-        Activity? span;
+        Activity? run;
         lock (_gate)
         {
             _phases[phase] = (_time.GetTimestamp(), null);
             _current = phase;
             _lastBegun = phase;
-            span = _run is null
-                ? null
-                : PzActivitySource.Instance.StartActivity("phase." + phase, ActivityKind.Internal, _run.Context);
+            run = _run;
         }
+
+        // Started outside the lock: listener callbacks must not run under it.
+        var span = run is null
+            ? null
+            : PzActivitySource.Instance.StartActivity("phase." + phase, ActivityKind.Internal, run.Context);
 
         return new Scope(this, phase, span);
     }
@@ -70,18 +73,24 @@ public sealed class RunPhaseClock
     public void AttachRunSpan(Activity? run)
     {
         if (run is null) return;
+        List<(string Name, long Start, long End)> finished = [];
         lock (_gate)
         {
             _run = run;
             foreach (var (name, (start, end)) in _phases)
             {
-                if (end is not { } e) continue;
-                var span = PzActivitySource.Instance.StartActivity("phase." + name, ActivityKind.Internal, run.Context,
-                    startTime: At(start));
-                if (span is null) continue;
-                span.SetEndTime(At(e).UtcDateTime);
-                span.Stop();
+                if (end is { } e) finished.Add((name, start, e));
             }
+        }
+
+        // Started outside the lock: listener callbacks must not run under it.
+        foreach (var (name, start, end) in finished)
+        {
+            var span = PzActivitySource.Instance.StartActivity("phase." + name, ActivityKind.Internal, run.Context,
+                startTime: At(start));
+            if (span is null) continue;
+            span.SetEndTime(At(end).UtcDateTime);
+            span.Stop();
         }
     }
 

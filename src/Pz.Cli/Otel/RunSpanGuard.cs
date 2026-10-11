@@ -25,9 +25,15 @@ internal sealed class RunSpanGuard(Activity? run, RunPhaseClock phases) : IDispo
 
     public void Dispose()
     {
-        if (_completed || run is null) return;
-        // An early return disposes the phase scope before this guard, so the phase it ended in is the last begun.
-        var phase = phases.Current ?? phases.LastBegun;
-        run.SetStatus(ActivityStatusCode.Error, phase is null ? "run ended before completing" : $"run ended during {phase}");
+        if (run is null) return;
+        var current = phases.Current;
+        // Complete runs before finalize; a finalize scope still open here means finalize did not finish.
+        if (_completed && current != RunPhaseClock.Finalize) return;
+        // A phase scope still open names where the run ended; otherwise the run left between phases (state
+        // backend check, session open), so name the last phase that finished rather than the next one.
+        var message = current is not null ? $"run ended during {current}"
+            : phases.LastBegun is { } last ? $"run ended after {last}"
+            : "run ended before completing";
+        run.SetStatus(ActivityStatusCode.Error, message);
     }
 }
