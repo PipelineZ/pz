@@ -147,6 +147,36 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Retry_span_event_reason_is_single_line_while_the_event_call_keeps_the_full_reason()
+    {
+        var source = new System.Diagnostics.ActivitySource("retry-reason-" + Guid.NewGuid().ToString("N"));
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name == source.Name,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+        using var nodeSpan = source.StartActivity("node.SourceLoad")!;
+        var node = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+            ["fail_read_retry_limit"] = new RetryCounter(1),
+            ["fail_message"] = "temporary outage\nsecond line detail",
+        }, dataset: "retryreason");
+
+        await NoDelayExecutor().ExecuteAsync(node, _ctx, default);
+
+        var call = Assert.Single(_events.RetryScheduledCalls);
+        Assert.Contains("second line detail", call.Reason);
+        var reason = (string)nodeSpan.Events.Single(e => e.Name == "retry_scheduled")
+            .Tags.Single(t => t.Key == "reason").Value!;
+        Assert.DoesNotContain("\n", reason);
+        Assert.DoesNotContain("second line detail", reason);
+    }
+
+    [Fact]
     public async Task Retried_node_reports_attempts_and_last_attempt_stages()
     {
         var node = SourceLoadNode(1_000, new Dictionary<string, object?>

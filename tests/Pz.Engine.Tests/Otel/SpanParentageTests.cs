@@ -102,6 +102,42 @@ public sealed class SpanParentageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_failed_node_span_carries_error_status_type_exception_event_and_kind()
+    {
+        var activities = new ConcurrentBag<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == PzActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activities.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var source = new ConnectionDef("mem", "inmemory", new Dictionary<string, object?>(),
+            [new DatasetDef("boom", new Dictionary<string, object?>
+            {
+                ["rows"] = 10L, ["fail_read_at_batch"] = 0, ["fail_message"] = "read exploded\nsecond line",
+            }, null)],
+            "sources/mem.yml");
+        var node = new DagNode(new NodeId("4444444444444444"), NodeKind.SourceLoad, "src_mem__boom",
+            [], null, new SourceDatasetDef(source, source.Datasets[0]));
+
+        var orchestrator = new RunOrchestrator(new KindDispatchingExecutor(), _ctx);
+        var result = await orchestrator.ExecuteAsync(new CompiledDag([node]), new RunOptions(MaxConcurrency: 1), default);
+        Assert.Equal(NodeStatus.Failed, Assert.Single(result.Nodes).Status);
+
+        var runSpan = Assert.Single(activities,
+            a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == _runId);
+        var nodeSpan = Assert.Single(activities,
+            a => a.OperationName == "node.SourceLoad" && a.ParentSpanId == runSpan.SpanId);
+        Assert.Equal(ActivityStatusCode.Error, nodeSpan.Status);
+        Assert.NotNull(nodeSpan.GetTagItem("error.type"));
+        Assert.Equal("SourceLoad", nodeSpan.GetTagItem("pz.node.kind"));
+        Assert.DoesNotContain("\n", nodeSpan.StatusDescription);
+        Assert.Contains(nodeSpan.Events, e => e.Name == "exception");
+    }
+
+    [Fact]
     public async Task Run_node_stage_span_tree_parents_correctly_and_rows_metric_sums()
     {
         var activities = new ConcurrentBag<Activity>();

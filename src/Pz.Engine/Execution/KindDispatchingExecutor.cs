@@ -5,6 +5,7 @@ using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
 using Pz.Core.Validation;
 using Pz.Engine.Checks;
+using Pz.Engine.Dispatch;
 using Pz.Engine.Resilience;
 
 namespace Pz.Engine.Execution;
@@ -185,7 +186,7 @@ public sealed class KindDispatchingExecutor(
                     ["attempt"] = attempt,
                     ["max_attempts"] = policy.MaxAttempts,
                     ["delay_ms"] = (long)delayDuration.TotalMilliseconds,
-                    ["reason"] = reason,
+                    ["reason"] = NodeSpanTags.Describe(reason),
                 }));
 
                 // Not wrapped in try/catch: an OperationCanceledException from the backoff wait (e.g. the
