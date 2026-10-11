@@ -16,6 +16,8 @@ public sealed class SinkWriteExecutor : INodeExecutor
     public async Task<NodeResult> ExecuteAsync(DagNode node, RunContext ctx, CancellationToken ct)
     {
         var def = (SinkOutputDef)node.Definition;
+        var facts = ctx.FactsFor(node.Id);
+        facts.Strategy = NodeFacts.Arrow;
 
         if (!ctx.Connectors.TryGetSink(def.Sink.Connector, out var connector))
         {
@@ -104,9 +106,11 @@ public sealed class SinkWriteExecutor : INodeExecutor
         {
             // No separate egress/write split for the native-copy tier: DuckDB's COPY statement reads
             // and writes atomically in one shot, so there is no seam to split on.
-            using var nativeWriteActivity = PzActivitySource.Instance.StartActivity("write");
+            facts.Strategy = NodeFacts.NativeCopy;
+            using var writeStage = facts.Stage("write");
 
             var nativeRows = await ctx.Duck.ScalarAsync<long>($"select count(*) from {relation}", ct).ConfigureAwait(false);
+            writeStage.SetRows(nativeRows);
             foreach (var statement in copy.SetupStatements)
             {
                 await ctx.SetupLedger.ExecuteOnceAsync(statement, ct).ConfigureAwait(false);
@@ -300,9 +304,9 @@ public sealed class SinkWriteExecutor : INodeExecutor
             // record below it — so Activity.Current is back to the node span by the time the
             // completion-only pz.rows_moved increment runs, matching SourceLoadExecutor's "ingest" span
             // being scoped tightly around just the IngestArrowAsync call.
-            var egressActivity = PzActivitySource.Instance.StartActivity("egress");
+            var egressStage = facts.Stage("egress");
             Activity.Current = nodeActivity;
-            var writeActivity = PzActivitySource.Instance.StartActivity("write");
+            var writeStage = facts.Stage("write");
 
             // Mirrors SourceLoadExecutor.ReportProgress's every-10-batches cadence: bytes must be
             // measured before the batch is disposed below. Hoisted above the write-phase try so the
@@ -510,8 +514,9 @@ public sealed class SinkWriteExecutor : INodeExecutor
             }
             finally
             {
-                egressActivity?.Dispose();
-                writeActivity?.Dispose();
+                writeStage.SetRows(rowsSoFar);
+                egressStage.Dispose();
+                writeStage.Dispose();
             }
 
             // Deliberately outside the write-phase try/catch above and uncaught here: a CommitAsync

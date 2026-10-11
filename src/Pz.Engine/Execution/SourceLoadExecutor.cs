@@ -22,6 +22,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
     public async Task<NodeResult> ExecuteAsync(DagNode node, RunContext ctx, CancellationToken ct)
     {
         var def = (SourceDatasetDef)node.Definition;
+        var facts = ctx.FactsFor(node.Id);
+        facts.Strategy = NodeFacts.Arrow;
 
         // A manifested node tries the copy path FIRST — before the connector is even resolved, because
         // "the flaky source is never contacted" is the point. A null return means a guard failed (table
@@ -223,7 +225,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
         {
             // No separate extract/ingest split for the native-scan tier: DuckDB reads and loads in one
             // statement, so there is no seam to split on.
-            using var ingestActivity = PzActivitySource.Instance.StartActivity("ingest");
+            facts.Strategy = NodeFacts.NativeScan;
+            using var ingestStage = facts.Stage("ingest");
 
             foreach (var statement in scan.SetupStatements)
             {
@@ -261,6 +264,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nativeWatermarkError);
             }
 
+            ingestStage.SetRows(nativeRows);
             PzMeters.RowsMoved.Add(nativeRows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
             // Ops: universal tier only -- the native tier never routes through a .NET gate.
             var nativeSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null,
@@ -359,7 +363,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // whatever is currently ambient, i.e. the node span) and Activity.Current explicitly restored
         // right after so "ingest" parents to the node span too, not to "extract".
         var nodeActivity = Activity.Current;
-        using var extractActivity = PzActivitySource.Instance.StartActivity("extract");
+        using var extractStage = facts.Stage("extract");
 
         // Streaming sources yield partitions lazily (the point is a source over millions of small files):
         // the list path below starts ALL partition tasks at once, backpressured only by the bounded
@@ -383,10 +387,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // straight into the canonical table.
             var landingTable = shape == ResolvedReadShape.Cdc ? tableName + "__changes" : tableName;
             long rows;
-            using (PzActivitySource.Instance.StartActivity("ingest"))
+            using (var ingestStage = facts.Stage("ingest"))
             {
                 rows = await ctx.Duck.IngestArrowAsync(
                     landingTable, schema, ReportProgress(channel.Reader, node, ctx, stall, ct), ct).ConfigureAwait(false);
+                ingestStage.SetRows(rows);
             }
 
             // Success: no teardown needed, just join the producer.

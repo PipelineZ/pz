@@ -191,6 +191,39 @@ public sealed class SpanParentageTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Stage_spans_keep_their_names_and_parents_and_ingest_carries_rows()
+    {
+        var activities = new ConcurrentBag<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == PzActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activities.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var orchestrator = new RunOrchestrator(new KindDispatchingExecutor(), _ctx);
+        var result = await orchestrator.ExecuteAsync(ThreeNodeDag(rows: 100), new RunOptions(MaxConcurrency: 4), default);
+        Assert.Equal(RunStatus.Success, result.Status);
+
+        var run = Assert.Single(activities,
+            a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == _runId);
+
+        Activity ChildOf(Activity parent, string name) =>
+            activities.Single(a => a.ParentSpanId == parent.SpanId && a.OperationName == name);
+        Activity NodeSpan(string nodeName) =>
+            activities.Single(a => a.ParentSpanId == run.SpanId && (string?)a.GetTagItem("pz.node.name") == nodeName);
+
+        var source = NodeSpan("src_mem__numbers");
+        var sink = NodeSpan("cap.out");
+
+        Assert.Equal(100L, ChildOf(source, "ingest").GetTagItem("pz.stage.rows"));
+        Assert.NotNull(ChildOf(source, "extract"));
+        Assert.Equal(100L, ChildOf(sink, "write").GetTagItem("pz.stage.rows"));
+        Assert.NotNull(ChildOf(sink, "egress"));
+    }
+
+    [Fact]
     public async Task Concurrent_sibling_nodes_each_parent_to_the_run_span()
     {
         // Two independent SourceLoad nodes (no edges between them) become ready and dispatch

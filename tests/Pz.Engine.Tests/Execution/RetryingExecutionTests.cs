@@ -82,6 +82,39 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
         Assert.Equal("inmemory", facts.Connector);
         Assert.Equal("mem", facts.Connection);
         Assert.Equal(1, facts.Attempts);
+        Assert.Equal(NodeFacts.Arrow, facts.Strategy);
+        Assert.NotNull(facts.Stages!.Extract);
+        Assert.NotNull(facts.Stages.Ingest);
+    }
+
+    [Fact]
+    public async Task Stage_times_are_recorded_with_no_listener()
+    {
+        // SpanParentageTests registers a listener only inside its own test bodies; this one runs with
+        // whatever is ambient and must not depend on a listener existing.
+        var result = await NoDelayExecutor().ExecuteAsync(SourceLoadNode(500, dataset: "nolistener"), _ctx, default);
+
+        Assert.Equal(NodeFacts.Arrow, result.Facts!.Strategy);
+        Assert.NotNull(result.Facts.Stages!.Extract);
+        Assert.NotNull(result.Facts.Stages.Ingest);
+        Assert.Null(result.Facts.Stages.Write);
+    }
+
+    [Fact]
+    public async Task Native_scan_reports_its_tier_and_only_ingest()
+    {
+        var node = NativeSourceLoadNode("tier");
+        _ctx.Connectors.AddSource("nativestub", new ConfigurableNativeSource(
+            "(values (cast(1 as bigint)), (cast(2 as bigint))) t(x)", failAttempts: 0, failMessage: ""));
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1, "test")],
+            MemoryBudget.Compute(new EngineConfig()));
+
+        var result = await NoDelayExecutor().ExecuteAsync(node, _ctx with { Plan = plan }, default);
+
+        Assert.Equal(NodeFacts.NativeScan, result.Facts!.Strategy);
+        Assert.NotNull(result.Facts.Stages!.Ingest);
+        Assert.Null(result.Facts.Stages.Extract);
     }
 
     [Fact]
@@ -97,6 +130,7 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
         var result = await NoDelayExecutor().ExecuteAsync(node, _ctx, default);
 
         Assert.Equal(3, result.Facts!.Attempts);
+        Assert.NotNull(result.Facts.Stages!.Ingest);
     }
 
     [Fact]
