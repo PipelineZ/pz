@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit.Reference;
 using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.DuckDb;
+using Pz.Diagnostics.Otel;
 using Pz.Engine.Execution;
 using Pz.Engine.Planning;
 using Pz.Engine.Resilience;
@@ -98,6 +101,93 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
         Assert.NotNull(result.Facts.Stages!.Extract);
         Assert.NotNull(result.Facts.Stages.Ingest);
         Assert.Null(result.Facts.Stages.Write);
+    }
+
+    [Fact]
+    public async Task Extract_stage_ends_with_the_pump_before_any_later_staging_work()
+    {
+        var extractStopped = false;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == PzActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = a => { if (a.OperationName == "extract") extractStopped = true; },
+        };
+        ActivitySource.AddActivityListener(listener);
+        var spy = new AfterIngestSpy(_duck, () => extractStopped);
+
+        // Incremental, so the watermark capture queries staging after the ingest.
+        var dataset = new DatasetDef("extractends", new Dictionary<string, object?> { ["rows"] = 300L }, null,
+            new SyncModeDef(SyncMode.Incremental, new IncrementalDef("id")));
+        var source = new ConnectionDef("mem", "inmemory", new Dictionary<string, object?>(), [dataset], "sources/mem.yml");
+        var node = new DagNode(new NodeId("eeeeeeeeeeeeeeee"), NodeKind.SourceLoad, "src_mem__extractends", [], null,
+            new SourceDatasetDef(source, dataset));
+
+        var result = await new SourceLoadExecutor().ExecuteAsync(node, _ctx with { Duck = spy }, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.True(spy.CallsAfterIngest > 0, "expected staging work after the ingest (watermark, drift gate)");
+        Assert.True(spy.ExtractStoppedBeforeEveryLaterCall, "extract span was still open during post-ingest work");
+    }
+
+    [Fact]
+    public async Task Sink_failing_before_any_tier_ran_reports_no_strategy()
+    {
+        var sinkConn = new ConnectionDef("ghost", "not-registered", new Dictionary<string, object?>(), [], "connections.yml");
+        var node = new DagNode(new NodeId("dddddddddddddddd"), NodeKind.SinkWrite, "ghost.mart", [], null,
+            new SinkOutputDef(sinkConn, new OutputDef("mart", "p", "append", "fail_on_change",
+                new Dictionary<string, object?>())));
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, _ctx, default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Null(_ctx.FactsFor(node.Id).Strategy);
+    }
+
+    private sealed class AfterIngestSpy(IDuckSession inner, Func<bool> extractStopped) : IDuckSession
+    {
+        private bool _ingested;
+        public int CallsAfterIngest { get; private set; }
+        public bool ExtractStoppedBeforeEveryLaterCall { get; private set; } = true;
+
+        private void Observe()
+        {
+            if (!_ingested) return;
+            CallsAfterIngest++;
+            if (!extractStopped()) ExtractStoppedBeforeEveryLaterCall = false;
+        }
+
+        public Task ExecuteAsync(string sql, CancellationToken ct = default) { Observe(); return inner.ExecuteAsync(sql, ct); }
+
+        public Task<T> ScalarAsync<T>(string sql, CancellationToken ct = default) { Observe(); return inner.ScalarAsync<T>(sql, ct); }
+
+        public async Task<long> IngestArrowAsync(string targetTable, Schema schema,
+            IAsyncEnumerable<RecordBatch> batches, CancellationToken ct = default)
+        {
+            var rows = await inner.IngestArrowAsync(targetTable, schema, batches, ct);
+            _ingested = true;
+            return rows;
+        }
+
+        public IAsyncEnumerable<RecordBatch> QueryArrowAsync(string sql, int targetBatchBytes = 32 * 1024 * 1024,
+            CancellationToken ct = default) => inner.QueryArrowAsync(sql, targetBatchBytes, ct);
+
+        public Task<Schema> GetResultSchemaAsync(string sql, CancellationToken ct = default)
+        {
+            Observe();
+            return inner.GetResultSchemaAsync(sql, ct);
+        }
+
+        public Task CreateEmptyTableAsync(string targetTable, Schema schema, CancellationToken ct = default) =>
+            inner.CreateEmptyTableAsync(targetTable, schema, ct);
+
+        public Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, Schema? schema = null,
+            CancellationToken ct = default) => inner.AppendArrowBatchAsync(targetTable, batch, schema, ct);
+
+        public Task ExecuteTransactionAsync(IReadOnlyList<string> statements, CancellationToken ct = default) =>
+            inner.ExecuteTransactionAsync(statements, ct);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
     }
 
     [Fact]

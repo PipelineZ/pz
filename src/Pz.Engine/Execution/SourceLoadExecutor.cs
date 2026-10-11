@@ -23,7 +23,6 @@ public sealed class SourceLoadExecutor : INodeExecutor
     {
         var def = (SourceDatasetDef)node.Definition;
         var facts = ctx.FactsFor(node.Id);
-        facts.Strategy = NodeFacts.Arrow;
 
         // A manifested node tries the copy path FIRST — before the connector is even resolved, because
         // "the flaky source is never contacted" is the point. A null return means a guard failed (table
@@ -257,6 +256,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 ? await TrimToWindowAsync(ctx, def, nativeTable, windowLower, windowUpper, upperInclusive, ct).ConfigureAwait(false)
                 : await ctx.Duck.ScalarAsync<long>($"select count(*) from {nativeTable}", ct).ConfigureAwait(false);
 
+            // The stage is the landing statement plus the row count; watermark capture, lint and the drift gate
+            // below are not part of it.
+            ingestStage.SetRows(nativeRows);
+            ingestStage.Dispose();
+
             var (nativeWatermarkError, nativeWatermarkCandidate) =
                 await CaptureWatermarkAsync(ctx, def, nativeTable, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
             if (nativeWatermarkError is not null)
@@ -264,7 +268,6 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nativeWatermarkError);
             }
 
-            ingestStage.SetRows(nativeRows);
             PzMeters.RowsMoved.Add(nativeRows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
             // Ops: universal tier only -- the native tier never routes through a .NET gate.
             var nativeSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null,
@@ -363,6 +366,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // whatever is currently ambient, i.e. the node span) and Activity.Current explicitly restored
         // right after so "ingest" parents to the node span too, not to "extract".
         var nodeActivity = Activity.Current;
+        facts.Strategy = NodeFacts.Arrow;
         using var extractStage = facts.Stage("extract");
 
         // Streaming sources yield partitions lazily (the point is a source over millions of small files):
@@ -396,6 +400,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             // Success: no teardown needed, just join the producer.
             await pump.ConfigureAwait(false);
+            // Extract ends with the pump; the collapse, trim, watermark and drift gate below are not extraction.
+            extractStage.Dispose();
 
             // After a clean read, collect the connector's opaque sync-state candidate (if the
             // partition emits one). Feed-shaped datasets are single-partition (guarded above), so there is
@@ -493,6 +499,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
             {
                 // Expected: this is exactly the teardown cancellation above unwinding the pump, not a new
                 // failure — the original consumer exception (about to be rethrown) must not be masked by it.
+            }
+            finally
+            {
+                extractStage.Dispose();
             }
 
             throw;
