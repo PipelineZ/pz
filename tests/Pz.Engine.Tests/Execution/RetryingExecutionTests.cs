@@ -118,6 +118,35 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Each_scheduled_retry_adds_a_span_event_on_the_ambient_node_span()
+    {
+        var source = new System.Diagnostics.ActivitySource("retry-events-" + Guid.NewGuid().ToString("N"));
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name == source.Name,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+        using var nodeSpan = source.StartActivity("node.SourceLoad")!;
+        var node = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+            ["fail_read_retry_limit"] = new RetryCounter(2),
+        }, dataset: "retryevents");
+
+        await NoDelayExecutor().ExecuteAsync(node, _ctx, default);
+
+        var events = nodeSpan.Events.Where(e => e.Name == "retry_scheduled").ToList();
+        Assert.Equal(2, events.Count);
+        Assert.Equal(1, events[0].Tags.Single(t => t.Key == "attempt").Value);
+        Assert.Contains(events[0].Tags, t => t.Key == "max_attempts");
+        Assert.Contains(events[0].Tags, t => t.Key == "delay_ms");
+        Assert.Contains(events[0].Tags, t => t.Key == "reason");
+    }
+
+    [Fact]
     public async Task Retried_node_reports_attempts_and_last_attempt_stages()
     {
         var node = SourceLoadNode(1_000, new Dictionary<string, object?>

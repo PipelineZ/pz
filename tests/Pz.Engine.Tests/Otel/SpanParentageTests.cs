@@ -18,9 +18,9 @@ namespace Pz.Engine.Tests.Otel;
 /// every assertion here identifies "my" spans by the unique <see cref="RunPaths.RunId"/> tagged onto the
 /// root span (and then walks down via <see cref="Activity.ParentSpanId"/>, which is a cryptographically
 /// random 8-byte value — collision-proof against whatever unrelated tests happen to run concurrently in
-/// other xunit collections) rather than assuming this listener sees nothing else. This is the ONLY place
-/// in the suite that registers such a listener — <c>tests/Pz.Diagnostics.Tests/Otel/OtelPrimitivesTests.cs</c>
-/// (a separate test process) asserts the no-listener zero-cost case and must never observe one.</summary>
+/// other xunit collections) rather than assuming this listener sees nothing else. This is no longer the
+/// only listener in this project; the no-listener assertions live in <c>Pz.Diagnostics.Tests</c>
+/// (<c>Otel/OtelPrimitivesTests.cs</c>), a separate test process that must never observe one.</summary>
 public sealed class SpanParentageTests : IAsyncLifetime
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"));

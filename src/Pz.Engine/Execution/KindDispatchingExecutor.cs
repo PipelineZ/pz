@@ -99,6 +99,7 @@ public sealed class KindDispatchingExecutor(
     private async Task<NodeResult> ExecuteWithRetriesAsync(
         DagNode node, RunContext ctx, StrongBox<int> attempts, CancellationToken ct)
     {
+        var nodeSpan = Activity.Current;
         ctx.Events.SafeNodeStarted(node);
         var stopwatch = Stopwatch.StartNew();
         var executor = ExecutorOverride?.Invoke(node.Kind) ?? Resolve(node.Kind);
@@ -179,6 +180,13 @@ public sealed class KindDispatchingExecutor(
                 // must never carry an unsanitized message through to those sinks.
                 var reason = NativeStatementRedactor.SanitizeEngineMessage(ex.Message);
                 ctx.Events.SafeRetryScheduled(node, attempt, policy.MaxAttempts, delayDuration, reason);
+                nodeSpan?.AddEvent(new ActivityEvent("retry_scheduled", tags: new ActivityTagsCollection
+                {
+                    ["attempt"] = attempt,
+                    ["max_attempts"] = policy.MaxAttempts,
+                    ["delay_ms"] = (long)delayDuration.TotalMilliseconds,
+                    ["reason"] = reason,
+                }));
 
                 // Not wrapped in try/catch: an OperationCanceledException from the backoff wait (e.g. the
                 // run being cancelled mid-delay) must propagate exactly like one from the node itself,
