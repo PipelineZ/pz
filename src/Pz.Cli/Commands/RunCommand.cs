@@ -806,6 +806,7 @@ internal static class RunCommand
         // through to the status-derived exit code), NOT by writing run_results first.
         finalize.Dispose();
         snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped, phases.Snapshot());
+        runSpan.Finish();
         onResults?.Invoke(result.Nodes);
 
         return result.Status switch
