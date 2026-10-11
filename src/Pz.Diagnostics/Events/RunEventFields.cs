@@ -148,6 +148,21 @@ public static class RunEventFields
                     json.WriteBoolean("caughtUp", caughtUp);
                 }
 
+                if (e.Connector is { } connector) json.WriteString("connector", connector);
+                if (e.Connection is { } connection) json.WriteString("connection", connection);
+                if (e.Strategy is { } strategy) json.WriteString("strategy", strategy);
+                if (e.Stages is { } stages)
+                {
+                    json.WriteStartObject("stages");
+                    WriteOptionalNumber(json, "extractMs", stages.ExtractMs);
+                    WriteOptionalNumber(json, "ingestMs", stages.IngestMs);
+                    WriteOptionalNumber(json, "egressMs", stages.EgressMs);
+                    WriteOptionalNumber(json, "writeMs", stages.WriteMs);
+                    json.WriteEndObject();
+                }
+
+                if (e.Attempts is { } attempts) json.WriteNumber("attempts", attempts);
+
                 break;
 
             case RunCompletedEvent e:
@@ -156,6 +171,19 @@ public static class RunEventFields
                 json.WriteNumber("failed", e.Failed);
                 json.WriteNumber("skipped", e.Skipped);
                 json.WriteNumber("durationMs", e.DurationMs);
+                if (e.Phases is { } phases)
+                {
+                    json.WriteStartObject("phases");
+                    WriteOptionalNumber(json, "loadMs", phases.LoadMs);
+                    WriteOptionalNumber(json, "compileMs", phases.CompileMs);
+                    WriteOptionalNumber(json, "validateMs", phases.ValidateMs);
+                    WriteOptionalNumber(json, "restoreCheckMs", phases.RestoreCheckMs);
+                    WriteOptionalNumber(json, "planMs", phases.PlanMs);
+                    WriteOptionalNumber(json, "executeMs", phases.ExecuteMs);
+                    WriteOptionalNumber(json, "finalizeMs", phases.FinalizeMs);
+                    json.WriteEndObject();
+                }
+
                 break;
 
             case RetentionSweptEvent e:
@@ -239,6 +267,11 @@ public static class RunEventFields
             default:
                 throw new ArgumentOutOfRangeException(nameof(evt), evt, "unknown RunEvent type");
         }
+    }
+
+    private static void WriteOptionalNumber(Utf8JsonWriter json, string name, long? value)
+    {
+        if (value is { } v) json.WriteNumber(name, v);
     }
 
     private static void WriteNullableString(Utf8JsonWriter json, string name, string? value)
