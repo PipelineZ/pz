@@ -20,9 +20,17 @@ pub struct RemoteCall {
 /// call works and records no statistics.
 #[must_use]
 pub fn start(operation: &str) -> RemoteCall {
+    start_with(operation, crate::telemetry::traces_enabled())
+}
+
+/// `start` with the trace-export gate supplied: without an exporter no span is built and the budget
+/// is untouched, so `spans_dropped` only ever counts spans that would have been exported.
+fn start_with(operation: &str, traces: bool) -> RemoteCall {
     let op = operation_name(operation);
     let stats = stats();
-    let span = if stats.try_take_span() {
+    let span = if !traces {
+        Span::none()
+    } else if stats.try_take_span() {
         tracing::info_span!(
             "remote",
             otel.name = %format!("remote.{op}"),
@@ -69,7 +77,8 @@ impl RemoteCall {
         self
     }
 
-    /// Marks the span failed. Only the error's type name is recorded, never its message.
+    /// Marks the span failed. The error value is used only for its type name; its message is never
+    /// read or recorded.
     ///
     /// Generic so the concrete type is named; a `&dyn Error` records `dyn Error`.
     pub fn fail<E: std::error::Error + ?Sized>(&self, _error: &E) {
@@ -124,12 +133,25 @@ mod tests {
         let s = Stats::new();
         scope(s.clone(), async {
             for _ in 0..250 {
-                drop(start("get_object"));
+                drop(start_with("get_object", true));
             }
         })
         .await;
         let p = s.to_proto().unwrap();
         assert_eq!((p.requests, p.spans_dropped), (250, 50));
+    }
+
+    #[tokio::test]
+    async fn without_trace_export_no_span_is_dropped_but_requests_count() {
+        let s = Stats::new();
+        scope(s.clone(), async {
+            for _ in 0..250 {
+                drop(start_with("get_object", false));
+            }
+        })
+        .await;
+        let p = s.to_proto().unwrap();
+        assert_eq!((p.requests, p.spans_dropped), (250, 0));
     }
 
     #[test]
