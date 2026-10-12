@@ -205,6 +205,8 @@ message ConnectorStats {
   string cost_unit = 6;
   map<string, double> extras = 7;
   int64 spans_dropped = 8;
+  // OR of the validation rules the connector's own accumulator fired (StatsDrop bit values).
+  uint32 drops = 9;
 }
 // Unset stats = the stream reported nothing, or the op/partition is unknown.
 message ReadStatsResponse { optional ConnectorStats stats = 1; }

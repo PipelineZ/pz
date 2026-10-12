@@ -18,7 +18,8 @@ internal static class HostStats
         }
 
         var stats = FromProto(proto);
-        if (stats.IsEmpty)
+        var drops = (StatsDrop)proto.Drops;
+        if (stats.IsEmpty && drops == StatsDrop.None)
         {
             return;
         }
@@ -27,10 +28,11 @@ internal static class HostStats
         if (current is ConnectorStatsAccumulator accumulator)
         {
             accumulator.Add(stats);
+            accumulator.AddDrops(drops);
             return;
         }
 
-        // A foreign sink only has the six reporting methods; dropped spans have no home there.
+        // A foreign sink only has the six reporting methods; dropped spans and drop flags have no home there.
         current.AddRequests(stats.Requests);
         current.AddWireBytes(stats.WireBytes);
         current.AddRemoteMs(stats.RemoteMs);

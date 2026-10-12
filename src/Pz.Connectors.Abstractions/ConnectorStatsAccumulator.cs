@@ -138,6 +138,10 @@ public sealed class ConnectorStatsAccumulator : IConnectorStats
         }
     }
 
+    /// <summary>Folds validation rules another party's accumulator already fired, so a reader of
+    /// <see cref="Drops"/> sees them. <see cref="Add"/> does not carry drops: a snapshot has none.</summary>
+    public void AddDrops(StatsDrop drops) => Drop(drops);
+
     public RemoteStats Snapshot()
     {
         lock (_gate)

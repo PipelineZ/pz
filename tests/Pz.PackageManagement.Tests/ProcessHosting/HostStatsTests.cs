@@ -44,6 +44,20 @@ public sealed class HostStatsTests
     }
 
     [Fact]
+    public void Merge_ors_the_reported_drops_into_the_ambient_accumulator()
+    {
+        var accumulator = new ConnectorStatsAccumulator();
+        using (ConnectorStats.Use(accumulator))
+        {
+            HostStats.Merge(new PbStats { Drops = (uint)StatsDrop.InvalidExtraName });
+            HostStats.Merge(new PbStats { Requests = 1, Drops = (uint)StatsDrop.TooManyExtras });
+        }
+
+        Assert.Equal(StatsDrop.InvalidExtraName | StatsDrop.TooManyExtras, accumulator.Drops);
+        Assert.Equal(1, accumulator.Snapshot().Requests);
+    }
+
+    [Fact]
     public void Merge_adds_into_the_ambient_accumulator()
     {
         var accumulator = new ConnectorStatsAccumulator();

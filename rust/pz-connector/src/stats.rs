@@ -1,7 +1,9 @@
 //! Remote statistics a connector reports for the write session it is serving: request count, wire
 //! bytes, time spent waiting on the remote system, throttling, billed cost and a few connector-specific
 //! extras. [`stats`] returns the handle for the session the calling task runs in; outside one it is a
-//! no-op, so connector code can report unconditionally.
+//! no-op, so connector code can report unconditionally. The handle lives in a task-local, so it
+//! reaches only code awaited inside the SDK's call: work moved to `tokio::spawn` runs outside the
+//! scope and its reports are no-ops.
 //!
 //! Values are validated rather than trusted: an invalid one is dropped (never a panic, never an error
 //! to the connector), and the rule that fired is remembered so tests can see it. The rules are the
@@ -161,7 +163,8 @@ impl Stats {
             .is_ok()
     }
 
-    /// The wire message for what was reported, or `None` when nothing was.
+    /// The wire message for what was reported, or `None` when nothing was and no rule fired. A message
+    /// carrying only drops is sent so the host can still tell the user a value was discarded.
     pub(crate) fn to_proto(&self) -> Option<pb::ConnectorStats> {
         let inner = self.inner.as_ref()?;
         let locked = inner.locked.lock().unwrap_or_else(|e| e.into_inner());
@@ -178,6 +181,7 @@ impl Stats {
             cost_unit: locked.cost_unit.clone().unwrap_or_default(),
             extras: locked.extras.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             spans_dropped: inner.spans_dropped.load(Ordering::Relaxed),
+            drops: inner.drops.load(Ordering::Relaxed),
         };
         let empty = proto.requests == 0
             && proto.wire_bytes == 0
@@ -185,7 +189,8 @@ impl Stats {
             && proto.throttled == 0
             && proto.cost_unit.is_empty()
             && proto.extras.is_empty()
-            && proto.spans_dropped == 0;
+            && proto.spans_dropped == 0
+            && proto.drops == 0;
         (!empty).then_some(proto)
     }
 
@@ -247,6 +252,13 @@ mod tests {
         s.to_proto().expect("non-empty")
     }
 
+    fn assert_nothing_but_drops(s: &Stats) {
+        let p = s.to_proto().expect("a fired rule is reported");
+        assert_ne!(p.drops, 0);
+        assert_eq!(p.requests + p.wire_bytes + p.remote_ms + p.throttled, 0);
+        assert!(p.cost_unit.is_empty() && p.extras.is_empty());
+    }
+
     #[test]
     fn empty_stats_have_no_proto() {
         assert!(Stats::new().to_proto().is_none());
@@ -276,7 +288,7 @@ mod tests {
         s.add_cost(-1.0, "ru");
         s.add_extra("a.b", f64::INFINITY);
         s.add_extra("a.b", -0.5);
-        assert!(s.to_proto().is_none());
+        assert_nothing_but_drops(&s);
         assert_eq!(s.drops(), DROP_NEGATIVE_OR_NON_FINITE);
     }
 
@@ -285,7 +297,7 @@ mod tests {
         for bad in ["", "RU", "1ru", "r-u", "r u", &"a".repeat(25)] {
             let s = Stats::new();
             s.add_cost(1.0, bad);
-            assert!(s.to_proto().is_none(), "{bad}");
+            assert_nothing_but_drops(&s);
             assert_eq!(s.drops(), DROP_INVALID_COST_UNIT, "{bad}");
         }
         let s = Stats::new();
@@ -319,7 +331,7 @@ mod tests {
         ] {
             let s = Stats::new();
             s.add_extra(bad, 1.0);
-            assert!(s.to_proto().is_none(), "{bad}");
+            assert_nothing_but_drops(&s);
             assert_eq!(s.drops(), DROP_INVALID_EXTRA_NAME, "{bad}");
         }
         for good in ["a.b", "vendor.metric_1", "a.b.c", "a_1.b.c_2"] {
@@ -353,6 +365,15 @@ mod tests {
         let s = Stats::new();
         s.add_spans_dropped(3);
         assert_eq!(snapshot(&s).spans_dropped, 3);
+    }
+
+    #[test]
+    fn to_proto_carries_drops_and_sends_a_drops_only_message() {
+        let s = Stats::new();
+        s.add_extra("Bad Name", 1.0);
+        let p = snapshot(&s);
+        assert_eq!(p.drops, DROP_INVALID_EXTRA_NAME);
+        assert_eq!(p.requests, 0);
     }
 
     #[test]

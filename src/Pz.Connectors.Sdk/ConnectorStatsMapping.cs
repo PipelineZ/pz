@@ -8,10 +8,16 @@ namespace Pz.Connectors.Sdk;
 /// units number alone means nothing without its unit.</summary>
 internal static class ConnectorStatsMapping
 {
-    /// <summary>Null for an empty snapshot, so an unreported stream leaves the field unset.</summary>
-    public static PbStats? ToProto(RemoteStats stats)
+    /// <summary>Null when the accumulator holds nothing and fired no rule, so an unreported stream
+    /// leaves the field unset.</summary>
+    public static PbStats? ToProto(ConnectorStatsAccumulator accumulator) =>
+        ToProto(accumulator.Snapshot(), accumulator.Drops);
+
+    /// <summary>Null for an empty snapshot with no drops. A message carrying only drops is sent, so the
+    /// host can still tell the user a reported value was discarded.</summary>
+    public static PbStats? ToProto(RemoteStats stats, StatsDrop drops = StatsDrop.None)
     {
-        if (stats.IsEmpty)
+        if (stats.IsEmpty && drops == StatsDrop.None)
         {
             return null;
         }
@@ -25,6 +31,7 @@ internal static class ConnectorStatsMapping
             CostUnits = stats.CostUnit is null ? 0 : stats.CostUnits ?? 0,
             CostUnit = stats.CostUnit ?? "",
             SpansDropped = stats.SpansDropped,
+            Drops = (uint)drops,
         };
         foreach (var extra in stats.Extras)
         {

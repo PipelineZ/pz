@@ -329,7 +329,7 @@ internal sealed class PcpConnectorService(
             if (_plans.TryGetValue(request.OpId, out var plan) &&
                 plan.Stats.TryGetValue(request.PartitionId, out var stats))
             {
-                response.Stats = ConnectorStatsMapping.ToProto(stats.Snapshot());
+                response.Stats = ConnectorStatsMapping.ToProto(stats);
             }
 
             return Task.FromResult(response);
@@ -482,7 +482,7 @@ internal sealed class PcpConnectorService(
                     {
                         RowsWritten = result.RowsWritten,
                         BatchesWritten = result.BatchesWritten,
-                        Stats = ConnectorStatsMapping.ToProto(state.Stats.Snapshot()),
+                        Stats = ConnectorStatsMapping.ToProto(state.Stats),
                     };
                 }
             }
@@ -506,7 +506,7 @@ internal sealed class PcpConnectorService(
                 }
             }
 
-            return new AbortResponse { Stats = ConnectorStatsMapping.ToProto(state.Stats.Snapshot()) };
+            return new AbortResponse { Stats = ConnectorStatsMapping.ToProto(state.Stats) };
         });
 
     // ---- cross-cutting ----------------------------------------------------------------------

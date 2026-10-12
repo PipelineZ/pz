@@ -106,6 +106,25 @@ public sealed class StatsReportingTests
         Assert.Null(ConnectorStatsMapping.ToProto(new ConnectorStatsAccumulator().Snapshot()));
     }
 
+    [Fact]
+    public void Mapping_carries_drops_and_sends_a_drops_only_message()
+    {
+        var accumulator = new ConnectorStatsAccumulator();
+        accumulator.AddExtra("Bad Name", 1);
+
+        var proto = ConnectorStatsMapping.ToProto(accumulator);
+
+        Assert.NotNull(proto);
+        Assert.Equal((uint)StatsDrop.InvalidExtraName, proto!.Drops);
+        Assert.Equal(0, proto.Requests);
+
+        accumulator.AddRequests(2);
+        accumulator.AddExtra("x.y", -1);
+        var both = ConnectorStatsMapping.ToProto(accumulator)!;
+        Assert.Equal(2, both.Requests);
+        Assert.Equal((uint)(StatsDrop.InvalidExtraName | StatsDrop.NegativeOrNonFinite), both.Drops);
+    }
+
     // --- helpers ---
 
     private static async Task ServeAsync(PcpConnectorService service, TicketRegistry tickets)
