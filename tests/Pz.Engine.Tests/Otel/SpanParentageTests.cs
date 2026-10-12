@@ -18,9 +18,9 @@ namespace Pz.Engine.Tests.Otel;
 /// every assertion here identifies "my" spans by the unique <see cref="RunPaths.RunId"/> tagged onto the
 /// root span (and then walks down via <see cref="Activity.ParentSpanId"/>, which is a cryptographically
 /// random 8-byte value — collision-proof against whatever unrelated tests happen to run concurrently in
-/// other xunit collections) rather than assuming this listener sees nothing else. This is the ONLY place
-/// in the suite that registers such a listener — <c>tests/Pz.Diagnostics.Tests/Otel/OtelPrimitivesTests.cs</c>
-/// (a separate test process) asserts the no-listener zero-cost case and must never observe one.</summary>
+/// other xunit collections) rather than assuming this listener sees nothing else. This is no longer the
+/// only listener in this project; the no-listener assertions live in <c>Pz.Diagnostics.Tests</c>
+/// (<c>Otel/OtelPrimitivesTests.cs</c>), a separate test process that must never observe one.</summary>
 public sealed class SpanParentageTests : IAsyncLifetime
 {
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"));
@@ -99,6 +99,42 @@ public sealed class SpanParentageTests : IAsyncLifetime
 
         var nodeSpans = activities.Where(a => a.OperationName.StartsWith("node.") && a.ParentSpanId == runSpan.SpanId);
         Assert.Equal(3, nodeSpans.Count());
+    }
+
+    [Fact]
+    public async Task A_failed_node_span_carries_error_status_type_exception_event_and_kind()
+    {
+        var activities = new ConcurrentBag<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == PzActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activities.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var source = new ConnectionDef("mem", "inmemory", new Dictionary<string, object?>(),
+            [new DatasetDef("boom", new Dictionary<string, object?>
+            {
+                ["rows"] = 10L, ["fail_read_at_batch"] = 0, ["fail_message"] = "read exploded\nsecond line",
+            }, null)],
+            "sources/mem.yml");
+        var node = new DagNode(new NodeId("4444444444444444"), NodeKind.SourceLoad, "src_mem__boom",
+            [], null, new SourceDatasetDef(source, source.Datasets[0]));
+
+        var orchestrator = new RunOrchestrator(new KindDispatchingExecutor(), _ctx);
+        var result = await orchestrator.ExecuteAsync(new CompiledDag([node]), new RunOptions(MaxConcurrency: 1), default);
+        Assert.Equal(NodeStatus.Failed, Assert.Single(result.Nodes).Status);
+
+        var runSpan = Assert.Single(activities,
+            a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == _runId);
+        var nodeSpan = Assert.Single(activities,
+            a => a.OperationName == "node.SourceLoad" && a.ParentSpanId == runSpan.SpanId);
+        Assert.Equal(ActivityStatusCode.Error, nodeSpan.Status);
+        Assert.NotNull(nodeSpan.GetTagItem("error.type"));
+        Assert.Equal("SourceLoad", nodeSpan.GetTagItem("pz.node.kind"));
+        Assert.DoesNotContain("\n", nodeSpan.StatusDescription);
+        Assert.Contains(nodeSpan.Events, e => e.Name == "exception");
     }
 
     [Fact]
@@ -188,6 +224,39 @@ public sealed class SpanParentageTests : IAsyncLifetime
             .Where(n => n.Kind is NodeKind.SourceLoad or NodeKind.SinkWrite)
             .Sum(n => n.RowsMoved);
         Assert.Equal(expectedRowsMoved, Interlocked.Read(ref rowsMovedSum));
+    }
+
+    [Fact]
+    public async Task Stage_spans_keep_their_names_and_parents_and_ingest_carries_rows()
+    {
+        var activities = new ConcurrentBag<Activity>();
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = source => source.Name == PzActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = activities.Add,
+        };
+        ActivitySource.AddActivityListener(listener);
+
+        var orchestrator = new RunOrchestrator(new KindDispatchingExecutor(), _ctx);
+        var result = await orchestrator.ExecuteAsync(ThreeNodeDag(rows: 100), new RunOptions(MaxConcurrency: 4), default);
+        Assert.Equal(RunStatus.Success, result.Status);
+
+        var run = Assert.Single(activities,
+            a => a.OperationName == "run" && (string?)a.GetTagItem("pz.run.id") == _runId);
+
+        Activity ChildOf(Activity parent, string name) =>
+            activities.Single(a => a.ParentSpanId == parent.SpanId && a.OperationName == name);
+        Activity NodeSpan(string nodeName) =>
+            activities.Single(a => a.ParentSpanId == run.SpanId && (string?)a.GetTagItem("pz.node.name") == nodeName);
+
+        var source = NodeSpan("src_mem__numbers");
+        var sink = NodeSpan("cap.out");
+
+        Assert.Equal(100L, ChildOf(source, "ingest").GetTagItem("pz.stage.rows"));
+        Assert.NotNull(ChildOf(source, "extract"));
+        Assert.Equal(100L, ChildOf(sink, "write").GetTagItem("pz.stage.rows"));
+        Assert.NotNull(ChildOf(sink, "egress"));
     }
 
     [Fact]

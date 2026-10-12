@@ -202,4 +202,48 @@ public sealed class TraceContextServerInterceptorTests
         Assert.NotEqual(default, seen.Duration);
         Assert.Null(Activity.Current);
     }
+
+    [Fact]
+    public async Task A_failing_rpc_marks_its_span_as_error_with_the_grpc_code_and_no_message()
+    {
+        using var telemetry = Exporting();
+        var interceptor = new TraceContextServerInterceptor(telemetry);
+        Activity? seen = null;
+        var context = new TestServerCallContext(CancellationToken.None, null, "/pz.connector.v1.PzConnector/Configure");
+
+        await Assert.ThrowsAsync<RpcException>(() => interceptor.UnaryServerHandler<string, string>(
+            "req", context, (_, _) =>
+            {
+                seen = Activity.Current;
+                throw new RpcException(new Status(StatusCode.Unavailable, "password=hunter2 refused"));
+            }));
+
+        Assert.NotNull(seen);
+        Assert.Equal(ActivityStatusCode.Error, seen!.Status);
+        Assert.Equal((int)StatusCode.Unavailable, seen.GetTagItem("rpc.grpc.status_code"));
+        Assert.Equal("Unavailable", seen.GetTagItem("error.type"));
+        Assert.DoesNotContain("hunter2", seen.StatusDescription ?? "");
+    }
+
+    [Fact]
+    public async Task A_non_rpc_exception_marks_the_span_with_its_type_name()
+    {
+        using var telemetry = Exporting();
+        var interceptor = new TraceContextServerInterceptor(telemetry);
+        Activity? seen = null;
+        var context = new TestServerCallContext(CancellationToken.None, null, "/pz.connector.v1.PzConnector/Configure");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => interceptor.UnaryServerHandler<string, string>(
+            "req", context, (_, _) =>
+            {
+                seen = Activity.Current;
+                throw new InvalidOperationException("secret");
+            }));
+
+        Assert.NotNull(seen);
+        Assert.Equal(ActivityStatusCode.Error, seen!.Status);
+        Assert.Equal("InvalidOperationException", seen.GetTagItem("error.type"));
+        Assert.Equal("InvalidOperationException", seen.StatusDescription);
+        Assert.DoesNotContain("secret", seen.StatusDescription ?? "");
+    }
 }

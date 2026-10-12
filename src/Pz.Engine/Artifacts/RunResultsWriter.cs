@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Globalization;
 using System.Text.Json;
 using Pz.Core.Artifacts;
+using Pz.Diagnostics.Events;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
 
@@ -28,7 +29,7 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
 {
     private readonly Lock _publishLock = new();
 
-    public void WriteSnapshot(IReadOnlyList<NodeResult> completed, string status)
+    public void WriteSnapshot(IReadOnlyList<NodeResult> completed, string status, RunPhasesPayload? phases = null)
     {
         Directory.CreateDirectory(paths.RunDir);
 
@@ -49,6 +50,7 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
                 writer.WriteString("finishedAt",
                     (time ?? TimeProvider.System).GetUtcNow().UtcDateTime
                         .ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
+                WritePhases(writer, phases);
             }
 
             writer.WriteStartArray("nodes");
@@ -65,6 +67,26 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
         {
             AtomicFile.Write(paths.RunResultsPath, stream => stream.Write(buffer.WrittenSpan));
         }
+    }
+
+    // Terminal snapshot only; keys omitted when null, in the order the event stream uses.
+    private static void WritePhases(Utf8JsonWriter writer, RunPhasesPayload? phases)
+    {
+        if (phases is null) return;
+        writer.WriteStartObject("phases");
+        WriteOptional(writer, "loadMs", phases.LoadMs);
+        WriteOptional(writer, "compileMs", phases.CompileMs);
+        WriteOptional(writer, "validateMs", phases.ValidateMs);
+        WriteOptional(writer, "restoreCheckMs", phases.RestoreCheckMs);
+        WriteOptional(writer, "planMs", phases.PlanMs);
+        WriteOptional(writer, "executeMs", phases.ExecuteMs);
+        WriteOptional(writer, "finalizeMs", phases.FinalizeMs);
+        writer.WriteEndObject();
+    }
+
+    private static void WriteOptional(Utf8JsonWriter writer, string name, long? value)
+    {
+        if (value is { } v) writer.WriteNumber(name, v);
     }
 
     private static void WriteNode(Utf8JsonWriter writer, NodeResult node)
@@ -208,6 +230,9 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
         {
             writer.WriteBoolean("caughtUp", caughtUp);
         }
+
+        // Appended after every older key so documents without facts stay byte-identical.
+        NodeFactsJson.Write(writer, node.Facts);
 
         writer.WriteEndObject();
     }

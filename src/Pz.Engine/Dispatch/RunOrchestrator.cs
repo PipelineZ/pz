@@ -267,6 +267,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
                             catch (OperationCanceledException)
                             {
                                 nodeActivity?.SetTag("pz.node.status", "skipped");
+                                nodeActivity?.SetTag("pz.node.kind", node.Kind.ToString());
                                 RecordSkip(node);
                                 return;
                             }
@@ -296,10 +297,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
                             }
 
                             nodeActivity?.SetTag("pz.node.status", StatusTag(result.Status));
-                            if (result.Status == NodeStatus.Failed)
-                            {
-                                nodeActivity?.SetStatus(ActivityStatusCode.Error);
-                            }
+                            NodeSpanTags.Apply(nodeActivity, result);
 
                             if (result.Status != NodeStatus.Skipped)
                             {

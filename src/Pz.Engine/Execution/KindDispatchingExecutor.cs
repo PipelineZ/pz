@@ -1,9 +1,11 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
 using Pz.Core.Validation;
 using Pz.Engine.Checks;
+using Pz.Engine.Dispatch;
 using Pz.Engine.Resilience;
 
 namespace Pz.Engine.Execution;
@@ -87,7 +89,20 @@ public sealed class KindDispatchingExecutor(
 
     public async Task<NodeResult> ExecuteAsync(DagNode node, RunContext ctx, CancellationToken ct)
     {
+        // Counted here, not read back from ctx.Attempts: that map and ctx.Facts are keyed by node id and shared by
+        // with-clones, so a node refused by an open breaker would otherwise report an earlier execution's numbers.
+        var attempts = new StrongBox<int>(0);
+        var result = await ExecuteWithRetriesAsync(node, ctx, attempts, ct).ConfigureAwait(false);
+        var recorder = attempts.Value > 0 && ctx.Facts.TryGetValue(node.Id, out var r) ? r : null;
+        return result with { Facts = NodeFacts.From(node, recorder, attempts.Value) };
+    }
+
+    private async Task<NodeResult> ExecuteWithRetriesAsync(
+        DagNode node, RunContext ctx, StrongBox<int> attempts, CancellationToken ct)
+    {
+        var nodeSpan = Activity.Current;
         ctx.Events.SafeNodeStarted(node);
+        ctx.FactsFor(node.Id).MarkNodeStart();
         var stopwatch = Stopwatch.StartNew();
         var executor = ExecutorOverride?.Invoke(node.Kind) ?? Resolve(node.Kind);
 
@@ -122,6 +137,9 @@ public sealed class KindDispatchingExecutor(
                 // Published before the call, not after: the executor reads it while running, to tell a
                 // connector which attempt at this write it is looking at.
                 ctx.Attempts[node.Id] = attempt;
+                attempts.Value = attempt;
+                // Stage times and the tier describe the attempt that produced the result, not a failed earlier one.
+                ctx.FactsFor(node.Id).Reset();
                 var inner = await ExecuteAttemptAsync(executor, node, ctx, attempt, ct).ConfigureAwait(false);
                 breaker?.RecordSuccess(ticket);
                 return inner with { Duration = stopwatch.Elapsed };
@@ -164,6 +182,13 @@ public sealed class KindDispatchingExecutor(
                 // must never carry an unsanitized message through to those sinks.
                 var reason = NativeStatementRedactor.SanitizeEngineMessage(ex.Message);
                 ctx.Events.SafeRetryScheduled(node, attempt, policy.MaxAttempts, delayDuration, reason);
+                nodeSpan?.AddEvent(new ActivityEvent("retry_scheduled", tags: new ActivityTagsCollection
+                {
+                    ["attempt"] = attempt,
+                    ["max_attempts"] = policy.MaxAttempts,
+                    ["delay_ms"] = (long)delayDuration.TotalMilliseconds,
+                    ["reason"] = NodeSpanTags.Describe(reason),
+                }));
 
                 // Not wrapped in try/catch: an OperationCanceledException from the backoff wait (e.g. the
                 // run being cancelled mid-delay) must propagate exactly like one from the node itself,

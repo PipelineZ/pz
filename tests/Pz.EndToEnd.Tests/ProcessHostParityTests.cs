@@ -178,8 +178,8 @@ public sealed class ProcessHostParityTests : IDisposable
 
     private static void AssertResultsAndOutputParity(RunArtifacts builtin, RunArtifacts process, bool universalTier)
     {
-        var builtinResults = NormalizeResults(builtin.Results, builtin.RunId);
-        var processResults = NormalizeResults(process.Results, process.RunId);
+        var builtinResults = NormalizeResults(builtin.Results, builtin.RunId, BuiltinConnector);
+        var processResults = NormalizeResults(process.Results, process.RunId, ProcessConnector);
         if (universalTier)
         {
             builtinResults = NormalizeUniversalTier(builtinResults);
@@ -212,21 +212,38 @@ public sealed class ProcessHostParityTests : IDisposable
 
     private static string Quoted(string value) => JsonEncodedText.Encode($"'{value}'").ToString();
 
-    /// <summary>run_results.json. Four entries, all run identity or wall clock:
+    /// <summary>run_results.json. Run identity, the connector alias and wall clock:
     /// <list type="bullet">
     /// <item><c>runId</c> — one per run, minted from the clock plus randomness.</item>
+    /// <item>the node fact <c>connector</c> — the name the host registered the connector under, which the two
+    /// hosts choose differently; the fact itself (present, same position) is still compared.</item>
     /// <item><c>startedAt</c> — wall clock.</item>
     /// <item><c>finishedAt</c> — wall clock.</item>
     /// <item><c>durationMs</c> — measured elapsed time per node.</item>
+    /// <item>every number inside <c>phases</c> and <c>stages</c> — wall-clock timings (see
+    /// <see cref="ZeroTimings"/>).</item>
     /// </list></summary>
-    private static string NormalizeResults(string json, string runId) =>
+    private static string NormalizeResults(string json, string runId, string connectorName) =>
         DurationPattern.Replace(
             FinishedAtPattern.Replace(
                 StartedAtPattern.Replace(
-                    json.Replace(runId, "<run-id>", StringComparison.Ordinal),
+                    ZeroTimings(json.Replace(runId, "<run-id>", StringComparison.Ordinal)
+                        .Replace($"\"connector\":\"{connectorName}\"", "\"connector\":\"<connector>\"", StringComparison.Ordinal)),
                     "\"startedAt\":\"<started-at>\""),
                 "\"finishedAt\":\"<finished-at>\""),
             "\"durationMs\":0");
+
+    /// <summary>Zeroes every number inside the <c>phases</c> and <c>stages</c> objects (wall-clock
+    /// timings) while keeping their keys, so the shape is still compared.</summary>
+    private static string ZeroTimings(string json) =>
+        TimingObjectPattern.Replace(json, m =>
+            "\"" + m.Groups[1].Value + "\":" + NumberPattern.Replace(m.Groups[2].Value, "0"));
+
+    private static readonly Regex TimingObjectPattern =
+        new("\"(phases|stages)\":(\\{[^}]*\\})", RegexOptions.Compiled);
+
+    private static readonly Regex NumberPattern =
+        new("(?<=:)[0-9]+(\\.[0-9]+)?", RegexOptions.Compiled);
 
     /// <summary>Two further entries, applied ONLY by the force_universal fact so the native-tier fact
     /// still proves parity without them:

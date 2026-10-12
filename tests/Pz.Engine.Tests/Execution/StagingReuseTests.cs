@@ -81,7 +81,8 @@ public sealed class StagingReuseTests : IAsyncLifetime
             [node.Id] = new(priorPaths.StagingDbPath, 5, new PriorWatermark("id", "bigint", "4")),
         });
 
-        var result = await new SourceLoadExecutor().ExecuteAsync(node, Ctx(reuse), CancellationToken.None);
+        var ctx = Ctx(reuse);
+        var result = await new SourceLoadExecutor().ExecuteAsync(node, ctx, CancellationToken.None);
 
         Assert.Equal(NodeStatus.Success, result.Status);
         Assert.Equal(5, result.RowsMoved);
@@ -91,6 +92,9 @@ public sealed class StagingReuseTests : IAsyncLifetime
         Assert.Equal("current", result.WatermarkCandidate.RunId);
 
         Assert.Equal(5L, await _duck.ScalarAsync<long>("select count(*) from staging.src_crm__orders", default));
+        // Nothing was extracted, so no data-plane tier ran and no stage was timed.
+        Assert.Null(ctx.FactsFor(node.Id).Strategy);
+        Assert.Null(ctx.FactsFor(node.Id).Stages());
     }
 
     [Fact]

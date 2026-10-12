@@ -50,15 +50,21 @@ public sealed record BreakerStateChangedEvent(DateTimeOffset At, string RunId, s
 /// <see cref="Cdc"/> is additive (also defaulted): raw per-op change
 /// counts for a cdc-shaped SourceLoad's successful collapse, null for every non-cdc dataset.
 /// <see cref="CaughtUp"/> is additive (also defaulted): whether a windowed source with a stopping point
-/// (<c>until</c>, or a SQL-declared ceiling) has caught up; null for every other node.</summary>
+/// (<c>until</c>, or a SQL-declared ceiling) has caught up; null for every other node.
+/// <see cref="Connector"/>, <see cref="Connection"/>, <see cref="Strategy"/> (<c>native_scan</c>,
+/// <c>native_copy</c> or <c>arrow</c>), <see cref="Stages"/> and <see cref="Attempts"/> are additive (also
+/// defaulted): the node's connector facts, null when the node never ran through the executor.</summary>
 public sealed record NodeCompletedEvent(DateTimeOffset At, string RunId, string NodeId, string Kind,
     string Name, string Status, long Rows, long DurationMs, string? ErrorCode, string? ErrorMessage,
     NodeTimingsPayload? Timings, string? Provenance = null, OpStatsPayload? Ops = null,
     PartitionStatsPayload? Partitions = null, DeliveryPayload? Delivery = null,
-    CdcPayload? Cdc = null, bool? CaughtUp = null) : RunEvent(At, RunId);
+    CdcPayload? Cdc = null, bool? CaughtUp = null, string? Connector = null, string? Connection = null,
+    string? Strategy = null, StageTimingsPayload? Stages = null, int? Attempts = null) : RunEvent(At, RunId);
 
+/// <summary><see cref="Phases"/> is additive (also defaulted): per-phase milliseconds for the phases that
+/// ran before this event, null when none were measured.</summary>
 public sealed record RunCompletedEvent(DateTimeOffset At, string RunId, string Status, int Succeeded,
-    int Failed, int Skipped, long DurationMs) : RunEvent(At, RunId);
+    int Failed, int Skipped, long DurationMs, RunPhasesPayload? Phases = null) : RunEvent(At, RunId);
 
 /// <summary>One sweep of <c>.pz/runs</c> at the end of a run.
 /// Published by <c>RunCommand</c> (not by <c>RunEventPublisher</c>) — retention is a CLI-side finalize
@@ -121,6 +127,18 @@ public sealed record ConnectorLogEvent(DateTimeOffset At, string RunId, string L
     string Message) : RunEvent(At, RunId);
 
 public sealed record NodeTimingsPayload(long ProducerStallMs, long ConsumerStallMs);
+
+/// <summary>Per-stage wall time of a node's last attempt, and each stage's start in ms from the node's start
+/// (its <c>node_started</c>). Every member is nullable and omitted when null. Each duration is that stage's own
+/// wall time, and on the Arrow path producer and consumer overlap, so the stages do not sum to the node's
+/// <c>durationMs</c>.</summary>
+public sealed record StageTimingsPayload(long? ExtractMs, long? IngestMs, long? EgressMs, long? WriteMs,
+    long? ExtractStartMs = null, long? IngestStartMs = null, long? EgressStartMs = null, long? WriteStartMs = null);
+
+/// <summary>Per-phase wall time of a run. Durations only; every member is nullable and omitted when null
+/// (a phase that did not run). Phases are sequential, but a phase measured up to an event may be partial.</summary>
+public sealed record RunPhasesPayload(long? LoadMs, long? CompileMs, long? ValidateMs, long? RestoreCheckMs,
+    long? PlanMs, long? ExecuteMs, long? FinalizeMs);
 
 /// <summary>BCL-only twin of <c>Pz.Engine.Resilience.OpStats</c> — Pz.Diagnostics
 /// cannot reference Pz.Engine, so <c>RunEventPublisher.ToOpsPayload</c> maps one onto the

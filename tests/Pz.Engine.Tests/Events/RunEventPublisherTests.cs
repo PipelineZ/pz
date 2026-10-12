@@ -32,6 +32,37 @@ public class RunEventPublisherTests
     }
 
     [Fact]
+    public async Task NodeCompleted_maps_facts_and_omits_zero_attempts()
+    {
+        var facts = new NodeFacts("postgres", "warehouse", NodeFacts.NativeScan,
+            new StageTimings(null, TimeSpan.FromMilliseconds(700), null, null,
+                IngestStart: TimeSpan.FromMilliseconds(12)), 1);
+        var withFacts = new NodeResult(new NodeId("1111111111111111"), NodeKind.SourceLoad, "src", NodeStatus.Success,
+            5, TimeSpan.FromSeconds(1), null, Facts: facts);
+        var noAttempt = withFacts with { Facts = facts with { Attempts = 0 } };
+        var bus = new RunEventBus();
+        var publisher = new RunEventPublisher(bus, "run-1", TimeProvider.System);
+
+        publisher.NodeCompleted(withFacts);
+        publisher.NodeCompleted(noAttempt);
+        bus.Complete();
+        var events = new List<RunEvent>();
+        await foreach (var evt in bus.ReadAllAsync()) events.Add(evt);
+        var first = Assert.IsType<NodeCompletedEvent>(events[0]);
+        var second = Assert.IsType<NodeCompletedEvent>(events[1]);
+
+        Assert.Equal("postgres", first.Connector);
+        Assert.Equal("warehouse", first.Connection);
+        Assert.Equal("native_scan", first.Strategy);
+        Assert.Equal(700, first.Stages!.IngestMs);
+        Assert.Null(first.Stages.ExtractMs);
+        Assert.Equal(12, first.Stages.IngestStartMs);
+        Assert.Null(first.Stages.ExtractStartMs);
+        Assert.Equal(1, first.Attempts);
+        Assert.Null(second.Attempts);
+    }
+
+    [Fact]
     public async Task NodeCompleted_maps_all_fields()
     {
         var bus = new RunEventBus();
@@ -356,6 +387,35 @@ public class RunEventPublisherTests
         Assert.IsType<NodeProgressEvent>(events[1]);
         Assert.IsType<NodeProgressEvent>(events[2]);
         Assert.IsType<NodeCompletedEvent>(events[3]);
+    }
+
+    private static async Task<RunCompletedEvent> CompleteOnce(Pz.Diagnostics.Otel.RunPhaseClock? clock)
+    {
+        var bus = new RunEventBus();
+        var publisher = new RunEventPublisher(bus, "run-1", TimeProvider.System, clock);
+        publisher.RunCompleted("run-1", RunStatus.Success, 1, 0, 0, TimeSpan.FromSeconds(1));
+        bus.Complete();
+        var events = new List<RunEvent>();
+        await foreach (var evt in bus.ReadAllAsync()) events.Add(evt);
+        return Assert.IsType<RunCompletedEvent>(Assert.Single(events));
+    }
+
+    [Fact]
+    public async Task RunCompleted_carries_phases_when_a_clock_is_given()
+    {
+        var clock = new Pz.Diagnostics.Otel.RunPhaseClock(TimeProvider.System);
+        using (clock.Begin(Pz.Diagnostics.Otel.RunPhaseClock.Load)) { }
+
+        var evt = await CompleteOnce(clock);
+
+        Assert.NotNull(evt.Phases!.LoadMs);
+        Assert.Null(evt.Phases.FinalizeMs);
+    }
+
+    [Fact]
+    public async Task RunCompleted_without_a_clock_has_no_phases()
+    {
+        Assert.Null((await CompleteOnce(null)).Phases);
     }
 
     [Fact]

@@ -51,6 +51,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 tempfile = "3"
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 # A connector author's own TLS code with rustls's default features: the SDK's TLS stack must not make rustls's
 # implicit provider ambiguous for it (see telemetry::headers_file tests).
 rustls = "0.23"

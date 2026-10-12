@@ -222,6 +222,24 @@ public sealed class RunResultsReaderTests : IDisposable
     }
 
     [Fact]
+    public void Reader_tolerates_new_keys()
+    {
+        var paths = new RunPaths(_projectDir, "20260101T000000000Z-0001");
+        var node = new NodeResult(new NodeId("1111111111111111"), NodeKind.SourceLoad, "src", NodeStatus.Success, 7,
+            TimeSpan.FromMilliseconds(5), null,
+            Facts: new NodeFacts("s3", "lake", NodeFacts.Arrow,
+                new StageTimings(TimeSpan.FromMilliseconds(1), null, null, null), 1));
+        new RunResultsWriter(paths, "2026-01-01T00:00:00.000Z").WriteSnapshot([node], "success");
+
+        var prior = RunResultsReader.ReadLatest(_projectDir);
+
+        var read = Assert.Single(prior!.Nodes);
+        Assert.Equal("1111111111111111", read.Id);
+        Assert.Equal("success", read.Status);
+        Assert.Equal(7, read.Rows);
+    }
+
+    [Fact]
     public void Writer_records_caught_up_only_where_the_engine_set_it()
     {
         var dir = Path.Combine(Path.GetTempPath(), "pz-tests", Guid.NewGuid().ToString("N"));

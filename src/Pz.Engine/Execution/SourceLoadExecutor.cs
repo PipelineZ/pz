@@ -22,6 +22,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
     public async Task<NodeResult> ExecuteAsync(DagNode node, RunContext ctx, CancellationToken ct)
     {
         var def = (SourceDatasetDef)node.Definition;
+        var facts = ctx.FactsFor(node.Id);
 
         // A manifested node tries the copy path FIRST — before the connector is even resolved, because
         // "the flaky source is never contacted" is the point. A null return means a guard failed (table
@@ -223,7 +224,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
         {
             // No separate extract/ingest split for the native-scan tier: DuckDB reads and loads in one
             // statement, so there is no seam to split on.
-            using var ingestActivity = PzActivitySource.Instance.StartActivity("ingest");
+            facts.Strategy = NodeFacts.NativeScan;
+            using var ingestStage = facts.Stage("ingest");
 
             foreach (var statement in scan.SetupStatements)
             {
@@ -253,6 +255,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
             var nativeRows = windowUpper is not null && !upperInclusive
                 ? await TrimToWindowAsync(ctx, def, nativeTable, windowLower, windowUpper, upperInclusive, ct).ConfigureAwait(false)
                 : await ctx.Duck.ScalarAsync<long>($"select count(*) from {nativeTable}", ct).ConfigureAwait(false);
+
+            // The stage is the landing statement plus the row count; watermark capture, lint and the drift gate
+            // below are not part of it.
+            ingestStage.SetRows(nativeRows);
+            ingestStage.Dispose();
 
             var (nativeWatermarkError, nativeWatermarkCandidate) =
                 await CaptureWatermarkAsync(ctx, def, nativeTable, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
@@ -359,7 +366,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // whatever is currently ambient, i.e. the node span) and Activity.Current explicitly restored
         // right after so "ingest" parents to the node span too, not to "extract".
         var nodeActivity = Activity.Current;
-        using var extractActivity = PzActivitySource.Instance.StartActivity("extract");
+        facts.Strategy = NodeFacts.Arrow;
+        using var extractStage = facts.Stage("extract");
 
         // Streaming sources yield partitions lazily (the point is a source over millions of small files):
         // the list path below starts ALL partition tasks at once, backpressured only by the bounded
@@ -383,14 +391,17 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // straight into the canonical table.
             var landingTable = shape == ResolvedReadShape.Cdc ? tableName + "__changes" : tableName;
             long rows;
-            using (PzActivitySource.Instance.StartActivity("ingest"))
+            using (var ingestStage = facts.Stage("ingest"))
             {
                 rows = await ctx.Duck.IngestArrowAsync(
                     landingTable, schema, ReportProgress(channel.Reader, node, ctx, stall, ct), ct).ConfigureAwait(false);
+                ingestStage.SetRows(rows);
             }
 
             // Success: no teardown needed, just join the producer.
             await pump.ConfigureAwait(false);
+            // Extract ends with the pump; the collapse, trim, watermark and drift gate below are not extraction.
+            extractStage.Dispose();
 
             // After a clean read, collect the connector's opaque sync-state candidate (if the
             // partition emits one). Feed-shaped datasets are single-partition (guarded above), so there is
@@ -488,6 +499,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
             {
                 // Expected: this is exactly the teardown cancellation above unwinding the pump, not a new
                 // failure — the original consumer exception (about to be rethrown) must not be masked by it.
+            }
+            finally
+            {
+                extractStage.Dispose();
             }
 
             throw;

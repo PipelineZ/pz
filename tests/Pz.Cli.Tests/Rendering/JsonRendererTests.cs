@@ -107,6 +107,50 @@ public class JsonRendererTests
     }
 
     [Fact]
+    public void Node_completed_with_facts_appends_them_after_existing_fields()
+    {
+        var at = new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero);
+        var evt = new NodeCompletedEvent(at, "r1", "n1", "SourceLoad", "src_pg__orders", "success", 42, 1500,
+            null, null, null, CaughtUp: true, Connector: "postgres", Connection: "warehouse", Strategy: "arrow",
+            Stages: new StageTimingsPayload(900, 1100, null, null, ExtractStartMs: 3, IngestStartMs: 4), Attempts: 2);
+
+        var line = Encoding.UTF8.GetString(Render([evt])).TrimEnd('\n');
+
+        Assert.EndsWith(
+            "\"caughtUp\":true,\"connector\":\"postgres\",\"connection\":\"warehouse\",\"strategy\":\"arrow\"," +
+            "\"stages\":{\"extractMs\":900,\"ingestMs\":1100,\"extractStartMs\":3,\"ingestStartMs\":4},\"attempts\":2}",
+            line);
+    }
+
+    [Fact]
+    public void Node_completed_without_facts_is_byte_identical_to_the_old_shape()
+    {
+        var at = new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero);
+        var evt = new NodeCompletedEvent(at, "r1", "n1", "Pipeline", "p", "success", 3, 10, null, null, null);
+
+        var line = Encoding.UTF8.GetString(Render([evt])).TrimEnd('\n');
+
+        Assert.DoesNotContain("connector", line);
+        Assert.DoesNotContain("stages", line);
+        Assert.DoesNotContain("attempts", line);
+        Assert.EndsWith("\"timings\":null}", line);
+    }
+
+    [Fact]
+    public void Run_completed_with_phases_writes_only_phases_that_ran()
+    {
+        var at = new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero);
+        var evt = new RunCompletedEvent(at, "r1", "success", 3, 0, 0, 5000,
+            new RunPhasesPayload(10, 20, 30, 400, 50, 4400, null));
+
+        var line = Encoding.UTF8.GetString(Render([evt])).TrimEnd('\n');
+
+        Assert.EndsWith(
+            "\"durationMs\":5000,\"phases\":{\"loadMs\":10,\"compileMs\":20,\"validateMs\":30," +
+            "\"restoreCheckMs\":400,\"planMs\":50,\"executeMs\":4400}}", line);
+    }
+
+    [Fact]
     public void Node_completed_with_timings_serializes_nested_object()
     {
         const string runId = "run-1";

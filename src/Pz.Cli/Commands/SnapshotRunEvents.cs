@@ -1,4 +1,5 @@
 using Pz.Core.Dag;
+using Pz.Diagnostics.Events;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.Dispatch;
@@ -88,11 +89,12 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
     /// (latched) — repeated failures (e.g. one per remaining node) do not spam stderr again.
     /// <paramref name="eventsDropped"/> is null for every call except the composition site's
     /// one deliberate post-dispose call — see <see cref="IRunArtifactStore.WriteSnapshot"/>.</summary>
-    public void TryWriteSnapshot(IReadOnlyList<NodeResult> completed, string status, long? eventsDropped = null)
+    public void TryWriteSnapshot(IReadOnlyList<NodeResult> completed, string status, long? eventsDropped = null,
+        RunPhasesPayload? phases = null)
     {
         try
         {
-            artifacts.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped);
+            artifacts.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped, phases);
         }
         catch (Exception ex)
         {

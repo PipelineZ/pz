@@ -26,7 +26,7 @@ use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::trace::{BatchConfigBuilder, BatchSpanProcessor, SdkTracerProvider, Tracer};
 use opentelemetry_sdk::Resource;
 use std::any::TypeId;
-use tower_http::classify::{GrpcErrorsAsFailures, SharedClassifier};
+use tower_http::classify::{GrpcErrorsAsFailures, GrpcFailureClass, SharedClassifier};
 use tower_http::trace::TraceLayer;
 
 use tracing::span::{Attributes, Id, Record};
@@ -623,6 +623,9 @@ impl<B> tower_http::trace::MakeSpan<B> for PcpMakeSpan {
             "pcp",
             otel.name = %name,
             otel.kind = "server",
+            otel.status_code = tracing::field::Empty,
+            rpc.grpc.status_code = tracing::field::Empty,
+            error.r#type = tracing::field::Empty,
             pz.instance = tracing::field::Empty
         );
         // Recorded only once `Configure` has named the instance: the RPCs that run before it
@@ -640,8 +643,31 @@ impl<B> tower_http::trace::MakeSpan<B> for PcpMakeSpan {
     }
 }
 
+/// Marks a failed RPC's span as an error with its gRPC code name, never the connector's message: a
+/// status message can carry connection details, so the code (or "transport") is all that is recorded.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PcpOnFailure;
+
+impl tower_http::trace::OnFailure<GrpcFailureClass> for PcpOnFailure {
+    fn on_failure(&mut self, failure: GrpcFailureClass, _latency: Duration, span: &Span) {
+        span.record("otel.status_code", "error");
+        match failure {
+            GrpcFailureClass::Status(status) => {
+                span.record("rpc.grpc.status_code", i64::from(status.code_raw()));
+                match status.code() {
+                    Some(code) => span.record("error.type", format!("{code:?}").as_str()),
+                    None => span.record("error.type", "unknown"),
+                };
+            }
+            _ => {
+                span.record("error.type", "transport");
+            }
+        }
+    }
+}
+
 pub(crate) type RpcTraceLayer =
-    TraceLayer<SharedClassifier<GrpcErrorsAsFailures>, PcpMakeSpan, (), (), (), (), ()>;
+    TraceLayer<SharedClassifier<GrpcErrorsAsFailures>, PcpMakeSpan, (), (), (), (), PcpOnFailure>;
 
 pub(crate) fn rpc_layer(instance: Arc<Mutex<Option<String>>>) -> RpcTraceLayer {
     TraceLayer::new_for_grpc()
@@ -650,13 +676,67 @@ pub(crate) fn rpc_layer(instance: Arc<Mutex<Option<String>>>) -> RpcTraceLayer {
         .on_response(())
         .on_body_chunk(())
         .on_eos(())
-        .on_failure(())
+        .on_failure(PcpOnFailure)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use opentelemetry::trace::TraceContextExt;
+
+    #[test]
+    fn a_grpc_failure_marks_the_span_as_error_with_its_code() {
+        use opentelemetry::trace::{Status, TracerProvider as _};
+        use opentelemetry::Value;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tower_http::classify::{ClassifiedResponse, ClassifyResponse};
+        use tower_http::trace::OnFailure;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!(
+                "pcp",
+                otel.name = "pcp.Configure",
+                otel.kind = "server",
+                otel.status_code = tracing::field::Empty,
+                rpc.grpc.status_code = tracing::field::Empty,
+                error.r#type = tracing::field::Empty
+            );
+            let response = http::Response::builder()
+                .header("grpc-status", "14")
+                .body(())
+                .unwrap();
+            let ClassifiedResponse::Ready(Err(failure)) =
+                GrpcErrorsAsFailures::new().classify_response(&response)
+            else {
+                panic!("grpc-status 14 must classify as a failure");
+            };
+            PcpOnFailure.on_failure(failure, std::time::Duration::from_millis(5), &span);
+            drop(span);
+        });
+
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans.iter().find(|s| s.name == "pcp.Configure").unwrap();
+        assert!(matches!(span.status, Status::Error { .. }));
+        let attr = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.clone())
+        };
+        assert_eq!(attr("rpc.grpc.status_code"), Some(Value::I64(14)));
+        assert_eq!(
+            attr("error.type").map(|v| v.to_string()),
+            Some("Unavailable".to_string())
+        );
+    }
 
     #[test]
     fn a_traceparent_header_becomes_the_parent_context() {

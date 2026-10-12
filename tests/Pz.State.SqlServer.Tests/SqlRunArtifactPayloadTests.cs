@@ -22,6 +22,21 @@ public sealed class SqlRunArtifactPayloadTests
             Observed: observed);
 
     [Fact]
+    public void Payload_carries_facts_with_the_run_results_shape()
+    {
+        var node = new NodeResult(new NodeId("1111111111111111"), NodeKind.SinkWrite, "lake.out", NodeStatus.Success, 9,
+            TimeSpan.FromSeconds(1), null,
+            Facts: new NodeFacts("s3", "lake", NodeFacts.NativeCopy,
+                new StageTimings(null, null, null, TimeSpan.FromMilliseconds(800)), 1));
+
+        var json = SqlRunArtifactStore.SerializePayload(node);
+
+        Assert.Equal(
+            "{\"connector\":\"s3\",\"connection\":\"lake\",\"strategy\":\"native_copy\",\"stages\":{\"writeMs\":800},\"attempts\":1}",
+            json);
+    }
+
+    [Fact]
     public void SerializePayload_then_ParseObservedSchema_round_trips_columns_and_hints_hash()
     {
         var observed = new ObservedSchema(

@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Pz.Core.Validation;
+using Pz.Diagnostics.Events;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
@@ -90,8 +91,9 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// upserts the same rows again: every statement here is `UPDATE ... IF @@ROWCOUNT = 0 INSERT`, so
     /// replaying it produces the same end state, never a duplicate.</summary>
     public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed, string status,
-        long? eventsDropped = null)
+        long? eventsDropped = null, RunPhasesPayload? phases = null)
     {
+        // phases: not stored -- the SQL backend keeps node results and the run header only.
         // Checked up front, before any connection/transaction opens: SQL Server assigns an over-long
         // input value into the matching sp_executesql declared length silently (no truncation warning,
         // no error), so a value past that length would be stored -- and later read back -- truncated
@@ -577,7 +579,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     internal static string? SerializePayload(NodeResult node)
     {
         if (node.Timings is null && node.Ops is null && node.Partitions is null &&
-            node.Delivery is null && node.Cdc is null && node.Observed is null)
+            node.Delivery is null && node.Cdc is null && node.Observed is null && node.Facts is null)
         {
             return null;
         }
@@ -657,6 +659,8 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 writer.WriteString("hintsHash", observed.HintsHash);
                 writer.WriteEndObject();
             }
+
+            NodeFactsJson.Write(writer, node.Facts);
 
             writer.WriteEndObject();
         }

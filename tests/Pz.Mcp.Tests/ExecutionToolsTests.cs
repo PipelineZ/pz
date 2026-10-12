@@ -367,8 +367,9 @@ public class ExecutionToolsTests
     private sealed class NotTheLocalStore(Pz.Engine.Artifacts.IRunArtifactStore inner) : Pz.Engine.Artifacts.IRunArtifactStore
     {
         public void WriteSnapshot(string runId, string startedAtIso,
-            IReadOnlyList<Pz.Engine.Execution.NodeResult> completed, string status, long? eventsDropped = null) =>
-            inner.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped);
+            IReadOnlyList<Pz.Engine.Execution.NodeResult> completed, string status, long? eventsDropped = null,
+            Pz.Diagnostics.Events.RunPhasesPayload? phases = null) =>
+            inner.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped, phases);
 
         public Pz.Engine.Artifacts.PriorRun? ReadLatest() => inner.ReadLatest();
 

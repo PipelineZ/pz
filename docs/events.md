@@ -217,6 +217,11 @@ and recorded into this retry's results) even though such nodes lie outside the e
 | `delivery` | object \| null | `{abortSemantics, rowsVisible, resumedRows}` — honest-abort / delivery-resume stats. Omitted for nodes without delivery semantics: only present on a failed sink node whose connector declares non-DiscardsAll abort semantics, or a successful sink node that resumed past a delivery checkpoint. |
 | `cdc` | object \| null | `{inserts, updates, deletes, position}` — raw per-op change counts from the last-event-per-key collapse, never net counts. Omitted for every non-cdc dataset; present only on a successful cdc-shaped SourceLoad. |
 | `caughtUp` | boolean | Optional (append-only addition). Present only on a successful `SourceLoad` of a windowed dataset with a stop: a YAML `until` (a value, or `now` for the time the run started), or a SQL-declared ceiling that stops at a constant (`least(watermark() + 500, 2000)` stops at 2000; a rolling `watermark() + interval 7 day` has no stop and reports nothing). `true` when the window this run loaded reaches the stop, so the source is caught up once the run commits; `false` while the window falls short. Absent on a `pz retry` node reused from the failed run. A caller driving a backfill repeats `pz run` while any node reports `false`. The same value is written to `run_results.json`'s `nodes[].caughtUp`. |
+| `connector` | string | Optional (append-only addition). The connector type the node read or wrote through (`postgres`, `s3`, …). `SourceLoad`/`SinkWrite` that ran through the executor only. |
+| `connection` | string | Optional (append-only addition). The connection name from `connections.yml`. Same presence as `connector`. |
+| `strategy` | string | Optional (append-only addition). The data-plane tier that actually moved the data: `native_scan`, `native_copy` or `arrow`. Present only when a tier ran: absent for a node reused from a prior run, one that failed before a tier began, and one a breaker refused. |
+| `stages` | object | Optional (append-only addition). `{extractMs?, ingestMs?, egressMs?, writeMs?, extractStartMs?, ingestStartMs?, egressStartMs?, writeStartMs?}` — each stage's own wall time in the node's last attempt, and when it began counted from the node's start. On the `arrow` tier producer and consumer run concurrently, so stages overlap and do not sum to `durationMs`; `timings` says which side waited. `native_scan` reports only `ingestMs`, `native_copy` only `writeMs`. |
+| `attempts` | number | Optional (append-only addition). How many times the node was executed (1 + retries). Absent when no attempt ran (a breaker refused it, or the node was skipped or carried forward). |
 
 A failed `Check` node's `errorMessage` records up to 5 offending row values verbatim (mirrored in
 `run_results.json`) — do not enable checks on columns holding sensitive/PII values if that isn't
@@ -284,6 +289,23 @@ successful sink node that resumed past a delivery checkpoint — same `run_resul
 Present only for a successful cdc-shaped (`mode: cdc`) SourceLoad — same `run_results.json` `cdc`
 object, just camelCase field names instead of snake_case.
 
+`stages` (when present):
+
+| Field | Type | Description |
+|---|---|---|
+| `extractMs` | number | Optional. Wall time of the extraction stage (the connector producing batches). |
+| `ingestMs` | number | Optional. Wall time of the stage landing data in the staging database. |
+| `egressMs` | number | Optional. Wall time of the stage reading the result out of staging. |
+| `writeMs` | number | Optional. Wall time of the stage writing to the sink. |
+| `extractStartMs` | number | Optional. When the extraction stage began, in ms after the node started (its `node_started`). |
+| `ingestStartMs` | number | Optional. When the ingest stage began, in ms after the node started. |
+| `egressStartMs` | number | Optional. When the egress stage began, in ms after the node started. |
+| `writeStartMs` | number | Optional. When the write stage began, in ms after the node started. |
+
+Each member is omitted when that stage did not run for the node's tier. A stage's start is present exactly when
+its duration is. Offsets count from the node's start, not the last attempt's, so on a retried node they include the
+earlier attempts and their backoff: `node_started` time + `<stage>StartMs` is when the stage began.
+
 ## `run_completed`
 
 Fired exactly once, after every node in the effective set has reached a terminal status.
@@ -295,6 +317,21 @@ Fired exactly once, after every node in the effective set has reached a terminal
 | `failed` | number | Count of nodes with `status: failed`. |
 | `skipped` | number | Count of nodes with `status: skipped`. |
 | `durationMs` | number | Wall-clock duration of the whole run, in milliseconds. |
+| `phases` | object | Optional (append-only addition). Milliseconds per phase that ran before this event: `{loadMs, compileMs, validateMs, restoreCheckMs, planMs, executeMs}`. `executeMs` is measured up to this event. `finalizeMs` is never here (finalize runs after it) and appears only in `run_results.json`'s `phases`. |
+
+`phases` (when present):
+
+| Field | Type | Description |
+|---|---|---|
+| `loadMs` | number | Optional. Milliseconds in the `load` phase. |
+| `compileMs` | number | Optional. Milliseconds in the `compile` phase. |
+| `validateMs` | number | Optional. Milliseconds in the `validate` phase. |
+| `restoreCheckMs` | number | Optional. Milliseconds in the `restore_check` phase. |
+| `planMs` | number | Optional. Milliseconds in the `plan` phase. |
+| `executeMs` | number | Optional. Milliseconds in the `execute` phase, measured up to this event. |
+| `finalizeMs` | number | Optional. Never present on this event (finalize runs after it). |
+
+Each member is omitted when that phase did not run before this event.
 
 ## `breaker_state_changed`
 

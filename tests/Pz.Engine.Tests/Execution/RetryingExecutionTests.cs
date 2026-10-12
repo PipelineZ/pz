@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit.Reference;
 using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.DuckDb;
+using Pz.Diagnostics.Otel;
 using Pz.Engine.Execution;
 using Pz.Engine.Planning;
 using Pz.Engine.Resilience;
@@ -72,6 +75,237 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
 
     private static KindDispatchingExecutor NoDelayExecutor(RetryPolicy? policy = null, Random? jitter = null) =>
         new(policy, jitter ?? new FixedRandom(0.5), delay: (_, _) => Task.CompletedTask);
+
+    [Fact]
+    public async Task Successful_load_reports_connector_connection_and_one_attempt()
+    {
+        var result = await NoDelayExecutor().ExecuteAsync(SourceLoadNode(100), _ctx, default);
+
+        var facts = Assert.IsType<NodeFacts>(result.Facts);
+        Assert.Equal("inmemory", facts.Connector);
+        Assert.Equal("mem", facts.Connection);
+        Assert.Equal(1, facts.Attempts);
+        Assert.Equal(NodeFacts.Arrow, facts.Strategy);
+        Assert.NotNull(facts.Stages!.Extract);
+        Assert.NotNull(facts.Stages.Ingest);
+    }
+
+    [Fact]
+    public async Task Stage_times_are_recorded_with_no_listener()
+    {
+        // SpanParentageTests registers a listener only inside its own test bodies; this one runs with
+        // whatever is ambient and must not depend on a listener existing.
+        var result = await NoDelayExecutor().ExecuteAsync(SourceLoadNode(500, dataset: "nolistener"), _ctx, default);
+
+        Assert.Equal(NodeFacts.Arrow, result.Facts!.Strategy);
+        Assert.NotNull(result.Facts.Stages!.Extract);
+        Assert.NotNull(result.Facts.Stages.Ingest);
+        Assert.Null(result.Facts.Stages.Write);
+        Assert.True(result.Facts.Stages.ExtractStart >= TimeSpan.Zero);
+        Assert.True(result.Facts.Stages.IngestStart >= TimeSpan.Zero);
+        Assert.Null(result.Facts.Stages.WriteStart);
+    }
+
+    [Fact]
+    public async Task Extract_stage_ends_with_the_pump_before_any_later_staging_work()
+    {
+        var extractStopped = false;
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => s.Name == PzActivitySource.Name,
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            ActivityStopped = a => { if (a.OperationName == "extract") extractStopped = true; },
+        };
+        ActivitySource.AddActivityListener(listener);
+        var spy = new AfterIngestSpy(_duck, () => extractStopped);
+
+        // Incremental, so the watermark capture queries staging after the ingest.
+        var dataset = new DatasetDef("extractends", new Dictionary<string, object?> { ["rows"] = 300L }, null,
+            new SyncModeDef(SyncMode.Incremental, new IncrementalDef("id")));
+        var source = new ConnectionDef("mem", "inmemory", new Dictionary<string, object?>(), [dataset], "sources/mem.yml");
+        var node = new DagNode(new NodeId("eeeeeeeeeeeeeeee"), NodeKind.SourceLoad, "src_mem__extractends", [], null,
+            new SourceDatasetDef(source, dataset));
+
+        var result = await new SourceLoadExecutor().ExecuteAsync(node, _ctx with { Duck = spy }, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.True(spy.CallsAfterIngest > 0, "expected staging work after the ingest (watermark, drift gate)");
+        Assert.True(spy.ExtractStoppedBeforeEveryLaterCall, "extract span was still open during post-ingest work");
+    }
+
+    [Fact]
+    public async Task Sink_failing_before_any_tier_ran_reports_no_strategy()
+    {
+        var sinkConn = new ConnectionDef("ghost", "not-registered", new Dictionary<string, object?>(), [], "connections.yml");
+        var node = new DagNode(new NodeId("dddddddddddddddd"), NodeKind.SinkWrite, "ghost.mart", [], null,
+            new SinkOutputDef(sinkConn, new OutputDef("mart", "p", "append", "fail_on_change",
+                new Dictionary<string, object?>())));
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, _ctx, default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Null(_ctx.FactsFor(node.Id).Strategy);
+    }
+
+    private sealed class AfterIngestSpy(IDuckSession inner, Func<bool> extractStopped) : IDuckSession
+    {
+        private bool _ingested;
+        public int CallsAfterIngest { get; private set; }
+        public bool ExtractStoppedBeforeEveryLaterCall { get; private set; } = true;
+
+        private void Observe()
+        {
+            if (!_ingested) return;
+            CallsAfterIngest++;
+            if (!extractStopped()) ExtractStoppedBeforeEveryLaterCall = false;
+        }
+
+        public Task ExecuteAsync(string sql, CancellationToken ct = default) { Observe(); return inner.ExecuteAsync(sql, ct); }
+
+        public Task<T> ScalarAsync<T>(string sql, CancellationToken ct = default) { Observe(); return inner.ScalarAsync<T>(sql, ct); }
+
+        public async Task<long> IngestArrowAsync(string targetTable, Schema schema,
+            IAsyncEnumerable<RecordBatch> batches, CancellationToken ct = default)
+        {
+            var rows = await inner.IngestArrowAsync(targetTable, schema, batches, ct);
+            _ingested = true;
+            return rows;
+        }
+
+        public IAsyncEnumerable<RecordBatch> QueryArrowAsync(string sql, int targetBatchBytes = 32 * 1024 * 1024,
+            CancellationToken ct = default) => inner.QueryArrowAsync(sql, targetBatchBytes, ct);
+
+        public Task<Schema> GetResultSchemaAsync(string sql, CancellationToken ct = default)
+        {
+            Observe();
+            return inner.GetResultSchemaAsync(sql, ct);
+        }
+
+        public Task CreateEmptyTableAsync(string targetTable, Schema schema, CancellationToken ct = default) =>
+            inner.CreateEmptyTableAsync(targetTable, schema, ct);
+
+        public Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, Schema? schema = null,
+            CancellationToken ct = default) => inner.AppendArrowBatchAsync(targetTable, batch, schema, ct);
+
+        public Task ExecuteTransactionAsync(IReadOnlyList<string> statements, CancellationToken ct = default) =>
+            inner.ExecuteTransactionAsync(statements, ct);
+
+        public ValueTask DisposeAsync() => inner.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task Native_scan_reports_its_tier_and_only_ingest()
+    {
+        var node = NativeSourceLoadNode("tier");
+        _ctx.Connectors.AddSource("nativestub", new ConfigurableNativeSource(
+            "(values (cast(1 as bigint)), (cast(2 as bigint))) t(x)", failAttempts: 0, failMessage: ""));
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1, "test")],
+            MemoryBudget.Compute(new EngineConfig()));
+
+        var result = await NoDelayExecutor().ExecuteAsync(node, _ctx with { Plan = plan }, default);
+
+        Assert.Equal(NodeFacts.NativeScan, result.Facts!.Strategy);
+        Assert.NotNull(result.Facts.Stages!.Ingest);
+        Assert.Null(result.Facts.Stages.Extract);
+    }
+
+    [Fact]
+    public async Task Each_scheduled_retry_adds_a_span_event_on_the_ambient_node_span()
+    {
+        var source = new System.Diagnostics.ActivitySource("retry-events-" + Guid.NewGuid().ToString("N"));
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name == source.Name,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+        using var nodeSpan = source.StartActivity("node.SourceLoad")!;
+        var node = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+            ["fail_read_retry_limit"] = new RetryCounter(2),
+        }, dataset: "retryevents");
+
+        await NoDelayExecutor().ExecuteAsync(node, _ctx, default);
+
+        var events = nodeSpan.Events.Where(e => e.Name == "retry_scheduled").ToList();
+        Assert.Equal(2, events.Count);
+        Assert.Equal(1, events[0].Tags.Single(t => t.Key == "attempt").Value);
+        Assert.Contains(events[0].Tags, t => t.Key == "max_attempts");
+        Assert.Contains(events[0].Tags, t => t.Key == "delay_ms");
+        Assert.Contains(events[0].Tags, t => t.Key == "reason");
+    }
+
+    [Fact]
+    public async Task Retry_span_event_reason_is_single_line_while_the_event_call_keeps_the_full_reason()
+    {
+        var source = new System.Diagnostics.ActivitySource("retry-reason-" + Guid.NewGuid().ToString("N"));
+        using var listener = new System.Diagnostics.ActivityListener
+        {
+            ShouldListenTo = s => s.Name == source.Name,
+            Sample = (ref System.Diagnostics.ActivityCreationOptions<System.Diagnostics.ActivityContext> _) =>
+                System.Diagnostics.ActivitySamplingResult.AllDataAndRecorded,
+        };
+        System.Diagnostics.ActivitySource.AddActivityListener(listener);
+        using var nodeSpan = source.StartActivity("node.SourceLoad")!;
+        var node = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+            ["fail_read_retry_limit"] = new RetryCounter(1),
+            ["fail_message"] = "temporary outage\nsecond line detail",
+        }, dataset: "retryreason");
+
+        await NoDelayExecutor().ExecuteAsync(node, _ctx, default);
+
+        var call = Assert.Single(_events.RetryScheduledCalls);
+        Assert.Contains("second line detail", call.Reason);
+        var reason = (string)nodeSpan.Events.Single(e => e.Name == "retry_scheduled")
+            .Tags.Single(t => t.Key == "reason").Value!;
+        Assert.DoesNotContain("\n", reason);
+        Assert.DoesNotContain("second line detail", reason);
+    }
+
+    [Fact]
+    public async Task Retried_node_reports_attempts_and_last_attempt_stages()
+    {
+        var node = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+            ["fail_read_retry_limit"] = new RetryCounter(2),
+        });
+
+        var result = await NoDelayExecutor().ExecuteAsync(node, _ctx, default);
+
+        Assert.Equal(3, result.Facts!.Attempts);
+        Assert.NotNull(result.Facts.Stages!.Ingest);
+    }
+
+    [Fact]
+    public async Task Breaker_open_before_any_attempt_reports_no_attempts()
+    {
+        var registry = new BreakerRegistry(new BreakerConfig(2, TimeSpan.FromMinutes(1)), new ManualTimeProvider(),
+            (_, _, _, _, _) => { });
+        var nodeA = SourceLoadNode(1_000, new Dictionary<string, object?>
+        {
+            ["fail_read_at_batch"] = 0,
+            ["fail_transient"] = true,
+        });
+        await NoDelayExecutor(new RetryPolicy(2, TimeSpan.Zero, TimeSpan.Zero))
+            .ExecuteAsync(nodeA, _ctx with { Breakers = registry }, default);
+
+        var resultB = await NoDelayExecutor().ExecuteAsync(SourceLoadNode(500), _ctx with { Breakers = registry }, default);
+
+        Assert.Equal("PZ0506", resultB.Error!.Code);
+        Assert.Equal(0, resultB.Facts!.Attempts);
+        Assert.Null(resultB.Facts.Stages);
+        Assert.Null(resultB.Facts.Strategy);
+        Assert.Equal("inmemory", resultB.Facts.Connector);
+    }
 
     [Fact]
     public async Task Transient_fails_twice_then_succeeds()

@@ -36,6 +36,43 @@ public sealed class RunResultsWriterTests : IDisposable
     }
 
     [Fact]
+    public void Facts_are_appended_after_caught_up_and_omitted_when_null()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+        var plain = new NodeResult(new NodeId("1111111111111111"), NodeKind.Pipeline, "p", NodeStatus.Success, 1,
+            TimeSpan.FromMilliseconds(5), null);
+        var withFacts = plain with
+        {
+            Id = new NodeId("2222222222222222"),
+            Facts = new NodeFacts("s3", "lake", NodeFacts.Arrow,
+                new StageTimings(null, null, TimeSpan.FromMilliseconds(30), TimeSpan.FromMilliseconds(40),
+                    EgressStart: TimeSpan.FromMilliseconds(2), WriteStart: TimeSpan.FromMilliseconds(3)), 2),
+        };
+
+        writer.WriteSnapshot([plain, withFacts], "running");
+        var text = File.ReadAllText(Paths.RunResultsPath);
+
+        Assert.Contains("\"name\":\"p\",\"status\":\"success\",\"rows\":1,\"durationMs\":5,\"error\":null}", text);
+        Assert.Contains("\"connector\":\"s3\",\"connection\":\"lake\",\"strategy\":\"arrow\"," +
+            "\"stages\":{\"egressMs\":30,\"writeMs\":40,\"egressStartMs\":2,\"writeStartMs\":3},\"attempts\":2}", text);
+    }
+
+    [Fact]
+    public void Phases_are_written_after_finished_at_on_the_terminal_snapshot_only()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+        var phases = new Pz.Diagnostics.Events.RunPhasesPayload(1, 2, 3, 4, 5, 6, 7);
+
+        writer.WriteSnapshot([], "running", phases);
+        Assert.DoesNotContain("phases", File.ReadAllText(Paths.RunResultsPath));
+
+        writer.WriteSnapshot([], "success", phases);
+        var text = File.ReadAllText(Paths.RunResultsPath);
+        Assert.Contains("\"phases\":{\"loadMs\":1,\"compileMs\":2,\"validateMs\":3,\"restoreCheckMs\":4,\"planMs\":5," +
+            "\"executeMs\":6,\"finalizeMs\":7},\"nodes\":[]", text);
+    }
+
+    [Fact]
     public void WriteSnapshot_fields_match_schema()
     {
         var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
