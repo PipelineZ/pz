@@ -2,7 +2,9 @@ namespace Pz.Connectors.Abstractions;
 
 /// <summary>Remote-side statistics a connector reports about the operation it is serving. Reached
 /// through <see cref="ConnectorStats.Current"/>. Invalid values (negative, non-finite, malformed
-/// names or units) are dropped, never thrown: reporting stats must not be able to fail a read or write.</summary>
+/// names or units) are dropped, never thrown: reporting stats must not be able to fail a read or write.
+/// A sink's stats are snapshotted after its write session is disposed, so anything reported until
+/// <see cref="IAsyncDisposable.DisposeAsync"/> returns is included in the commit or abort response.</summary>
 public interface IConnectorStats
 {
     /// <summary>Requests issued to the remote system.</summary>

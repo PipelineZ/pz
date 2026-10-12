@@ -69,6 +69,19 @@ public sealed class StatsReportingTests
     }
 
     [Fact]
+    public async Task Commit_includes_stats_a_session_reports_while_disposing()
+    {
+        var tickets = new TicketRegistry();
+        var service = await ConfiguredAsync(new StatsSinkConnector(), tickets);
+        var begun = await service.BeginWrite(await BeginWriteRequestAsync(), Context());
+        await DrainWriteAsync(tickets, begun);
+
+        var result = await service.CommitWrite(new SessionRef { SessionId = begun.SessionId }, Context());
+
+        Assert.Equal(100, result.Stats!.WireBytes);
+    }
+
+    [Fact]
     public async Task Abort_returns_the_sessions_stats()
     {
         var service = await ConfiguredAsync(new StatsSinkConnector(), new TicketRegistry());
@@ -282,6 +295,10 @@ public sealed class StatsReportingTests
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public ValueTask DisposeAsync()
+        {
+            AbsStats.Current.AddWireBytes(100);
+            return ValueTask.CompletedTask;
+        }
     }
 }

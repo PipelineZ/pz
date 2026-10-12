@@ -473,19 +473,22 @@ internal sealed class PcpConnectorService(
             // completes. Closing and awaiting it is what guarantees no WriteBatchAsync is still in
             // flight when CommitAsync runs, and shuts out any later data connection for this session.
             await QuiesceAsync(state, context.CancellationToken).ConfigureAwait(false);
+            WriteResult result;
             using (OperationScope.Enter(state.Stats, state.Budget))
             {
                 await using (state.Session.ConfigureAwait(false))
                 {
-                    var result = await state.Session.CommitAsync(context.CancellationToken).ConfigureAwait(false);
-                    return new WriteResultMsg
-                    {
-                        RowsWritten = result.RowsWritten,
-                        BatchesWritten = result.BatchesWritten,
-                        Stats = ConnectorStatsMapping.ToProto(state.Stats),
-                    };
+                    result = await state.Session.CommitAsync(context.CancellationToken).ConfigureAwait(false);
                 }
             }
+
+            // Snapshot only after the session is disposed: a sink may report from DisposeAsync.
+            return new WriteResultMsg
+            {
+                RowsWritten = result.RowsWritten,
+                BatchesWritten = result.BatchesWritten,
+                Stats = ConnectorStatsMapping.ToProto(state.Stats),
+            };
         });
 
     public override Task<AbortResponse> AbortWrite(SessionRef request, ServerCallContext context) =>

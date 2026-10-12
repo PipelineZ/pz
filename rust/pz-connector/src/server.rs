@@ -686,6 +686,8 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         let result = stats::scope(state.stats.clone(), session.commit())
             .await
             .map_err(|e| to_status(&e))?;
+        // Stats are read only after the session is dropped: anything its `Drop` reports still counts.
+        stats::scope(state.stats.clone(), async move { drop(session) }).await;
         Ok(Response::new(pb::WriteResultMsg {
             rows_written: result.rows_written,
             batches_written: result.batches_written,
@@ -715,6 +717,8 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             stats::scope(state.stats.clone(), session.abort())
                 .await
                 .map_err(|e| to_status(&e))?;
+            // Stats are read only after the session is dropped: anything its `Drop` reports still counts.
+            stats::scope(state.stats.clone(), async move { drop(session) }).await;
         }
 
         Ok(Response::new(pb::AbortResponse {
@@ -1884,6 +1888,13 @@ mod tests {
 
     struct FixtureWriteSession;
 
+    /// Reports on the way out, so a test can tell whether stats were read before or after the drop.
+    impl Drop for FixtureWriteSession {
+        fn drop(&mut self) {
+            crate::stats().add_wire_bytes(100);
+        }
+    }
+
     #[async_trait]
     impl WriteSession for FixtureWriteSession {
         async fn write_batch(&mut self, _batch: RecordBatch) -> Result<(), PzError> {
@@ -2193,5 +2204,57 @@ mod tests {
             .await
             .expect("CommitWrite never answered although its data stream was complete");
         answered.expect("a completely delivered write must commit");
+    }
+
+    /// A session may report from its `Drop`; those numbers belong in the commit response.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn commit_stats_include_what_the_session_reports_while_dropping() {
+        use std::io::Write;
+
+        let service = test_service(FixtureConnector::default());
+        service
+            .configure(Request::new(pb::ConfigureRequest {
+                instance_id: "a".to_string(),
+                config: None,
+            }))
+            .await
+            .unwrap();
+        let schema = arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "value",
+            arrow::datatypes::DataType::Int64,
+            false,
+        )]);
+        let begun = service
+            .begin_write(Request::new(pb::BeginWriteRequest {
+                op_id: "op1".to_string(),
+                spec: Some(pb::OutputSpecMsg::default()),
+                arrow_schema_ipc: encode_schema_ipc(&schema),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let dir = tempfile::tempdir().unwrap();
+        let data_path = dir.path().join("c.sock.data");
+        let listener = Listener::bind(&data_path).unwrap();
+        let mut host_side = transport::connect_blocking(&data_path).unwrap();
+        host_side.write_all(&begun.ticket).unwrap();
+        host_side.write_all(&encode_schema_ipc(&schema)).unwrap();
+        host_side.shutdown(Shutdown::Write).unwrap();
+        let (_stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(data_plane::run(listener, service.tickets.clone(), stop_rx));
+
+        let committed = tokio::time::timeout(
+            Duration::from_secs(10),
+            service.commit_write(Request::new(pb::SessionRef {
+                session_id: begun.session_id.clone(),
+            })),
+        )
+        .await
+        .expect("CommitWrite never answered")
+        .unwrap()
+        .into_inner();
+
+        assert_eq!(committed.stats.expect("stats reported").wire_bytes, 100);
     }
 }
