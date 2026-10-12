@@ -17,7 +17,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   are none.
 - **`pz.remote.*` span attributes and metrics** for the same figures.
 - **C# connector SDK.** The `ctx.Remote` helper, an HTTP handler that records requests, wire bytes (from `Content-Length`) and 429/503 throttles, a
-  200-span cap per operation, and redaction of spans from foreign `ActivitySource`s.
+  200-span cap per operation, and redaction of spans from foreign `ActivitySource`s. The HTTP handler also counts
+  the bytes of streamed (chunked) request and response bodies as they are sent and read. `RemoteCalls` has a public
+  constructor taking an `ActivitySource`, so connector unit tests can build one.
+- **Sink stats are snapshotted after the write session is disposed** (C# and Rust SDKs), so numbers a session reports
+  while disposing are included in the commit response, as they already were for abort.
+- Libraries built on Azure.Core emit their `ActivitySource` only when the AppContext switch
+  `Azure.Experimental.EnableActivitySource` is set; set it before creating clients, then list the source in
+  `PzConnectorHostOptions.ActivitySources`.
 - **Rust connector SDK.** `pz_connector::stats()` and `pz_connector::remote::start`, for sinks.
 - **`pz connector test` vector `commit-stats-valid`** for connectors declaring `ReportsStats`. It commits once more
   to the probe target.
