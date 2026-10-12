@@ -181,7 +181,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
         using var writer = new ArrowStreamWriter(stream, read.Schema, leaveOpen: true);
         await writer.WriteStartAsync(ct).ConfigureAwait(false);
         // Entered before the first MoveNextAsync: the iterator body, where a connector reports, runs there.
-        using var statsScope = OperationScope.Enter(read.Stats, read.Budget ?? new RemoteSpanBudget());
+        using var statsScope = OperationScope.Enter(read.Stats, read.Budget);
         await foreach (var batch in read.Partition.ReadAsync(read.Options, ct).ConfigureAwait(false))
         {
             // The SDK stands where the engine stands in-proc: it owns every batch the partition

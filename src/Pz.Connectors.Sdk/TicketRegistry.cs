@@ -28,7 +28,7 @@ internal sealed record ReadTicket(
     StreamFailureCapture Failure,
     ConnectorStatsAccumulator Stats,
     ActivityContext Parent,
-    RemoteSpanBudget? Budget = null) : TicketEntry;
+    RemoteSpanBudget Budget) : TicketEntry;
 
 /// <summary>Host -> connector: the data plane reads batches off the stream into
 /// <paramref name="Session"/> until end-of-stream, then releases CommitWrite.

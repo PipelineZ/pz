@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Apache.Arrow.Ipc;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Sdk;
+using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk.Tests;
 
@@ -17,7 +18,7 @@ public sealed class SyncStateCaptureTests
         using var stream = new MemoryStream();
 
         await DataPlaneListener.ServeReadAsync(
-            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default),
+            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default, new RemoteSpanBudget()),
             Source, CancellationToken.None);
 
         Assert.True(capture.TryGet(out var token));
@@ -45,7 +46,7 @@ public sealed class SyncStateCaptureTests
         using var stream = new MemoryStream();
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => DataPlaneListener.ServeReadAsync(
-            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default),
+            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default, new RemoteSpanBudget()),
             Source, CancellationToken.None));
 
         Assert.False(capture.TryGet(out _));
@@ -62,7 +63,7 @@ public sealed class SyncStateCaptureTests
         using var stream = new MemoryStream();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => DataPlaneListener.ServeReadAsync(
-            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, cts.Token, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default), Source, cts.Token));
+            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, cts.Token, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default, new RemoteSpanBudget()), Source, cts.Token));
 
         Assert.False(capture.TryGet(out _));
     }
@@ -75,7 +76,7 @@ public sealed class SyncStateCaptureTests
         using var stream = new MemoryStream();
 
         await DataPlaneListener.ServeReadAsync(
-            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default),
+            stream, new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, capture, new StreamFailureCapture(), new ConnectorStatsAccumulator(), default, new RemoteSpanBudget()),
             Source, CancellationToken.None);
 
         Assert.False(capture.TryGet(out _));
