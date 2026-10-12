@@ -887,6 +887,7 @@ const CAPABILITY_NAMES: &[(u64, &str)] = &[
     (524_288, "TextLengthStats"),
     (1_048_576, "ColumnPartitionedWrites"),
     (2_097_152, "NativeOnlyRead"),
+    (4_194_304, "ReportsStats"),
 ];
 
 fn capability_names(capabilities: u64) -> Vec<String> {
