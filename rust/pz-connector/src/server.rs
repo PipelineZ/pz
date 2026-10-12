@@ -25,6 +25,7 @@ use crate::error::{to_error_detail, to_status, PzError};
 use crate::hostlog;
 use crate::pb;
 use crate::pb::pz_connector_server::{PzConnector, PzConnectorServer};
+use crate::stats::{self, Stats};
 use crate::telemetry;
 use crate::ticket::{TicketEntry, TicketRegistry, TICKET_LENGTH};
 use crate::transport::{self, DataConn, Listener};
@@ -225,6 +226,10 @@ pub(crate) struct SessionState {
     /// The `BeginWrite` RPC's trace context, captured when the session was created: the data plane
     /// carries no headers, so the write stream served later is parented here.
     pub(crate) parent: opentelemetry::Context,
+    /// What the connector reported through [`crate::stats()`] while serving this session. Every call
+    /// into the connector runs inside [`stats::scope`] of this handle, so the commit and abort
+    /// responses carry the session's whole tally.
+    stats: Stats,
 }
 
 impl SessionState {
@@ -233,6 +238,7 @@ impl SessionState {
         ticket: [u8; TICKET_LENGTH],
         session: Box<dyn WriteSession>,
         parent: opentelemetry::Context,
+        stats: Stats,
     ) -> Arc<Self> {
         let (tx, rx) = oneshot::channel();
         Arc::new(SessionState {
@@ -244,6 +250,7 @@ impl SessionState {
             drain_failure: StdMutex::new(None),
             data_conn: StdMutex::new(None),
             parent,
+            stats,
         })
     }
 
@@ -274,6 +281,7 @@ impl SessionState {
             TicketRegistry::generate(),
             Box::new(NullSession),
             opentelemetry::Context::new(),
+            Stats::new(),
         )
     }
 
@@ -283,7 +291,9 @@ impl SessionState {
     pub(crate) async fn write_batch(&self, batch: RecordBatch) -> Result<(), PzError> {
         let mut guard = self.write_session.lock().await;
         match guard.as_mut() {
-            Some(session) => session.write_batch(batch).await,
+            // The scope wraps the async call into the connector, not the blocking reader that produced
+            // the batch: a task-local does not cross the `spawn_blocking` hop.
+            Some(session) => stats::scope(self.stats.clone(), session.write_batch(batch)).await,
             None => Err(PzError::new(
                 "write session was closed before its data stream opened",
             )),
@@ -601,8 +611,8 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             .map_err(|e| Status::invalid_argument(format!("malformed Arrow schema IPC: {e}")))?;
 
         let sink = self.sink().await.map_err(|e| to_status(&e))?;
-        let session = sink
-            .begin_write(spec, schema)
+        let stats = Stats::new();
+        let session = stats::scope(stats.clone(), sink.begin_write(spec, schema))
             .await
             .map_err(|e| to_status(&e))?;
 
@@ -612,7 +622,13 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         // it later, and that means the bytes have to exist before the `Arc` the registry entry wraps
         // does.
         let ticket_bytes = TicketRegistry::generate();
-        let state = SessionState::new(msg.op_id, ticket_bytes, session, Span::current().context());
+        let state = SessionState::new(
+            msg.op_id,
+            ticket_bytes,
+            session,
+            Span::current().context(),
+            stats,
+        );
         self.sessions
             .lock()
             .unwrap()
@@ -667,11 +683,13 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         let mut session = state.take_session().await.ok_or_else(|| {
             Status::failed_precondition("write session has no data left to commit")
         })?;
-        let result = session.commit().await.map_err(|e| to_status(&e))?;
+        let result = stats::scope(state.stats.clone(), session.commit())
+            .await
+            .map_err(|e| to_status(&e))?;
         Ok(Response::new(pb::WriteResultMsg {
             rows_written: result.rows_written,
             batches_written: result.batches_written,
-            stats: None,
+            stats: state.stats.to_proto(),
         }))
     }
 
@@ -694,10 +712,14 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         // so a pump stuck reading the data socket cannot make this wait forever.
         state.force_unblock();
         if let Some(mut session) = state.take_session().await {
-            session.abort().await.map_err(|e| to_status(&e))?;
+            stats::scope(state.stats.clone(), session.abort())
+                .await
+                .map_err(|e| to_status(&e))?;
         }
 
-        Ok(Response::new(pb::AbortResponse { stats: None }))
+        Ok(Response::new(pb::AbortResponse {
+            stats: state.stats.to_proto(),
+        }))
     }
 
     async fn cancel(

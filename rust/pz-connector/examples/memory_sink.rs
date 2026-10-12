@@ -108,11 +108,15 @@ impl WriteSession for MemoryWriteSession {
             )));
         }
 
+        // One counted request per batch, through the span API: the host-side stats test relies on
+        // `requests == batches + 1` (this per-batch call plus the one in `commit`).
+        let _call = pz_connector::remote::start("write");
         self.batches.push(batch);
         Ok(())
     }
 
     async fn commit(&mut self) -> Result<WriteResult, PzError> {
+        pz_connector::stats().add_requests(1);
         let rows_written: i64 = self.batches.iter().map(|b| b.num_rows() as i64).sum();
         let batches_written = self.batches.len() as i64;
         Ok(WriteResult {
