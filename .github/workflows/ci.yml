@@ -42,7 +42,7 @@ jobs:
       # --blame-hang names the hung test in the log, but the thread stacks that say WHY it hung are in
       # the dump and sequence files it writes under TestResults/, which die with the runner unless
       # they are kept. A rare hang is only diagnosable from the one run that showed it.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: hang-blame-${{ matrix.os }}
@@ -179,7 +179,7 @@ jobs:
       - run: scripts/rust-conformance.sh
         shell: bash
       # See build-test's identical step: what --blame-hang wrote is lost with the runner otherwise.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: failure()
         with:
           name: hang-blame-rust-${{ matrix.os }}
