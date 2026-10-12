@@ -7,6 +7,27 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **Connector stats ABI.** A connector reports what its remote service did through `ConnectorStats.Current`
+  (requests, wire bytes, remote time, throttles, one cost unit, up to eight namespaced extras) and declares
+  `ConnectorCapabilities.ReportsStats`. Invalid values are dropped, never thrown. The TestKit gains opt-in
+  `Reported_stats_are_valid` / `Reported_write_stats_are_valid` facts that skip without the capability.
+- **`remote` on `node_completed` and `run_results.json`.** The stats a node's connector reported, omitted when there
+  are none.
+- **`pz.remote.*` span attributes and metrics** for the same figures.
+- **C# connector SDK.** The `ctx.Remote` helper, an HTTP handler that records requests, bytes, time and throttles, a
+  200-span cap per operation, and redaction of spans from foreign `ActivitySource`s.
+- **Rust connector SDK.** `pz_connector::stats()` and `pz_connector::remote::start`, for sinks.
+- **PCP.** The `GetReadStats` RPC, and `stats` on the write-commit and abort responses.
+
+### Notes
+
+- Library exception *events* are not redacted; only the `exception.message` tag is.
+- A commit or abort that fails reports no stats for that call.
+- A partition read abandoned early (cancellation, or a failure elsewhere) reports no stats for that stream.
+- Rust SDK stats cover sinks only; the Rust SDK has no source support.
+
 ## [0.10.0] - 2026-10-12
 
 ### Added
