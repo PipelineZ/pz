@@ -261,6 +261,26 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
         return candidate is not null;
     }
 
+    /// <summary>Fetches the partition's remote stats once its stream has ended, torn or clean, and merges
+    /// them into the attempt's accumulator. Telemetry never fails a read: every RPC failure, a connector
+    /// that does not implement the call (UNIMPLEMENTED, i.e. no stats), a disposed channel and the
+    /// timeout all mean "no stats". The timeout token is not the read's: a read that failed because
+    /// its caller cancelled must still be able to report what it consumed.</summary>
+    private async ValueTask PollReadStatsAsync()
+    {
+        using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
+        try
+        {
+            var response = await client.Grpc
+                .GetReadStatsAsync(new ReadStateRequest { OpId = opId, PartitionId = partitionId }, cancellationToken: cts.Token)
+                .ConfigureAwait(false);
+            HostStats.Merge(response.Stats);
+        }
+        catch (Exception ex) when (ex is RpcException or ObjectDisposedException or OperationCanceledException)
+        {
+        }
+    }
+
     private async IAsyncEnumerable<RecordBatch> ReadCoreAsync(
         BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -308,6 +328,7 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
                 // the wire protocol is a bug a retry will not fix. A still-alive connector that
                 // truncated because its partition THREW is neither: it is asked what it threw, so a rate
                 // limit raised mid-read keeps its transience and retry-after, as it would in-process.
+                await PollReadStatsAsync().ConfigureAwait(false);
                 throw await ProcessFailureMapping.StreamFailureAsync(
                     client, process,
                     new StreamFailureRequest { Read = new ReadStateRequest { OpId = opId, PartitionId = partitionId } },
@@ -321,6 +342,8 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
 
             yield return batch;
         }
+
+        await PollReadStatsAsync().ConfigureAwait(false);
 
         // Layer 2: the stream ended with a proper EOS marker, but a connector must never exit before
         // the host-initiated Shutdown RPC -- observing it already gone here means it crashed during or

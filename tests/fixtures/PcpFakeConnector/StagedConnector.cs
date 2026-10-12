@@ -233,6 +233,11 @@ internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IO
             partition = new FailingMidstreamReadPartition(partition);
         }
 
+        if (options.EmitStats)
+        {
+            partition = new StatsReadPartition(partition);
+        }
+
         if (options.EndlessRead)
         {
             partition = new EndlessReadPartition(partition);
@@ -270,12 +275,27 @@ internal sealed class StagedFeedSource(ISource inner, FixtureOptions options)
 
 internal sealed class StagedSink(ISink inner, FixtureOptions options) : ISink
 {
-    public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy) =>
-        inner.TryGetNativeCopy(spec, out copy);
+    // --emit-stats reports through the Arrow write session, so it declines native copy: a native copy
+    // never opens a session and would leave nothing to report from.
+    public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
+    {
+        if (options.EmitStats)
+        {
+            copy = null;
+            return false;
+        }
+
+        return inner.TryGetNativeCopy(spec, out copy);
+    }
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
         var session = await inner.BeginWriteAsync(spec, schema, ct).ConfigureAwait(false);
+        if (options.EmitStats)
+        {
+            session = new StatsWriteSession(session);
+        }
+
         return options.FailWriteMidstreamTransient ? new FailingMidstreamWriteSession(session) : session;
     }
 

@@ -92,7 +92,10 @@ internal static class Program
 /// purpose.
 /// <c>--native-only</c> declares <see cref="Pz.Connectors.Abstractions.ConnectorCapabilities.NativeOnlyRead"/>
 /// and makes every <c>PlanReadAsync</c> call refuse with the same PZ0312 shape a real native-only
-/// connector's stub raises.</para></summary>
+/// connector's stub raises.
+/// <c>--emit-stats</c> reports remote stats through <see cref="Pz.Connectors.Abstractions.ConnectorStats"/>:
+/// per partition batch one request, 100 wire bytes, 0.25 "ru" and a <c>fake.batches</c> extra; per sink
+/// session one request per batch written and one on commit.</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -114,7 +117,8 @@ internal sealed record FixtureOptions(
     bool FailWriteMidstreamTransient,
     bool ReportUnknownCapabilityBit,
     bool ThrowUnhandled,
-    bool NativeOnly)
+    bool NativeOnly,
+    bool EmitStats)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -134,6 +138,7 @@ internal sealed record FixtureOptions(
         bool reportUnknownCapabilityBit = false;
         bool throwUnhandled = false;
         bool nativeOnly = false;
+        bool emitStats = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -224,6 +229,9 @@ internal sealed record FixtureOptions(
                 case "--native-only":
                     nativeOnly = true;
                     break;
+                case "--emit-stats":
+                    emitStats = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -239,7 +247,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly),
+            nativeOnly, emitStats),
             passthrough.ToArray());
     }
 }
