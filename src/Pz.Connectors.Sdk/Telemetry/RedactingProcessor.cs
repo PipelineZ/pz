@@ -3,17 +3,21 @@ using OpenTelemetry;
 
 namespace Pz.Connectors.Sdk.Telemetry;
 
-/// <summary>Keeps data values out of the spans that client libraries emit, before export. Spans from the
-/// SDK's own <c>Pz.Connector</c> sources are left alone: the SDK writes none of the keys below.
+/// <summary>Keeps data values out of the spans that client libraries emit, before export. Only the exact
+/// <c>Pz.Connector</c> source and meter (<see cref="ConnectorTelemetry.SourceName"/>) are the SDK's own and left
+/// alone: the SDK writes none of the keys below. A name that merely starts with <c>Pz.Connector.</c> is foreign.
 ///
 /// <para>Foreign span attributes fail closed: only keys in <see cref="SafeKeys"/> survive, every other tag is
-/// removed, and the status description is cleared (libraries put the exception message there). The span's
-/// display name is kept, since libraries name spans for the operation or command, not its data. An
+/// removed, and the status description is cleared (libraries put the exception message there). A foreign span's
+/// display name can embed data (a request path, a command), so it is replaced by a bounded name built only from
+/// the source name plus, if present, the first of <c>db.operation.name</c>, <c>http.request.method</c>,
+/// <c>rpc.method</c> and <c>messaging.operation.name</c>, capped at <see cref="MaxNameLength"/> characters. An
 /// <see cref="Activity"/> event or link can be neither edited nor removed, and
 /// <see cref="Activity.AddException"/> appends <c>exception.message</c> and <c>exception.stacktrace</c> after
-/// any <see cref="ActivityListener.ExceptionRecorder"/> has run, so their text cannot be scrubbed. A span with
-/// any event tag other than <c>exception.type</c>, or any link carrying tags, is therefore dropped whole, by
-/// clearing <see cref="ActivityTraceFlags.Recorded"/>, which the export processors honour. A failed library
+/// any <see cref="ActivityListener.ExceptionRecorder"/> has run, so their text cannot be scrubbed. Event names are
+/// free text too. A span with any event not named <c>exception</c>, any event tag other than
+/// <c>exception.type</c>, or any link carrying tags, is therefore dropped whole, by clearing
+/// <see cref="ActivityTraceFlags.Recorded"/>, which the export processors honour. A failed library
 /// call loses its span; an exported one could leak a data value. Children of a dropped span export with a
 /// parent id that points at the dropped span. This processor must be registered ahead of the exporter.</para></summary>
 internal sealed class RedactingProcessor : BaseProcessor<Activity>
@@ -55,9 +59,31 @@ internal sealed class RedactingProcessor : BaseProcessor<Activity>
         "otel.status_code",
     };
 
+    /// <summary>The longest span name a foreign span exports.</summary>
+    internal const int MaxNameLength = 96;
+
+    private static readonly string[] NameOperationKeys =
+        ["db.operation.name", "http.request.method", "rpc.method", "messaging.operation.name"];
+
+    /// <summary>Only the exact <see cref="ConnectorTelemetry.SourceName"/> is the SDK's own; the SDK creates no
+    /// other source or meter, so a name merely prefixed with it comes from a library and is filtered.</summary>
     internal static bool IsForeign(string sourceName) =>
-        sourceName != ConnectorTelemetry.SourceName
-        && !sourceName.StartsWith(ConnectorTelemetry.SourceName + ".", StringComparison.Ordinal);
+        !string.Equals(sourceName, ConnectorTelemetry.SourceName, StringComparison.Ordinal);
+
+    private static string BoundedName(Activity activity)
+    {
+        var name = activity.Source.Name;
+        foreach (var key in NameOperationKeys)
+        {
+            if (activity.GetTagItem(key) is { } value && value.ToString() is { Length: > 0 } operation)
+            {
+                name = $"{name} {operation}";
+                break;
+            }
+        }
+
+        return name.Length <= MaxNameLength ? name : name[..MaxNameLength];
+    }
 
     public override void OnEnd(Activity data)
     {
@@ -76,6 +102,8 @@ internal sealed class RedactingProcessor : BaseProcessor<Activity>
             data.ActivityTraceFlags &= ~ActivityTraceFlags.Recorded;
             return;
         }
+
+        data.DisplayName = BoundedName(data);
 
         List<string>? doomed = null;
         foreach (var tag in data.TagObjects)
@@ -101,6 +129,11 @@ internal sealed class RedactingProcessor : BaseProcessor<Activity>
     {
         foreach (var activityEvent in activity.Events)
         {
+            if (activityEvent.Name != "exception")
+            {
+                return true;
+            }
+
             foreach (var tag in activityEvent.Tags)
             {
                 if (tag.Key != "exception.type")

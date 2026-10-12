@@ -37,13 +37,32 @@ public sealed class RedactingProcessorTests
         Assert.Equal("cosmosdb", activity.GetTagItem("db.system"));
     }
 
-    [Theory]
-    [InlineData("Pz.Connector")]
-    [InlineData("Pz.Connector.Foo")]
-    public void Connector_sources_are_left_alone(string sourceName)
+    [Fact]
+    public void The_sdks_own_source_is_left_alone()
     {
-        var activity = Run(sourceName);
+        var activity = Run("Pz.Connector");
 
         foreach (var key in Keys) Assert.Equal("value", activity.GetTagItem(key));
+    }
+
+    [Fact]
+    public void The_sdks_own_spans_keep_their_exception_events_and_name()
+    {
+        using var source = new ActivitySource("Pz.Connector");
+        using var listener = new ActivityListener
+        {
+            ShouldListenTo = s => ReferenceEquals(s, source),
+            Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+        };
+        ActivitySource.AddActivityListener(listener);
+        var activity = source.StartActivity("own-op")!;
+        activity.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection { ["exception.message"] = "own-message" }));
+        activity.SetStatus(ActivityStatusCode.Error, "own-description");
+        new RedactingProcessor().OnEnd(activity);
+
+        Assert.Contains(Assert.Single(activity.Events).Tags, t => t.Key == "exception.message");
+        Assert.Equal("own-description", activity.StatusDescription);
+        Assert.Equal("own-op", activity.DisplayName);
+        Assert.True(activity.Recorded);
     }
 }

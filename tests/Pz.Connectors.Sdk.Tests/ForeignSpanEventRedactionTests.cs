@@ -13,17 +13,15 @@ public sealed class ForeignSpanEventRedactionTests : IDisposable
 {
     private const string Secret = "secret-value";
     private const string Foreign = "Foreign.Lib.Events";
-    private const string Own = "Pz.Connector.EventsTest";
 
     private readonly List<Activity> _exported = [];
     private readonly ActivitySource _foreign = new(Foreign);
-    private readonly ActivitySource _own = new(Own);
     private readonly TracerProvider _tracer;
 
     public ForeignSpanEventRedactionTests()
     {
         _tracer = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
-            .AddSource(Foreign, Own)
+            .AddSource(Foreign)
             .AddProcessor(new RedactingProcessor())
             .AddInMemoryExporter(_exported)
             .Build();
@@ -33,7 +31,6 @@ public sealed class ForeignSpanEventRedactionTests : IDisposable
     {
         _tracer.Dispose();
         _foreign.Dispose();
-        _own.Dispose();
     }
 
     private static string Everything(Activity a)
@@ -96,14 +93,86 @@ public sealed class ForeignSpanEventRedactionTests : IDisposable
     }
 
     [Fact]
-    public void A_foreign_event_without_tags_is_exported()
+    public void A_foreign_event_with_a_free_text_name_is_not_exported()
     {
         using (var span = _foreign.StartActivity("op")!)
         {
-            span.AddEvent(new ActivityEvent("cache.miss"));
+            span.AddEvent(new ActivityEvent($"fetched {Secret}"));
         }
 
-        Assert.Equal("cache.miss", Assert.Single(Assert.Single(_exported).Events).Name);
+        Assert.Empty(_exported);
+    }
+
+    [Fact]
+    public void A_foreign_span_name_never_reaches_the_export()
+    {
+        using (_foreign.StartActivity("GET /idx/_doc/secret-id")!)
+        {
+        }
+
+        var exported = Assert.Single(_exported);
+        Assert.DoesNotContain("secret-id", exported.DisplayName);
+        Assert.Equal(Foreign, exported.DisplayName);
+    }
+
+    [Fact]
+    public void A_foreign_span_name_is_the_source_and_operation()
+    {
+        using (var span = _foreign.StartActivity("find customers-acme")!)
+        {
+            span.SetTag("db.operation.name", "find");
+            span.SetTag("http.request.method", "POST");
+        }
+
+        Assert.Equal($"{Foreign} find", Assert.Single(_exported).DisplayName);
+    }
+
+    [Fact]
+    public void A_foreign_span_name_is_capped()
+    {
+        using (var span = _foreign.StartActivity("op")!)
+        {
+            span.SetTag("rpc.method", new string('x', 500));
+        }
+
+        Assert.Equal(RedactingProcessor.MaxNameLength, Assert.Single(_exported).DisplayName.Length);
+    }
+
+    [Fact]
+    public void A_source_merely_prefixed_with_the_sdk_name_is_filtered()
+    {
+        const string Prefixed = "Pz.Connector.Foo";
+        using var source = new ActivitySource(Prefixed);
+        using var tracer = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
+            .AddSource(Prefixed)
+            .AddProcessor(new RedactingProcessor())
+            .AddInMemoryExporter(_exported)
+            .Build();
+
+        using (var span = source.StartActivity("GET /secret-id")!)
+        {
+            span.SetTag("db.statement", Secret);
+        }
+
+        var exported = Assert.Single(_exported);
+        Assert.Null(exported.GetTagItem("db.statement"));
+        Assert.DoesNotContain("secret-id", exported.DisplayName);
+        Assert.True(RedactingProcessor.IsForeign(Prefixed));
+        Assert.False(RedactingProcessor.IsForeign("Pz.Connector"));
+    }
+
+    [Fact]
+    public void A_rejected_endpoint_is_described_without_userinfo_path_or_query()
+    {
+        var described = ConnectorTelemetry.Describe("ftp://user:pw@collector.example:2121/v1/traces?token=abc");
+
+        Assert.Contains("collector.example", described);
+        Assert.Contains("2121", described);
+        Assert.DoesNotContain("pw", described);
+        Assert.DoesNotContain("user", described);
+        Assert.DoesNotContain("abc", described);
+        Assert.DoesNotContain("traces", described);
+        Assert.Equal("", ConnectorTelemetry.Describe("not a url token=abc"));
     }
 
     [Fact]
@@ -236,21 +305,7 @@ public sealed class ForeignSpanEventRedactionTests : IDisposable
         }
 
         Assert.True(tracer.ForceFlush());
-        Assert.Equal("clean", Assert.Single(batched).DisplayName);
+        Assert.Equal(Foreign, Assert.Single(batched).DisplayName);
         Assert.DoesNotContain(Secret, string.Concat(batched.Select(Everything)));
-    }
-
-    [Fact]
-    public void The_sdks_own_spans_keep_their_exception_events()
-    {
-        using (var span = _own.StartActivity("op")!)
-        {
-            span.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection { ["exception.message"] = "own-message" }));
-            span.SetStatus(ActivityStatusCode.Error, "own-description");
-        }
-
-        var exported = Assert.Single(_exported);
-        Assert.Contains(Assert.Single(exported.Events).Tags, t => t.Key == "exception.message" && (string?)t.Value == "own-message");
-        Assert.Equal("own-description", exported.StatusDescription);
     }
 }

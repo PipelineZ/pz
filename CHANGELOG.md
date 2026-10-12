@@ -37,7 +37,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   other attribute is dropped. A span is dropped, not exported, when it records an exception or any event attribute
   other than `exception.type`, or has a link carrying attributes: events and links cannot be edited, and exception
   messages can carry data values. Its status description is cleared. Children of a dropped span export with a parent
-  id pointing at it.
+  id pointing at it. A foreign span's name is replaced by its source name plus the operation name, if recorded (at most
+  96 characters), a span with any event not named `exception` is dropped, and only the exact `Pz.Connector` source and
+  meter are treated as the SDK's own (`Pz.Connector.*` is filtered like any library). An invalid OTLP endpoint is
+  reported on stderr by scheme, host and port only.
 - A commit or abort that fails reports no stats for that call.
 - A partition read abandoned early (cancellation, or a failure elsewhere) reports no stats for that stream.
 - Rust SDK stats cover sinks only; the Rust SDK has no source support.

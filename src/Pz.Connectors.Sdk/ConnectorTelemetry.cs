@@ -199,9 +199,15 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
             return uri;
         }
 
-        Console.Error.WriteLine($"pz connector: telemetry: otel endpoint is not an absolute http(s) URL: {url}");
+        Console.Error.WriteLine($"pz connector: telemetry: otel endpoint is not an absolute http(s) URL{Describe(url)}");
         return null;
     }
+
+    /// <summary>Scheme, host and port of a rejected endpoint, never userinfo, path or query, which can carry a token.</summary>
+    internal static string Describe(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            ? $" (scheme '{uri.Scheme}'{(uri.Host.Length > 0 ? $", host '{uri.Host}'" : "")}{(uri.Port >= 0 && !uri.IsDefaultPort ? $", port {uri.Port}" : "")})"
+            : "";
 
     private static bool IsHistogram(Instrument instrument) =>
         instrument.GetType() is { IsGenericType: true } type && type.GetGenericTypeDefinition() == typeof(Histogram<>);
