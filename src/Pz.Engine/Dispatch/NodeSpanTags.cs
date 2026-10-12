@@ -30,6 +30,22 @@ internal static class NodeSpanTags
                 SetMs(span, "pz.stage.egress_ms", s.Egress);
                 SetMs(span, "pz.stage.write_ms", s.Write);
             }
+
+            if (facts.Remote is { } r)
+            {
+                if (r.Requests > 0) span.SetTag("pz.remote.requests", r.Requests);
+                if (r.WireBytes > 0) span.SetTag("pz.remote.wire_bytes", r.WireBytes);
+                if (r.RemoteMs > 0) span.SetTag("pz.remote.ms", r.RemoteMs);
+                if (r.Throttled > 0) span.SetTag("pz.remote.throttled", r.Throttled);
+                if (r.CostUnit is { } costUnit)
+                {
+                    span.SetTag("pz.remote.cost", r.CostUnits ?? 0);
+                    span.SetTag("pz.remote.cost_unit", costUnit);
+                }
+
+                foreach (var extra in r.Extras) span.SetTag("pz.remote.extra." + extra.Key, extra.Value);
+                if (r.SpansDropped > 0) span.SetTag("pz.remote.spans_dropped", r.SpansDropped);
+            }
         }
 
         if (result.Ops is { } ops)

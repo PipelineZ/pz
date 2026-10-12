@@ -52,6 +52,26 @@ public static class PzMeters
     /// accumulates a per-node TOTAL wait, not a per-observation distribution.</summary>
     public static readonly RunTaggedCounter<long> OpsThrottleWait = new(Meter.CreateCounter<long>("pz.ops.throttle.wait", unit: "ms"));
 
+    /// <summary>Requests the connector made to its remote system; recorded once per node at completion
+    /// from <c>NodeFacts.Remote</c>.</summary>
+    public static readonly RunTaggedCounter<long> RemoteRequests = new(Meter.CreateCounter<long>("pz.remote.requests"));
+
+    /// <summary>Bytes the connector moved on the wire; recorded once per node at completion from
+    /// <c>NodeFacts.Remote</c>.</summary>
+    public static readonly RunTaggedCounter<long> RemoteWireBytes = new(Meter.CreateCounter<long>("pz.remote.wire_bytes", unit: "By"));
+
+    /// <summary>Requests the remote system throttled; recorded once per node at completion from
+    /// <c>NodeFacts.Remote</c>.</summary>
+    public static readonly RunTaggedCounter<long> RemoteThrottled = new(Meter.CreateCounter<long>("pz.remote.throttled"));
+
+    /// <summary>Time spent waiting on the remote system; recorded once per node at completion from
+    /// <c>NodeFacts.Remote</c>.</summary>
+    public static readonly RunTaggedHistogram<double> RemoteDuration = new(Meter.CreateHistogram<double>("pz.remote.duration", unit: "ms"));
+
+    /// <summary>Provider-specific cost units (tagged with <c>pz.remote.cost_unit</c>); recorded once per node
+    /// at completion from <c>NodeFacts.Remote</c>.</summary>
+    public static readonly RunTaggedCounter<double> RemoteCost = new(Meter.CreateCounter<double>("pz.remote.cost"));
+
     private static readonly AsyncLocal<string?> Run = new();
 
     /// <summary>The run whose id every measurement carries until the returned scope is disposed. AsyncLocal, so it flows

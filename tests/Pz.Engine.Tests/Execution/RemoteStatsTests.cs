@@ -92,6 +92,29 @@ public sealed class RemoteStatsTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_node_that_reports_then_fails_non_transiently_still_carries_remote()
+    {
+        var partition = new ReportingPartition(1, s => s.AddRequests(4),
+            () => new PzConnectorException("denied", isTransient: false));
+        var ctx = Context(new ListStubSource([partition]));
+
+        var result = await Executor(maxAttempts: 3).ExecuteAsync(Node("aaaaaaaaaaaaaaaa", "numbers"), ctx, CancellationToken.None);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(4, result.Facts!.Remote!.Requests);
+
+        var bus = new Pz.Diagnostics.Events.RunEventBus();
+        new Pz.Engine.Events.RunEventPublisher(bus, "test-run", TimeProvider.System).NodeCompleted(result);
+        bus.Complete();
+        await foreach (var published in bus.ReadAllAsync())
+        {
+            var evt = Assert.IsType<Pz.Diagnostics.Events.NodeCompletedEvent>(published);
+            Assert.Equal("failed", evt.Status);
+            Assert.Equal(4, evt.Remote!.Requests);
+        }
+    }
+
+    [Fact]
     public async Task A_connector_that_reports_nothing_has_no_remote()
     {
         var ctx = Context(new ListStubSource([Reporting(2, _ => { })]));

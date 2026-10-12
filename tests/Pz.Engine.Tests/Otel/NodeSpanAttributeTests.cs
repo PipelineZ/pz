@@ -58,6 +58,46 @@ public sealed class NodeSpanAttributeTests : IDisposable
     }
 
     [Fact]
+    public void Remote_stats_become_pz_remote_tags()
+    {
+        using var span = _source.StartActivity("node.SourceLoad")!;
+        var remote = new Pz.Connectors.Abstractions.RemoteStats(42, 1830421, 950, 3, 12.5, "ru",
+            [new("cosmos.partitions_scanned", 7)], 4);
+
+        NodeSpanTags.Apply(span, Result(NodeStatus.Success) with
+        {
+            Facts = new NodeFacts("cosmos", "c", NodeFacts.Arrow, null, 1, remote),
+        });
+
+        Assert.Equal(42L, span.GetTagItem("pz.remote.requests"));
+        Assert.Equal(1830421L, span.GetTagItem("pz.remote.wire_bytes"));
+        Assert.Equal(950L, span.GetTagItem("pz.remote.ms"));
+        Assert.Equal(3L, span.GetTagItem("pz.remote.throttled"));
+        Assert.Equal(12.5, span.GetTagItem("pz.remote.cost"));
+        Assert.Equal("ru", span.GetTagItem("pz.remote.cost_unit"));
+        Assert.Equal(7.0, span.GetTagItem("pz.remote.extra.cosmos.partitions_scanned"));
+        Assert.Equal(4L, span.GetTagItem("pz.remote.spans_dropped"));
+    }
+
+    [Fact]
+    public void Remote_tags_are_absent_without_stats_and_spans_dropped_only_when_positive()
+    {
+        using var none = _source.StartActivity("node.SourceLoad")!;
+        NodeSpanTags.Apply(none, Result(NodeStatus.Success));
+        Assert.DoesNotContain(none.TagObjects, t => t.Key.StartsWith("pz.remote.", StringComparison.Ordinal));
+
+        using var some = _source.StartActivity("node.SourceLoad")!;
+        NodeSpanTags.Apply(some, Result(NodeStatus.Success) with
+        {
+            Facts = new NodeFacts("cosmos", "c", NodeFacts.Arrow, null, 1,
+                new Pz.Connectors.Abstractions.RemoteStats(1, 0, 0, 0, null, null, [], 0)),
+        });
+        Assert.Equal(1L, some.GetTagItem("pz.remote.requests"));
+        Assert.Null(some.GetTagItem("pz.remote.spans_dropped"));
+        Assert.Null(some.GetTagItem("pz.remote.cost"));
+    }
+
+    [Fact]
     public void Failed_node_span_description_is_sanitized_first_line()
     {
         using var span = _source.StartActivity("node.SourceLoad")!;

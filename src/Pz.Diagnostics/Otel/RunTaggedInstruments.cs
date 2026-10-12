@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.Metrics;
 
 namespace Pz.Diagnostics.Otel;
@@ -19,6 +20,13 @@ public sealed class RunTaggedCounter<T>(Counter<T> instrument) where T : struct
         if (PzMeters.CurrentRunId is { } run) Instrument.Add(value, tag, new KeyValuePair<string, object?>("pz.run.id", run));
         else Instrument.Add(value, tag);
     }
+
+    public void Add(T value, in TagList tags)
+    {
+        var all = tags;
+        if (PzMeters.CurrentRunId is { } run) all.Add("pz.run.id", run);
+        Instrument.Add(value, all);
+    }
 }
 
 /// <summary>The histogram counterpart of <see cref="RunTaggedCounter{T}"/>.</summary>
@@ -36,5 +44,12 @@ public sealed class RunTaggedHistogram<T>(Histogram<T> instrument) where T : str
     {
         if (PzMeters.CurrentRunId is { } run) Instrument.Record(value, tag, new KeyValuePair<string, object?>("pz.run.id", run));
         else Instrument.Record(value, tag);
+    }
+
+    public void Record(T value, in TagList tags)
+    {
+        var all = tags;
+        if (PzMeters.CurrentRunId is { } run) all.Add("pz.run.id", run);
+        Instrument.Record(value, all);
     }
 }

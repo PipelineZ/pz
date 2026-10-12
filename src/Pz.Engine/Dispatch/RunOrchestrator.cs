@@ -298,6 +298,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
 
                             nodeActivity?.SetTag("pz.node.status", StatusTag(result.Status));
                             NodeSpanTags.Apply(nodeActivity, result);
+                            RemoteMetrics.Record(node, result);
 
                             if (result.Status != NodeStatus.Skipped)
                             {
