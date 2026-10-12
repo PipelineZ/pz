@@ -97,6 +97,48 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
 
     public NodeFactsRecorder FactsFor(Pz.Core.Dag.NodeId id) => Facts.GetOrAdd(id, static _ => new NodeFactsRecorder());
 
+    /// <summary>Per-node connector-reported stats, shared by `with`-clones like <see cref="Facts"/>. One
+    /// accumulator spans every attempt at a node, so retries sum rather than overwrite.</summary>
+    public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, ConnectorStatsAccumulator> Remote { get; } = new();
+
+    public ConnectorStatsAccumulator RemoteFor(Pz.Core.Dag.NodeId id) =>
+        Remote.GetOrAdd(id, static _ => new ConnectorStatsAccumulator());
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _statsNotices =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Tells the user, once per run and per (connector, rule), that a connector reported a stat the
+    /// contract refuses. The text names the rule and never the offending value or name.</summary>
+    public void NoteStatsDrops(string connector, StatsDrop drops)
+    {
+        if (Notice is not { } deliver)
+        {
+            return;
+        }
+
+        foreach (var flag in Enum.GetValues<StatsDrop>())
+        {
+            if (flag == StatsDrop.None || (drops & flag) == 0)
+            {
+                continue;
+            }
+
+            if (_statsNotices.TryAdd($"stats\n{connector}\n{flag}", 0))
+            {
+                deliver($"connector '{connector}' reported a stat that breaks '{RuleName(flag)}'; it was dropped");
+            }
+        }
+    }
+
+    private static string RuleName(StatsDrop flag) => flag switch
+    {
+        StatsDrop.NegativeOrNonFinite => "non-negative finite value",
+        StatsDrop.InvalidCostUnit => "cost unit format",
+        StatsDrop.SecondCostUnit => "one cost unit per node",
+        StatsDrop.InvalidExtraName => "extra name format",
+        _ => "at most 8 extras",
+    };
+
     /// <summary><c>engine.node_timeout</c>: the longest one attempt of one node may run before
     /// <see cref="KindDispatchingExecutor"/> cancels it. Null is unbounded.</summary>
     public TimeSpan? NodeTimeout { get; init; }

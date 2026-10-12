@@ -1,3 +1,4 @@
+using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
 
 namespace Pz.Engine.Execution;
@@ -11,15 +12,17 @@ public sealed record StageTimings(TimeSpan? Extract, TimeSpan? Ingest, TimeSpan?
 
 /// <summary>What a node ran through and how it got there. Names only, never connection config.
 /// <see cref="Attempts"/> is the number of executor invocations; 0 when a breaker refused the node before any
-/// attempt (writers omit it then).</summary>
+/// attempt (writers omit it then). <see cref="Remote"/> is what the connector reported about its own remote
+/// work, summed over every attempt; null when it reported nothing.</summary>
 public sealed record NodeFacts(string? Connector, string? Connection, string? Strategy, StageTimings? Stages,
-    int Attempts)
+    int Attempts, RemoteStats? Remote = null)
 {
     public const string NativeScan = "native_scan";
     public const string NativeCopy = "native_copy";
     public const string Arrow = "arrow";
 
-    public static NodeFacts From(DagNode node, NodeFactsRecorder? recorder, int attempts)
+    public static NodeFacts From(DagNode node, NodeFactsRecorder? recorder, int attempts,
+        ConnectorStatsAccumulator? remote = null)
     {
         var (connector, connection) = node.Definition switch
         {
@@ -27,6 +30,8 @@ public sealed record NodeFacts(string? Connector, string? Connection, string? St
             SinkOutputDef s => (s.Sink.Connector, s.Sink.Name),
             _ => ((string?)null, (string?)null),
         };
-        return new NodeFacts(connector, connection, recorder?.Strategy, recorder?.Stages(), attempts);
+        var stats = remote?.Snapshot();
+        return new NodeFacts(connector, connection, recorder?.Strategy, recorder?.Stages(), attempts,
+            stats is { IsEmpty: false } ? stats : null);
     }
 }

@@ -94,7 +94,14 @@ public sealed class KindDispatchingExecutor(
         var attempts = new StrongBox<int>(0);
         var result = await ExecuteWithRetriesAsync(node, ctx, attempts, ct).ConfigureAwait(false);
         var recorder = attempts.Value > 0 && ctx.Facts.TryGetValue(node.Id, out var r) ? r : null;
-        return result with { Facts = NodeFacts.From(node, recorder, attempts.Value) };
+        ctx.Remote.TryGetValue(node.Id, out var remote);
+        var facts = NodeFacts.From(node, recorder, attempts.Value, remote);
+        if (remote is not null && remote.Drops != StatsDrop.None)
+        {
+            ctx.NoteStatsDrops(facts.Connector ?? "connector", remote.Drops);
+        }
+
+        return result with { Facts = facts };
     }
 
     private async Task<NodeResult> ExecuteWithRetriesAsync(
@@ -140,6 +147,11 @@ public sealed class KindDispatchingExecutor(
                 attempts.Value = attempt;
                 // Stage times and the tier describe the attempt that produced the result, not a failed earlier one.
                 ctx.FactsFor(node.Id).Reset();
+                // The ambient handle encloses the whole attempt, timeout wrapper included, so partition pump
+                // tasks started inside inherit it; it is not reset between attempts, so retries sum.
+                using var stats = node.Kind is NodeKind.SourceLoad or NodeKind.SinkWrite
+                    ? ConnectorStats.Use(ctx.RemoteFor(node.Id))
+                    : null;
                 var inner = await ExecuteAttemptAsync(executor, node, ctx, attempt, ct).ConfigureAwait(false);
                 breaker?.RecordSuccess(ticket);
                 return inner with { Duration = stopwatch.Elapsed };
