@@ -32,7 +32,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Notes
 
-- Library exception *events* are not redacted; only the `exception.message` tag is.
+- A span from a library source listed in `ActivitySources` is dropped, not exported, when it records an exception
+  or any event attribute other than `exception.type`: events cannot be edited, and exception messages can carry data
+  values. Its status description is cleared, and the listed attribute keys are still removed from the spans that are
+  exported.
 - A commit or abort that fails reports no stats for that call.
 - A partition read abandoned early (cancellation, or a failure elsewhere) reports no stats for that stream.
 - Rust SDK stats cover sinks only; the Rust SDK has no source support.
