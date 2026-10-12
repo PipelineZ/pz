@@ -5,11 +5,10 @@ using Pz.Engine.Execution;
 namespace Pz.Engine.Dispatch;
 
 /// <summary>The node span's attributes, from the node's result. Names and counts only: never SQL, connection
-/// config, watermark values, sync tokens or CDC positions. Error text is sanitized, cut before any check sample, first line, capped.</summary>
+/// config, watermark values, sync tokens or CDC positions. A failure is exported as its error code and nothing else:
+/// a connector's message can echo data values, so message text never reaches a span.</summary>
 internal static class NodeSpanTags
 {
-    private const int MaxDescription = 200;
-
     public static void Apply(Activity? span, NodeResult result)
     {
         if (span is null) return;
@@ -89,26 +88,14 @@ internal static class NodeSpanTags
         if (result.Status == NodeStatus.Failed)
         {
             var code = result.Error?.Code ?? PzErrorCode.NodeFailed;
-            var description = Describe(result.Error?.Message ?? code);
             span.SetTag("error.type", code);
-            span.SetStatus(ActivityStatusCode.Error, description);
+            span.SetStatus(ActivityStatusCode.Error, code);
             span.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection
             {
                 ["exception.type"] = code,
-                ["exception.message"] = description,
+                ["pz.error.code"] = code,
             }));
         }
-    }
-
-    public static string Describe(string message)
-    {
-        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(message);
-        // A failed check appends sampled row values after this marker; row data never goes on a span.
-        var sample = sanitized.IndexOf("; sample:", StringComparison.Ordinal);
-        if (sample >= 0) sanitized = sanitized[..sample];
-        var newline = sanitized.IndexOfAny(['\r', '\n']);
-        var firstLine = (newline >= 0 ? sanitized[..newline] : sanitized).Trim();
-        return firstLine.Length <= MaxDescription ? firstLine : firstLine[..MaxDescription];
     }
 
     private static void SetMs(Activity span, string name, TimeSpan? value)

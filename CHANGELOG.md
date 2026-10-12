@@ -30,6 +30,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   to the probe target.
 - **PCP.** The `GetReadStats` RPC, and `stats` on the write-commit and abort responses.
 
+### Changed
+
+- **Exported spans carry error codes and types only.** A failed node span's status description is its error code
+  (for example `PZ0501`), its `exception` event carries `exception.type` and `pz.error.code` with no
+  `exception.message`, and the `retry_scheduled` span event drops `reason` for `exception.type` and `pz.error.code`,
+  because a connector's message can echo data values. Full messages remain in `run_results.json`, the NDJSON events
+  and console output.
+
 ### Notes
 
 - Attributes from libraries listed in `ActivitySources` and `Meters` fail closed: only a fixed set of safe keys

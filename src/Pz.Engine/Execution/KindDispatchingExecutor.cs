@@ -199,7 +199,8 @@ public sealed class KindDispatchingExecutor(
                     ["attempt"] = attempt,
                     ["max_attempts"] = policy.MaxAttempts,
                     ["delay_ms"] = (long)delayDuration.TotalMilliseconds,
-                    ["reason"] = NodeSpanTags.Describe(reason),
+                    ["exception.type"] = ex.GetType().Name,
+                    ["pz.error.code"] = ex.Code ?? PzErrorCode.NodeFailed,
                 }));
 
                 // Not wrapped in try/catch: an OperationCanceledException from the backoff wait (e.g. the

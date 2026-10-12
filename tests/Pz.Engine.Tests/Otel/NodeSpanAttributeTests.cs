@@ -97,23 +97,26 @@ public sealed class NodeSpanAttributeTests : IDisposable
         Assert.Null(some.GetTagItem("pz.remote.cost"));
     }
 
+    private const string Marker = "pzsecret-7f3a";
+
     [Fact]
-    public void Failed_node_span_description_is_sanitized_first_line()
+    public void Failed_node_span_carries_the_error_code_and_type_only()
     {
         using var span = _source.StartActivity("node.SourceLoad")!;
-        var message = "Binder Error: column \"x\" not found\nLINE 1: select x from secret_table\n        ^";
+        var message = "E11000 duplicate key error: dup key: { _id: \"" + Marker + "\" }\nLINE 1: select x";
         var error = new PzError(PzErrorCode.NodeFailed, message, null, null, null);
 
         NodeSpanTags.Apply(span, Result(NodeStatus.Failed, error));
 
         Assert.Equal(ActivityStatusCode.Error, span.Status);
+        Assert.Equal("PZ0501", span.StatusDescription);
         Assert.Equal(PzErrorCode.NodeFailed, span.GetTagItem("error.type"));
-        Assert.DoesNotContain("secret_table", span.StatusDescription);
-        Assert.DoesNotContain("\n", span.StatusDescription);
         var ex = Assert.Single(span.Events);
         Assert.Equal("exception", ex.Name);
-        Assert.Equal(span.StatusDescription, ex.Tags.Single(t => t.Key == "exception.message").Value);
         Assert.Equal(PzErrorCode.NodeFailed, ex.Tags.Single(t => t.Key == "exception.type").Value);
+        Assert.Equal(PzErrorCode.NodeFailed, ex.Tags.Single(t => t.Key == "pz.error.code").Value);
+        Assert.DoesNotContain(ex.Tags, t => t.Key is "exception.message" or "exception.stacktrace");
+        AssertNoText(span, Marker, "LINE 1", "duplicate key");
     }
 
     [Fact]
@@ -125,16 +128,16 @@ public sealed class NodeSpanAttributeTests : IDisposable
 
         NodeSpanTags.Apply(span, Result(NodeStatus.Failed, error));
 
-        Assert.Equal("check not_null failed on staging.orders: 2 violation(s)", span.StatusDescription);
-        var ex = Assert.Single(span.Events);
-        var exceptionMessage = (string)ex.Tags.Single(t => t.Key == "exception.message").Value!;
-        Assert.DoesNotContain("jane@example.com", exceptionMessage);
-        Assert.DoesNotContain("sample", exceptionMessage);
+        Assert.Equal("PZ0510", span.StatusDescription);
+        AssertNoText(span, "jane@example.com", "violation");
     }
 
-    [Fact]
-    public void Description_is_capped_at_200_chars()
+    internal static void AssertNoText(Activity span, params string[] forbidden)
     {
-        Assert.Equal(200, NodeSpanTags.Describe(new string('a', 500)).Length);
+        var all = new List<string?> { span.StatusDescription };
+        all.AddRange(span.TagObjects.Select(t => t.Value?.ToString()));
+        foreach (var e in span.Events) all.AddRange(e.Tags.Select(t => t.Value?.ToString()));
+        foreach (var f in forbidden)
+            Assert.DoesNotContain(all, v => v is not null && v.Contains(f, StringComparison.Ordinal));
     }
 }
