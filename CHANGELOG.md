@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-12
+
 ### Added
 
 - **Node facts on every completed node.** `node_completed` and `run_results.json`'s `nodes[]` carry `connector`,
