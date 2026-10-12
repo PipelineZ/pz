@@ -3,6 +3,7 @@ using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Memory;
 using Pz.Connectors.Sdk;
+using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk.Tests;
 
@@ -74,7 +75,7 @@ public sealed class DataPlaneWriteAllocatorTests
             input,
             new ReadTicket(
                 PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None,
-                new SyncStateCapture(), new StreamFailureCapture(), default),
+                new SyncStateCapture(), new StreamFailureCapture(), new ConnectorStatsAccumulator(), default, new RemoteSpanBudget()),
             Source, CancellationToken.None);
         input.Position = 0;
         return input;

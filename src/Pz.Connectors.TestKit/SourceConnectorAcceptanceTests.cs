@@ -245,6 +245,45 @@ public abstract class SourceConnectorAcceptanceTests
         Assert.Equal(unprunedRows, prunedRows);
     }
 
+    /// <summary>The executable contract behind <see cref="ConnectorCapabilities.ReportsStats"/>: reading
+    /// a partition to the end while a <see cref="ConnectorStatsAccumulator"/> is ambient leaves it with no
+    /// validation rule fired (<see cref="ConnectorStatsAccumulator.Drops"/> is
+    /// <see cref="StatsDrop.None"/>), no negative count and at most eight extras. A connector that
+    /// declares the capability but reports nothing passes. Connectors that do not declare the capability
+    /// Skip.</summary>
+    [SkippableFact]
+    public virtual async Task Reported_stats_are_valid()
+    {
+        Gate();
+        var connector = CreateSource();
+        SkipIfNativeOnly(connector);
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.ReportsStats),
+            "connector does not declare ReportsStats");
+        await using var source = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+
+        var acc = new ConnectorStatsAccumulator();
+        using (ConnectorStats.Use(acc))
+        {
+            var partitions = await source.PlanReadAsync(SmallDataset, ReadHints.None, CancellationToken.None);
+            await foreach (var batch in partitions[0].ReadAsync(
+                new BatchOptions(TargetBatchBytes: SmallBatchTargetBytes), CancellationToken.None))
+            {
+                batch.Dispose();
+            }
+        }
+
+        AssertStatsValid(acc);
+    }
+
+    private static void AssertStatsValid(ConnectorStatsAccumulator acc)
+    {
+        Assert.True(acc.Drops == StatsDrop.None, $"the connector reported invalid stats; rules fired: {acc.Drops}");
+        var s = acc.Snapshot();
+        Assert.True(s.Requests >= 0 && s.WireBytes >= 0 && s.RemoteMs >= 0 && s.Throttled >= 0 && s.SpansDropped >= 0,
+            "a reported count is negative");
+        Assert.True(s.Extras.Count <= 8, $"the connector reported {s.Extras.Count} extras; at most 8 are allowed");
+    }
+
     [SkippableFact]
     public async Task Read_is_deterministic_across_two_reads()
     {

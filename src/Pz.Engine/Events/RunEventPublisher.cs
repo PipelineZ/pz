@@ -77,7 +77,26 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
             ToCdcPayload(result.Cdc, result.SyncStateCandidate), result.CaughtUp,
             Connector: result.Facts?.Connector, Connection: result.Facts?.Connection,
             Strategy: result.Facts?.Strategy, Stages: ToStagesPayload(result.Facts?.Stages),
-            Attempts: result.Facts is { Attempts: > 0 } f ? f.Attempts : null));
+            Attempts: result.Facts is { Attempts: > 0 } f ? f.Attempts : null,
+            Remote: ToRemotePayload(result.Facts?.Remote)));
+
+    /// <summary>Maps the connector's <see cref="Pz.Connectors.Abstractions.RemoteStats"/> onto the BCL-only
+    /// <see cref="RemotePayload"/>; zero counts become null, and a snapshot with nothing to show maps to
+    /// null so the event omits <c>remote</c> exactly as <c>run_results.json</c> does.</summary>
+    private static RemotePayload? ToRemotePayload(Pz.Connectors.Abstractions.RemoteStats? remote)
+    {
+        if (remote is null) return null;
+        var payload = new RemotePayload(
+            remote.Requests > 0 ? remote.Requests : null,
+            remote.WireBytes > 0 ? remote.WireBytes : null,
+            remote.RemoteMs > 0 ? remote.RemoteMs : null,
+            remote.Throttled > 0 ? remote.Throttled : null,
+            remote.CostUnit is { } unit ? new RemoteCostPayload(remote.CostUnits ?? 0, unit) : null,
+            remote.Extras.Count > 0 ? remote.Extras : null);
+        return payload is { Requests: null, WireBytes: null, RemoteMs: null, Throttled: null, Cost: null, Extras: null }
+            ? null
+            : payload;
+    }
 
     private static StageTimingsPayload? ToStagesPayload(StageTimings? stages) => stages is null
         ? null

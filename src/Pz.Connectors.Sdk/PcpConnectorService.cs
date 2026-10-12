@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
 using Pz.Connectors.Protocol.V1;
+using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk;
 
@@ -44,7 +45,9 @@ internal sealed class PcpConnectorService(
         Schema Schema,
         IReadOnlyList<IDatasetPartition> Partitions,
         ConcurrentDictionary<string, SyncStateCapture> Captures,
-        ConcurrentDictionary<string, StreamFailureCapture> Failures);
+        ConcurrentDictionary<string, StreamFailureCapture> Failures,
+        ConcurrentDictionary<string, ConnectorStatsAccumulator> Stats,
+        RemoteSpanBudget Budget);
 
     // ---- identity + config ------------------------------------------------------------------
 
@@ -238,7 +241,9 @@ internal sealed class PcpConnectorService(
             _plans[request.OpId] = new PlannedRead(
                 ReadSchemaProjection.Apply(declared.Schema, hints, connector.Capabilities),
                 partitions, new ConcurrentDictionary<string, SyncStateCapture>(StringComparer.Ordinal),
-                new ConcurrentDictionary<string, StreamFailureCapture>(StringComparer.Ordinal));
+                new ConcurrentDictionary<string, StreamFailureCapture>(StringComparer.Ordinal),
+                new ConcurrentDictionary<string, ConnectorStatsAccumulator>(StringComparer.Ordinal),
+                new RemoteSpanBudget());
 
             for (var i = 0; i < partitions.Count; i++)
             {
@@ -289,7 +294,10 @@ internal sealed class PcpConnectorService(
                 // started. Same rule Failures already followed on the line below.
                 plan.Captures[request.PartitionId] = new SyncStateCapture(),
                 plan.Failures[request.PartitionId] = new StreamFailureCapture(),
-                Activity.Current?.Context ?? default));
+                // Fresh per stream for the same reason: a reopened partition reports its own attempt only.
+                plan.Stats[request.PartitionId] = new ConnectorStatsAccumulator(),
+                Activity.Current?.Context ?? default,
+                plan.Budget));
             return Task.FromResult(new ReadStreamTicket { Ticket = ByteString.CopyFrom(ticket) });
         });
 
@@ -311,6 +319,20 @@ internal sealed class PcpConnectorService(
                     ? NaturalReadShapeResponse.Types.Shape.Feed
                     : NaturalReadShapeResponse.Types.Shape.Full,
             };
+        });
+
+    public override Task<ReadStatsResponse> GetReadStats(ReadStateRequest request, ServerCallContext context) =>
+        Guarded(() =>
+        {
+            // An unknown op or partition, or one never opened, simply reported nothing.
+            var response = new ReadStatsResponse();
+            if (_plans.TryGetValue(request.OpId, out var plan) &&
+                plan.Stats.TryGetValue(request.PartitionId, out var stats))
+            {
+                response.Stats = ConnectorStatsMapping.ToProto(stats);
+            }
+
+            return Task.FromResult(response);
         });
 
     public override Task<ReadStateResponse> GetReadState(ReadStateRequest request, ServerCallContext context) =>
@@ -405,10 +427,17 @@ internal sealed class PcpConnectorService(
             var ct = linked.Token;
             var sink = await OpenSinkAsync(ct).ConfigureAwait(false);
             var schema = await SchemaCodec.DeserializeAsync(request.ArrowSchemaIpc, ct).ConfigureAwait(false);
-            var session = await sink
-                .BeginWriteAsync(SpecMapping.ToOutputSpec(request.Spec), schema, ct)
-                .ConfigureAwait(false);
-            var state = new WriteSessionState(Guid.NewGuid().ToString("n"), request.OpId, session);
+            var stats = new ConnectorStatsAccumulator();
+            var budget = new RemoteSpanBudget();
+            ISinkWriteSession session;
+            using (OperationScope.Enter(stats, budget))
+            {
+                session = await sink
+                    .BeginWriteAsync(SpecMapping.ToOutputSpec(request.Spec), schema, ct)
+                    .ConfigureAwait(false);
+            }
+
+            var state = new WriteSessionState(Guid.NewGuid().ToString("n"), request.OpId, session, stats, budget);
             _sessions[state.SessionId] = state;
             return new WriteSessionTicket
             {
@@ -444,11 +473,22 @@ internal sealed class PcpConnectorService(
             // completes. Closing and awaiting it is what guarantees no WriteBatchAsync is still in
             // flight when CommitAsync runs, and shuts out any later data connection for this session.
             await QuiesceAsync(state, context.CancellationToken).ConfigureAwait(false);
-            await using (state.Session.ConfigureAwait(false))
+            WriteResult result;
+            using (OperationScope.Enter(state.Stats, state.Budget))
             {
-                var result = await state.Session.CommitAsync(context.CancellationToken).ConfigureAwait(false);
-                return new WriteResultMsg { RowsWritten = result.RowsWritten, BatchesWritten = result.BatchesWritten };
+                await using (state.Session.ConfigureAwait(false))
+                {
+                    result = await state.Session.CommitAsync(context.CancellationToken).ConfigureAwait(false);
+                }
             }
+
+            // Snapshot only after the session is disposed: a sink may report from DisposeAsync.
+            return new WriteResultMsg
+            {
+                RowsWritten = result.RowsWritten,
+                BatchesWritten = result.BatchesWritten,
+                Stats = ConnectorStatsMapping.ToProto(state.Stats),
+            };
         });
 
     public override Task<AbortResponse> AbortWrite(SessionRef request, ServerCallContext context) =>
@@ -461,12 +501,15 @@ internal sealed class PcpConnectorService(
             var state = TakeSession(request.SessionId);
             await state.Cancellation.CancelAsync().ConfigureAwait(false);
             await QuiesceAsync(state, context.CancellationToken).ConfigureAwait(false);
-            await using (state.Session.ConfigureAwait(false))
+            using (OperationScope.Enter(state.Stats, state.Budget))
             {
-                await state.Session.AbortAsync(context.CancellationToken).ConfigureAwait(false);
+                await using (state.Session.ConfigureAwait(false))
+                {
+                    await state.Session.AbortAsync(context.CancellationToken).ConfigureAwait(false);
+                }
             }
 
-            return new AbortResponse();
+            return new AbortResponse { Stats = ConnectorStatsMapping.ToProto(state.Stats) };
         });
 
     // ---- cross-cutting ----------------------------------------------------------------------

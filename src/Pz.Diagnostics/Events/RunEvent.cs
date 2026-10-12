@@ -53,13 +53,24 @@ public sealed record BreakerStateChangedEvent(DateTimeOffset At, string RunId, s
 /// (<c>until</c>, or a SQL-declared ceiling) has caught up; null for every other node.
 /// <see cref="Connector"/>, <see cref="Connection"/>, <see cref="Strategy"/> (<c>native_scan</c>,
 /// <c>native_copy</c> or <c>arrow</c>), <see cref="Stages"/> and <see cref="Attempts"/> are additive (also
-/// defaulted): the node's connector facts, null when the node never ran through the executor.</summary>
+/// defaulted): the node's connector facts, null when the node never ran through the executor.
+/// <see cref="Remote"/> is additive (also defaulted): what the connector reported about its own remote
+/// system, summed across attempts and partitions; null when it reported nothing.</summary>
 public sealed record NodeCompletedEvent(DateTimeOffset At, string RunId, string NodeId, string Kind,
     string Name, string Status, long Rows, long DurationMs, string? ErrorCode, string? ErrorMessage,
     NodeTimingsPayload? Timings, string? Provenance = null, OpStatsPayload? Ops = null,
     PartitionStatsPayload? Partitions = null, DeliveryPayload? Delivery = null,
     CdcPayload? Cdc = null, bool? CaughtUp = null, string? Connector = null, string? Connection = null,
-    string? Strategy = null, StageTimingsPayload? Stages = null, int? Attempts = null) : RunEvent(At, RunId);
+    string? Strategy = null, StageTimingsPayload? Stages = null, int? Attempts = null,
+    RemotePayload? Remote = null) : RunEvent(At, RunId);
+
+/// <summary>A connector's remote stats for one node. Each member is null when the connector reported none
+/// of it; the same shape as <c>run_results.json</c>'s <c>nodes[].remote</c>.</summary>
+public sealed record RemotePayload(long? Requests, long? WireBytes, long? RemoteMs, long? Throttled,
+    RemoteCostPayload? Cost, IReadOnlyList<KeyValuePair<string, double>>? Extras);
+
+/// <summary>Provider-specific cost units and the unit's name (<c>ru</c>, <c>dbu</c>, …).</summary>
+public sealed record RemoteCostPayload(double Units, string Unit);
 
 /// <summary><see cref="Phases"/> is additive (also defaulted): per-phase milliseconds for the phases that
 /// ran before this event, null when none were measured.</summary>

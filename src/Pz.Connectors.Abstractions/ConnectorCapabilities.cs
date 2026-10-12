@@ -98,4 +98,8 @@ public enum ConnectorCapabilities
     /// flag. <c>pz connector test</c> reads it to skip the vectors that need <c>PlanRead</c> to
     /// succeed.</summary>
     NativeOnlyRead = 2097152,
+
+    /// <summary>The connector reports remote stats through <c>ConnectorStats.Current</c>; the TestKit
+    /// runs its stats checks. The engine accepts stats with or without it.</summary>
+    ReportsStats = 4194304,
 }

@@ -123,6 +123,34 @@ public class JsonRendererTests
     }
 
     [Fact]
+    public void Node_completed_remote_is_written_after_attempts_and_matches_the_run_results_bytes()
+    {
+        var at = new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero);
+        var evt = new NodeCompletedEvent(at, "r1", "n1", "SourceLoad", "s", "success", 42, 1500,
+            null, null, null, Attempts: 1,
+            Remote: new RemotePayload(42, 1830421, 950, 3, new RemoteCostPayload(12.5, "ru"),
+                [new("cosmos.partitions_scanned", 7)]));
+
+        var line = Encoding.UTF8.GetString(Render([evt])).TrimEnd('\n');
+
+        const string expected = "\"remote\":{\"requests\":42,\"wireBytes\":1830421,\"remoteMs\":950," +
+            "\"throttled\":3,\"cost\":{\"units\":12.5,\"unit\":\"ru\"},\"extras\":{\"cosmos.partitions_scanned\":7}}";
+        Assert.EndsWith("\"attempts\":1," + expected + "}", line);
+
+        var stats = new Pz.Connectors.Abstractions.RemoteStats(42, 1830421, 950, 3, 12.5, "ru",
+            [new("cosmos.partitions_scanned", 7)], 0);
+        var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+        using (var w = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            Pz.Engine.Artifacts.RemoteStatsJson.Write(w, stats);
+            w.WriteEndObject();
+        }
+
+        Assert.Equal("{" + expected + "}", Encoding.UTF8.GetString(buffer.WrittenSpan));
+    }
+
+    [Fact]
     public void Node_completed_without_facts_is_byte_identical_to_the_old_shape()
     {
         var at = new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero);

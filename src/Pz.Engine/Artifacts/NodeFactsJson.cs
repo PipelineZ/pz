@@ -31,6 +31,7 @@ public static class NodeFactsJson
         }
 
         if (facts.Attempts > 0) writer.WriteNumber("attempts", facts.Attempts);
+        RemoteStatsJson.Write(writer, facts.Remote);
     }
 
     private static void WriteMs(Utf8JsonWriter writer, string name, TimeSpan? value)

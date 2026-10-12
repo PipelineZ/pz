@@ -237,6 +237,46 @@ internal sealed class FailingMidstreamReadPartition(IDatasetPartition inner) : I
     }
 }
 
+/// <summary>Reports remote stats per batch the way a connector talking to a billed API would: one
+/// request, 100 wire bytes, 0.25 "ru" and one <c>fake.batches</c> tick for every batch it yields.
+/// Reported before the yield, so a read torn after its first batch has already counted it.</summary>
+internal sealed class StatsReadPartition(IDatasetPartition inner) : IDatasetPartition
+{
+    public async IAsyncEnumerable<RecordBatch> ReadAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        await foreach (var batch in inner.ReadAsync(options, ct).WithCancellation(ct).ConfigureAwait(false))
+        {
+            var stats = ConnectorStats.Current;
+            stats.AddRequests(1);
+            stats.AddWireBytes(100);
+            stats.AddCost(0.25, "ru");
+            stats.AddExtra("fake.batches", 1);
+            yield return batch;
+        }
+    }
+}
+
+/// <summary>One request per batch written and one more on commit.</summary>
+internal sealed class StatsWriteSession(ISinkWriteSession inner) : ISinkWriteSession
+{
+    public ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
+    {
+        ConnectorStats.Current.AddRequests(1);
+        return inner.WriteBatchAsync(batch, ct);
+    }
+
+    public ValueTask<WriteResult> CommitAsync(CancellationToken ct)
+    {
+        ConnectorStats.Current.AddRequests(1);
+        return inner.CommitAsync(ct);
+    }
+
+    public ValueTask AbortAsync(CancellationToken ct) => inner.AbortAsync(ct);
+
+    public ValueTask DisposeAsync() => inner.DisposeAsync();
+}
+
 /// <summary>Throws <see cref="MidstreamFailure"/> from the first batch written; commit and abort go
 /// through to <paramref name="inner"/> untouched.</summary>
 internal sealed class FailingMidstreamWriteSession(ISinkWriteSession inner) : ISinkWriteSession

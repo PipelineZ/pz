@@ -58,6 +58,35 @@ public sealed class RunResultsWriterTests : IDisposable
     }
 
     [Fact]
+    public void Remote_is_written_last_in_fixed_order_and_omitted_when_empty()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+        var plain = new NodeResult(new NodeId("1111111111111111"), NodeKind.SourceLoad, "p", NodeStatus.Success, 1,
+            TimeSpan.FromMilliseconds(5), null,
+            Facts: new NodeFacts("cosmos", "c", "arrow", null, 1));
+        var withRemote = plain with
+        {
+            Id = new NodeId("2222222222222222"),
+            Facts = new NodeFacts("cosmos", "c", "arrow", null, 1,
+                Remote: new Pz.Connectors.Abstractions.RemoteStats(42, 1830421, 950, 3, 12.5, "ru",
+                    [new("cosmos.partitions_scanned", 7)], 0)),
+        };
+        var droppedOnly = plain with
+        {
+            Id = new NodeId("3333333333333333"),
+            Facts = new NodeFacts("cosmos", "c", "arrow", null, 1,
+                Remote: new Pz.Connectors.Abstractions.RemoteStats(0, 0, 0, 0, null, null, [], 5)),
+        };
+
+        writer.WriteSnapshot([plain, withRemote, droppedOnly], "running");
+        var text = File.ReadAllText(Paths.RunResultsPath);
+
+        Assert.Contains("\"attempts\":1,\"remote\":{\"requests\":42,\"wireBytes\":1830421,\"remoteMs\":950," +
+            "\"throttled\":3,\"cost\":{\"units\":12.5,\"unit\":\"ru\"},\"extras\":{\"cosmos.partitions_scanned\":7}}", text);
+        Assert.Equal(1, text.Split("\"remote\"").Length - 1);
+    }
+
+    [Fact]
     public void Phases_are_written_after_finished_at_on_the_terminal_snapshot_only()
     {
         var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");

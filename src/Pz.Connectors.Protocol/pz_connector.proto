@@ -29,6 +29,8 @@ service PzConnector {
   // NOT_FOUND and fails the read. A connector that mints its token on a separate task and answers "no
   // candidate" loses the token: the engine persists nothing and the feed replays next run.
   rpc GetReadState(ReadStateRequest) returns (ReadStateResponse);
+  // Asked after a read stream drains or tears; UNIMPLEMENTED means the connector reports no stats.
+  rpc GetReadStats(ReadStateRequest) returns (ReadStatsResponse);
 
   // Why a data-plane stream failed. The data plane carries Arrow bytes and nothing else, so a connector
   // that fails mid-stream can only truncate a read or hang up on a write: that tells the host THAT the
@@ -192,6 +194,23 @@ message ReadStateResponse {
   optional string token = 1;
 }
 
+// What a connector's remote calls cost, totalled over one read stream or one write session.
+// cost_unit empty = no cost reported (cost_units is then meaningless).
+message ConnectorStats {
+  int64 requests = 1;
+  int64 wire_bytes = 2;
+  int64 remote_ms = 3;
+  int64 throttled = 4;
+  double cost_units = 5;
+  string cost_unit = 6;
+  map<string, double> extras = 7;
+  int64 spans_dropped = 8;
+  // OR of the validation rules the connector's own accumulator fired (StatsDrop bit values).
+  uint32 drops = 9;
+}
+// Unset stats = the stream reported nothing, or the op/partition is unknown.
+message ReadStatsResponse { optional ConnectorStats stats = 1; }
+
 // Names the stream the way the call that opened it did: a read by its op and partition (exactly as
 // OpenReadRequest/ReadStateRequest resolve them), a write by its session. An unknown op, partition or
 // session is "no failure known", not an error: by the time a stream has failed the connector may
@@ -248,8 +267,12 @@ message WriteSessionTicket {
   AbortSemanticsMsg abort_semantics = 3;
 }
 message SessionRef { string session_id = 1; }
-message WriteResultMsg { int64 rows_written = 1; int64 batches_written = 2; }
-message AbortResponse {}
+message WriteResultMsg {
+  int64 rows_written = 1;
+  int64 batches_written = 2;
+  optional ConnectorStats stats = 3;
+}
+message AbortResponse { optional ConnectorStats stats = 1; }
 
 message CancelRequest { string op_id = 1; }
 message CancelResponse {}

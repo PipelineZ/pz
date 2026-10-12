@@ -137,6 +137,10 @@ public static class ConformanceSuite
                 ? SkippedAsync("no write: probe supplied in --config")
                 : CommitAbortSessionRulesAsync(client, process, request.ConnectionConfig, request.WriteProbe, ct));
 
+            await AddVectorAsync(vectors, "commit-stats-valid", request.WriteProbe is null
+                ? SkippedAsync("no write: probe supplied in --config")
+                : CommitStatsValidAsync(client, process, request.ConnectionConfig, request.WriteProbe, ct));
+
             await AddVectorAsync(vectors, "cancellation", request.ReadProbe is null
                 ? SkippedAsync("no read: probe supplied in --config")
                 : nativeOnlyRead
@@ -388,6 +392,38 @@ public static class ConformanceSuite
         }
 
         return VectorVerdict.Pass();
+    }
+
+    // Stats on the commit response are optional; when present they merge into a fresh accumulator through
+    // the same validators the host applies, so any rule firing (negative or non-finite number, bad cost
+    // unit or extra name, more than eight extras) is a connector bug the host would otherwise silently drop.
+    private static async Task<VectorVerdict> CommitStatsValidAsync(
+        PcpClient client, ConnectorProcess process, ConnectorConfig connectionConfig,
+        ConformanceWriteProbe probe, CancellationToken ct)
+    {
+        var spec = new OutputSpec("conformance", probe.Output, probe.Mode, probe.SchemaPolicy, probe.Options);
+        await using var sink = await new ProcessSinkConnector(client, process)
+            .OpenAsync(connectionConfig, ct).ConfigureAwait(false);
+
+        var accumulator = new ConnectorStatsAccumulator();
+        var (schema, batch) = BuildProbeBatch();
+        try
+        {
+            using (Pz.Connectors.Abstractions.ConnectorStats.Use(accumulator))
+            {
+                await using var session = await sink.BeginWriteAsync(spec, schema, ct).ConfigureAwait(false);
+                await session.WriteBatchAsync(batch, ct).ConfigureAwait(false);
+                await session.CommitAsync(ct).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            batch.Dispose();
+        }
+
+        return accumulator.Drops == StatsDrop.None
+            ? VectorVerdict.Pass()
+            : VectorVerdict.Fail($"commit reported invalid stats (rules fired: {accumulator.Drops})");
     }
 
     private static async Task TryAbortAsync(PcpClient client, string sessionId)

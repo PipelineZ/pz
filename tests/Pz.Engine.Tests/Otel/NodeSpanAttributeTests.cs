@@ -58,22 +58,65 @@ public sealed class NodeSpanAttributeTests : IDisposable
     }
 
     [Fact]
-    public void Failed_node_span_description_is_sanitized_first_line()
+    public void Remote_stats_become_pz_remote_tags()
     {
         using var span = _source.StartActivity("node.SourceLoad")!;
-        var message = "Binder Error: column \"x\" not found\nLINE 1: select x from secret_table\n        ^";
+        var remote = new Pz.Connectors.Abstractions.RemoteStats(42, 1830421, 950, 3, 12.5, "ru",
+            [new("cosmos.partitions_scanned", 7)], 4);
+
+        NodeSpanTags.Apply(span, Result(NodeStatus.Success) with
+        {
+            Facts = new NodeFacts("cosmos", "c", NodeFacts.Arrow, null, 1, remote),
+        });
+
+        Assert.Equal(42L, span.GetTagItem("pz.remote.requests"));
+        Assert.Equal(1830421L, span.GetTagItem("pz.remote.wire_bytes"));
+        Assert.Equal(950L, span.GetTagItem("pz.remote.ms"));
+        Assert.Equal(3L, span.GetTagItem("pz.remote.throttled"));
+        Assert.Equal(12.5, span.GetTagItem("pz.remote.cost"));
+        Assert.Equal("ru", span.GetTagItem("pz.remote.cost_unit"));
+        Assert.Equal(7.0, span.GetTagItem("pz.remote.extra.cosmos.partitions_scanned"));
+        Assert.Equal(4L, span.GetTagItem("pz.remote.spans_dropped"));
+    }
+
+    [Fact]
+    public void Remote_tags_are_absent_without_stats_and_spans_dropped_only_when_positive()
+    {
+        using var none = _source.StartActivity("node.SourceLoad")!;
+        NodeSpanTags.Apply(none, Result(NodeStatus.Success));
+        Assert.DoesNotContain(none.TagObjects, t => t.Key.StartsWith("pz.remote.", StringComparison.Ordinal));
+
+        using var some = _source.StartActivity("node.SourceLoad")!;
+        NodeSpanTags.Apply(some, Result(NodeStatus.Success) with
+        {
+            Facts = new NodeFacts("cosmos", "c", NodeFacts.Arrow, null, 1,
+                new Pz.Connectors.Abstractions.RemoteStats(1, 0, 0, 0, null, null, [], 0)),
+        });
+        Assert.Equal(1L, some.GetTagItem("pz.remote.requests"));
+        Assert.Null(some.GetTagItem("pz.remote.spans_dropped"));
+        Assert.Null(some.GetTagItem("pz.remote.cost"));
+    }
+
+    private const string Marker = "pzsecret-7f3a";
+
+    [Fact]
+    public void Failed_node_span_carries_the_error_code_and_type_only()
+    {
+        using var span = _source.StartActivity("node.SourceLoad")!;
+        var message = "E11000 duplicate key error: dup key: { _id: \"" + Marker + "\" }\nLINE 1: select x";
         var error = new PzError(PzErrorCode.NodeFailed, message, null, null, null);
 
         NodeSpanTags.Apply(span, Result(NodeStatus.Failed, error));
 
         Assert.Equal(ActivityStatusCode.Error, span.Status);
+        Assert.Equal("PZ0501", span.StatusDescription);
         Assert.Equal(PzErrorCode.NodeFailed, span.GetTagItem("error.type"));
-        Assert.DoesNotContain("secret_table", span.StatusDescription);
-        Assert.DoesNotContain("\n", span.StatusDescription);
         var ex = Assert.Single(span.Events);
         Assert.Equal("exception", ex.Name);
-        Assert.Equal(span.StatusDescription, ex.Tags.Single(t => t.Key == "exception.message").Value);
         Assert.Equal(PzErrorCode.NodeFailed, ex.Tags.Single(t => t.Key == "exception.type").Value);
+        Assert.Equal(PzErrorCode.NodeFailed, ex.Tags.Single(t => t.Key == "pz.error.code").Value);
+        Assert.DoesNotContain(ex.Tags, t => t.Key is "exception.message" or "exception.stacktrace");
+        AssertNoText(span, Marker, "LINE 1", "duplicate key");
     }
 
     [Fact]
@@ -85,16 +128,44 @@ public sealed class NodeSpanAttributeTests : IDisposable
 
         NodeSpanTags.Apply(span, Result(NodeStatus.Failed, error));
 
-        Assert.Equal("check not_null failed on staging.orders: 2 violation(s)", span.StatusDescription);
+        Assert.Equal("PZ0510", span.StatusDescription);
+        AssertNoText(span, "jane@example.com", "violation");
+    }
+
+    [Theory]
+    [InlineData("PZ0501", "PZ0501")]
+    [InlineData("PZBQ0101", "PZBQ0101")]
+    [InlineData("dup key _id=pzsecret-7f3a", "PZ0501")]
+    [InlineData("", "PZ0501")]
+    [InlineData("A23456789012345678901234567890123", "PZ0501")]
+    public void A_non_identifier_code_is_exported_as_the_generic_node_failure(string code, string exported)
+    {
+        using var span = _source.StartActivity("node.SourceLoad")!;
+
+        NodeSpanTags.Apply(span, Result(NodeStatus.Failed, new PzError(code, "boom", null, null, null)));
+
+        Assert.Equal(exported, span.StatusDescription);
+        Assert.Equal(exported, span.GetTagItem("error.type"));
         var ex = Assert.Single(span.Events);
-        var exceptionMessage = (string)ex.Tags.Single(t => t.Key == "exception.message").Value!;
-        Assert.DoesNotContain("jane@example.com", exceptionMessage);
-        Assert.DoesNotContain("sample", exceptionMessage);
+        Assert.Equal(exported, ex.Tags.Single(t => t.Key == "exception.type").Value);
+        Assert.Equal(exported, ex.Tags.Single(t => t.Key == "pz.error.code").Value);
+        AssertNoText(span, Marker);
     }
 
     [Fact]
-    public void Description_is_capped_at_200_chars()
+    public void The_retry_event_code_goes_through_the_same_filter()
     {
-        Assert.Equal(200, NodeSpanTags.Describe(new string('a', 500)).Length);
+        Assert.Equal("PZ0501", NodeSpanTags.SafeCode("dup key _id=" + Marker));
+        Assert.Equal("PZ0501", NodeSpanTags.SafeCode(null));
+        Assert.Equal("PZBQ0101", NodeSpanTags.SafeCode("PZBQ0101"));
+    }
+
+    internal static void AssertNoText(Activity span, params string[] forbidden)
+    {
+        var all = new List<string?> { span.StatusDescription };
+        all.AddRange(span.TagObjects.Select(t => t.Value?.ToString()));
+        foreach (var e in span.Events) all.AddRange(e.Tags.Select(t => t.Value?.ToString()));
+        foreach (var f in forbidden)
+            Assert.DoesNotContain(all, v => v is not null && v.Contains(f, StringComparison.Ordinal));
     }
 }

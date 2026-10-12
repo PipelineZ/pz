@@ -167,6 +167,32 @@ public static class RunEventFields
 
                 if (e.Attempts is { } attempts) json.WriteNumber("attempts", attempts);
 
+                // Key order mirrors Pz.Engine's RemoteStatsJson (run_results.json); a test pins the bytes.
+                if (e.Remote is { } remote)
+                {
+                    json.WriteStartObject("remote");
+                    WriteOptionalNumber(json, "requests", remote.Requests);
+                    WriteOptionalNumber(json, "wireBytes", remote.WireBytes);
+                    WriteOptionalNumber(json, "remoteMs", remote.RemoteMs);
+                    WriteOptionalNumber(json, "throttled", remote.Throttled);
+                    if (remote.Cost is { } cost)
+                    {
+                        json.WriteStartObject("cost");
+                        json.WriteNumber("units", cost.Units);
+                        json.WriteString("unit", cost.Unit);
+                        json.WriteEndObject();
+                    }
+
+                    if (remote.Extras is { Count: > 0 } extras)
+                    {
+                        json.WriteStartObject("extras");
+                        foreach (var extra in extras) json.WriteNumber(extra.Key, extra.Value);
+                        json.WriteEndObject();
+                    }
+
+                    json.WriteEndObject();
+                }
+
                 break;
 
             case RunCompletedEvent e:

@@ -7,6 +7,55 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **Connector stats ABI.** A connector reports what its remote service did through `ConnectorStats.Current`
+  (requests, wire bytes, remote time, throttles, one cost unit, up to eight namespaced extras) and declares
+  `ConnectorCapabilities.ReportsStats`. Invalid values are dropped, never thrown. The TestKit gains opt-in
+  `Reported_stats_are_valid` / `Reported_write_stats_are_valid` facts that skip without the capability.
+- **`remote` on `node_completed` and `run_results.json`.** The stats a node's connector reported, omitted when there
+  are none.
+- **`pz.remote.*` span attributes and metrics** for the same figures.
+- **C# connector SDK.** The `ctx.Remote` helper, an HTTP handler that records requests, wire bytes and 429/503 throttles, a
+  200-span cap per operation, and redaction of spans from foreign `ActivitySource`s. The HTTP handler also counts
+  the bytes of streamed (chunked) request and response bodies as they are sent and read. `RemoteCalls` has a public
+  constructor taking an `ActivitySource`, so connector unit tests can build one.
+- **Sink stats are snapshotted after the write session is disposed** (C# and Rust SDKs), so numbers a session reports
+  while disposing are included in the commit response, as they already were for abort.
+- Libraries built on Azure.Core emit their `ActivitySource` only when the AppContext switch
+  `Azure.Experimental.EnableActivitySource` is set; set it before creating clients, then list the source in
+  `PzConnectorHostOptions.ActivitySources`.
+- **Rust connector SDK.** `pz_connector::stats()` and `pz_connector::remote::start`, for sinks.
+- **`pz connector test` vector `commit-stats-valid`** for connectors declaring `ReportsStats`. It commits once more
+  to the probe target.
+- **PCP.** The `GetReadStats` RPC, and `stats` on the write-commit and abort responses.
+
+### Changed
+
+- **Exported spans carry error codes and types only.** A failed node span's status description is its error code
+  (for example `PZ0501`), its `exception` event carries `exception.type` and `pz.error.code` with no
+  `exception.message`, and the `retry_scheduled` span event drops `reason` for `exception.type` and `pz.error.code`,
+  because a connector's message can echo data values. Full messages remain in `run_results.json`, the NDJSON events
+  and console output.
+
+### Notes
+
+- Attributes from libraries listed in `ActivitySources` and `Meters` fail closed: only a fixed set of safe keys
+  (system, operation, database and collection names, server address and port, status codes) is exported, and every
+  other attribute is dropped. A span is dropped, not exported, when it records an exception or any event attribute
+  other than `exception.type`, or has a link carrying attributes: events and links cannot be edited, and exception
+  messages can carry data values. Its status description is cleared. Children of a dropped span export with a parent
+  id pointing at it. A foreign span's name is replaced by its source name plus the operation name, if recorded (at most
+  96 characters), a span with any event not named `exception` is dropped, and only the exact `Pz.Connector` source and
+  meter are treated as the SDK's own (`Pz.Connector.*` is filtered like any library). An invalid OTLP endpoint is
+  reported on stderr by scheme, host and port only.
+- A commit or abort that fails reports no stats for that call.
+- A partition read abandoned early (cancellation, or a failure elsewhere) reports no stats for that stream.
+- Rust SDK stats cover sinks only; the Rust SDK has no source support.
+- Requests a hosted connector makes during open, plan and schema calls are not counted.
+- The Rust SDK does not redact foreign `tracing` spans.
+- Rust `stats()` reaches only code awaited inside the SDK's call, not work moved to `tokio::spawn`.
+
 ## [0.10.0] - 2026-10-12
 
 ### Added

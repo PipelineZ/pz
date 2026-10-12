@@ -236,11 +236,13 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
         Assert.Equal(1, events[0].Tags.Single(t => t.Key == "attempt").Value);
         Assert.Contains(events[0].Tags, t => t.Key == "max_attempts");
         Assert.Contains(events[0].Tags, t => t.Key == "delay_ms");
-        Assert.Contains(events[0].Tags, t => t.Key == "reason");
+        Assert.Equal("PZ0501", events[0].Tags.Single(t => t.Key == "pz.error.code").Value);
+        Assert.Contains(events[0].Tags, t => t.Key == "exception.type");
+        Assert.DoesNotContain(events[0].Tags, t => t.Key == "reason");
     }
 
     [Fact]
-    public async Task Retry_span_event_reason_is_single_line_while_the_event_call_keeps_the_full_reason()
+    public async Task Retry_span_event_carries_no_message_text_while_the_event_call_keeps_the_full_reason()
     {
         var source = new System.Diagnostics.ActivitySource("retry-reason-" + Guid.NewGuid().ToString("N"));
         using var listener = new System.Diagnostics.ActivityListener
@@ -263,10 +265,9 @@ public sealed class RetryingExecutionTests : IAsyncLifetime
 
         var call = Assert.Single(_events.RetryScheduledCalls);
         Assert.Contains("second line detail", call.Reason);
-        var reason = (string)nodeSpan.Events.Single(e => e.Name == "retry_scheduled")
-            .Tags.Single(t => t.Key == "reason").Value!;
-        Assert.DoesNotContain("\n", reason);
-        Assert.DoesNotContain("second line detail", reason);
+        var retry = nodeSpan.Events.Single(e => e.Name == "retry_scheduled");
+        Assert.DoesNotContain(retry.Tags, t => t.Key == "reason");
+        Assert.All(retry.Tags, t => Assert.DoesNotContain("temporary outage", t.Value?.ToString()));
     }
 
     [Fact]

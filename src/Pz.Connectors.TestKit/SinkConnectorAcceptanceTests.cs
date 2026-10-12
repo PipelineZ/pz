@@ -132,6 +132,41 @@ public abstract class SinkConnectorAcceptanceTests
         Assert.Equal(Enumerable.Range(0, 150).Select(i => (long)i), CommittedIds(committed).Order());
     }
 
+    /// <summary>The executable contract behind <see cref="ConnectorCapabilities.ReportsStats"/>: a
+    /// begin, one batch and a commit while a <see cref="ConnectorStatsAccumulator"/> is ambient leaves it
+    /// with no validation rule fired (<see cref="ConnectorStatsAccumulator.Drops"/> is
+    /// <see cref="StatsDrop.None"/>), no negative count and at most eight extras. A connector that
+    /// declares the capability but reports nothing passes. Connectors that do not declare the capability
+    /// Skip.</summary>
+    [SkippableFact]
+    public virtual async Task Reported_write_stats_are_valid()
+    {
+        Gate();
+        var connector = CreateSink();
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.ReportsStats),
+            "connector does not declare ReportsStats");
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+
+        var acc = new ConnectorStatsAccumulator();
+        using (ConnectorStats.Use(acc))
+        {
+            await using var session = await sink.BeginWriteAsync(SmallOutput, FixedSchema, CancellationToken.None);
+            foreach (var batch in BuildBatches(batchCount: 1, rowsPerBatch: 10))
+            {
+                await session.WriteBatchAsync(batch, CancellationToken.None);
+                batch.Dispose();
+            }
+
+            await session.CommitAsync(CancellationToken.None);
+        }
+
+        Assert.True(acc.Drops == StatsDrop.None, $"the connector reported invalid stats; rules fired: {acc.Drops}");
+        var s = acc.Snapshot();
+        Assert.True(s.Requests >= 0 && s.WireBytes >= 0 && s.RemoteMs >= 0 && s.Throttled >= 0 && s.SpansDropped >= 0,
+            "a reported count is negative");
+        Assert.True(s.Extras.Count <= 8, $"the connector reported {s.Extras.Count} extras; at most 8 are allowed");
+    }
+
     [SkippableFact]
     public async Task Abort_discards_everything()
     {

@@ -1,15 +1,15 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Pz.Core.Validation;
 using Pz.Engine.Execution;
 
 namespace Pz.Engine.Dispatch;
 
 /// <summary>The node span's attributes, from the node's result. Names and counts only: never SQL, connection
-/// config, watermark values, sync tokens or CDC positions. Error text is sanitized, cut before any check sample, first line, capped.</summary>
-internal static class NodeSpanTags
+/// config, watermark values, sync tokens or CDC positions. A failure is exported as its error code and nothing else:
+/// a connector's message can echo data values, so message text never reaches a span.</summary>
+internal static partial class NodeSpanTags
 {
-    private const int MaxDescription = 200;
-
     public static void Apply(Activity? span, NodeResult result)
     {
         if (span is null) return;
@@ -29,6 +29,22 @@ internal static class NodeSpanTags
                 SetMs(span, "pz.stage.ingest_ms", s.Ingest);
                 SetMs(span, "pz.stage.egress_ms", s.Egress);
                 SetMs(span, "pz.stage.write_ms", s.Write);
+            }
+
+            if (facts.Remote is { } r)
+            {
+                if (r.Requests > 0) span.SetTag("pz.remote.requests", r.Requests);
+                if (r.WireBytes > 0) span.SetTag("pz.remote.wire_bytes", r.WireBytes);
+                if (r.RemoteMs > 0) span.SetTag("pz.remote.ms", r.RemoteMs);
+                if (r.Throttled > 0) span.SetTag("pz.remote.throttled", r.Throttled);
+                if (r.CostUnit is { } costUnit)
+                {
+                    span.SetTag("pz.remote.cost", r.CostUnits ?? 0);
+                    span.SetTag("pz.remote.cost_unit", costUnit);
+                }
+
+                foreach (var extra in r.Extras) span.SetTag("pz.remote.extra." + extra.Key, extra.Value);
+                if (r.SpansDropped > 0) span.SetTag("pz.remote.spans_dropped", r.SpansDropped);
             }
         }
 
@@ -72,28 +88,24 @@ internal static class NodeSpanTags
 
         if (result.Status == NodeStatus.Failed)
         {
-            var code = result.Error?.Code ?? PzErrorCode.NodeFailed;
-            var description = Describe(result.Error?.Message ?? code);
+            var code = SafeCode(result.Error?.Code);
             span.SetTag("error.type", code);
-            span.SetStatus(ActivityStatusCode.Error, description);
+            span.SetStatus(ActivityStatusCode.Error, code);
             span.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection
             {
                 ["exception.type"] = code,
-                ["exception.message"] = description,
+                ["pz.error.code"] = code,
             }));
         }
     }
 
-    public static string Describe(string message)
-    {
-        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(message);
-        // A failed check appends sampled row values after this marker; row data never goes on a span.
-        var sample = sanitized.IndexOf("; sample:", StringComparison.Ordinal);
-        if (sample >= 0) sanitized = sanitized[..sample];
-        var newline = sanitized.IndexOfAny(['\r', '\n']);
-        var firstLine = (newline >= 0 ? sanitized[..newline] : sanitized).Trim();
-        return firstLine.Length <= MaxDescription ? firstLine : firstLine[..MaxDescription];
-    }
+    /// <summary>The code a span may carry. A connector supplies its own code string, so only a short
+    /// identifier-shaped value is exported; anything else could be free text and becomes the generic node failure.</summary>
+    public static string SafeCode(string? code) =>
+        code is not null && SafeCodeShape().IsMatch(code) ? code : PzErrorCode.NodeFailed;
+
+    [GeneratedRegex("^[A-Za-z][A-Za-z0-9_.-]{0,31}$", RegexOptions.CultureInvariant)]
+    private static partial Regex SafeCodeShape();
 
     private static void SetMs(Activity span, string name, TimeSpan? value)
     {

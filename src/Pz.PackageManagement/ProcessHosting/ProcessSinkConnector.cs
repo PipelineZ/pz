@@ -245,6 +245,7 @@ internal sealed class ProcessSinkWriteSession(
             var response = await client.Grpc
                 .CommitWriteAsync(new SessionRef { SessionId = sessionId }, cancellationToken: ct)
                 .ConfigureAwait(false);
+            HostStats.Merge(response.Stats);
             return MessageMapping.ToWriteResult(response);
         }
         catch (RpcException ex)
@@ -269,8 +270,10 @@ internal sealed class ProcessSinkWriteSession(
         await writer.DisposeAsync().ConfigureAwait(false);
         try
         {
-            await client.Grpc.AbortWriteAsync(new SessionRef { SessionId = sessionId }, cancellationToken: ct)
+            var response = await client.Grpc
+                .AbortWriteAsync(new SessionRef { SessionId = sessionId }, cancellationToken: ct)
                 .ConfigureAwait(false);
+            HostStats.Merge(response.Stats);
         }
         catch (RpcException ex)
         {

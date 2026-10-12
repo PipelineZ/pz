@@ -127,6 +127,7 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
                 var tracerBuilder = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
                     .SetResourceBuilder(resource)
                     .AddSource(SourceName)
+                    .AddProcessor(new RedactingProcessor())
                     .AddOtlpExporter(o =>
                     {
                         Exporter(o, traces);
@@ -156,10 +157,25 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
                             ? MetricReaderTemporalityPreference.Delta
                             : MetricReaderTemporalityPreference.Cumulative;
                     });
-                if (http)
+                // One view per instrument: a second matching view would export the stream twice.
+                var safeTagKeys = RedactingProcessor.SafeKeys.ToArray();
+                meterBuilder.AddView(instrument =>
                 {
-                    meterBuilder.AddView(instrument => IsHistogram(instrument) ? new Base2ExponentialBucketHistogramConfiguration() : null);
-                }
+                    var histogram = http && IsHistogram(instrument);
+                    var foreign = RedactingProcessor.IsForeign(instrument.Meter.Name);
+                    if (!histogram && !foreign)
+                    {
+                        return null;
+                    }
+
+                    MetricStreamConfiguration config = histogram ? new Base2ExponentialBucketHistogramConfiguration() : new MetricStreamConfiguration();
+                    if (foreign)
+                    {
+                        config.TagKeys = safeTagKeys;
+                    }
+
+                    return config;
+                });
 
                 foreach (var meter in options.Meters)
                 {
@@ -183,9 +199,15 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
             return uri;
         }
 
-        Console.Error.WriteLine($"pz connector: telemetry: otel endpoint is not an absolute http(s) URL: {url}");
+        Console.Error.WriteLine($"pz connector: telemetry: otel endpoint is not an absolute http(s) URL{Describe(url)}");
         return null;
     }
+
+    /// <summary>Scheme, host and port of a rejected endpoint, never userinfo, path or query, which can carry a token.</summary>
+    internal static string Describe(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri)
+            ? $" (scheme '{uri.Scheme}'{(uri.Host.Length > 0 ? $", host '{uri.Host}'" : "")}{(uri.Port >= 0 && !uri.IsDefaultPort ? $", port {uri.Port}" : "")})"
+            : "";
 
     private static bool IsHistogram(Instrument instrument) =>
         instrument.GetType() is { IsGenericType: true } type && type.GetGenericTypeDefinition() == typeof(Histogram<>);

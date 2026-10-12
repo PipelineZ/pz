@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Sdk;
+using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk.Tests;
 
@@ -27,7 +28,7 @@ public sealed class DataPlaneSpanTests
         }
 
         var partition = new SyncPartition(3, prior: "0+3");
-        var ticket = new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, new SyncStateCapture(), new StreamFailureCapture(), parent);
+        var ticket = new ReadTicket(PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None, new SyncStateCapture(), new StreamFailureCapture(), new ConnectorStatsAccumulator(), parent, new RemoteSpanBudget());
         using var stream = new MemoryStream();
 
         await DataPlaneListener.ServeReadAsync(stream, ticket, source, CancellationToken.None);

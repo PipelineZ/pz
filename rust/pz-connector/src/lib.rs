@@ -49,7 +49,9 @@ mod config;
 mod data_plane;
 mod error;
 mod hostlog;
+pub mod remote;
 mod server;
+pub mod stats;
 mod telemetry;
 mod ticket;
 mod transport;
@@ -61,4 +63,5 @@ pub use server::{
     serve_sink, AbortSemantics, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink,
     SinkConnector, WriteAttempt, WriteResult, WriteSession,
 };
+pub use stats::stats;
 pub use telemetry::{layer, meter};
