@@ -119,6 +119,12 @@ internal sealed class CountingRequestContent : HttpContent
         await _inner.CopyToAsync(counting, context, cancellationToken).ConfigureAwait(false);
     }
 
+    protected override void SerializeToStream(Stream stream, TransportContext? context, CancellationToken cancellationToken)
+    {
+        using var counting = new CountingStream(new NonOwningStream(stream), _call);
+        _inner.CopyTo(counting, context, cancellationToken);
+    }
+
     protected override bool TryComputeLength(out long length)
     {
         length = 0;

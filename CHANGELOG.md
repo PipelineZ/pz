@@ -16,7 +16,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **`remote` on `node_completed` and `run_results.json`.** The stats a node's connector reported, omitted when there
   are none.
 - **`pz.remote.*` span attributes and metrics** for the same figures.
-- **C# connector SDK.** The `ctx.Remote` helper, an HTTP handler that records requests, wire bytes (from `Content-Length`) and 429/503 throttles, a
+- **C# connector SDK.** The `ctx.Remote` helper, an HTTP handler that records requests, wire bytes and 429/503 throttles, a
   200-span cap per operation, and redaction of spans from foreign `ActivitySource`s. The HTTP handler also counts
   the bytes of streamed (chunked) request and response bodies as they are sent and read. `RemoteCalls` has a public
   constructor taking an `ActivitySource`, so connector unit tests can build one.

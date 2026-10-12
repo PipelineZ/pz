@@ -30,9 +30,10 @@ internal sealed class RemoteHttpHandler(RemoteCalls remote, HttpMessageHandler i
             }
         }
 
+        HttpResponseMessage? response = null;
         try
         {
-            var response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
+            response = await base.SendAsync(request, cancellationToken).ConfigureAwait(false);
             var status = (int)response.StatusCode;
             call.Tag("http.response.status_code", status);
             if (status is 429 or 503)
@@ -57,6 +58,7 @@ internal sealed class RemoteHttpHandler(RemoteCalls remote, HttpMessageHandler i
         catch (Exception ex)
         {
             call.Fail(ex);
+            response?.Dispose();
             throw;
         }
     }

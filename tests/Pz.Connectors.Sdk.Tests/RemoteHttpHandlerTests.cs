@@ -104,6 +104,8 @@ public sealed class RemoteHttpHandlerTests : IDisposable
     {
         protected override Task SerializeToStreamAsync(Stream target, TransportContext? context) => stream.CopyToAsync(target);
 
+        protected override void SerializeToStream(Stream target, TransportContext? context, CancellationToken ct) => stream.CopyTo(target);
+
         protected override bool TryComputeLength(out long length)
         {
             length = 0;
@@ -198,6 +200,45 @@ public sealed class RemoteHttpHandlerTests : IDisposable
         _ = await response.Content.ReadAsByteArrayAsync();
 
         Assert.Equal(50, acc.Snapshot().WireBytes);
+    }
+
+    [Fact]
+    public void A_chunked_request_body_can_be_serialized_synchronously_and_keeps_its_content_type()
+    {
+        var acc = new ConnectorStatsAccumulator();
+        CountingRequestContent content;
+        using (OperationScope.Enter(acc, new RemoteSpanBudget()))
+        {
+            using var source = new ActivitySource("t");
+            using var call = new RemoteCalls(source).Start("x");
+            var inner = new Chunked(new NonSeekable(new byte[300]));
+            inner.Headers.ContentType = new("application/vnd.apache.arrow.stream");
+            content = new CountingRequestContent(inner, call);
+        }
+
+        content.CopyTo(Stream.Null, null, CancellationToken.None);
+
+        Assert.Equal(300, acc.Snapshot().WireBytes);
+        Assert.Equal("application/vnd.apache.arrow.stream", content.Headers.ContentType?.MediaType);
+    }
+
+    [Fact]
+    public async Task Bytes_read_after_the_scope_ends_land_in_the_handle_captured_at_the_call()
+    {
+        var acc = new ConnectorStatsAccumulator();
+        HttpResponseMessage response;
+        using (OperationScope.Enter(acc, new RemoteSpanBudget()))
+        {
+            using var client = new HttpClient(new RemoteCalls(_source).HttpHandler(new Reading(_ => ChunkedResponse(700))), disposeHandler: true);
+            response = await client.GetAsync("https://example.test/x", HttpCompletionOption.ResponseHeadersRead);
+        }
+
+        using (response)
+        {
+            _ = await response.Content.ReadAsByteArrayAsync();
+        }
+
+        Assert.Equal(700, acc.Snapshot().WireBytes);
     }
 
     [Fact]
