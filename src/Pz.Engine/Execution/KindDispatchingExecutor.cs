@@ -94,7 +94,7 @@ public sealed class KindDispatchingExecutor(
         var attempts = new StrongBox<int>(0);
         var result = await ExecuteWithRetriesAsync(node, ctx, attempts, ct).ConfigureAwait(false);
         var recorder = attempts.Value > 0 && ctx.Facts.TryGetValue(node.Id, out var r) ? r : null;
-        ctx.Remote.TryGetValue(node.Id, out var remote);
+        var remote = attempts.Value > 0 && ctx.Remote.TryGetValue(node.Id, out var accumulator) ? accumulator : null;
         var facts = NodeFacts.From(node, recorder, attempts.Value, remote);
         if (remote is not null && remote.Drops != StatsDrop.None)
         {
