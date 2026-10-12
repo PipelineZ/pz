@@ -132,6 +132,34 @@ public sealed class NodeSpanAttributeTests : IDisposable
         AssertNoText(span, "jane@example.com", "violation");
     }
 
+    [Theory]
+    [InlineData("PZ0501", "PZ0501")]
+    [InlineData("PZBQ0101", "PZBQ0101")]
+    [InlineData("dup key _id=pzsecret-7f3a", "PZ0501")]
+    [InlineData("", "PZ0501")]
+    [InlineData("A23456789012345678901234567890123", "PZ0501")]
+    public void A_non_identifier_code_is_exported_as_the_generic_node_failure(string code, string exported)
+    {
+        using var span = _source.StartActivity("node.SourceLoad")!;
+
+        NodeSpanTags.Apply(span, Result(NodeStatus.Failed, new PzError(code, "boom", null, null, null)));
+
+        Assert.Equal(exported, span.StatusDescription);
+        Assert.Equal(exported, span.GetTagItem("error.type"));
+        var ex = Assert.Single(span.Events);
+        Assert.Equal(exported, ex.Tags.Single(t => t.Key == "exception.type").Value);
+        Assert.Equal(exported, ex.Tags.Single(t => t.Key == "pz.error.code").Value);
+        AssertNoText(span, Marker);
+    }
+
+    [Fact]
+    public void The_retry_event_code_goes_through_the_same_filter()
+    {
+        Assert.Equal("PZ0501", NodeSpanTags.SafeCode("dup key _id=" + Marker));
+        Assert.Equal("PZ0501", NodeSpanTags.SafeCode(null));
+        Assert.Equal("PZBQ0101", NodeSpanTags.SafeCode("PZBQ0101"));
+    }
+
     internal static void AssertNoText(Activity span, params string[] forbidden)
     {
         var all = new List<string?> { span.StatusDescription };

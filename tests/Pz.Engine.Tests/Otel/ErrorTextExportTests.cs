@@ -122,6 +122,7 @@ public sealed class ErrorTextExportTests : IAsyncLifetime
         var nodeSpan = Assert.Single(stopped, a => a.OperationName == "node.SourceLoad" && a.ParentSpanId == runSpan.SpanId);
         var retry = Assert.Single(nodeSpan.Events, e => e.Name == "retry_scheduled");
         Assert.Equal("PZ0501", retry.Tags.Single(t => t.Key == "pz.error.code").Value);
+        Assert.DoesNotContain(retry.Tags, t => t.Key is "reason" or "exception.message");
         AssertNoMarker(nodeSpan);
         AssertNoMarker(runSpan);
     }

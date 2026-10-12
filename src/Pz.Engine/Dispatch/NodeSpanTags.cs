@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Pz.Core.Validation;
 using Pz.Engine.Execution;
 
@@ -7,7 +8,7 @@ namespace Pz.Engine.Dispatch;
 /// <summary>The node span's attributes, from the node's result. Names and counts only: never SQL, connection
 /// config, watermark values, sync tokens or CDC positions. A failure is exported as its error code and nothing else:
 /// a connector's message can echo data values, so message text never reaches a span.</summary>
-internal static class NodeSpanTags
+internal static partial class NodeSpanTags
 {
     public static void Apply(Activity? span, NodeResult result)
     {
@@ -87,7 +88,7 @@ internal static class NodeSpanTags
 
         if (result.Status == NodeStatus.Failed)
         {
-            var code = result.Error?.Code ?? PzErrorCode.NodeFailed;
+            var code = SafeCode(result.Error?.Code);
             span.SetTag("error.type", code);
             span.SetStatus(ActivityStatusCode.Error, code);
             span.AddEvent(new ActivityEvent("exception", tags: new ActivityTagsCollection
@@ -97,6 +98,14 @@ internal static class NodeSpanTags
             }));
         }
     }
+
+    /// <summary>The code a span may carry. A connector supplies its own code string, so only a short
+    /// identifier-shaped value is exported; anything else could be free text and becomes the generic node failure.</summary>
+    public static string SafeCode(string? code) =>
+        code is not null && SafeCodeShape().IsMatch(code) ? code : PzErrorCode.NodeFailed;
+
+    [GeneratedRegex("^[A-Za-z][A-Za-z0-9_.-]{0,31}$", RegexOptions.CultureInvariant)]
+    private static partial Regex SafeCodeShape();
 
     private static void SetMs(Activity span, string name, TimeSpan? value)
     {
