@@ -546,6 +546,13 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         Err(source_unimplemented())
     }
 
+    async fn get_read_stats(
+        &self,
+        _request: Request<pb::ReadStateRequest>,
+    ) -> Result<Response<pb::ReadStatsResponse>, Status> {
+        Err(source_unimplemented())
+    }
+
     async fn get_stream_failure(
         &self,
         request: Request<pb::StreamFailureRequest>,
@@ -664,6 +671,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
         Ok(Response::new(pb::WriteResultMsg {
             rows_written: result.rows_written,
             batches_written: result.batches_written,
+            stats: None,
         }))
     }
 
@@ -689,7 +697,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
             session.abort().await.map_err(|e| to_status(&e))?;
         }
 
-        Ok(Response::new(pb::AbortResponse {}))
+        Ok(Response::new(pb::AbortResponse { stats: None }))
     }
 
     async fn cancel(

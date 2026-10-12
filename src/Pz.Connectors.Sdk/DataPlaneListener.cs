@@ -179,6 +179,8 @@ internal sealed class DataPlaneListener : IAsyncDisposable
         using var activity = source.StartActivity("pcp.read_stream", ActivityKind.Server, read.Parent);
         using var writer = new ArrowStreamWriter(stream, read.Schema, leaveOpen: true);
         await writer.WriteStartAsync(ct).ConfigureAwait(false);
+        // Entered before the first MoveNextAsync: the iterator body, where a connector reports, runs there.
+        using var statsScope = ConnectorStats.Use(read.Stats);
         await foreach (var batch in read.Partition.ReadAsync(read.Options, ct).ConfigureAwait(false))
         {
             // The SDK stands where the engine stands in-proc: it owns every batch the partition
@@ -250,6 +252,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
         try
         {
             using var reader = new ArrowStreamReader(stream, allocator, leaveOpen: true);
+            using var statsScope = ConnectorStats.Use(state.Stats);
             while (await reader.ReadNextRecordBatchAsync(ct).ConfigureAwait(false) is { } batch)
             {
                 // Batches read off the wire are ours; ISinkWriteSession must not retain them past the

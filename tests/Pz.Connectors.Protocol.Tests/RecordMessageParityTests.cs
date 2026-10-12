@@ -22,7 +22,7 @@ public class RecordMessageParityTests
         (typeof(NativeScan), NativeScanResponse.Descriptor, ["found"]),
         (typeof(NativeCopy), NativeCopyResponse.Descriptor, ["found"]),
         (typeof(FileMove), FileMoveMsg.Descriptor, []),
-        (typeof(WriteResult), WriteResultMsg.Descriptor, []),
+        (typeof(WriteResult), WriteResultMsg.Descriptor, ["stats"]),
     ];
 
     public static IEnumerable<object[]> PairData() => Pairs.Select(p => new object[] { p.Record, p.Message, p.ProtoOnly });

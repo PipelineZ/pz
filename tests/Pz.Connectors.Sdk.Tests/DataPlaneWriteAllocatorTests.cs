@@ -74,7 +74,7 @@ public sealed class DataPlaneWriteAllocatorTests
             input,
             new ReadTicket(
                 PlainSource.RowSchema, partition, BatchOptions.Default, CancellationToken.None,
-                new SyncStateCapture(), new StreamFailureCapture(), default),
+                new SyncStateCapture(), new StreamFailureCapture(), new ConnectorStatsAccumulator(), default),
             Source, CancellationToken.None);
         input.Position = 0;
         return input;

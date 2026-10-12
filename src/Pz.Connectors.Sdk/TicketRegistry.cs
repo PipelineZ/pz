@@ -25,6 +25,7 @@ internal sealed record ReadTicket(
     CancellationToken OpToken,
     SyncStateCapture Capture,
     StreamFailureCapture Failure,
+    ConnectorStatsAccumulator Stats,
     ActivityContext Parent) : TicketEntry;
 
 /// <summary>Host -> connector: the data plane reads batches off the stream into
@@ -45,7 +46,8 @@ internal sealed record WriteTicket(WriteSessionState Session, ActivityContext Pa
 /// or dispose the session while a write is in flight. Close shuts the door on a pump that has not
 /// started and hands back the one that has, and <see cref="Cancellation"/> is what stops it — which is
 /// what makes AbortWrite and Cancel able to end a write at all.</para></summary>
-internal sealed class WriteSessionState(string sessionId, string opId, ISinkWriteSession session)
+internal sealed class WriteSessionState(
+    string sessionId, string opId, ISinkWriteSession session, ConnectorStatsAccumulator? stats = null)
 {
     private readonly Lock _gate = new();
     private Task? _pump;
@@ -57,6 +59,10 @@ internal sealed class WriteSessionState(string sessionId, string opId, ISinkWrit
     public string OpId { get; } = opId;
 
     public ISinkWriteSession Session { get; } = session;
+
+    /// <summary>Everything the connector reported through <see cref="ConnectorStats.Current"/> while this
+    /// session ran, begin to commit or abort. One per session, so the host's sum never double counts.</summary>
+    public ConnectorStatsAccumulator Stats { get; } = stats ?? new ConnectorStatsAccumulator();
 
     public CancellationTokenSource Cancellation { get; } = new();
 
