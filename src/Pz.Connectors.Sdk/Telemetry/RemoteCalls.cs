@@ -13,7 +13,15 @@ public sealed class RemoteCalls
 {
     private readonly ActivitySource _source;
 
-    internal RemoteCalls(ActivitySource source) => _source = source;
+    /// <summary>Creates a helper that opens spans on <paramref name="source"/>. The SDK builds its own
+    /// for <see cref="PzConnectorContext.Remote"/>; use this in a connector's unit tests or a custom host
+    /// that does not run through <c>PzConnectorHost</c>.</summary>
+    /// <param name="source">The source the <c>remote.*</c> spans are created on.</param>
+    public RemoteCalls(ActivitySource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        _source = source;
+    }
 
     /// <summary>Starts a <c>remote.&lt;operation&gt;</c> span parented on the current activity. The
     /// operation matches <c>[a-z][a-z0-9_]{0,31}</c>; anything else is recorded as <c>call</c>, never
@@ -43,7 +51,7 @@ public sealed class RemoteCalls
     }
 
     /// <summary>A handler that wraps each request in a <c>remote.http</c> span and counts requests,
-    /// wire bytes (known <c>Content-Length</c>s) and throttling (429 and 503). It records method, host,
+    /// wire bytes (the <c>Content-Length</c> when known, the bytes actually streamed otherwise) and throttling (429 and 503). It records method, host,
     /// port and status code only.</summary>
     /// <param name="inner">The handler to delegate to; a default <see cref="HttpClientHandler"/> when null.</param>
     /// <returns>A handler to pass to <see cref="HttpClient"/>.</returns>

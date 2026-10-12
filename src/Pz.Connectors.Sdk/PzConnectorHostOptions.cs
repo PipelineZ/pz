@@ -6,6 +6,9 @@ namespace Pz.Connectors.Sdk;
 /// exported alongside them -- a client library's own source, for instance.</summary>
 public sealed class PzConnectorHostOptions
 {
+    /// <summary>Names of extra <see cref="System.Diagnostics.ActivitySource"/>s to export. Libraries built on
+    /// Azure.Core emit their source only when the AppContext switch
+    /// <c>Azure.Experimental.EnableActivitySource</c> is set, so set it before creating their clients.</summary>
     public IReadOnlyList<string> ActivitySources { get; init; } = [];
 
     public IReadOnlyList<string> Meters { get; init; } = [];
