@@ -135,8 +135,9 @@ public abstract class SinkConnectorAcceptanceTests
     /// <summary>The executable contract behind <see cref="ConnectorCapabilities.ReportsStats"/>: a
     /// begin, one batch and a commit while a <see cref="ConnectorStatsAccumulator"/> is ambient leaves it
     /// with no validation rule fired (<see cref="ConnectorStatsAccumulator.Drops"/> is
-    /// <see cref="StatsDrop.None"/>), no negative count and at most eight extras. Connectors that do not
-    /// declare the capability Skip.</summary>
+    /// <see cref="StatsDrop.None"/>), no negative count and at most eight extras. A connector that
+    /// declares the capability but reports nothing passes. Connectors that do not declare the capability
+    /// Skip.</summary>
     [SkippableFact]
     public virtual async Task Reported_write_stats_are_valid()
     {

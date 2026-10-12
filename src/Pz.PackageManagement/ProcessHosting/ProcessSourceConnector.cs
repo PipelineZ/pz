@@ -264,8 +264,9 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
     /// <summary>Fetches the partition's remote stats once its stream has ended, torn or clean, and merges
     /// them into the attempt's accumulator. Telemetry never fails a read: every RPC failure, a connector
     /// that does not implement the call (UNIMPLEMENTED, i.e. no stats), a disposed channel and the
-    /// timeout all mean "no stats". The timeout token is not the read's: a read that failed because
-    /// its caller cancelled must still be able to report what it consumed.</summary>
+    /// timeout all mean "no stats". The poll's token is independent of the caller's: a read that failed
+    /// because its caller cancelled must still be able to report what it consumed, while cancelling the
+    /// caller or abandoning the read early does not poll at all.</summary>
     private async ValueTask PollReadStatsAsync()
     {
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);

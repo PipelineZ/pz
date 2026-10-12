@@ -16,9 +16,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **`remote` on `node_completed` and `run_results.json`.** The stats a node's connector reported, omitted when there
   are none.
 - **`pz.remote.*` span attributes and metrics** for the same figures.
-- **C# connector SDK.** The `ctx.Remote` helper, an HTTP handler that records requests, bytes, time and throttles, a
+- **C# connector SDK.** The `ctx.Remote` helper, an HTTP handler that records requests, wire bytes (from `Content-Length`) and 429/503 throttles, a
   200-span cap per operation, and redaction of spans from foreign `ActivitySource`s.
 - **Rust connector SDK.** `pz_connector::stats()` and `pz_connector::remote::start`, for sinks.
+- **`pz connector test` vector `commit-stats-valid`** for connectors declaring `ReportsStats`. It commits once more
+  to the probe target.
 - **PCP.** The `GetReadStats` RPC, and `stats` on the write-commit and abort responses.
 
 ### Notes
@@ -27,6 +29,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - A commit or abort that fails reports no stats for that call.
 - A partition read abandoned early (cancellation, or a failure elsewhere) reports no stats for that stream.
 - Rust SDK stats cover sinks only; the Rust SDK has no source support.
+- Requests a hosted connector makes during open, plan and schema calls are not counted.
+- The Rust SDK does not redact foreign `tracing` spans.
+- Rust `stats()` reaches only code awaited inside the SDK's call, not work moved to `tokio::spawn`.
 
 ## [0.10.0] - 2026-10-12
 

@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using Pz.Connectors.Abstractions;
-
 using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk;

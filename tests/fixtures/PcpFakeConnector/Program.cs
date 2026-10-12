@@ -95,7 +95,8 @@ internal static class Program
 /// connector's stub raises.
 /// <c>--emit-stats</c> reports remote stats through <see cref="Pz.Connectors.Abstractions.ConnectorStats"/>:
 /// per partition batch one request, 100 wire bytes, 0.25 "ru" and a <c>fake.batches</c> extra; per sink
-/// session one request per batch written and one on commit.</para></summary>
+/// session one request per batch written and one on commit. It also declines native copy on the sink,
+/// so writes take the batch path that reports.</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,

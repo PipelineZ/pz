@@ -2,7 +2,8 @@
 //! `remote.<operation>` client span and, when the returned [`RemoteCall`] is dropped, counts one
 //! request in the session's [`stats`](crate::stats). Spans carry only the operation name and numbers,
 //! never URLs, headers, SQL or error messages. At most 200 spans open per write session; further calls
-//! still count as requests and are tallied as dropped spans.
+//! still count as requests and are tallied as dropped spans. A call started inside a `tokio::spawn`ed
+//! task loses the session's task-local and records no statistics.
 
 use tracing::Span;
 
