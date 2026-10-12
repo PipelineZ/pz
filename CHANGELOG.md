@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-13
+
 ### Added
 
 - **Connector stats ABI.** A connector reports what its remote service did through `ConnectorStats.Current`
