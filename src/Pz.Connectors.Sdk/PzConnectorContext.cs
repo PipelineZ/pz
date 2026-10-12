@@ -17,6 +17,7 @@ public sealed class PzConnectorContext
         LoggerFactory = loggerFactory;
         ActivitySource = telemetry.ActivitySource;
         Meter = telemetry.Meter;
+        Remote = new RemoteCalls(telemetry.ActivitySource);
     }
 
     public ILoggerFactory LoggerFactory { get; }
@@ -24,4 +25,7 @@ public sealed class PzConnectorContext
     public ActivitySource ActivitySource { get; }
 
     public Meter Meter { get; }
+
+    /// <summary>Opens <c>remote.*</c> spans and counts requests, bytes and cost for calls to the remote system.</summary>
+    public RemoteCalls Remote { get; }
 }

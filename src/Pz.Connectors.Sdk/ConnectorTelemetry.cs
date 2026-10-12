@@ -127,6 +127,7 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
                 var tracerBuilder = OpenTelemetry.Sdk.CreateTracerProviderBuilder()
                     .SetResourceBuilder(resource)
                     .AddSource(SourceName)
+                    .AddProcessor(new RedactingProcessor())
                     .AddOtlpExporter(o =>
                     {
                         Exporter(o, traces);

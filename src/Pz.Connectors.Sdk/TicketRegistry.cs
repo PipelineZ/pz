@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
+using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk;
 
@@ -26,7 +27,8 @@ internal sealed record ReadTicket(
     SyncStateCapture Capture,
     StreamFailureCapture Failure,
     ConnectorStatsAccumulator Stats,
-    ActivityContext Parent) : TicketEntry;
+    ActivityContext Parent,
+    RemoteSpanBudget? Budget = null) : TicketEntry;
 
 /// <summary>Host -> connector: the data plane reads batches off the stream into
 /// <paramref name="Session"/> until end-of-stream, then releases CommitWrite.
@@ -47,7 +49,8 @@ internal sealed record WriteTicket(WriteSessionState Session, ActivityContext Pa
 /// started and hands back the one that has, and <see cref="Cancellation"/> is what stops it — which is
 /// what makes AbortWrite and Cancel able to end a write at all.</para></summary>
 internal sealed class WriteSessionState(
-    string sessionId, string opId, ISinkWriteSession session, ConnectorStatsAccumulator? stats = null)
+    string sessionId, string opId, ISinkWriteSession session, ConnectorStatsAccumulator? stats = null,
+    RemoteSpanBudget? budget = null)
 {
     private readonly Lock _gate = new();
     private Task? _pump;
@@ -63,6 +66,10 @@ internal sealed class WriteSessionState(
     /// <summary>Everything the connector reported through <see cref="ConnectorStats.Current"/> while this
     /// session ran, begin to commit or abort. One per session, so the host's sum never double counts.</summary>
     public ConnectorStatsAccumulator Stats { get; } = stats ?? new ConnectorStatsAccumulator();
+
+    /// <summary>The remote-span cap of this session's operation, shared by begin, the write stream,
+    /// and commit or abort.</summary>
+    public RemoteSpanBudget Budget { get; } = budget ?? new();
 
     public CancellationTokenSource Cancellation { get; } = new();
 

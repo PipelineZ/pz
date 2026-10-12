@@ -7,6 +7,7 @@ using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Memory;
 using Pz.Connectors.Protocol;
+using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk;
 
@@ -180,7 +181,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
         using var writer = new ArrowStreamWriter(stream, read.Schema, leaveOpen: true);
         await writer.WriteStartAsync(ct).ConfigureAwait(false);
         // Entered before the first MoveNextAsync: the iterator body, where a connector reports, runs there.
-        using var statsScope = ConnectorStats.Use(read.Stats);
+        using var statsScope = OperationScope.Enter(read.Stats, read.Budget ?? new RemoteSpanBudget());
         await foreach (var batch in read.Partition.ReadAsync(read.Options, ct).ConfigureAwait(false))
         {
             // The SDK stands where the engine stands in-proc: it owns every batch the partition
@@ -252,7 +253,7 @@ internal sealed class DataPlaneListener : IAsyncDisposable
         try
         {
             using var reader = new ArrowStreamReader(stream, allocator, leaveOpen: true);
-            using var statsScope = ConnectorStats.Use(state.Stats);
+            using var statsScope = OperationScope.Enter(state.Stats, state.Budget);
             while (await reader.ReadNextRecordBatchAsync(ct).ConfigureAwait(false) is { } batch)
             {
                 // Batches read off the wire are ours; ISinkWriteSession must not retain them past the
