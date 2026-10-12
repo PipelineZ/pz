@@ -3,6 +3,7 @@ using Pz.Connectors.Sdk.Telemetry;
 
 namespace Pz.Connectors.Sdk.Tests;
 
+[Collection("connector-telemetry-serialized")]
 public sealed class RedactingProcessorTests
 {
     private static readonly string[] Keys =

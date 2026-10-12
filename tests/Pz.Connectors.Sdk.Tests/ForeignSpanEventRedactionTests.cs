@@ -9,6 +9,7 @@ namespace Pz.Connectors.Sdk.Tests;
 
 /// <summary>Drives the real tracer pipeline (redacting processor ahead of an in-memory exporter) to prove
 /// that no exception text or event attribute from a client library's span is exported.</summary>
+[Collection("connector-telemetry-serialized")]
 public sealed class ForeignSpanEventRedactionTests : IDisposable
 {
     private const string Secret = "secret-value";
