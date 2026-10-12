@@ -157,10 +157,25 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
                             ? MetricReaderTemporalityPreference.Delta
                             : MetricReaderTemporalityPreference.Cumulative;
                     });
-                if (http)
+                // One view per instrument: a second matching view would export the stream twice.
+                var safeTagKeys = RedactingProcessor.SafeKeys.ToArray();
+                meterBuilder.AddView(instrument =>
                 {
-                    meterBuilder.AddView(instrument => IsHistogram(instrument) ? new Base2ExponentialBucketHistogramConfiguration() : null);
-                }
+                    var histogram = http && IsHistogram(instrument);
+                    var foreign = RedactingProcessor.IsForeign(instrument.Meter.Name);
+                    if (!histogram && !foreign)
+                    {
+                        return null;
+                    }
+
+                    MetricStreamConfiguration config = histogram ? new Base2ExponentialBucketHistogramConfiguration() : new MetricStreamConfiguration();
+                    if (foreign)
+                    {
+                        config.TagKeys = safeTagKeys;
+                    }
+
+                    return config;
+                });
 
                 foreach (var meter in options.Meters)
                 {
