@@ -14,6 +14,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **Patched `System.Security.Cryptography.Pkcs`.** NuGet.Protocol and Microsoft.Data.SqlClient brought in 8.0.1 and
   9.0.4, flagged by CVE-2026-84008 and CVE-2026-70162 (GHSA-846f-f764-76mx, GHSA-2fmv-rv2c-59x7). `Pz.PackageManagement`,
   `Pz.State.SqlServer` and the SQL Server connector now pin 10.0.13.
+- **Patched `rustls` in the Rust connector SDK lockfile.** 0.23.45 to 0.23.46, for RUSTSEC-2026-0346, -0347, -0348
+  and -0349.
 
 ## [0.11.0] - 2026-10-13
 
