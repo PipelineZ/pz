@@ -132,9 +132,9 @@ public sealed class IcebergRestCatalogFixture : IAsyncLifetime
     }
 
     /// <summary>Copies every object of one table (<c>ns/table/**</c>) from the MinIO warehouse into
-    /// an Azure container under the same keys, so an <c>az://</c> files root can scan a table only a
-    /// REST catalog could have written.</summary>
-    public async Task MirrorTableAsync(string ns, string table, BlobContainerClient target)
+    /// an Azure container under the same keys (behind <paramref name="keyPrefix"/>, when given), so an
+    /// <c>az://</c> files root can scan a table only a REST catalog could have written.</summary>
+    public async Task MirrorTableAsync(string ns, string table, BlobContainerClient target, string keyPrefix = "")
     {
         using var client = CreateClient();
         var listing = await client.ListObjectsV2Async(new Amazon.S3.Model.ListObjectsV2Request
@@ -146,7 +146,7 @@ public sealed class IcebergRestCatalogFixture : IAsyncLifetime
         foreach (var key in listing.S3Objects.Select(o => o.Key))
         {
             using var response = await client.GetObjectAsync(Bucket, key).ConfigureAwait(false);
-            await target.GetBlobClient(key).UploadAsync(response.ResponseStream, overwrite: true).ConfigureAwait(false);
+            await target.GetBlobClient(keyPrefix + key).UploadAsync(response.ResponseStream, overwrite: true).ConfigureAwait(false);
         }
     }
 }
