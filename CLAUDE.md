@@ -71,7 +71,7 @@ scripts/verify-sdk-package.sh
 Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-bench.sh`.
 
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
-green. Five jobs: `build-test`, an ubuntu+windows matrix where both legs build and run the full
+green. Six jobs: `build-test`, an ubuntu+windows matrix where both legs build and run the full
 `dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — on windows the docker suites
 skip, because `DockerFacts` counts a daemon that can't run Linux containers as no docker, and everything
 else runs for real, including the PCP host over AF_UNIX (only facts needing bash fixtures, `/proc` or
@@ -80,7 +80,9 @@ so the install path a stranger's first five commands depend on cannot silently r
 (ubuntu), which runs the `Category=DuckDbExtension` tests (xlsx/avro, needing network to install
 DuckDB's excel/avro extensions) that `build-test` excludes; `verify-aot` (ubuntu), the Native AOT
 runtime proof, followed in the same job by `scripts/verify-sdk-package.sh` (the connector packaging
-proof, since both need the Native AOT toolchain); and `rust` (ubuntu+windows), the Rust workspace's own
+proof, since both need the Native AOT toolchain); `azure-tls` (ubuntu), which serves Azurite over HTTPS
+with a throwaway certificate in the system trust store and runs the `Category=AzuriteTls` tests, the only
+CI coverage of the DuckDB azure extension's transport (plain-http Azurite never exercises it); and `rust` (ubuntu+windows), the Rust workspace's own
 clippy/test plus the conformance script on both (fmt and cargo-audit on ubuntu only; the SDK's AF_UNIX
 transport has a Windows half in `rust/pz-connector/src/transport.rs`). `release.yml` stays tag-triggered.
 

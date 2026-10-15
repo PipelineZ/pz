@@ -90,6 +90,35 @@ jobs:
       - run: dotnet test tests/Pz.Connector.LocalFiles.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
       - run: dotnet test tests/Pz.DuckDb.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
 
+  # Azure native IO over TLS. Azurite normally speaks plain http, which never exercises the DuckDB azure
+  # extension's transport: its default one cannot find the system CA bundle on Linux, so every native read
+  # and write against a real storage account fails while the http suites stay green. This job serves Azurite
+  # over HTTPS with a throwaway certificate installed into the runner's system trust store; the tests skip
+  # everywhere else (no PZ_TEST_AZURITE_TLS_DIR), so the grep makes a silent skip fail the job.
+  azure-tls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Trust a throwaway Azurite certificate
+        run: |
+          dir="$RUNNER_TEMP/azurite-tls"
+          mkdir -p "$dir"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=127.0.0.1" \
+            -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" -keyout "$dir/key.pem" -out "$dir/cert.pem"
+          chmod 644 "$dir/key.pem"
+          sudo cp "$dir/cert.pem" /usr/local/share/ca-certificates/pz-azurite.crt
+          sudo update-ca-certificates
+          echo "PZ_TEST_AZURITE_TLS_DIR=$dir" >> "$GITHUB_ENV"
+      - run: dotnet build tests/Pz.Connector.AzureBlob.Tests -c Release
+      - run: |
+          dotnet test tests/Pz.Connector.AzureBlob.Tests -c Release --no-build --filter "Category=AzuriteTls" \
+            --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini | tee "$RUNNER_TEMP/azurite-tls.log"
+          grep -Eq "Passed!.*Skipped: +0," "$RUNNER_TEMP/azurite-tls.log"
+
   # The Native AOT runtime proof, host side then connector side: verify-aot.sh publishes the
   # linux-x64 native image and drives init/run/restore/PZ0360/PCP-spawn/MCP against it;
   # verify-sdk-package.sh publishes the SDK fixture through Pz.Connectors.Sdk's packaging targets and
