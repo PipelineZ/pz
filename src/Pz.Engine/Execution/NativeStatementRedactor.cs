@@ -100,7 +100,7 @@ public static partial class NativeStatementRedactor
     private static string ScrubFreeText(string text)
     {
         var scrubbed = EmbeddedUrl().Replace(text, m => ScrubUrl(m.Value));
-        scrubbed = InnerLiteral().Replace(scrubbed, m => IsUrl(m.Groups["body"].Value) ? m.Value : "'***'");
+        scrubbed = InnerLiteral().Replace(scrubbed, m => IsUrl(m.Groups["body"].Value) && m.Value.EndsWith('\'') ? m.Value : "'***'");
         return MaskCredentials(scrubbed);
     }
 
@@ -109,12 +109,17 @@ public static partial class NativeStatementRedactor
             CredentialPair().Replace(text, m => $"{m.Groups["key"].Value}{m.Groups["sep"].Value}***"),
             m => $"{m.Groups["scheme"].Value} ***");
 
-    /// <summary>The nested alternative is greedy to the LAST quote on its line, so a quote inside the original
-    /// error cannot end the literal early and leave the rest of it outside any scrubbing.</summary>
-    [GeneratedRegex(@"(?<nested>Original error message:\s*)'(?<inner>[^\n]*)'|'(?<body>[^']*)'", RegexOptions.IgnoreCase)]
+    /// <summary>The nested alternative only matches the extension's shape: the original error is the LAST thing on
+    /// its line, and the literal runs to that line's last quote, so a quote inside it cannot end it early. Text an
+    /// error echoes from an identifier or a data value can contain the prefix too, but then the literal does not
+    /// end the line and the plain alternative masks it.</summary>
+    [GeneratedRegex(
+        @"(?<nested>Original error message:[ \t]*)'(?<inner>[^\n]*)'(?=[ \t]*$)|'(?<body>[^']*)'",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline)]
     private static partial Regex QuotedLiteral();
 
-    [GeneratedRegex(@"'(?<body>[^']*)'")]
+    /// <summary>A quote with no partner inside the nested original error masks everything after it.</summary>
+    [GeneratedRegex(@"'(?<body>[^']*)('|$)")]
     private static partial Regex InnerLiteral();
 
     [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9+.\-]*://\S+$")]

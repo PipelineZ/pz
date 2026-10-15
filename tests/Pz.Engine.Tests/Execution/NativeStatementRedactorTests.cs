@@ -149,4 +149,22 @@ public sealed class NativeStatementRedactorTests
 
         Assert.DoesNotContain("AZKEY", sanitized);
     }
+
+    [Fact]
+    public void SanitizeEngineMessage_does_not_trust_the_nested_prefix_when_it_comes_from_echoed_text()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "Binder Error: column \"Original error message: 'a\" not found, candidate: 'ECHOEDSECRET' in table 't'");
+
+        Assert.DoesNotContain("ECHOEDSECRET", sanitized);
+    }
+
+    [Fact]
+    public void SanitizeEngineMessage_masks_an_unbalanced_quote_inside_the_nested_original_error()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "IO Error: failed. Original error message: 'value 'TAILSECRET and more'");
+
+        Assert.DoesNotContain("TAILSECRET", sanitized);
+    }
 }
