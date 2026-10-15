@@ -7,8 +7,10 @@ namespace Pz.Engine.Execution;
 /// express intent ("redact this before it reaches a user/log/artifact") rather than reaching for a
 /// helper whose name reads as SQL-specific. Delegates entirely to
 /// <see cref="NativeStatementRedactor.SanitizeEngineMessage"/>:
-/// drops a DuckDB parser/binder's verbatim "LINE n: ..." statement-echo block, then masks any
-/// single-quoted literal remaining in the summary to <c>'***'</c>.
+/// drops a DuckDB parser/binder's verbatim "LINE n: ..." statement-echo block, then masks the
+/// single-quoted literals remaining in the summary to <c>'***'</c>, except an object/file URL (userinfo
+/// and query masked) and an extension's nested <c>Original error message: '...'</c> (URLs and
+/// credential-named <c>key=value</c> pairs masked).
 ///
 /// This is METADATA-level hardening, NOT a PII-proof guarantee: it strips the two shapes DuckDB/engine
 /// exceptions are known to leak through (a verbatim statement echo, a single-quoted literal), and

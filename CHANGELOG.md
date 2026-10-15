@@ -12,6 +12,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **Iceberg `storage: azure` on Linux.** The iceberg connector loaded DuckDB's azure extension without choosing a
   transport, so on Linux every HTTPS request to Azure Storage failed with `Problem with the SSL CA cert` (the bug
   0.11.2 fixed for azureblob). It now sets `azure_transport_option_type = 'curl'` on Linux, as azureblob does.
+- **Native IO errors keep the detail that explains them.** Redaction masked every quoted literal in a DuckDB error,
+  so an Azure CA-bundle failure read as `could not open file: '***' ... Original error message: '***'`. Object/file
+  URLs are now kept (userinfo and query string, e.g. a SAS token, masked) and an extension's nested
+  `Original error message: '...'` is kept when it ends the line, with URLs, inner quoted literals and credential
+  values (`key=value`, `key: value`, JSON pairs, `Bearer`/`Basic`/`SharedKey`) masked. Every other literal is
+  still masked, and the echoed statement is still dropped.
 
 ## [0.11.2] - 2026-10-15
 

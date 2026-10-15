@@ -63,4 +63,58 @@ public sealed class NativeStatementRedactorTests
 
         Assert.Equal("Invalid Input Error: Secret type not found", sanitized);
     }
+
+    /// <summary>The azure extension's native-copy failure from a Linux host whose default transport could not
+    /// find the CA bundle: the file URL and the nested transport error are what explain it.</summary>
+    [Fact]
+    public void SanitizeEngineMessage_keeps_the_file_url_and_the_nested_original_error()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "IO Error: AzureStorageFileSystem could not open file: 'az://lake/raw/quakes/data_0.parquet', unknown error " +
+            "occurred, this could mean the credentials used were wrong. Original error message: 'Problem with the SSL CA " +
+            "cert (path? access rights?)'");
+
+        Assert.Equal(
+            "IO Error: AzureStorageFileSystem could not open file: 'az://lake/raw/quakes/data_0.parquet', unknown error " +
+            "occurred, this could mean the credentials used were wrong. Original error message: 'Problem with the SSL CA " +
+            "cert (path? access rights?)'",
+            sanitized);
+    }
+
+    [Fact]
+    public void SanitizeEngineMessage_masks_a_sas_query_string_and_userinfo_in_a_url_literal()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "IO Error: could not open 'https://acct.blob.core.windows.net/lake/x.parquet?sv=2024&sig=SASSIG%3D' and " +
+            "'postgresql://admin:PGPASS@db.internal:5432/app'");
+
+        Assert.Equal(
+            "IO Error: could not open 'https://acct.blob.core.windows.net/lake/x.parquet?***' and " +
+            "'postgresql://***@db.internal:5432/app'",
+            sanitized);
+        Assert.DoesNotContain("SASSIG", sanitized);
+        Assert.DoesNotContain("PGPASS", sanitized);
+    }
+
+    [Fact]
+    public void SanitizeEngineMessage_scrubs_credentials_inside_a_nested_original_error()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "IO Error: request failed. Original error message: 'GET https://acct.blob.core.windows.net/c/x?sig=SASSIG " +
+            "rejected for AccountName=acct;AccountKey=AZKEY=='");
+
+        Assert.Equal(
+            "IO Error: request failed. Original error message: 'GET https://acct.blob.core.windows.net/c/x?*** " +
+            "rejected for AccountName=acct;AccountKey=***'",
+            sanitized);
+    }
+
+    [Fact]
+    public void SanitizeEngineMessage_still_masks_a_secret_literal_that_is_not_a_url()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "Invalid Input Error: could not parse connection string 'DefaultEndpointsProtocol=https;AccountName=a;AccountKey=AZKEY'");
+
+        Assert.Equal("Invalid Input Error: could not parse connection string '***'", sanitized);
+    }
 }
