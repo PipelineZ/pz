@@ -117,4 +117,36 @@ public sealed class NativeStatementRedactorTests
 
         Assert.Equal("Invalid Input Error: could not parse connection string '***'", sanitized);
     }
+
+    [Fact]
+    public void SanitizeEngineMessage_masks_a_password_containing_a_slash_in_url_userinfo()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "IO Error: could not connect to 'postgresql://admin:PG/PASS@db.internal/app'");
+
+        Assert.Equal("IO Error: could not connect to 'postgresql://***@db.internal/app'", sanitized);
+    }
+
+    [Fact]
+    public void SanitizeEngineMessage_scrubs_past_a_quote_inside_the_nested_original_error()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "IO Error: failed. Original error message: 'secret 'INNERSECRET' rejected, Authorization: Bearer EYJTOKEN, " +
+            "{\"password\": \"JSONPW\"}, client_secret: COLONPW'");
+
+        Assert.DoesNotContain("INNERSECRET", sanitized);
+        Assert.DoesNotContain("EYJTOKEN", sanitized);
+        Assert.DoesNotContain("JSONPW", sanitized);
+        Assert.DoesNotContain("COLONPW", sanitized);
+        Assert.Contains("Original error message: 'secret '***' rejected", sanitized);
+    }
+
+    [Fact]
+    public void SanitizeEngineMessage_masks_credential_pairs_in_a_kept_url_path()
+    {
+        var sanitized = NativeStatementRedactor.SanitizeEngineMessage(
+            "IO Error: could not open 'https://acct.blob.core.windows.net/c;AccountKey=AZKEY/x.parquet'");
+
+        Assert.DoesNotContain("AZKEY", sanitized);
+    }
 }

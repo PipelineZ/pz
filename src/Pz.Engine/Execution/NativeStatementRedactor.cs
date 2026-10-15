@@ -61,45 +61,61 @@ public static partial class NativeStatementRedactor
         var summary = SplitSummary(message);
         return QuotedLiteral().Replace(summary, m =>
         {
-            var body = m.Groups["body"].Value;
             if (m.Groups["nested"].Success)
             {
-                return $"{m.Groups["nested"].Value}'{ScrubFreeText(body)}'";
+                return $"{m.Groups["nested"].Value}'{ScrubFreeText(m.Groups["inner"].Value)}'";
             }
 
+            var body = m.Groups["body"].Value;
             return IsUrl(body) ? $"'{ScrubUrl(body)}'" : "'***'";
         });
     }
 
     private static bool IsUrl(string text) => UrlLiteral().IsMatch(text);
 
-    /// <summary>Keeps scheme, host and path; masks userinfo (<c>user:password@</c>) and drops the query and
-    /// fragment behind a <c>?***</c> marker, since a SAS token or presigned signature rides the query.</summary>
+    /// <summary>Keeps scheme, host and path; masks everything up to the LAST <c>@</c> (userinfo, including a
+    /// password that itself contains <c>/</c>, <c>?</c> or <c>#</c>, which a strict URL parser would read
+    /// differently) and drops the query and fragment behind a <c>?***</c> marker, since a SAS token or presigned
+    /// signature rides the query. Credential-named <c>key=value</c> pairs left in the path are masked too.</summary>
     private static string ScrubUrl(string url)
     {
         var schemeEnd = url.IndexOf("://", StringComparison.Ordinal) + 3;
-        var tailStart = url.IndexOfAny(['?', '#'], schemeEnd);
-        var head = tailStart < 0 ? url : url[..tailStart];
-
-        var authorityEnd = head.IndexOf('/', schemeEnd);
-        var authority = authorityEnd < 0 ? head[schemeEnd..] : head[schemeEnd..authorityEnd];
-        var at = authority.LastIndexOf('@');
+        var rest = url[schemeEnd..];
+        var at = rest.LastIndexOf('@');
+        var userinfo = at >= 0 ? "***@" : "";
         if (at >= 0)
         {
-            head = string.Concat(head.AsSpan(0, schemeEnd), "***", head.AsSpan(schemeEnd + at));
+            rest = rest[(at + 1)..];
         }
 
-        return tailStart < 0 ? head : head + "?***";
+        var tailStart = rest.IndexOfAny(['?', '#']);
+        var head = tailStart < 0 ? rest : rest[..tailStart];
+        var scrubbed = MaskCredentials(string.Concat(url.AsSpan(0, schemeEnd), userinfo, head));
+        return tailStart < 0 ? scrubbed : scrubbed + "?***";
     }
 
+    /// <summary>Free text an extension wraps (the nested original error): URLs scrubbed as above, quoted
+    /// literals inside it masked by the same rule as the outer message, credential pairs and bearer/basic
+    /// authorization values masked.</summary>
     private static string ScrubFreeText(string text)
     {
         var scrubbed = EmbeddedUrl().Replace(text, m => ScrubUrl(m.Value));
-        return CredentialPair().Replace(scrubbed, m => $"{m.Groups["key"].Value}=***");
+        scrubbed = InnerLiteral().Replace(scrubbed, m => IsUrl(m.Groups["body"].Value) ? m.Value : "'***'");
+        return MaskCredentials(scrubbed);
     }
 
-    [GeneratedRegex(@"(?<nested>Original error message:\s*)?'(?<body>[^']*)'", RegexOptions.IgnoreCase)]
+    private static string MaskCredentials(string text) =>
+        AuthorizationValue().Replace(
+            CredentialPair().Replace(text, m => $"{m.Groups["key"].Value}{m.Groups["sep"].Value}***"),
+            m => $"{m.Groups["scheme"].Value} ***");
+
+    /// <summary>The nested alternative is greedy to the LAST quote on its line, so a quote inside the original
+    /// error cannot end the literal early and leave the rest of it outside any scrubbing.</summary>
+    [GeneratedRegex(@"(?<nested>Original error message:\s*)'(?<inner>[^\n]*)'|'(?<body>[^']*)'", RegexOptions.IgnoreCase)]
     private static partial Regex QuotedLiteral();
+
+    [GeneratedRegex(@"'(?<body>[^']*)'")]
+    private static partial Regex InnerLiteral();
 
     [GeneratedRegex(@"^[A-Za-z][A-Za-z0-9+.\-]*://\S+$")]
     private static partial Regex UrlLiteral();
@@ -108,7 +124,10 @@ public static partial class NativeStatementRedactor
     private static partial Regex EmbeddedUrl();
 
     [GeneratedRegex(
-        @"\b(?<key>AccountKey|SharedAccessSignature|SharedAccessKey|sig|password|pwd|token|secret|client_secret|access_key|secret_key|key_id|session_token)=[^;&\s]+",
+        @"\b(?<key>AccountKey|SharedAccessSignature|SharedAccessKey|sig|signature|password|passwd|pwd|token|access_token|refresh_token|secret|client_secret|access_key|secret_key|key_id|session_token|api_key|apikey)(?<sep>""?\s*[=:]\s*""?)[^;&\s""]+",
         RegexOptions.IgnoreCase)]
     private static partial Regex CredentialPair();
+
+    [GeneratedRegex(@"\b(?<scheme>Bearer|Basic|SharedKey)\s+[^\s'""]+", RegexOptions.IgnoreCase)]
+    private static partial Regex AuthorizationValue();
 }
