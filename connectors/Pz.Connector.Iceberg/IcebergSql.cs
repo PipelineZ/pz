@@ -211,7 +211,7 @@ internal static class IcebergSql
 
         if (azure)
         {
-            statements.AddRange(["install azure", "load azure"]);
+            statements.AddRange(["install azure", "load azure", .. AzureTransportStatements()]);
         }
         else if (IcebergCatalog.IsAws(catalog) && !hasStorageKeys)
         {
@@ -332,6 +332,13 @@ internal static class IcebergSql
             $", url_style '{EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}" +
             (scope is null ? "" : $", scope '{EscapeLiteral(scope)}'") + ")";
     }
+
+    /// <summary>On Linux the azure extension's default transport cannot find the system CA bundle, so every
+    /// HTTPS request fails with "Problem with the SSL CA cert" before it leaves the host (which surfaces as a
+    /// credentials error); the curl transport uses the system bundle. Global to the DuckDB instance and the
+    /// same value the azureblob connector sets, so the two never disagree within a run.</summary>
+    internal static IEnumerable<string> AzureTransportStatements() =>
+        OperatingSystem.IsLinux() ? ["set azure_transport_option_type = 'curl'"] : [];
 
     /// <summary>Azure storage credentials as a <c>type azure</c> secret. One body per
     /// <c>storage_auth</c> method, field-for-field the azureblob connector's shapes: the two

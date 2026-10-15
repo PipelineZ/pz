@@ -10,6 +10,9 @@ public sealed class IcebergSqlGenTests
 {
     private const string WhAlias = "pz_iceberg_wh_509bcf06";
 
+    // Linux-only: the azure extension's default transport cannot find the system CA bundle there.
+    private static readonly string[] AzureTransport = OperatingSystem.IsLinux() ? ["set azure_transport_option_type = 'curl'"] : [];
+
     private static DatasetSpec Spec(Dictionary<string, object?>? options = null, string entity = "raw.events") =>
         new("wh", entity, options ?? []);
 
@@ -441,12 +444,12 @@ public sealed class IcebergSqlGenTests
     {
         var statements = IcebergSql.SetupStatements(Rest(("token", "tok"), ("storage", "azure")), WhAlias);
         Assert.Equal(
-            new[]
-            {
-                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure",
+            (string[])
+            [
+                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure", .. AzureTransport,
                 $"create or replace secret {WhAlias}_secret (type iceberg, token 'tok')",
                 $"attach if not exists 'wh' as {WhAlias} (type iceberg, endpoint 'https://cat.example.com/api', secret {WhAlias}_secret)",
-            },
+            ],
             statements);
     }
 
@@ -457,13 +460,13 @@ public sealed class IcebergSqlGenTests
             Rest(("token", "tok"), ("storage", "azure"), ("storage_auth", "connection_string"), ("storage_connection_string", "AccountName=a;AccountKey=k'k")),
             WhAlias);
         Assert.Equal(
-            new[]
-            {
-                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure",
+            (string[])
+            [
+                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure", .. AzureTransport,
                 $"create or replace secret {WhAlias}_storage (type azure, connection_string 'AccountName=a;AccountKey=k''k')",
                 $"create or replace secret {WhAlias}_secret (type iceberg, token 'tok')",
                 $"attach if not exists 'wh' as {WhAlias} (type iceberg, endpoint 'https://cat.example.com/api', secret {WhAlias}_secret, access_delegation_mode 'none')",
-            },
+            ],
             statements);
     }
 
@@ -495,11 +498,11 @@ public sealed class IcebergSqlGenTests
         var statements = IcebergSql.SetupStatements(
             Config(("catalog", "files"), ("root", "az://c/wh/"), ("storage_auth", "connection_string"), ("storage_connection_string", "cs")), WhAlias);
         Assert.Equal(
-            new[]
-            {
-                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure",
+            (string[])
+            [
+                "install iceberg", "load iceberg", "install httpfs", "load httpfs", "install azure", "load azure", .. AzureTransport,
                 $"create or replace secret {WhAlias}_storage (type azure, connection_string 'cs', scope 'az://c/wh/')",
-            },
+            ],
             statements);
     }
 

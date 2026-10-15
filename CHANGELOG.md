@@ -7,6 +7,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Iceberg `storage: azure` on Linux.** The iceberg connector loaded DuckDB's azure extension without choosing a
+  transport, so on Linux every HTTPS request to Azure Storage failed with `Problem with the SSL CA cert` (the bug
+  0.11.2 fixed for azureblob). It now sets `azure_transport_option_type = 'curl'` on Linux, as azureblob does.
+
 ## [0.11.2] - 2026-10-15
 
 ### Fixed
