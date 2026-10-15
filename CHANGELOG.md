@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-10-16
+
 ### Fixed
 
 - **Iceberg `storage: azure` on Linux.** The iceberg connector loaded DuckDB's azure extension without choosing a
