@@ -1,10 +1,9 @@
 namespace Pz.TestSupport;
 
-/// <summary>The opt-in lane against a real storage account over HTTPS. Azurite speaks plain <c>http://</c>, so
-/// it never exercises TLS: a transport that cannot find the CA bundle passes every emulator test and fails on
-/// every real host. Tests gated on <see cref="SkipUnlessConfigured"/> run only when
+/// <summary>The opt-in lane against a real storage account over HTTPS, run by hand (CI covers TLS with Azurite
+/// over HTTPS). Tests gated on <see cref="SkipUnlessConfigured"/> run only when
 /// <c>PZ_TEST_AZURE_ACCOUNT</c> names a storage account. Auth is <c>PZ_TEST_AZURE_ACCOUNT_KEY</c> when set,
-/// otherwise the Azure CLI credential (an <c>az login</c> session, or CI's OIDC federated login), which needs
+/// otherwise the Azure CLI credential (an <c>az login</c> session), which needs
 /// Storage Blob Data Contributor on the container. Every test writes under its own <see cref="NewPrefix"/>
 /// and deletes it afterwards.</summary>
 public static class LiveAzure
