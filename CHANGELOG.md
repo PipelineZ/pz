@@ -7,6 +7,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-15
+
+### Fixed
+
+- **Azure Blob native reads and writes on Linux.** The DuckDB azure extension's default transport could not find
+  the system CA bundle (seen on Ubuntu 24.04 and Arch), so every native scan and native copy failed before any
+  request left the host, reported as `PZ0501 ... this could mean the credentials used were wrong`. The azureblob
+  connector now sets `azure_transport_option_type = 'curl'` on Linux, which uses the system bundle. Managed
+  identity (`auth: managed_identity` with `client_id`) now works natively on Azure Container Apps.
+
 ## [0.11.1] - 2026-10-14
 
 ### Security

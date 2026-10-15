@@ -46,7 +46,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
 
         copy = new NativeCopy(
             $"copy (select * from {{{{source}}}}) to '{AzureUrl.Escape(AzureUrl.Render(loc))}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
-            ["install azure", "load azure", secret, .. FileFormatCatalog.SetupStatements(format)])
+            ["install azure", "load azure", secret, .. AzureAuth.TransportStatements(), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO azure {format.Name}",
         };

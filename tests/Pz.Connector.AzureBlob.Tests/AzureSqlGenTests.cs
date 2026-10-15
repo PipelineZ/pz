@@ -31,6 +31,24 @@ public sealed class AzureSqlGenTests
     }
 
     [Fact]
+    public void Native_setup_selects_the_curl_transport_on_linux_only()
+    {
+        Assert.True(new AzureSink(Conn()).TryGetNativeCopy(Out(), out var copy));
+        Assert.True(new AzureSource(Conn()).TryGetNativeScan(Ds(), out var scan));
+        const string curl = "set azure_transport_option_type = 'curl'";
+        if (OperatingSystem.IsLinux())
+        {
+            Assert.Equal(curl, copy!.SetupStatements[3]);
+            Assert.Equal(curl, scan!.SetupStatements[3]);
+        }
+        else
+        {
+            Assert.DoesNotContain(curl, copy!.SetupStatements);
+            Assert.DoesNotContain(curl, scan!.SetupStatements);
+        }
+    }
+
+    [Fact]
     public void Csv_copy_adds_header_clause()
     {
         var sink = new AzureSink(Conn());
