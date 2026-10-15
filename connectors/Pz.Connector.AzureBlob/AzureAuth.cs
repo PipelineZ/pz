@@ -72,6 +72,13 @@ internal static class AzureAuth
         return $"create or replace secret {secretName} (type azure, {body})";
     }
 
+    /// <summary>Native-tier setup that follows the secret. On Linux the azure extension's default transport
+    /// cannot find the system CA bundle (Ubuntu 24.04 and Arch both fail with "Problem with the SSL CA cert"
+    /// before any request leaves the host, which surfaces as a credentials error); its curl transport uses the
+    /// system bundle. Global to the DuckDB instance, and the same value for every azure connection.</summary>
+    public static IEnumerable<string> TransportStatements() =>
+        OperatingSystem.IsLinux() ? ["set azure_transport_option_type = 'curl'"] : [];
+
     /// <summary>The universal blob-stream tier's per-container client (<see cref="AzureParquetReader"/>
     /// et al) -- see <see cref="CreateBlobServiceClient"/> for the auth→client mapping.</summary>
     public static BlobContainerClient CreateBlobContainerClient(ConnectorConfig config, string container) =>

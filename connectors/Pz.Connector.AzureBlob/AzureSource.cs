@@ -122,7 +122,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
 
         scan = new NativeScan(
             AzureWindowSql.Wrap(fragment, spec),
-            ["install azure", "load azure", secret, .. FileFormatCatalog.SetupStatements(format)])
+            ["install azure", "load azure", secret, .. AzureAuth.TransportStatements(), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
             SchemaInferred = inferred,
