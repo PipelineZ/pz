@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-10-15
+
 ### Fixed
 
 - **Azure Blob native reads and writes on Linux.** The DuckDB azure extension's default transport could not find
