@@ -68,7 +68,7 @@ scripts/verify-sdk-package.sh
 
 `PZ_TESTS_OFFLINE=1` skips network-dependent tests. Tests that download a DuckDB extension carry
 `[Trait("Category", "DuckDbExtension")]`, skip offline, and run in CI's `format-extensions` job.
-Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-bench.sh`.
+Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-bench.sh` (throughput) and `scripts/scale-bench.sh` (project-size scaling).
 
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
 green. Six jobs: `build-test`, an ubuntu+windows matrix where both legs build and run the full
