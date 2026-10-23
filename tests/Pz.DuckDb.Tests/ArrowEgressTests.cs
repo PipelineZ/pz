@@ -1,4 +1,5 @@
 using Apache.Arrow;
+using Pz.Connectors.Abstractions.Memory;
 using Pz.DuckDb;
 
 namespace Pz.DuckDb.Tests;
@@ -265,5 +266,155 @@ public sealed class ArrowEgressTests : IDisposable
         // streaming producer's first batch lands after only a small slice of the result has been read.
         Assert.True(firstBatchRowsSoFar < 1_000_000,
             $"first batch only arrived after {firstBatchRowsSoFar} of 5,000,000 rows were read — looks like full buffering");
+    }
+
+    [Fact]
+    public async Task Egress_roundtrip_decimal38_beyond_system_decimal()
+    {
+        await using var duck = Open();
+
+        var values = new List<string?>();
+        await foreach (var batch in duck.QueryArrowAsync(
+            "select * from (values (12345678901234567890123456789.123456789::decimal(38,9)), " +
+            "(-99999999999999999999999999999.999999999::decimal(38,9)), (null::decimal(38,9))) t(x)"))
+        {
+            using var b = batch;
+            var decs = (Decimal128Array)b.Column(0);
+            for (var i = 0; i < b.Length; i++)
+            {
+                values.Add(decs.IsNull(i) ? null : decs.GetString(i));
+            }
+        }
+
+        Assert.Equal(3, values.Count);
+        Assert.Equal("12345678901234567890123456789.123456789", values[0]);
+        Assert.Equal("-99999999999999999999999999999.999999999", values[1]);
+        Assert.Null(values[2]);
+    }
+
+    [Fact]
+    public async Task Egress_empty_result_yields_no_batches()
+    {
+        await using var duck = Open();
+
+        var batches = 0;
+        await foreach (var batch in duck.QueryArrowAsync("select * from range(0) t(g)"))
+        {
+            using var b = batch;
+            batches++;
+        }
+
+        Assert.Equal(0, batches);
+        // Only completes if the egress stream released the session gate.
+        Assert.Equal(1L, await duck.ScalarAsync<long>("select 1"));
+    }
+
+    [Fact]
+    public async Task Egress_batches_respect_max_rows_exactly()
+    {
+        await using var duck = Open();
+
+        var lengths = new List<int>();
+        var expected = 0L;
+        await foreach (var batch in duck.QueryArrowAsync("select g::bigint from range(300000) t(g)"))
+        {
+            using var b = batch;
+            lengths.Add(b.Length);
+            var ids = (Int64Array)b.Column(0);
+            for (var i = 0; i < b.Length; i++)
+            {
+                Assert.Equal(expected, ids.GetValue(i));
+                expected++;
+            }
+        }
+
+        Assert.Equal(new[] { 122880, 122880, 54240 }, lengths);
+        Assert.Equal(300000L, expected);
+    }
+
+    [Fact]
+    public async Task Egress_concatenation_preserves_nulls_and_utf8_across_chunks()
+    {
+        await using var duck = Open();
+
+        // 10,000 rows is at least 5 DuckDB data chunks (2,048 rows each); they all fit one output batch,
+        // so every chunk boundary is a concatenation seam.
+        var batches = 0;
+        var row = 0L;
+        await foreach (var batch in duck.QueryArrowAsync(
+            "select g, case when g % 3 = 0 then null when g % 3 = 1 then '' else 'ză' || g::varchar end as s " +
+            "from range(10000) t(g) order by g"))
+        {
+            using var b = batch;
+            batches++;
+            var gs = (Int64Array)b.Column(0);
+            var ss = (StringArray)b.Column(1);
+            for (var i = 0; i < b.Length; i++)
+            {
+                Assert.Equal(row, gs.GetValue(i));
+                switch (row % 3)
+                {
+                    case 0:
+                        Assert.True(ss.IsNull(i), $"row {row} should be null");
+                        break;
+                    case 1:
+                        Assert.False(ss.IsNull(i), $"row {row} should be empty, not null");
+                        Assert.Equal(string.Empty, ss.GetString(i));
+                        break;
+                    default:
+                        Assert.False(ss.IsNull(i), $"row {row} should not be null");
+                        Assert.Equal("ză" + row.ToString(System.Globalization.CultureInfo.InvariantCulture), ss.GetString(i));
+                        break;
+                }
+
+                row++;
+            }
+        }
+
+        Assert.Equal(10000L, row);
+        Assert.Equal(1, batches);
+    }
+
+    [Fact]
+    public async Task Egress_early_break_releases_held_chunks_and_pool()
+    {
+        await using var duck = Open();
+        var allocator = new PooledNativeAllocator();
+        duck.EgressAllocator = allocator;
+        var baseline = allocator.RentedBytes;
+
+        // Released once the producer has written a second batch, i.e. one the consumer has not taken is
+        // sitting in the channel when the consumer breaks.
+        var secondBatchWritten = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var produced = 0;
+        duck.OnEgressBatchProducedForTests = _ =>
+        {
+            if (Interlocked.Increment(ref produced) == 2) { secondBatchWritten.TrySetResult(); }
+        };
+
+        var firstBatchRows = 0;
+        try
+        {
+            await foreach (var batch in duck.QueryArrowAsync(
+                "select g::bigint as g, 'pad-' || g::varchar as pad from range(1000000) t(g)"))
+            {
+                using (batch)
+                {
+                    firstBatchRows = batch.Length;
+                }
+
+                await secondBatchWritten.Task;
+                break;
+            }
+        }
+        finally
+        {
+            duck.OnEgressBatchProducedForTests = null;
+        }
+
+        Assert.Equal(122880, firstBatchRows);
+        // Only completes if the egress stream released the session gate.
+        Assert.Equal(1L, await duck.ScalarAsync<long>("select 1"));
+        Assert.Equal(baseline, allocator.RentedBytes);
     }
 }
