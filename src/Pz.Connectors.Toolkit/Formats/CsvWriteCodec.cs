@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Text;
 using Apache.Arrow;
@@ -38,7 +39,7 @@ namespace Pz.Connectors.Toolkit.Formats;
 public sealed class CsvWriteCodec : IAsyncDisposable
 {
     /// <summary>Bytes reserved for one fixed-width cell. The widest v0 fixed-width rendering is a
-    /// decimal (up to 31 characters) or a round-trip <see cref="DateTimeOffset"/> ("O", 33), both ASCII;
+    /// decimal (up to 41 characters: 38 digits, sign, point) or a round-trip <see cref="DateTimeOffset"/> ("O", 33), both ASCII;
     /// 64 leaves room without a per-value length calculation.</summary>
     private const int FixedCellReserve = 64;
 
@@ -423,8 +424,18 @@ public sealed class CsvWriteCodec : IAsyncDisposable
                 written = flag.Length;
                 break;
             case CellKind.Decimal128:
-                ((Decimal128Array)column.Array).GetValue(row)!.Value
-                    .TryFormat(destination, out written, default, CultureInfo.InvariantCulture);
+                var decimals = (Decimal128Array)column.Array;
+                if (FitsSystemDecimal(decimals, row))
+                {
+                    decimals.GetValue(row)!.Value.TryFormat(destination, out written, default, CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    // Beyond System.Decimal's range, which GetValue/TryGetValue wrap silently: Arrow's exact
+                    // decimal text, at most 40 bytes, well inside FixedCellReserve.
+                    written = Encoding.UTF8.GetBytes(decimals.GetString(row), destination);
+                }
+
                 break;
             case CellKind.Date32:
                 ((Date32Array)column.Array).GetDateTime(row)!.Value
@@ -439,6 +450,21 @@ public sealed class CsvWriteCodec : IAsyncDisposable
         }
 
         return written;
+    }
+
+    /// <summary>True when the cell's 128-bit unscaled integer fits System.Decimal's 96-bit mantissa and
+    /// its scale is at most 28. Arrow's <c>GetValue</c> and <c>TryGetValue</c> both wrap silently outside
+    /// that range, so the range is checked on the raw little-endian two's-complement bytes.</summary>
+    private static bool FitsSystemDecimal(Decimal128Array array, int row)
+    {
+        if (((Apache.Arrow.Types.Decimal128Type)array.Data.DataType).Scale > 28)
+        {
+            return false;
+        }
+
+        var unscaled = MemoryMarshal.Read<Int128>(array.ValueBuffer.Span.Slice((array.Offset + row) * 16, 16));
+        var limit = Int128.One << 96;
+        return unscaled > -limit && unscaled < limit;
     }
 
     /// <summary>Copies one string cell's UTF-8 bytes straight from the pinned Arrow value buffer,
