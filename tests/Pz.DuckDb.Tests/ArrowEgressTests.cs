@@ -290,6 +290,20 @@ public sealed class ArrowEgressTests : IDisposable
         Assert.Equal("12345678901234567890123456789.123456789", values[0]);
         Assert.Equal("-99999999999999999999999999999.999999999", values[1]);
         Assert.Null(values[2]);
+
+        var scale10 = new List<string?>();
+        await foreach (var batch in duck.QueryArrowAsync(
+            "select 1234567890123456789012345678.1234567890::decimal(38,10) x"))
+        {
+            using var b = batch;
+            var decs = (Decimal128Array)b.Column(0);
+            for (var i = 0; i < b.Length; i++)
+            {
+                scale10.Add(decs.GetString(i));
+            }
+        }
+
+        Assert.Equal(["1234567890123456789012345678.1234567890"], scale10);
     }
 
     [Fact]

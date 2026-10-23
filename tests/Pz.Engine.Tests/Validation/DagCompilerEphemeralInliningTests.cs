@@ -24,7 +24,8 @@ public sealed class DagCompilerEphemeralInliningTests
         var project = new PzProject("t", "0.0.0", new EngineConfig(),
             new Dictionary<string, object?>(), [], [], [.. pipelines]);
         var ctx = new RenderContext(project, "run-1", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
-        var dag = DagCompiler.Compile(project, ctx, sqlAst: new DuckDbSqlAstReader());
+        using var sqlAst = new DuckDbSqlAstReader();
+        var dag = DagCompiler.Compile(project, ctx, sqlAst: sqlAst);
         var dryCompile = await SqlDryCompiler.RunAsync(dag, default);
         return (dag, dryCompile);
     }
@@ -91,7 +92,9 @@ public sealed class DagCompilerEphemeralInliningTests
             new Dictionary<string, object?>(), [], [crm], [eph, consumer]);
         var ctx = new RenderContext(project, "run-1", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
 
-        var dag = DagCompiler.Compile(project, ctx, sqlAst: new DuckDbSqlAstReader());
+        using var sqlAst = new DuckDbSqlAstReader();
+
+        var dag = DagCompiler.Compile(project, ctx, sqlAst: sqlAst);
 
         var source = dag.Nodes.Single(n => n.Name == "src_crm__orders");
         var incremental = Assert.IsType<SourceDatasetDef>(source.Definition).Dataset.SyncMode?.Incremental;

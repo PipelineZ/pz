@@ -30,7 +30,8 @@ public sealed class MssqlMartSampleCompileTests
     {
         var project = ProjectLoader.Load(Path.Combine(FindRepoRoot(), "samples", "mssql-mart"), Env);
         var ctx = new RenderContext(project, "test-run", DateTimeOffset.UnixEpoch) { Env = Env };
-        return (project, DagCompiler.Compile(project, ctx, sqlAst: new DuckDbSqlAstReader()));
+        using var sqlAst = new DuckDbSqlAstReader();
+        return (project, DagCompiler.Compile(project, ctx, sqlAst: sqlAst));
     }
 
     [Fact]

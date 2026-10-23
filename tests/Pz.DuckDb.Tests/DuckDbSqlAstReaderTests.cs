@@ -5,7 +5,11 @@ namespace Pz.DuckDb.Tests;
 public sealed class DuckDbSqlAstReaderTests
 {
     private const string S = "__pz_watermark__crm__orders__";
-    private static WatermarkAnalysis Analyze(string sql) => new DuckDbSqlAstReader().Analyze(sql, [S]);
+    private static WatermarkAnalysis Analyze(string sql)
+    {
+        using var reader = new DuckDbSqlAstReader();
+        return reader.Analyze(sql, [S]);
+    }
 
     [Theory]
     [InlineData($"select * from staging.src_crm__orders o where o.updated_at > '{S}'", "updated_at", false)]

@@ -9,7 +9,7 @@ namespace Pz.Connectors.Abstractions.Batches;
 /// <summary>Pivots values into columnar Arrow <see cref="RecordBatch"/>es, via either of two entry
 /// points sharing the same underlying column builders/byte accounting: row-major
 /// <see cref="AppendRow"/> (a boxed <c>object?[]</c> row) or, for a source that is already columnar
-/// Arrow (DuckDB's own egress batches), the typed non-boxing <see cref="AppendFrom"/>. v0 supports a fixed
+/// Arrow, the typed non-boxing <see cref="AppendFrom"/>. v0 supports a fixed
 /// type matrix (int32/int64/double/decimal128(38,9)/utf8/bool/date32/timestamp-µs-UTC,
 /// all nullable); any other schema field type fails fast in the constructor. Byte accounting is an
 /// estimate (fixed-width columns count exactly, utf8 counts UTF-8 bytes + a 4-byte offset, every column
@@ -150,7 +150,7 @@ public sealed class ArrowBatchBuilder
     /// schema field, same order) at <paramref name="sourceRow"/>, using each column's typed
     /// (non-boxing) <c>Append</c> overload instead of round-tripping the value through
     /// <c>object</c>/<c>object?[]</c> the way <see cref="AppendRow"/> does. Exists for re-batching an
-    /// already-columnar source (e.g. DuckDB's own Arrow export) toward this builder's
+    /// already-columnar source (e.g. a connector that reads Arrow natively) toward this builder's
     /// <see cref="PendingBytes"/> target without paying a struct-boxing allocation per cell — the whole
     /// point of a coalescing step whose input is already Arrow, not row-major values. Null handling
     /// mirrors <see cref="AppendRow"/>: a null source cell (<see cref="IArrowArray.IsNull"/>) becomes
