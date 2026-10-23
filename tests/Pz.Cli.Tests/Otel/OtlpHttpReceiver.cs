@@ -80,6 +80,12 @@ internal sealed class OtlpHttpReceiver : IAsyncDisposable
         var address = new Uri(_app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First());
         TracesUrl = new Uri(address, "/traces");
         MetricsUrl = new Uri(address, "/metrics");
+
+        // An exporter's first request pays once-per-process costs -- system proxy resolution (seconds on some
+        // Windows hosts) and the server's first-request path -- inside its own export timeout, and a late export
+        // is dropped, not retried. One request to an unmapped path here pays them up front; it is never recorded.
+        using var warmUp = new HttpClient();
+        using var _ = await warmUp.PostAsync(new Uri(address, "/warm-up"), new ByteArrayContent([]));
     }
 
     private async Task Accept(HttpContext context, bool traces)
