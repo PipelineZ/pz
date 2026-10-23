@@ -75,7 +75,8 @@ internal static class TestCommand
                 return ExitCodes.ConfigError;
             }
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new Pz.DuckDb.DuckDbSqlAstReader());
+            using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
+            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
         }
         catch (PzValidationException ex)
         {

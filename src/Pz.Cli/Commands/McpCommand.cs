@@ -323,7 +323,8 @@ internal static class McpCommand
             project = ProjectLoader.Load(projectDir, env);
             project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new DuckDbSqlAstReader());
+            using var sqlAst = new DuckDbSqlAstReader();
+            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
         }
         catch (PzValidationException ex)
         {
@@ -408,7 +409,8 @@ internal static class McpCommand
             project = ProjectLoader.Load(projectDir, env);
             project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new DuckDbSqlAstReader());
+            using var sqlAst = new DuckDbSqlAstReader();
+            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
         }
         catch (PzValidationException ex)
         {

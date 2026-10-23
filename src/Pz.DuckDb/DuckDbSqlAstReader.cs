@@ -6,17 +6,81 @@ namespace Pz.DuckDb;
 /// <summary>Reads watermark comparisons out of rendered pipeline SQL using DuckDB's own
 /// parser (json_serialize_sql), and rewrites each recognized comparison with the NULL-guard via
 /// AST mutation + json_deserialize_sql. Total-or-error: anything outside the blessed shape is a
-/// WatermarkShapeViolation, never a guess. A fresh in-memory session per call — parse-only, no
-/// catalog, deterministic.</summary>
-public sealed class DuckDbSqlAstReader : ISqlAstReader
+/// WatermarkShapeViolation, never a guess. One parse-only in-memory session per reader instance;
+/// parsing reads no catalog, so reuse cannot change a result. A reader serves one compile and is
+/// disposed by its owner.</summary>
+public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
 {
     // The "unknown location" marker DuckDB itself emits for synthesized nodes (UINT64 max / invalid
     // index). Reused for the guard nodes we inject so json_deserialize_sql accepts them.
     private const ulong UnknownLocation = 18446744073709551615UL;
 
+    private readonly Lazy<DuckDbSync> _session;
+    private readonly Lazy<Dictionary<string, bool>> _functionCatalog;
+    private readonly Lazy<string> _skeletonJson;
+    private int _sessionsOpened;
+    private volatile bool _disposed;
+
+    public DuckDbSqlAstReader()
+    {
+        _session = new Lazy<DuckDbSync>(OpenSession);
+        _functionCatalog = new Lazy<Dictionary<string, bool>>(LoadFunctionCatalog);
+        _skeletonJson = new Lazy<string>(() => _session.Value.Scalar("select json_serialize_sql('select 1')"));
+    }
+
+    /// <summary>Number of <c>DuckSession.Open</c> calls this instance has made.</summary>
+    internal int SessionsOpenedForTests => Volatile.Read(ref _sessionsOpened);
+
+    public void Dispose()
+    {
+        _disposed = true;
+        if (_session.IsValueCreated)
+        {
+            _session.Value.Dispose();
+        }
+    }
+
+    private DuckDbSync OpenSession()
+    {
+        Interlocked.Increment(ref _sessionsOpened);
+        var duck = DuckDbSync.OpenInMemory();
+        // Parsing is single-statement and tiny; worker threads would only cost start-up time.
+        duck.Execute("set threads=1");
+        return duck;
+    }
+
+    private DuckDbSync Session()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _session.Value;
+    }
+
+    /// <summary>function_name (lowercased, ordinal) to whether any overload is VOLATILE or
+    /// CONSISTENT_WITHIN_QUERY. Loaded once per instance.</summary>
+    private Dictionary<string, bool> LoadFunctionCatalog()
+    {
+        var packed = _session.Value.Scalar(
+            "select coalesce(string_agg(n || chr(2) || case when nc then '1' else '0' end, chr(1)), '') from (" +
+            "select lower(function_name), bool_or(stability in ('VOLATILE','CONSISTENT_WITHIN_QUERY')) " +
+            "from duckdb_functions() group by 1) t(n, nc)");
+        var catalog = new Dictionary<string, bool>(StringComparer.Ordinal);
+        if (packed.Length == 0)
+        {
+            return catalog;
+        }
+
+        foreach (var entry in packed.Split('\u0001'))
+        {
+            var sep = entry.LastIndexOf('\u0002');
+            catalog[entry[..sep]] = entry[(sep + 1)..] == "1";
+        }
+
+        return catalog;
+    }
+
     public WatermarkAnalysis Analyze(string sql, IReadOnlyList<string> sentinels)
     {
-        using var duck = DuckDbSync.OpenInMemory();
+        var duck = Session();
         var serialized = duck.Scalar($"select json_serialize_sql('{Escape(sql)}')");
         var root = JsonNode.Parse(serialized)!;
         if (root["error"]?.GetValue<bool>() == true)
@@ -91,7 +155,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
     /// <see cref="TargetRowsPreserved"/> the third.</summary>
     public ReadHintPlan ExtractReadHints(string sql, string baseTable, string? cursorColumn)
     {
-        using var duck = DuckDbSync.OpenInMemory();
+        var duck = Session();
         var serialized = duck.Scalar($"select json_serialize_sql('{Escape(sql)}')");
         var root = JsonNode.Parse(serialized)!;
         if (root["error"]?.GetValue<bool>() == true)
@@ -155,7 +219,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
     /// this interface member documents as its "AST route unavailable" signal.</summary>
     public string? PrependCtes(string consumerSql, IReadOnlyList<(string Alias, string Sql)> ctes)
     {
-        using var duck = DuckDbSync.OpenInMemory();
+        var duck = Session();
         var consumerRoot = ParseSingleStatement(duck, consumerSql);
         if (consumerRoot is null)
         {
@@ -393,7 +457,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
     /// <summary>The AND-conjuncts of the WHERE clause that are safe to hand the connector, joined back
     /// with " AND " and stripped of table qualifiers (the connector's own SELECT declares no alias).
     /// Null when nothing survives.</summary>
-    private static string? ExtractPredicate(DuckDbSync duck, JsonNode? whereClause,
+    private string? ExtractPredicate(DuckDbSync duck, JsonNode? whereClause,
         HintScope scope, string? cursorColumn)
     {
         if (whereClause is null)
@@ -435,7 +499,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         yield return node;
     }
 
-    private static bool IsPushable(DuckDbSync duck, JsonNode conjunct, HintScope scope, string? cursorColumn)
+    private bool IsPushable(DuckDbSync duck, JsonNode conjunct, HintScope scope, string? cursorColumn)
     {
         // The sentinel is substituted per-run by PipelineExecutor, long after compile — pushing a
         // conjunct carrying it would send the placeholder text itself to the source. Watermark bounds
@@ -474,7 +538,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         // Same volatility rule as the watermark value side: the connector evaluates the pushed
         // predicate in a different query from the pipeline's own filter, so a function that varies
         // between the two would land a different row set than the SQL asked for.
-        return FindNonDeterministicFunction(duck, CollectFunctionNames(conjunct)) is null;
+        return FindNonDeterministicFunction(CollectFunctionNames(conjunct)) is null;
     }
 
     /// <summary>Reduces every COLUMN_REF in <paramref name="node"/> to its bare column name, in place.
@@ -588,24 +652,25 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
     /// A name ABSENT from the catalog is not treated as deterministic either — json_serialize_sql
     /// parses without resolving to the catalog at all, so a typo'd or nonexistent function (e.g. the
     /// Postgres-ism <c>clock_timestamp()</c>, which DuckDB has no builtin for) would otherwise bind at
-    /// EXPLAIN time and slip this guard with unverifiable determinism. Two in-memory catalog queries
-    /// per comparison (non-consistent hit, then presence check for the remainder); deterministic;
+    /// EXPLAIN time and slip this guard with unverifiable determinism. Answered from a function
+    /// catalog loaded once per reader; deterministic;
     /// returns the lowest offending name (ordinal) for a deterministic message, tagged with whether it
     /// was found-but-non-consistent or missing entirely, or null when every name is CONSISTENT.</summary>
-    private static FunctionDeterminismIssue? FindNonDeterministicFunction(DuckDbSync duck, IReadOnlyList<string> names)
+    private FunctionDeterminismIssue? FindNonDeterministicFunction(IReadOnlyList<string> names)
     {
         if (names.Count == 0)
         {
             return null;
         }
 
+        var catalog = _functionCatalog.Value;
         var lowerNames = names.Select(n => n.ToLowerInvariant()).ToList();
-        var inList = string.Join(", ", lowerNames.Select(n => $"'{Escape(n)}'"));
 
-        var nonConsistent = duck.Scalar(
-            "select coalesce(min(lower(function_name)), '') from duckdb_functions() " +
-            $"where stability in ('VOLATILE', 'CONSISTENT_WITHIN_QUERY') and lower(function_name) in ({inList})");
-        if (!string.IsNullOrEmpty(nonConsistent))
+        var nonConsistent = lowerNames
+            .Where(n => catalog.TryGetValue(n, out var flagged) && flagged)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (nonConsistent is not null)
         {
             return new FunctionDeterminismIssue(nonConsistent, IsAbsentFromCatalog: false);
         }
@@ -613,13 +678,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         // None of the names is a cataloged VOLATILE/CONSISTENT_WITHIN_QUERY function. Now check
         // whether every name is even cataloged at all — anything missing is unverifiable, not
         // deterministic-by-default.
-        var known = duck.Scalar(
-            "select coalesce(string_agg(distinct lower(function_name), chr(1)), '') from duckdb_functions() " +
-            $"where lower(function_name) in ({inList})");
-        var knownNames = known.Length == 0
-            ? new HashSet<string>(StringComparer.Ordinal)
-            : new HashSet<string>(known.Split('\u0001'), StringComparer.Ordinal);
-        var absent = lowerNames.Where(n => !knownNames.Contains(n)).OrderBy(n => n, StringComparer.Ordinal).FirstOrDefault();
+        var absent = lowerNames.Where(n => !catalog.ContainsKey(n)).OrderBy(n => n, StringComparer.Ordinal).FirstOrDefault();
         return absent is null ? null : new FunctionDeterminismIssue(absent, IsAbsentFromCatalog: true);
     }
 
@@ -706,7 +765,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
     /// this JSON node in place into CONJUNCTION_OR [ OPERATOR_IS_NULL(clone(valueExpr)), original
     /// comparison ] — the NULL-guard. On any failure: add a WatermarkShapeViolation whose Reason
     /// names the specific rule broken and states the accepted shape.</summary>
-    private static void Classify(JsonObject comparison, string sentinel, Dictionary<string, string> aliases,
+    private void Classify(JsonObject comparison, string sentinel, Dictionary<string, string> aliases,
         DuckDbSync duck, List<WatermarkComparison> comparisons, List<WatermarkShapeViolation> violations)
     {
         void Reject(string reason) => violations.Add(new WatermarkShapeViolation(sentinel, reason));
@@ -751,7 +810,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         // evaluates differently at extraction-bound time vs pipeline-predicate time, so rows landed in
         // staging can be excluded by the predicate while advancement (MAX(cursor)) moves past them —
         // permanently skipped, breaking effectively-once.
-        var determinismIssue = FindNonDeterministicFunction(duck, CollectFunctionNames(valueSide));
+        var determinismIssue = FindNonDeterministicFunction(CollectFunctionNames(valueSide));
         if (determinismIssue is { } issue)
         {
             var reason = issue.IsAbsentFromCatalog
@@ -854,9 +913,9 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
 
     /// <summary>Wrap the expression subtree as the lone select-list item of a parsed `SELECT 1`
     /// skeleton, run json_deserialize_sql, strip the leading "SELECT ".</summary>
-    private static string RegenerateExprSql(DuckDbSync duck, JsonNode expr)
+    private string RegenerateExprSql(DuckDbSync duck, JsonNode expr)
     {
-        var skeleton = JsonNode.Parse(duck.Scalar("select json_serialize_sql('select 1')"))!;
+        var skeleton = JsonNode.Parse(_skeletonJson.Value)!; // fresh tree per call: it is mutated below
         skeleton["statements"]![0]!["node"]!["select_list"] = new JsonArray(expr.DeepClone());
         var sql = Deserialize(duck, skeleton);
         const string prefix = "SELECT ";
@@ -867,7 +926,8 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         duck.Scalar($"select json_deserialize_sql('{Escape(root.ToJsonString())}')");
 
     /// <summary>Thin synchronous wrapper over <see cref="DuckSession"/> — Analyze must be sync
-    /// because DagCompiler.Compile is. A fresh in-memory, catalog-less session per call.</summary>
+    /// because DagCompiler.Compile is. One parse-only in-memory session per reader instance; parsing
+    /// reads no catalog, so reuse cannot change a result.</summary>
     private sealed class DuckDbSync : IDisposable
     {
         private readonly DuckSession _session;
@@ -875,6 +935,8 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader
         private DuckDbSync(DuckSession session) => _session = session;
 
         public static DuckDbSync OpenInMemory() => new(DuckSession.Open(":memory:"));
+
+        public void Execute(string sql) => _session.ExecuteAsync(sql).GetAwaiter().GetResult();
 
         public string Scalar(string sql) => _session.ScalarAsync<string>(sql).GetAwaiter().GetResult();
 

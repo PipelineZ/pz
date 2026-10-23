@@ -62,7 +62,8 @@ internal static class ValidateCommand
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
             // Tier 2: DAG compile catches PZ0201-0210 semantic errors. The DAG is kept for tier 4's
             // SQL dry-compile below.
-            dag = DagCompiler.Compile(project, renderCtx, compileNotices, new Pz.DuckDb.DuckDbSqlAstReader());
+            using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
+            dag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
             // Tiers 3-5 validate the EFFECTIVE connections, not the loaded ones: an entity may be
             // declared entirely at its source()/sink() call site, and a validator reading the loaded
             // project would skip it -- silently, which is exactly how drift detection would be lost on

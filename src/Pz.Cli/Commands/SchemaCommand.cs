@@ -59,7 +59,8 @@ internal static class SchemaCommand
             project = ProjectLoader.Load(projectDir, env);
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
             var compileNotices = new List<string>();
-            dag = DagCompiler.Compile(project, renderCtx, compileNotices, new Pz.DuckDb.DuckDbSqlAstReader());
+            using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
+            dag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
             foreach (var notice in compileNotices)
             {
                 Console.WriteLine($"note: {notice}");

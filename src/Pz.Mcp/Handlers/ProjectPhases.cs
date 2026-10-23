@@ -29,7 +29,8 @@ internal static class ProjectPhases
         ThrowOnPathEscapes(project, projectDir);
         var ctx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
         var notices = new List<string>();
-        var dag = DagCompiler.Compile(project, ctx, notices, new Pz.DuckDb.DuckDbSqlAstReader());
+        using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
+        var dag = DagCompiler.Compile(project, ctx, notices, sqlAst);
         return (project, dag, notices);
     }
 
