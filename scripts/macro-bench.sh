@@ -35,6 +35,8 @@
 # DuckSession gate's serialization cost (the correctness fix from the full-suite-parallel-flake
 # investigation -- see DuckSession._gate's doc comment) directly against production DuckSession code.
 #
+# Samples invoke the built Pz.Cli.dll directly, because `dotnet run` adds MSBuild evaluation to every sample.
+#
 # Usage: scripts/macro-bench.sh [row_count]   (default 1,000,000)
 set -euo pipefail
 
@@ -57,6 +59,12 @@ echo "-- Building Release --"
 dotnet build "${ROOT_DIR}/Pz.slnx" -c Release --nologo -v quiet
 echo "build OK"
 echo
+
+PZ_CLI_DLL="${ROOT_DIR}/src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll"
+if [[ ! -f "${PZ_CLI_DLL}" ]]; then
+    echo "error: Pz.Cli.dll not found at ${PZ_CLI_DLL}" >&2
+    exit 1
+fi
 
 # Every value is a pure function of the row index and the fixed seed -- no awk rand(), which differs
 # between awk implementations -- so the file is byte-identical on every machine and every run.
@@ -218,7 +226,7 @@ EOF
     local best_s="" sample_i start_ns end_ns elapsed_s
     for ((sample_i = 1; sample_i <= samples; sample_i++)); do
         start_ns=$(date +%s%N)
-        dotnet run -c Release --project "${ROOT_DIR}/src/Pz.Cli" --no-build -- run --project "${project_dir}" >"${project_dir}/run.log" 2>&1
+        dotnet "${PZ_CLI_DLL}" run --project "${project_dir}" >"${project_dir}/run.log" 2>&1
         end_ns=$(date +%s%N)
         elapsed_s=$(awk -v s="${start_ns}" -v e="${end_ns}" 'BEGIN { printf "%.4f", (e - s) / 1000000000.0 }')
 
