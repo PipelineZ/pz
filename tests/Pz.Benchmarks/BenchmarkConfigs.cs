@@ -2,8 +2,20 @@ using BenchmarkDotNet.Configs;
 using BenchmarkDotNet.Diagnosers;
 using BenchmarkDotNet.Engines;
 using BenchmarkDotNet.Jobs;
+using BenchmarkDotNet.Toolchains.InProcess.Emit;
 
 namespace Pz.Benchmarks;
+
+/// <summary>Toolchain selection shared by both configs. The out-of-process toolchain refuses to build when
+/// another Pz.Benchmarks.csproj exists below the repo root (for example a nested worktree under
+/// .claude/worktrees/), so PZ_BENCH_INPROCESS=1 switches the job to the in-process emit toolchain.</summary>
+internal static class BenchmarkToolchain
+{
+    public static Job Apply(Job job) =>
+        Environment.GetEnvironmentVariable("PZ_BENCH_INPROCESS") == "1"
+            ? job.WithToolchain(InProcessEmitToolchain.Instance)
+            : job;
+}
 
 /// <summary>Shared stability settings for the cheap, high-iteration-count micro-benchmarks (builder
 /// append, allocator rent/return): <see cref="MemoryDiagnoser"/> on, and a raised
@@ -13,7 +25,7 @@ public sealed class MicroBenchmarkConfig : ManualConfig
 {
     public MicroBenchmarkConfig()
     {
-        AddJob(Job.Default.WithMinIterationCount(10).WithId("PzMicro"));
+        AddJob(BenchmarkToolchain.Apply(Job.Default.WithMinIterationCount(10).WithId("PzMicro")));
         AddDiagnoser(MemoryDiagnoser.Default);
     }
 }
@@ -26,14 +38,14 @@ public sealed class MacroishBenchmarkConfig : ManualConfig
 {
     public MacroishBenchmarkConfig()
     {
-        AddJob(Job.Default
+        AddJob(BenchmarkToolchain.Apply(Job.Default
             .WithStrategy(RunStrategy.Monitoring)
             .WithLaunchCount(1)
             .WithWarmupCount(1)
             .WithIterationCount(3)
             .WithInvocationCount(1)
             .WithUnrollFactor(1)
-            .WithId("PzMacroish"));
+            .WithId("PzMacroish")));
         AddDiagnoser(MemoryDiagnoser.Default);
     }
 }
