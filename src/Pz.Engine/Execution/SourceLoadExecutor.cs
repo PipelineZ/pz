@@ -233,10 +233,25 @@ public sealed class SourceLoadExecutor : INodeExecutor
             }
 
             var nativeTable = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
+            var nativeHints = def.Hints;
+            var hinted = nativeHints is { Columns.Count: > 0 } or { PredicateSql.Length: > 0 };
             try
             {
-                await ctx.Duck.ExecuteAsync($"create or replace table {nativeTable} as select * from {scan.SqlFragment}", ct)
-                    .ConfigureAwait(false);
+                try
+                {
+                    await ctx.Duck.ExecuteAsync(
+                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(scan.SqlFragment, nativeHints)}", ct)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (hinted && ex is not OperationCanceledException &&
+                    ex.Message.Contains("Binder Error", StringComparison.Ordinal))
+                {
+                    // A hinted column the scan does not expose: read everything and let the pipeline's own SQL
+                    // report any column that is genuinely missing, as it does for an unhinted scan.
+                    await ctx.Duck.ExecuteAsync(
+                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(scan.SqlFragment, null)}", ct)
+                        .ConfigureAwait(false);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -287,10 +302,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             // The drift gate covers both data-plane tiers uniformly --
             // native scan never surfaces Arrow batches to .NET, but it always produces a staging
-            // table, and that materialized table is the gate's only input. HintsFor (not the
-            // universal branch's ProjectToHints-reconciled `hints`, which requires a queried logical
-            // schema this tier never resolves) is the native tier's own stable read-shape hash input.
-            return Stamp(await SchemaDriftGate.ApplyAsync(nativeSuccess, node, def, HintsFor(def, connector.Capabilities),
+            // table, and that materialized table is the gate's only input. NativeHints (capabilities do
+            // not gate a native scan, and the universal branch's ProjectToHints-reconciled `hints` requires
+            // a queried logical schema this tier never resolves) is the native tier's stable read-shape hash input.
+            return Stamp(await SchemaDriftGate.ApplyAsync(nativeSuccess, node, def, NativeHints(def),
                 nativeTable, ctx, ct).ConfigureAwait(false));
         }
 
@@ -525,6 +540,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// push nothing for that half, silently — this is an optimisation, and the pipeline's own SQL still
     /// runs in DuckDB over whatever landed, so a connector that receives nothing produces exactly the
     /// same rows, just after moving more of them.</summary>
+    /// <summary>The compiler's hints as a native scan applies them: DuckDB honours both halves whatever the
+    /// connector advertises, so nothing is filtered by capability.</summary>
+    internal static ReadHints NativeHints(SourceDatasetDef def) =>
+        def.Hints is { } plan ? new ReadHints(plan.Columns, plan.PredicateSql) : ReadHints.None;
+
     internal static ReadHints HintsFor(SourceDatasetDef def, ConnectorCapabilities caps)
     {
         if (def.Hints is not { } plan)

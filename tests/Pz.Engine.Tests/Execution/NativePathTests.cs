@@ -52,6 +52,57 @@ public sealed class NativePathTests : IAsyncLifetime
     private static ExecutionPlan SingleNodePlan(DagNode node, EdgeStrategy strategy) =>
         new([new PlannedNode(node.Id, node.Kind, node.Name, strategy, 1, "test")], MemoryBudget.Compute(new EngineConfig()));
 
+    private const string HintedFragment =
+        "(select range as id, range % 10 as k, 'x' || range as c1, 'y' as c2 from range(100)) t";
+
+    private static DagNode HintedSourceLoadNode(ReadHintPlan hints)
+    {
+        var node = SourceLoadNode("stub", "t");
+        return node with { Definition = ((SourceDatasetDef)node.Definition) with { Hints = hints } };
+    }
+
+    private async Task<NodeResult> RunHintedAsync(ReadHintPlan hints)
+    {
+        var node = HintedSourceLoadNode(hints);
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", new ConfigurableNativeSource(HintedFragment, []));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+        return await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+    }
+
+    [Fact]
+    public async Task Native_scan_stages_only_hinted_columns_and_rows()
+    {
+        var result = await RunHintedAsync(new ReadHintPlan(["id", "k"], "k = 7"));
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(10, result.RowsMoved);
+        Assert.Equal(2, await _duck.ScalarAsync<long>("select count(*) from pragma_table_info('staging.src_stub__t')"));
+        Assert.Equal(10, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t"));
+    }
+
+    [Fact]
+    public async Task Native_scan_hint_matches_columns_case_insensitively()
+    {
+        var result = await RunHintedAsync(new ReadHintPlan(["ID", "K"], "K = 7"));
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(10, result.RowsMoved);
+        Assert.Equal(2, await _duck.ScalarAsync<long>("select count(*) from pragma_table_info('staging.src_stub__t')"));
+        Assert.Equal(10, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t"));
+    }
+
+    [Fact]
+    public async Task Native_scan_hint_naming_an_absent_column_falls_back_to_the_full_read()
+    {
+        var result = await RunHintedAsync(new ReadHintPlan(["id", "nope"], "k = 7"));
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(4, await _duck.ScalarAsync<long>("select count(*) from pragma_table_info('staging.src_stub__t')"));
+        Assert.Equal(100, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t"));
+    }
+
     [Fact]
     public async Task Native_scan_lands_rows_without_connector_batches()
     {
