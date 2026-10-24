@@ -134,7 +134,7 @@ public sealed class MySqlSqlGenTests
     }
 
     [Fact]
-    public void Given_columns_win_over_a_declared_contract()
+    public void Given_columns_narrow_a_declared_contract()
     {
         var spec = Spec(new Dictionary<string, object?>
         {
@@ -142,6 +142,19 @@ public sealed class MySqlSqlGenTests
         });
 
         Assert.Equal("SELECT `name` FROM `orders`", MySqlSql.InnerSelect(spec, ["name"]));
+    }
+
+    [Fact]
+    public void Given_columns_never_exceed_a_declared_contract()
+    {
+        var spec = Spec(new Dictionary<string, object?>
+        {
+            ["columns"] = new Dictionary<string, string> { ["id"] = "bigint", ["name"] = "varchar" },
+        });
+
+        // Contract spelling wins; a column outside the contract is never read.
+        Assert.Equal("SELECT `name` FROM `orders`", MySqlSql.InnerSelect(spec, ["NAME", "secret"]));
+        Assert.Equal("SELECT `id`, `name` FROM `orders`", MySqlSql.InnerSelect(spec, ["secret"]));
     }
 
     [Fact]

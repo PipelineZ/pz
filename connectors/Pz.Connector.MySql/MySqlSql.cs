@@ -94,13 +94,22 @@ internal static class MySqlSql
 
     /// <summary>The MySQL-side SELECT: a declared <c>columns:</c> contract prunes the read (only
     /// declared columns are projected — the csv/json rule); <c>query:</c> replaces the table as the
-    /// read's base; a non-empty <paramref name="projected"/> replaces the projection outright (it wins over
-    /// a contract); the watermark window renders as typed literals. The plain (unwindowed) incremental
+    /// read's base; a non-empty <paramref name="projected"/> narrows the projection, and under a contract
+    /// keeps only contract columns (contract spelling) so the read never exceeds it; the watermark window
+    /// renders as typed literals. The plain (unwindowed) incremental
     /// watermark IS pushed down — unlike the file connectors, extraction savings are the entire point
     /// of a database source, and DatasetSpec's contract explicitly permits it.</summary>
     internal static string InnerSelect(DatasetSpec spec, IReadOnlyList<string>? projected = null)
     {
         var columns = ExtractColumns(spec);
+        if (projected is { Count: > 0 } && columns is { Count: > 0 })
+        {
+            projected = [.. projected
+                .Select(p => columns.Keys.FirstOrDefault(k => string.Equals(k, p, StringComparison.OrdinalIgnoreCase)))
+                .OfType<string>()
+                .Distinct(StringComparer.Ordinal)];
+        }
+
         var projection = projected is { Count: > 0 }
             ? string.Join(", ", projected.Select(QuoteIdent))
             : columns is { Count: > 0 }
