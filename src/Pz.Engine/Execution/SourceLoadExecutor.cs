@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Apache.Arrow;
@@ -530,20 +531,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
     }
 
-    /// <summary>Collapses the raw change window landed in
-    /// <paramref name="changesTable"/> (<c>&lt;staging&gt;__changes</c>) into last-event-per-key upserts
-    /// (canonical <paramref name="canonicalTable"/>) plus a <c>&lt;staging&gt;__deletes</c> side table of
-    /// net-deleted keys, and returns the raw per-op counts. Guards, in order: (1) the `_pz_op`/`_pz_lsn`
-    /// change-row contract must be present in the landed schema; (2) the connector must report change key
-    /// columns (<see cref="IChangeCapturePartition"/>) — an empty window with none is legitimate (empty
-    /// collapse), a non-empty window with none is a connector defect. Ordering matters: candidate + keys
-    /// are polled after the pump joins, THEN the two collapse statements, THEN
-    /// counts. Identifier quoting reuses <see cref="ArrowInterop.QuoteQualified"/> (the same helper
-    /// <see cref="CaptureWatermarkAsync"/> uses), never raw concatenation of key names.</summary>
     /// <summary>The native scan to stage: a projecting source narrows its own read to the hinted columns
     /// (never the predicate); every other source gives its plain scan.</summary>
     private static bool TryGetScan(ISource source, DatasetSpec spec, ReadHintPlan? hints,
-        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan) =>
+        [NotNullWhen(true)] out NativeScan? scan) =>
         source is IProjectingNativeScan projecting && hints is { Columns.Count: > 0 }
             ? projecting.TryGetNativeScan(spec, hints.Columns, out scan)
             : source.TryGetNativeScan(spec, out scan);
@@ -596,6 +587,16 @@ public sealed class SourceLoadExecutor : INodeExecutor
         return (hints with { Columns = [.. fields.Select(f => f.Name)] }, new Schema(fields, schema.Metadata));
     }
 
+    /// <summary>Collapses the raw change window landed in
+    /// <paramref name="changesTable"/> (<c>&lt;staging&gt;__changes</c>) into last-event-per-key upserts
+    /// (canonical <paramref name="canonicalTable"/>) plus a <c>&lt;staging&gt;__deletes</c> side table of
+    /// net-deleted keys, and returns the raw per-op counts. Guards, in order: (1) the `_pz_op`/`_pz_lsn`
+    /// change-row contract must be present in the landed schema; (2) the connector must report change key
+    /// columns (<see cref="IChangeCapturePartition"/>) — an empty window with none is legitimate (empty
+    /// collapse), a non-empty window with none is a connector defect. Ordering matters: candidate + keys
+    /// are polled after the pump joins, THEN the two collapse statements, THEN
+    /// counts. Identifier quoting reuses <see cref="ArrowInterop.QuoteQualified"/> (the same helper
+    /// <see cref="CaptureWatermarkAsync"/> uses), never raw concatenation of key names.</summary>
     private static async Task<(PzError? Error, CdcStats? Stats)> CollapseCdcAsync(
         RunContext ctx, SourceDatasetDef def, string canonicalTable, string changesTable,
         IChangeCapturePartition? partition, long changeRows, CancellationToken ct)
