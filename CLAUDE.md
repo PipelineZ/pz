@@ -159,8 +159,11 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   Hand-rolled or regex SQL parsing remains forbidden.
 - **One serialized DuckDB connection per run** gated by a `SemaphoreSlim` — a correctness fix (one
   `DuckDBConnection` is not safe for concurrent statement execution; concurrent dispatch raced on
-  native pending-query state), and measured ~free: concurrent/sequential ratio 0.94–1.04, and
-  connection-per-operation measured the same, so removing the gate buys nothing. Concurrency comes
+  native pending-query state). Channel-path ingest takes the gate once to create the table and once per
+  batch, so a slow source (Postgres, SqlServer, Sftp, Azure Blob, GCS) no longer serializes the run.
+  Egress drains and transactions still hold the gate for their whole duration, so a slow sink still does.
+  The gate probe's concurrent/sequential ratio is 0.93–1.00 (its slow leg is an egress drain), and
+  connection-per-operation measured the same, so removing the gate buys nothing there. Concurrency comes
   from the topological dispatcher + bounded channels, not parallel connections.
 - **Execution is always staged materialize-then-drain**, never statement-scoped DML — even for the
   inline `INSERT INTO {{ sink(...) }}` form, which the compiler strips.
