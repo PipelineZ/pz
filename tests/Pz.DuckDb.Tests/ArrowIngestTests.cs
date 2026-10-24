@@ -364,4 +364,105 @@ public sealed class ArrowIngestTests : IDisposable
             await Task.CompletedTask;
         }
     }
+
+    private sealed class ParkedSource
+    {
+        public readonly TaskCompletionSource Parked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async IAsyncEnumerable<RecordBatch> Batches([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+        {
+            var first = true;
+            await foreach (var b in MatrixBatches(40, 20).WithCancellation(ct))
+            {
+                if (!first)
+                {
+                    Parked.TrySetResult();
+                    await Release.Task.WaitAsync(ct);
+                }
+                first = false;
+                yield return b;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Statements_run_while_an_ingest_awaits_its_next_batch()
+    {
+        await using var duck = Open();
+        var source = new ParkedSource();
+        var ingest = duck.IngestArrowAsync("main.slow", MatrixSchema(), source.Batches());
+        await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(1L, await duck.ScalarAsync<long>("select 1").WaitAsync(TimeSpan.FromSeconds(30)));
+
+        source.Release.SetResult();
+        Assert.Equal(40, await ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal(40L, await duck.ScalarAsync<long>("select count(*) from main.slow"));
+    }
+
+    [Fact]
+    public async Task Ingest_cancelled_while_awaiting_a_batch_drops_the_table_and_frees_the_gate()
+    {
+        await using var duck = Open();
+        using var cts = new CancellationTokenSource();
+        var source = new ParkedSource();
+        var ingest = duck.IngestArrowAsync("main.slow", MatrixSchema(), source.Batches(), cts.Token);
+        await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(0L, await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'slow'"));
+        await duck.ExecuteAsync("select 1").WaitAsync(TimeSpan.FromSeconds(30));
+    }
+
+    [Fact]
+    public async Task Ingest_batch_with_a_different_shape_fails_and_drops_the_table()
+    {
+        await using var duck = Open();
+        var disposed = false;
+
+        async IAsyncEnumerable<RecordBatch> Mixed()
+        {
+            await foreach (var b in MatrixBatches(20, 20)) { yield return b; }
+            yield return new DisposeTrackingBatch(
+                new Schema([new Field("x", Int64Type.Default, nullable: true)], null),
+                [new Int64Array.Builder().Append(1).Build()], 1, () => disposed = true);
+        }
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => duck.IngestArrowAsync("main.mixed", MatrixSchema(), Mixed()).WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.True(disposed);
+        Assert.Equal(0L, await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'mixed'"));
+    }
+
+    [Fact]
+    public async Task Ingest_survives_an_unrelated_failing_statement_between_batches()
+    {
+        await using var duck = Open();
+        var source = new ParkedSource();
+        var ingest = duck.IngestArrowAsync("main.slow", MatrixSchema(), source.Batches());
+        await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => duck.ExecuteAsync("select * from no_such_table").WaitAsync(TimeSpan.FromSeconds(30)));
+
+        source.Release.SetResult();
+        Assert.Equal(40, await ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal(40L, await duck.ScalarAsync<long>("select count(*) from main.slow"));
+    }
+
+    private sealed class DisposeTrackingBatch(Schema schema, IEnumerable<IArrowArray> arrays, int length, Action onDispose)
+        : RecordBatch(schema, arrays, length)
+    {
+        protected override void Dispose(bool disposing)
+        {
+            onDispose();
+            base.Dispose(disposing);
+        }
+    }
 }

@@ -22,17 +22,16 @@ public sealed class DuckSession : IDuckSession
     // A single duckdb_connection is NOT safe for concurrent statement execution from multiple threads —
     // DuckDB's own C API contract is "used by one thread at a time" per connection. RunOrchestrator
     // dispatches nodes up to RunOptions.MaxConcurrency (engine.threads) concurrently, and every node
-    // executor shares this ONE DuckSession/_connection, so two SourceLoad/SinkWrite nodes ingesting or
-    // querying at the same time race directly on the native connection's pending-query state —
-    // surfacing as a nondeterministic "duckdb_appender_close failed: Attempting to execute an
-    // unsuccessful or closed pending query result" (PZ0501), a genuine node failure. This gate
-    // serializes every operation that touches `_connection`/`NativeConnection` end-to-end (including the
-    // full streaming duration of ingest/egress, since a live pending result is per-connection state that
-    // must not be interleaved with any other statement) so concurrent nodes queue instead of corrupting
-    // shared state. Correctness, not performance: it trades away genuine DB-level overlap between
-    // concurrent nodes for the connection's exclusive-use contract — a known perf caveat. Recovering
-    // that overlap would take a connection per concurrent node, which DuckDB supports against the same
-    // attached database.
+    // executor shares this ONE DuckSession/_connection, so two nodes touching the native connection at
+    // the same time race on its pending-query state — surfacing as a nondeterministic
+    // "duckdb_appender_close failed: Attempting to execute an unsuccessful or closed pending query
+    // result" (PZ0501), a genuine node failure. This gate serializes every operation that touches
+    // `_connection`/`NativeConnection` so concurrent nodes queue instead of corrupting shared state.
+    // Operations holding live per-connection state across calls hold the gate for their full duration:
+    // egress streams (a live pending result must not be interleaved with any other statement) and
+    // ExecuteTransactionAsync (BEGIN..COMMIT). Ingest and partition-mode appends hold it per batch
+    // instead: each batch uses a fresh appender that is closed before the gate is released, so no
+    // appender state spans a release and the gate is free while awaiting the next upstream batch.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private DuckSession(DuckDBConnection connection)
@@ -185,85 +184,93 @@ public sealed class DuckSession : IDuckSession
     public Task<long> IngestArrowAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct = default)
     {
-        return Task.Run(() => IngestArrowGatedAsync(targetTable, schema, batches, ct), ct);
+        return Task.Run(() => IngestArrowPerBatchAsync(targetTable, schema, batches, ct), ct);
     }
 
-    /// <summary>Gate held for the whole ingest (see <see cref="_gate"/>'s doc comment) — including while
-    /// awaiting the next upstream batch — since a partially-appended table is per-connection pending
-    /// state that must not interleave with any other statement on <see cref="_connection"/>.</summary>
-    private async Task<long> IngestArrowGatedAsync(
+    /// <summary>Takes <see cref="_gate"/> once to create the table and once per batch (fresh appender per
+    /// batch, closed before release); never while awaiting the next upstream batch. Rows are therefore
+    /// visible to other statements as each batch lands. A failed or cancelled ingest drops the table; a
+    /// successful return is the only way it survives.</summary>
+    private async Task<long> IngestArrowPerBatchAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
     {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            return await IngestArrowCoreAsync(targetTable, schema, batches, ct).ConfigureAwait(false);
+            ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema));
         }
         finally
         {
             _gate.Release();
         }
-    }
 
-    private async Task<long> IngestArrowCoreAsync(
-        string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
-    {
-        ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema));
-
-        // From here on, the target table exists. A failed or cancelled ingest must leave nothing behind,
-        // so any exception (including OperationCanceledException) that escapes the ingest below is
-        // followed by a best-effort DROP TABLE before propagating — see DropTableBestEffort. A
-        // successful return is the only way the table survives.
         try
         {
-            return await IngestBatchesAsync(targetTable, schema, batches, ct).ConfigureAwait(false);
+            var rows = 0L;
+            await foreach (var batch in batches.WithCancellation(ct).ConfigureAwait(false))
+            {
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    await _gate.WaitAsync(ct).ConfigureAwait(false);
+                    try
+                    {
+                        rows += AppendUnderGate(targetTable, batch, schema);
+                    }
+                    finally
+                    {
+                        _gate.Release();
+                    }
+                }
+                finally
+                {
+                    batch.Dispose();
+                }
+
+                OnBatchConsumedForTests?.Invoke();
+            }
+
+            return rows;
         }
         catch
         {
-            DropTableBestEffort(targetTable);
+            await DropTableBestEffortAsync(targetTable).ConfigureAwait(false);
             throw;
         }
     }
 
-    private async Task<long> IngestBatchesAsync(
-        string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
+    /// <summary>Appends <paramref name="batch"/> through a fresh appender that is completed (closed) before
+    /// returning. The caller holds <see cref="_gate"/>. Returns the batch's row count.</summary>
+    private long AppendUnderGate(string targetTable, RecordBatch batch, Schema schema)
     {
         var connectionHandle = _connection.NativeConnection.DangerousGetHandle();
+        // A fresh appender per call: appender state is per-connection pending state (see _gate's doc
+        // comment) and must not span gate releases. Close errors (duckdb_appender_close) surface from
+        // Complete() inside this same call. The explicit schema makes a batch of a different shape fail.
         using var writer = ArrowInterop.ArrowIngestWriter.Create(connectionHandle, targetTable, schema);
-
-        var rows = 0L;
-        await foreach (var batch in batches.WithCancellation(ct).ConfigureAwait(false))
-        {
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                writer.AppendBatch(batch);
-                rows += batch.Length;
-                OnBatchConsumedForTests?.Invoke();
-            }
-            finally
-            {
-                batch.Dispose();
-            }
-        }
-
+        writer.AppendBatch(batch);
         writer.Complete();
-        return rows;
-
-        // `writer` is disposed (via the `using` above) as part of stack unwinding before any exception
-        // reaches IngestArrowCoreAsync's catch, so the appender/converted-schema are always released
-        // before the DROP TABLE below runs.
+        return batch.Length;
     }
 
     /// <summary>Best-effort cleanup after a failed or cancelled ingest: drops the table the failed ingest
-    /// created so nothing half-written survives. Failures here are swallowed — the original ingest
-    /// exception must reach the caller untouched even if the drop itself fails (e.g. the connection is no
-    /// longer usable).</summary>
-    private void DropTableBestEffort(string targetTable)
+    /// created so nothing half-written survives. Takes the gate with no cancellation token (the caller's
+    /// token may be the reason for failure). Failures here are swallowed — the original ingest exception
+    /// must reach the caller untouched even if the drop itself fails (e.g. the connection is no longer
+    /// usable).</summary>
+    private async Task DropTableBestEffortAsync(string targetTable)
     {
         try
         {
-            ExecuteSync($"DROP TABLE IF EXISTS {ArrowInterop.QuoteQualified(targetTable)}");
+            await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            try
+            {
+                ExecuteSync($"DROP TABLE IF EXISTS {ArrowInterop.QuoteQualified(targetTable)}");
+            }
+            finally
+            {
+                _gate.Release();
+            }
         }
         catch
         {
@@ -308,14 +315,7 @@ public sealed class DuckSession : IDuckSession
                     try
                     {
                         ct.ThrowIfCancellationRequested();
-                        var connectionHandle = _connection.NativeConnection.DangerousGetHandle();
-                        // A fresh appender per call: appender state is per-connection pending state
-                        // (see _gate's doc comment) and must not span gate releases. Close errors
-                        // (duckdb_appender_close) surface from Complete() inside this same call.
-                        using var writer = ArrowInterop.ArrowIngestWriter.Create(connectionHandle, targetTable, schema ?? batch.Schema);
-                        writer.AppendBatch(batch);
-                        writer.Complete();
-                        return (long)batch.Length;
+                        return AppendUnderGate(targetTable, batch, schema ?? batch.Schema);
                     }
                     finally
                     {

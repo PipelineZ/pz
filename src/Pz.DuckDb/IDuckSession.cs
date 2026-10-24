@@ -12,6 +12,8 @@ public interface IDuckSession : IAsyncDisposable
     /// <summary>Creates <paramref name="targetTable"/> (qualified name, e.g. "staging.src_a__b") from the
     /// Arrow stream, consuming batches as they arrive (streaming — never buffers the full input) and
     /// disposing each batch after it is consumed. Returns rows ingested.
+    /// The connection gate is held only to create the table and per batch, never while awaiting the next
+    /// batch, so other statements run in between and see rows as each batch lands.
     /// On failure or cancellation, the target table is removed; a successful return is the only way the
     /// table exists.</summary>
     Task<long> IngestArrowAsync(string targetTable, Apache.Arrow.Schema schema,
