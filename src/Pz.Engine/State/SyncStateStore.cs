@@ -38,6 +38,11 @@ public sealed class SyncStateStore(IKeyedStateStore<SyncState> store)
 
     public void Set(string sourceDataset, SyncState state) => _store.Set(sourceDataset, state);
 
+    /// <summary>Writes several entries at once; returns the keys that were not written, each with its
+    /// exception. See <see cref="IKeyedStateStore{T}.SetMany"/>.</summary>
+    public IReadOnlyList<KeyValuePair<string, Exception>> SetMany(IReadOnlyList<KeyValuePair<string, SyncState>> entries) =>
+        _store.SetMany(entries);
+
     /// <summary>`pz state show` reports sync state read-only — no write
     /// subcommand accepts a sync-state key, because an opaque connector token has no previous value to roll
     /// back to. `pz cdc drop` remains the way to clear one.</summary>
