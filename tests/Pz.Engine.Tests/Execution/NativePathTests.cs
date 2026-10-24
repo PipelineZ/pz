@@ -140,6 +140,71 @@ public sealed class NativePathTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Binder_error_fallback_drift_compares_only_the_hinted_columns()
+    {
+        var hints = new ReadHintPlan(["id", "k", "c1"], "k = 7");
+        var store = SchemaBaselineStore.Local(Path.Combine(_dir, "state"));
+        var events = new LintRecordingEvents();
+
+        RunContext Ctx(string runId) => new(_duck, Registry(new ConfigurableNativeSource(
+                runId == "run-1" ? HintedFragment : "(select range as id, range % 10 as k, 'y' as c2 from range(100)) t", [])),
+            new RunPaths(_dir, runId), events, SingleNodePlan(HintedSourceLoadNode(hints), EdgeStrategy.NativeScan),
+            SchemaBaselines: store, OnSourceDrift: DriftPolicy.Warn);
+
+        var first = await new KindDispatchingExecutor().ExecuteAsync(HintedSourceLoadNode(hints), Ctx("run-1"), default);
+        Assert.Equal(NodeStatus.Success, first.Status);
+        Assert.Empty(events.Drifts);
+
+        var second = await new KindDispatchingExecutor().ExecuteAsync(HintedSourceLoadNode(hints), Ctx("run-2"), default);
+
+        Assert.Equal(NodeStatus.Success, second.Status);
+        var drift = Assert.Single(events.Drifts);
+        var change = Assert.Single(drift);
+        Assert.Equal("removed", change.Kind);
+        Assert.Equal("c1", change.Column);
+    }
+
+    [Fact]
+    public async Task Binder_error_fallback_is_reported_as_a_notice_without_sql()
+    {
+        var notices = new List<string>();
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "nope"], "k = 7"));
+        var ctx = new RunContext(_duck, Registry(new ConfigurableNativeSource(HintedFragment, [])),
+            new RunPaths(_dir, "run"), NullRunEvents.Instance, SingleNodePlan(node, EdgeStrategy.NativeScan),
+            Notice: notices.Add);
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        var notice = Assert.Single(notices);
+        Assert.Contains("stub.t", notice, StringComparison.Ordinal);
+        Assert.DoesNotContain("select", notice, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("range(", notice, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Binder_error_fallback_runs_the_plain_scans_setup_statements()
+    {
+        var source = new ProjectingNativeSource(HintedFragment, "(select range as id from range(100)) t",
+            plainSetup: ["create or replace table staging.plain_setup_marker as select 1 as x"]);
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "k"], "k = 7"));
+        var ctx = new RunContext(_duck, Registry(source), new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, await _duck.ScalarAsync<long>("select count(*) from staging.plain_setup_marker"));
+    }
+
+    private static ConnectorRegistry Registry(ISourceConnector source)
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", source);
+        return registry;
+    }
+
+    [Fact]
     public async Task Native_scan_lands_rows_without_connector_batches()
     {
         var node = SourceLoadNode("stub", "t");
@@ -434,8 +499,8 @@ public sealed class NativePathTests : IAsyncLifetime
         Assert.Empty(events.Lints);
     }
 
-    /// <summary>Records every <see cref="IRunEvents.LossyIntegerInferenceDetected"/> call — every
-    /// other member is a no-op, mirroring <c>SchemaDriftGateTests.RecordingEvents</c>'s shape.</summary>
+    /// <summary>Records every <see cref="IRunEvents.LossyIntegerInferenceDetected"/> and
+    /// <see cref="IRunEvents.SourceDriftDetected"/> call — every other member is a no-op, mirroring <c>SchemaDriftGateTests.RecordingEvents</c>'s shape.</summary>
     private sealed class LintRecordingEvents : IRunEvents
     {
         public readonly List<(string Connection, string Entity, IReadOnlyList<string> Columns)> Lints = [];
@@ -446,9 +511,10 @@ public sealed class NativePathTests : IAsyncLifetime
         public void RetryScheduled(DagNode node, int attempt, int maxAttempts, TimeSpan delay, string reason) { }
         public void BreakerStateChanged(string instance, string oldState, string newState, string trigger,
             TimeSpan coolDown) { }
+        public readonly List<IReadOnlyList<Pz.Engine.State.SchemaDriftDiffer.Change>> Drifts = [];
         public void SourceDriftDetected(DagNode node, string connection, string entity, string policy,
             IReadOnlyList<Pz.Engine.State.SchemaDriftDiffer.Change> changes,
-            IReadOnlyList<Pz.Engine.State.SchemaColumn> observed, string hintsHash) { }
+            IReadOnlyList<Pz.Engine.State.SchemaColumn> observed, string hintsHash) => Drifts.Add(changes);
         public void MergeKeyDuplicatesDetected(DagNode node, string output, IReadOnlyList<string> keys,
             long duplicateGroups, long extraRows) { }
         public void LossyIntegerInferenceDetected(DagNode node, string connection, string entity,
@@ -616,7 +682,8 @@ public sealed class NativePathTests : IAsyncLifetime
 
     /// <summary>Native source that also projects: records the columns it was asked for and hands back
     /// <paramref name="projectedFragment"/>; the plain scan returns <paramref name="plainFragment"/>.</summary>
-    private sealed class ProjectingNativeSource(string plainFragment, string projectedFragment)
+    private sealed class ProjectingNativeSource(string plainFragment, string projectedFragment,
+        IReadOnlyList<string>? plainSetup = null)
         : ISourceConnector, ISource, IProjectingNativeScan
     {
         public IReadOnlyList<string>? ReceivedColumns { get; private set; }
@@ -637,7 +704,7 @@ public sealed class NativePathTests : IAsyncLifetime
         public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
         {
             PlainCalls++;
-            scan = new NativeScan(plainFragment, []) { Mechanism = "stub_scan" };
+            scan = new NativeScan(plainFragment, plainSetup ?? []) { Mechanism = "stub_scan" };
             return true;
         }
 

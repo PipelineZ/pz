@@ -235,7 +235,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             var nativeTable = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
             var nativeHints = def.Hints;
-            var hinted = nativeHints is { Columns.Count: > 0 } or { PredicateSql.Length: > 0 };
+            var hinted = nativeHints is not null &&
+                (nativeHints.Columns is { Count: > 0 } || !string.IsNullOrWhiteSpace(nativeHints.PredicateSql));
+            var stagedUnhinted = false;
             try
             {
                 try
@@ -255,9 +257,20 @@ public sealed class SourceLoadExecutor : INodeExecutor
                         throw;
                     }
 
+                    // The plain scan may need its own setup; the ledger skips any statement already issued.
+                    foreach (var statement in plain.SetupStatements)
+                    {
+                        await ctx.SetupLedger.ExecuteOnceAsync(statement, ct).ConfigureAwait(false);
+                    }
+
                     await ctx.Duck.ExecuteAsync(
                         $"create or replace table {nativeTable} as {NativeScanSql.Staging(plain.SqlFragment, null)}", ct)
                         .ConfigureAwait(false);
+                    stagedUnhinted = true;
+                    // Never the engine message or the statement: either can carry the scan fragment.
+                    ctx.Notice?.Invoke(
+                        $"source '{def.Source.Name}.{def.Dataset.Name}': the pushed-down columns or predicate do not " +
+                        "bind against the scan; staged the full read instead");
                 }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
@@ -312,8 +325,13 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // table, and that materialized table is the gate's only input. NativeHints (capabilities do
             // not gate a native scan, and the universal branch's ProjectToHints-reconciled `hints` requires
             // a queried logical schema this tier never resolves) is the native tier's stable read-shape hash input.
+            // An unhinted fallback staged every column, but the baseline under this hints hash holds only the
+            // hinted ones; comparing the full width would report every unread column as added.
+            var driftColumns = stagedUnhinted && nativeHints?.Columns is { Count: > 0 } hintedColumns
+                ? hintedColumns
+                : null;
             return Stamp(await SchemaDriftGate.ApplyAsync(nativeSuccess, node, def, NativeHints(def),
-                nativeTable, ctx, ct).ConfigureAwait(false));
+                nativeTable, ctx, ct, driftColumns).ConfigureAwait(false));
         }
 
         var schema = (await source.GetSchemaAsync(spec, ct).ConfigureAwait(false)).Schema;
