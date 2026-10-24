@@ -390,6 +390,58 @@ public sealed class ArrowEgressTests : IDisposable
     }
 
     [Fact]
+    public async Task Egress_concatenation_preserves_bool_decimal_and_timestamp_nulls_across_chunks()
+    {
+        await using var duck = Open();
+
+        // 10,000 rows span at least 5 DuckDB data chunks, all in one output batch; each column has its own
+        // null period so the validity bitmaps differ.
+        var row = 0L;
+        await foreach (var batch in duck.QueryArrowAsync(
+            "select g, " +
+            "case when g % 5 = 0 then null else g % 3 = 0 end as b, " +
+            "case when g % 7 = 0 then null else (12345678901234567890123456789::decimal(38,0) + g)::decimal(38,9) end as amount, " +
+            "case when g % 11 = 0 then null else timestamp '2026-01-01' + to_microseconds(g) end as at " +
+            "from range(10000) t(g) order by g"))
+        {
+            using var b = batch;
+            var bools = (BooleanArray)b.Column(1);
+            var amounts = (Decimal128Array)b.Column(2);
+            var ats = (TimestampArray)b.Column(3);
+            for (var i = 0; i < b.Length; i++)
+            {
+                Assert.Equal(row % 5 == 0, bools.IsNull(i));
+                if (row % 5 != 0)
+                {
+                    Assert.Equal(row % 3 == 0, bools.GetValue(i));
+                }
+
+                Assert.Equal(row % 7 == 0, amounts.IsNull(i));
+                if (row % 7 != 0)
+                {
+                    Assert.Equal(
+                        System.Data.SqlTypes.SqlDecimal.Parse("12345678901234567890123456789") + row,
+                        amounts.GetSqlDecimal(i)!.Value);
+                }
+
+                Assert.Equal(row % 11 == 0, ats.IsNull(i));
+                if (row % 11 != 0)
+                {
+                    Assert.Equal(
+                        new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero).AddTicks(row * 10),
+                        ats.GetTimestamp(i)!.Value);
+                }
+
+                row++;
+            }
+
+            Assert.Equal((b.Length + 4) / 5, bools.NullCount);
+        }
+
+        Assert.Equal(10000L, row);
+    }
+
+    [Fact]
     public async Task Egress_early_break_releases_held_chunks_and_pool()
     {
         await using var duck = Open();
