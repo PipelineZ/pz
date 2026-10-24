@@ -2,8 +2,11 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Apache.Arrow;
+using Apache.Arrow.Memory;
 using DuckDB.NET.Data;
+using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Abstractions.Memory;
 
 namespace Pz.DuckDb;
 
@@ -416,6 +419,11 @@ public sealed class DuckSession : IDuckSession
     /// whole result has been read — proof the producer streams rather than buffers the full result.</summary>
     internal Action<long>? OnEgressBatchProducedForTests { get; set; }
 
+    /// <summary>Allocator every egress output batch's buffers are rented from. Settable so a test can
+    /// observe exactly the memory one session's egress rents and returns, on an allocator no other
+    /// concurrently running test shares.</summary>
+    internal MemoryAllocator EgressAllocator { get; set; } = PooledNativeAllocator.Shared;
+
     public IAsyncEnumerable<RecordBatch> QueryArrowAsync(
         string sql, int targetBatchBytes = 32 * 1024 * 1024, CancellationToken ct = default)
     {
@@ -469,6 +477,13 @@ public sealed class DuckSession : IDuckSession
             {
                 // Intentionally swallowed — see comment above.
             }
+
+            // The producer has finished, so nothing is written after this. A batch still buffered in the
+            // channel was never handed to the consumer and is still engine-owned: release it here.
+            while (channel.Reader.TryRead(out var unread))
+            {
+                unread.Dispose();
+            }
         }
     }
 
@@ -478,25 +493,27 @@ public sealed class DuckSession : IDuckSession
     /// Interface export, one native call per ~2048-row data chunk, no per-cell P/Invoke) rather than a
     /// row-by-row <c>ExecuteReader</c>/<c>Read</c> loop. DuckDB's own chunk size does not respect
     /// <paramref name="targetBatchBytes"/> (byte-targeted adaptive sizing, chosen over fixed row counts),
-    /// so each incoming chunk is re-pivoted through the SAME <see cref="ArrowBatchBuilder"/>/
-    /// <c>TryTakeBatch</c> machinery — via <see cref="ArrowBatchBuilder.AppendFrom"/>, its typed
-    /// non-boxing bulk-copy entry point, NOT <c>AppendRow(object?[])</c>. Boxing each cell into
-    /// <c>AppendRow</c> instead measures WORSE throughput and 4x more Gen1/Gen2 GC than a plain row loop
-    /// on <c>EgressBenchmarks</c> — DuckDB's per-chunk Arrow export plus an immediate box-per-cell unpack
-    /// back into our own builder is two full encode passes, not one. <c>AppendFrom</c> exists
-    /// specifically to avoid that: it reads each cell via each column's own typed (non-boxing) accessor
-    /// and appends it via the target builder's typed <c>Append(T)</c> overload — no <c>object</c>
-    /// round-trip for value types. <see cref="ArrowBatchBuilder"/>'s own constructor is what enforces the
-    /// v0 type matrix (its <c>NotSupportedException</c> names the column).
-    /// <see cref="DuckDBCommand.UseStreamingMode"/> is load-bearing here — without it DuckDB.NET
-    /// materializes the whole result before yielding anything, silently reintroducing full buffering.
+    /// so chunks are coalesced by <see cref="ArrowChunkCoalescer"/>, which concatenates whole columns:
+    /// one buffer copy per column per output batch, no per-cell decode/re-encode, and every value type
+    /// DuckDB exports carried bit-for-bit (a DECIMAL(38) beyond <see cref="decimal"/>'s range included).
+    /// Output buffers come from <see cref="EgressAllocator"/> (pooled native memory), never from DuckDB's
+    /// chunk memory, so a chunk's lifetime ends at the concatenation that consumes its last row and an
+    /// output batch is engine-owned independently of the DuckDB result.
+    /// <see cref="ArrowBatchBuilder"/>'s constructor, run once over the first chunk's schema, is what
+    /// enforces the v0 type matrix (its <c>NotSupportedException</c> names the column); the builder is
+    /// otherwise unused. <see cref="DuckDBCommand.UseStreamingMode"/> is load-bearing here — without it
+    /// DuckDB.NET materializes the whole result before yielding anything, silently reintroducing full
+    /// buffering.
     ///
-    /// The builder is built lazily from the FIRST incoming batch's own <see cref="RecordBatch.Schema"/> —
-    /// NOT via <see cref="PeekSchema"/> (<see cref="GetResultSchemaAsync"/>'s limit-0 peek), because
-    /// deriving from the first real batch avoids planning/binding <paramref name="sql"/> twice.
+    /// The schema is taken from the FIRST incoming chunk's own <see cref="RecordBatch.Schema"/> — NOT via
+    /// <see cref="PeekSchema"/> (<see cref="GetResultSchemaAsync"/>'s limit-0 peek), because deriving from
+    /// the first real chunk avoids planning/binding <paramref name="sql"/> twice.
     ///
-    /// Checks <paramref name="ct"/> once per row (i.e. more often than the contract's "between batches"
-    /// minimum) so a cancellation mid-batch is honored promptly rather than only at a batch boundary. Any
+    /// Ownership: each DuckDB chunk passes to the coalescer as soon as it arrives, and the coalescer is
+    /// disposed in <c>finally</c> (releasing any chunk still held) before the command is. A batch whose
+    /// channel write fails is disposed here, never handed on.
+    ///
+    /// Checks <paramref name="ct"/> once per chunk (in addition to DuckDB.NET's own check per fetch). Any
     /// exception (including <see cref="OperationCanceledException"/>) is captured and handed to
     /// <see cref="ChannelWriter{T}.Complete(Exception?)"/> so it surfaces to the consumer through the
     /// channel rather than becoming an unobserved task exception.</summary>
@@ -518,50 +535,54 @@ public sealed class DuckSession : IDuckSession
             command.CommandText = sql;
             command.UseStreamingMode = true;
 
-            ArrowBatchBuilder? builder = null;
-            IArrowArray[]? columns = null;
-            var rowsRead = 0L;
-
-            await foreach (var duckBatch in command.ExecuteArrowBatchesAsync(ct).ConfigureAwait(false))
+            ArrowChunkCoalescer? coalescer = null;
+            try
             {
-                using (duckBatch)
+                var rowsRead = 0L;
+
+                await foreach (var duckBatch in command.ExecuteArrowBatchesAsync(ct).ConfigureAwait(false))
                 {
-                    if (builder is null)
+                    if (coalescer is null)
                     {
-                        // First batch fixes the schema for the whole stream (ADO.NET/Arrow-stream
+                        // First chunk fixes the schema for the whole stream (ADO.NET/Arrow-stream
                         // convention — DuckDB never changes a result's column types mid-stream). An
                         // unsupported column type fails fast here, in ArrowBatchBuilder's own
-                        // constructor, on the very first batch, before any row of it is processed.
-                        builder = new ArrowBatchBuilder(duckBatch.Schema, targetBatchBytes);
-                        columns = new IArrowArray[duckBatch.Schema.FieldsList.Count];
-                    }
-
-                    for (var col = 0; col < columns!.Length; col++)
-                    {
-                        columns[col] = duckBatch.Column(col);
-                    }
-
-                    for (var row = 0; row < duckBatch.Length; row++)
-                    {
-                        ct.ThrowIfCancellationRequested();
-
-                        builder.AppendFrom(columns, row);
-                        rowsRead++;
-
-                        if (builder.TryTakeBatch(out var batch))
+                        // constructor, before any row is processed.
+                        try
                         {
-                            await writer.WriteAsync(batch!, ct).ConfigureAwait(false);
-                            OnEgressBatchProducedForTests?.Invoke(rowsRead);
+                            _ = new ArrowBatchBuilder(duckBatch.Schema, targetBatchBytes);
                         }
+                        catch
+                        {
+                            duckBatch.Dispose();
+                            throw;
+                        }
+
+                        coalescer = new ArrowChunkCoalescer(
+                            duckBatch.Schema, targetBatchBytes, BatchOptions.Default.MaxRowsPerBatch, EgressAllocator);
+                    }
+
+                    rowsRead += duckBatch.Length;
+                    var due = coalescer.Add(duckBatch); // owns the chunk from here on
+                    ct.ThrowIfCancellationRequested();
+
+                    foreach (var batch in due)
+                    {
+                        await WriteOwnedAsync(writer, batch, ct).ConfigureAwait(false);
+                        OnEgressBatchProducedForTests?.Invoke(rowsRead);
                     }
                 }
-            }
 
-            var final = builder?.Flush();
-            if (final is not null)
+                var final = coalescer?.Flush();
+                if (final is not null)
+                {
+                    await WriteOwnedAsync(writer, final, ct).ConfigureAwait(false);
+                    OnEgressBatchProducedForTests?.Invoke(rowsRead);
+                }
+            }
+            finally
             {
-                await writer.WriteAsync(final, ct).ConfigureAwait(false);
-                OnEgressBatchProducedForTests?.Invoke(rowsRead);
+                coalescer?.Dispose();
             }
         }
         catch (Exception ex)
@@ -576,6 +597,23 @@ public sealed class DuckSession : IDuckSession
             }
 
             writer.Complete(error);
+        }
+    }
+
+    /// <summary>Hands <paramref name="batch"/> to the consumer, or disposes it when the write does not
+    /// happen (cancellation, or a channel already completed), since it then still belongs to the
+    /// producer.</summary>
+    private static async ValueTask WriteOwnedAsync(
+        ChannelWriter<RecordBatch> writer, RecordBatch batch, CancellationToken ct)
+    {
+        try
+        {
+            await writer.WriteAsync(batch, ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            batch.Dispose();
+            throw;
         }
     }
 }

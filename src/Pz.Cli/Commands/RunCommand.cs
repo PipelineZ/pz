@@ -191,7 +191,8 @@ internal static class RunCommand
             using (phases.Begin(RunPhaseClock.Compile))
             {
                 var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-                fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new DuckDbSqlAstReader());
+                using var sqlAst = new DuckDbSqlAstReader();
+                fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
             }
         }
         catch (PzValidationException ex)

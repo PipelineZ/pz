@@ -7,6 +7,22 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **DECIMAL(38) values beyond `System.Decimal` no longer wrap on universal-tier egress.** Arrow's
+  `Decimal128Array.GetValue` wraps silently instead of throwing, so such values left DuckDB changed. Egress now
+  copies them exactly, and the CSV writer writes them exactly. The NDJSON writer, the Postgres and SqlServer sinks,
+  the Azure/GCS/SFTP partitioned writers and check result formatting still use `GetValue` and are tracked as a
+  follow-up.
+
+### Changed
+
+- **Faster compile and egress.** Compile reuses one DuckDB parse session per command (a wide project with 200
+  sources: 2250 to 284 ms). Universal egress concatenates DuckDB chunks by column (1M rows: 246 to 73 ms; mixed
+  utf8/decimal/timestamp/date: 576 to 102 ms). `scripts/macro-bench.sh` times the built CLI instead of
+  `dotnet run`, `scripts/scale-bench.sh` measures project-size scaling, and `PZ_BENCH_INPROCESS=1` switches the
+  benchmarks to BenchmarkDotNet.
+
 ## [0.11.3] - 2026-10-16
 
 ### Fixed

@@ -16,6 +16,7 @@ public class EgressBenchmarks
 {
     private const int RowCount = 1_000_000;
     private const string SourceTable = "staging.bench_egress";
+    private const string MixedSourceTable = "staging.bench_egress_mixed";
 
     private string _dir = null!;
     private DuckSession _duck = null!;
@@ -31,6 +32,10 @@ public class EgressBenchmarks
         var schema = BenchData.BuildSchema();
         var rows = BenchData.GenerateRows(RowCount);
         _duck.IngestArrowAsync(SourceTable, schema, BuildBatches(schema, rows)).GetAwaiter().GetResult();
+
+        _duck.ExecuteAsync(
+            $"create table {MixedSourceTable} as select g::bigint as id, 'name-' || g::varchar as name, (g * 1.25)::decimal(38,9) as amount, timestamp '2026-01-01' + to_microseconds(g) as at, date '2026-01-01' + (g % 365)::int as d from range({RowCount}) t(g)")
+            .GetAwaiter().GetResult();
     }
 
     [GlobalCleanup]
@@ -41,10 +46,15 @@ public class EgressBenchmarks
     }
 
     [Benchmark(Description = "Egress 1M rows: DuckSession.QueryArrowAsync draining the full result set")]
-    public async Task<long> Egress1MRows()
+    public Task<long> Egress1MRows() => Drain(SourceTable);
+
+    [Benchmark(Description = "Egress 1M rows, mixed types (utf8/decimal(38,9)/timestamp/date)")]
+    public Task<long> Egress1MRowsMixedTypes() => Drain(MixedSourceTable);
+
+    private async Task<long> Drain(string table)
     {
         var rows = 0L;
-        await foreach (var batch in _duck.QueryArrowAsync($"select * from {SourceTable}"))
+        await foreach (var batch in _duck.QueryArrowAsync($"select * from {table}"))
         {
             rows += batch.Length;
             batch.Dispose();

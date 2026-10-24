@@ -41,6 +41,16 @@ run the solution one assembly at a time:
 $ dotnet test Pz.slnx -c Release --no-build -m:1
 ```
 
+### Benchmarks
+
+```sh
+dotnet run -c Release --project tests/Pz.Benchmarks -- --filter '*Egress*'
+```
+
+Set `PZ_BENCH_INPROCESS=1` when worktrees are nested in the checkout (for example under `.claude/worktrees/`):
+BenchmarkDotNet's out-of-process toolchain refuses to build when another `Pz.Benchmarks.csproj` exists below the
+repo root. `scripts/macro-bench.sh` and `scripts/scale-bench.sh` are the end-to-end harnesses.
+
 ## Branch protection
 
 - `main` requires the `ci` workflow (`.github/workflows/ci.yml`) green before merging -- both the

@@ -37,7 +37,8 @@ public sealed class SqlServerTourSampleCompileTests
         var loaded = ProjectLoader.Load(
             Path.Combine(FindRepoRoot(), "samples", "sqlserver-tour", project), Env);
         var ctx = new RenderContext(loaded, "test-run", DateTimeOffset.UnixEpoch) { Env = Env };
-        return (loaded, DagCompiler.Compile(loaded, ctx, sqlAst: new DuckDbSqlAstReader()));
+        using var sqlAst = new DuckDbSqlAstReader();
+        return (loaded, DagCompiler.Compile(loaded, ctx, sqlAst: sqlAst));
     }
 
     [Theory]

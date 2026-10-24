@@ -60,7 +60,8 @@ internal static class PlanCommand
             project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
             var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
             var compileNotices = new List<string>();
-            var fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, new Pz.DuckDb.DuckDbSqlAstReader());
+            using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
+            var fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
             SharedInputHelpers.WriteWarnings(fullDag.Warnings);
             foreach (var notice in compileNotices)
             {

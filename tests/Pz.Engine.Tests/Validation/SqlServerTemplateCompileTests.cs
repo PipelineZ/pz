@@ -29,7 +29,8 @@ public sealed class SqlServerTemplateCompileTests
 
         var project = ProjectLoader.Load(dir, Env);
         var ctx = new RenderContext(project, "test-run", DateTimeOffset.UnixEpoch) { Env = Env };
-        var dag = DagCompiler.Compile(project, ctx, sqlAst: new DuckDbSqlAstReader());
+        using var sqlAst = new DuckDbSqlAstReader();
+        var dag = DagCompiler.Compile(project, ctx, sqlAst: sqlAst);
 
         Assert.Empty(dag.Warnings);
         Assert.Contains(dag.Nodes, n => n.Kind == NodeKind.SinkWrite);

@@ -7,8 +7,11 @@ namespace Pz.DuckDb.Tests;
 /// assumed.</summary>
 public sealed class DuckDbReadHintsTests
 {
-    private static ReadHintPlan Extract(string sql, string baseTable = "src_a", string? cursorColumn = null) =>
-        new DuckDbSqlAstReader().ExtractReadHints(sql, baseTable, cursorColumn);
+    private static ReadHintPlan Extract(string sql, string baseTable = "src_a", string? cursorColumn = null)
+    {
+        using var reader = new DuckDbSqlAstReader();
+        return reader.ExtractReadHints(sql, baseTable, cursorColumn);
+    }
 
     // -- the hazard this whole feature is gated on ---------------------------------------------
 
