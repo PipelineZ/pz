@@ -27,6 +27,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   utf8/decimal/timestamp/date: 576 to 102 ms). `scripts/macro-bench.sh` times the built CLI instead of
   `dotnet run`, `scripts/scale-bench.sh` measures project-size scaling, and `PZ_BENCH_INPROCESS=1` switches the
   benchmarks to BenchmarkDotNet.
+- **Native scans stage only the columns and rows the pipeline reads; less per-node overhead.** A wide Parquet source
+  (2M rows, 50 columns) read by `select id, c1 ... where k = 7` now stages 3 columns and 20,000 rows instead of 50
+  columns and 2,000,000 rows (SourceLoad 19.8 s to 63 ms, min of 3). Per-node overhead drops too: `run_results.json`
+  is written in the background (except right after a sink commit), watermark and sync-state writes are batched, and
+  the dry compile runs in memory (a 600-node project, execute phase 2014 to 1963 ms; the 1.0 s target was not met,
+  `scripts/scale-bench.sh`). The drift baseline re-seeds once on the first run after upgrading. Drift detection on
+  native scans now covers the columns the pipeline reads, so an added column the pipeline never reads is no longer
+  reported, as on the universal tier's pruning connectors. Connector authors: `IProjectingNativeScan` is new, for
+  native scans that can read only the requested columns and rows.
 
 ## [0.11.3] - 2026-10-16
 
