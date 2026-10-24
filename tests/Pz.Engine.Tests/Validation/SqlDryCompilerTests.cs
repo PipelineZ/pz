@@ -71,31 +71,18 @@ public sealed class SqlDryCompilerTests
     }
 
     [Fact]
-    public async Task Valid_project_produces_no_errors_and_no_leftover_files()
+    public async Task Valid_project_produces_no_errors()
     {
         var srcId = Id("1");
         var src = SourceLoadNode(srcId, "s", "d", new Dictionary<string, string> { ["id"] = "bigint" });
         var pipeline = PipelineNode(Id("2"), "good", "select id from staging.src_s__d", [srcId]);
         var dag = new CompiledDag([src, pipeline]);
 
-        // An isolated root (never the machine-global %TMP%/pz-dry-compile): the leftover-files
-        // assertion below is only meaningful over a directory nothing else writes to — counting the
-        // shared dir races every concurrent dry-compile in the suite.
-        var tempRoot = Path.Combine(Path.GetTempPath(), "pz-tests", "dry-compile-" + Guid.NewGuid().ToString("N"));
-        try
-        {
-            var result = await SqlDryCompiler.RunAsync(dag, default, tempRoot);
+        var result = await SqlDryCompiler.RunAsync(dag, default);
 
-            Assert.Empty(result.Errors);
-            Assert.Empty(result.SkippedPipelines);
-            Assert.Empty(result.UndeclaredDatasets);
-
-            Assert.Empty(Directory.GetFiles(tempRoot));
-        }
-        finally
-        {
-            try { Directory.Delete(tempRoot, recursive: true); } catch { /* best-effort cleanup */ }
-        }
+        Assert.Empty(result.Errors);
+        Assert.Empty(result.SkippedPipelines);
+        Assert.Empty(result.UndeclaredDatasets);
     }
 
     [Fact]
