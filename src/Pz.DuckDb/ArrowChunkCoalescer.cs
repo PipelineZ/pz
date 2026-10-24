@@ -4,7 +4,10 @@ using Apache.Arrow.Memory;
 namespace Pz.DuckDb;
 
 /// <summary>Coalesces a stream of small Arrow chunks (DuckDB's ~2048-row data chunks) into engine-owned
-/// batches by concatenating whole columns: one buffer copy per column per output batch, no per-cell work.
+/// batches by concatenating whole columns with <see cref="ArrowColumnConcat"/>: one copy per buffer per
+/// output batch, written straight into allocator memory, no per-cell work. The schema must be within the
+/// v0 type matrix; the constructor throws <see cref="NotSupportedException"/> naming the first column that
+/// is not.
 ///
 /// Ownership: <see cref="Add"/> takes ownership of its chunk at the call, before its result is
 /// enumerated. A held chunk is disposed right after the concatenation that consumes its last pending row,
@@ -23,6 +26,7 @@ internal sealed class ArrowChunkCoalescer : IDisposable
     // in `_held[0]` were already emitted.
     private readonly List<RecordBatch> _held = new();
     private readonly List<long> _heldBytes = new();
+    private ColumnSlice[] _slices = new ColumnSlice[4];
     private int _headOffset;
     private int _pendingRows;
     private long _pendingBytes;
@@ -33,6 +37,7 @@ internal sealed class ArrowChunkCoalescer : IDisposable
         ArgumentNullException.ThrowIfNull(schema);
         ArgumentNullException.ThrowIfNull(allocator);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxRowsPerBatch);
+        ArrowColumnConcat.EnsureSupported(schema);
         _schema = schema;
         _targetBatchBytes = targetBatchBytes;
         _maxRowsPerBatch = maxRowsPerBatch;
@@ -51,6 +56,13 @@ internal sealed class ArrowChunkCoalescer : IDisposable
         {
             chunk.Dispose();
             throw new ObjectDisposedException(nameof(ArrowChunkCoalescer));
+        }
+
+        if (!MatchesSchema(chunk))
+        {
+            chunk.Dispose();
+            throw new InvalidOperationException(
+                "an egress chunk's column types differ from the stream schema fixed by its first chunk");
         }
 
         if (chunk.Length == 0)
@@ -152,34 +164,28 @@ internal sealed class ArrowChunkCoalescer : IDisposable
         }
 
         var contributing = fullyConsumed + (tailRows > 0 ? 1 : 0);
+        if (_slices.Length < contributing)
+        {
+            _slices = new ColumnSlice[Math.Max(contributing, _slices.Length * 2)];
+        }
+
         var columnCount = _schema.FieldsList.Count;
         var arrays = new IArrowArray[columnCount];
         var built = 0;
         try
         {
-            // A single input would make the concatenator return that input unchanged (aliasing chunk
-            // memory), so one contributing chunk is padded with an empty slice to force a copy.
-            var slices = new List<IArrowArray>(Math.Max(contributing, 2));
             for (var col = 0; col < columnCount; col++)
             {
-                slices.Clear();
                 for (var i = 0; i < contributing; i++)
                 {
                     var column = _held[i].Column(col);
                     var offset = i == 0 ? _headOffset : 0;
                     var length = i == fullyConsumed ? tailRows : column.Length - offset;
-                    // Slices share their parent's buffers: they are never disposed; the chunk is.
-                    slices.Add(offset == 0 && length == column.Length
-                        ? column
-                        : ArrowArrayFactory.Slice(column, offset, length));
+                    _slices[i] = new ColumnSlice(column, offset, length);
                 }
 
-                if (slices.Count == 1)
-                {
-                    slices.Add(ArrowArrayFactory.Slice(slices[0], 0, 0));
-                }
-
-                arrays[col] = ArrowArrayConcatenator.Concatenate(slices, _allocator);
+                arrays[col] = ArrowColumnConcat.Concatenate(
+                    _schema.FieldsList[col].DataType, _slices.AsSpan(0, contributing), rows, _allocator);
                 built++;
             }
         }
@@ -191,6 +197,11 @@ internal sealed class ArrowChunkCoalescer : IDisposable
             }
 
             throw;
+        }
+        finally
+        {
+            // The slices reference chunk arrays; clearing them keeps a released chunk unreachable from here.
+            _slices.AsSpan(0, contributing).Clear();
         }
 
         var batch = new RecordBatch(_schema, arrays, rows);
@@ -206,6 +217,25 @@ internal sealed class ArrowChunkCoalescer : IDisposable
         _headOffset = tailRows > 0 ? (fullyConsumed == 0 ? _headOffset : 0) + tailRows : 0;
         _pendingRows -= rows;
         return batch;
+    }
+
+    private bool MatchesSchema(RecordBatch chunk)
+    {
+        var fields = _schema.FieldsList;
+        if (chunk.ColumnCount != fields.Count)
+        {
+            return false;
+        }
+
+        for (var col = 0; col < fields.Count; col++)
+        {
+            if (chunk.Column(col).Data.DataType.TypeId != fields[col].DataType.TypeId)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>The chunk's buffer footprint: every buffer of every column at its full length, so a

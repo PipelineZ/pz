@@ -499,9 +499,8 @@ public sealed class DuckSession : IDuckSession
     /// Output buffers come from <see cref="EgressAllocator"/> (pooled native memory), never from DuckDB's
     /// chunk memory, so a chunk's lifetime ends at the concatenation that consumes its last row and an
     /// output batch is engine-owned independently of the DuckDB result.
-    /// <see cref="ArrowBatchBuilder"/>'s constructor, run once over the first chunk's schema, is what
-    /// enforces the v0 type matrix (its <c>NotSupportedException</c> names the column); the builder is
-    /// otherwise unused. <see cref="DuckDBCommand.UseStreamingMode"/> is load-bearing here — without it
+    /// The coalescer's constructor, run once over the first chunk's schema, is what enforces the v0 type
+    /// matrix (its <c>NotSupportedException</c> names the column). <see cref="DuckDBCommand.UseStreamingMode"/> is load-bearing here — without it
     /// DuckDB.NET materializes the whole result before yielding anything, silently reintroducing full
     /// buffering.
     ///
@@ -546,20 +545,18 @@ public sealed class DuckSession : IDuckSession
                     {
                         // First chunk fixes the schema for the whole stream (ADO.NET/Arrow-stream
                         // convention — DuckDB never changes a result's column types mid-stream). An
-                        // unsupported column type fails fast here, in ArrowBatchBuilder's own
-                        // constructor, before any row is processed.
+                        // unsupported column type fails fast here, in the coalescer's constructor, before
+                        // any row is processed; the chunk is not yet the coalescer's, so it is released here.
                         try
                         {
-                            _ = new ArrowBatchBuilder(duckBatch.Schema, targetBatchBytes);
+                            coalescer = new ArrowChunkCoalescer(
+                                duckBatch.Schema, targetBatchBytes, BatchOptions.Default.MaxRowsPerBatch, EgressAllocator);
                         }
                         catch
                         {
                             duckBatch.Dispose();
                             throw;
                         }
-
-                        coalescer = new ArrowChunkCoalescer(
-                            duckBatch.Schema, targetBatchBytes, BatchOptions.Default.MaxRowsPerBatch, EgressAllocator);
                     }
 
                     rowsRead += duckBatch.Length;
