@@ -150,22 +150,25 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         return new ExecutionPlan(planned, budget);
     }
 
-    /// <summary>Stamps what this SourceLoad will actually ask its
-    /// connector for, so `pz plan` can tell a pushed read from an unpushed one. Reuses the executor's own
-    /// capability gate rather than restating it, so the two can never drift. Only the universal tier is
-    /// reported: the native path builds its own SQL and never calls PlanReadAsync, so claiming pushdown
-    /// there would be a lie. Static Capabilities read — no OpenAsync, same never-connects promise as
-    /// DeclaredPartitionCount.</summary>
+    /// <summary>Stamps what this SourceLoad will actually ask for, so `pz plan` can tell a pushed read from an
+    /// unpushed one. Reuses the executor's own hint selection rather than restating it, so the two can never
+    /// drift: the universal tier is capability-gated (HintsFor), the native-scan tier applies the compiler's
+    /// hints whatever the connector advertises (NativeHints). Static Capabilities read, no OpenAsync, same
+    /// never-connects promise as DeclaredPartitionCount.</summary>
     private PlannedNode WithPushdown(PlannedNode planned, DagNode node)
     {
-        if (planned.Strategy != EdgeStrategy.ArrowStream
-            || node.Definition is not SourceDatasetDef { Hints: not null } def
+        if (node.Definition is not SourceDatasetDef { Hints: not null } def
             || !connectors.TryGetSource(def.Source.Connector, out var connector))
         {
             return planned;
         }
 
-        var hints = SourceLoadExecutor.HintsFor(def, connector.Capabilities);
+        var hints = planned.Strategy switch
+        {
+            EdgeStrategy.ArrowStream => SourceLoadExecutor.HintsFor(def, connector.Capabilities),
+            EdgeStrategy.NativeScan => SourceLoadExecutor.NativeHints(def),
+            _ => ReadHints.None,
+        };
         return hints is { Columns: null, PredicateSql: null }
             ? planned
             : planned with { Pushdown = new PushdownInfo(hints.Columns?.Count, hints.PredicateSql is not null) };
