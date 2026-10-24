@@ -1460,7 +1460,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         try
         {
             duckType = await ctx.Duck.ScalarAsync<string>(
-                $"select column_type from (describe {tableName}) where column_name = '{cursor.Replace("'", "''")}'", ct)
+                $"select column_type from (describe {tableName}) where lower(column_name) = lower('{cursor.Replace("'", "''")}')", ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

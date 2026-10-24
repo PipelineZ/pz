@@ -197,6 +197,30 @@ public sealed class NativePathTests : IAsyncLifetime
         Assert.Equal(1, await _duck.ScalarAsync<long>("select count(*) from staging.plain_setup_marker"));
     }
 
+    [Fact]
+    public async Task Native_watermark_capture_matches_the_cursor_case_insensitively()
+    {
+        var node = SourceLoadNode("stub", "t");
+        var def = (SourceDatasetDef)node.Definition;
+        node = node with
+        {
+            Definition = def with
+            {
+                Dataset = def.Dataset with { SyncMode = new SyncModeDef(SyncMode.Incremental, new IncrementalDef("updated_at")) },
+            },
+        };
+        var ctx = new RunContext(_duck,
+            Registry(new ConfigurableNativeSource("(select range as id, range as UPDATED_AT from range(10)) t", [])),
+            new RunPaths(_dir, "run"), NullRunEvents.Instance, SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.NotNull(result.WatermarkCandidate);
+        Assert.Equal("9", result.WatermarkCandidate!.Value);
+        Assert.Equal("bigint", result.WatermarkCandidate.TypeName);
+    }
+
     private static ConnectorRegistry Registry(ISourceConnector source)
     {
         var registry = new ConnectorRegistry();
