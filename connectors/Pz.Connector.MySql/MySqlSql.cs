@@ -89,20 +89,23 @@ internal static class MySqlSql
 
     /// <summary>The scan fragment: always <c>mysql_query('alias', '…')</c>, never a bare attached-table
     /// scan, so projection and the watermark window are guaranteed to execute inside MySQL.</summary>
-    internal static string ScanFragment(string alias, DatasetSpec spec) =>
-        $"mysql_query('{EscapeLiteral(alias)}', '{EscapeLiteral(InnerSelect(spec))}')";
+    internal static string ScanFragment(string alias, DatasetSpec spec, IReadOnlyList<string>? projected = null) =>
+        $"mysql_query('{EscapeLiteral(alias)}', '{EscapeLiteral(InnerSelect(spec, projected))}')";
 
     /// <summary>The MySQL-side SELECT: a declared <c>columns:</c> contract prunes the read (only
     /// declared columns are projected — the csv/json rule); <c>query:</c> replaces the table as the
-    /// read's base; the watermark window renders as typed literals. The plain (unwindowed) incremental
+    /// read's base; a non-empty <paramref name="projected"/> replaces the projection outright (it wins over
+    /// a contract); the watermark window renders as typed literals. The plain (unwindowed) incremental
     /// watermark IS pushed down — unlike the file connectors, extraction savings are the entire point
     /// of a database source, and DatasetSpec's contract explicitly permits it.</summary>
-    internal static string InnerSelect(DatasetSpec spec)
+    internal static string InnerSelect(DatasetSpec spec, IReadOnlyList<string>? projected = null)
     {
         var columns = ExtractColumns(spec);
-        var projection = columns is { Count: > 0 }
-            ? string.Join(", ", columns.Keys.Select(QuoteIdent))
-            : "*";
+        var projection = projected is { Count: > 0 }
+            ? string.Join(", ", projected.Select(QuoteIdent))
+            : columns is { Count: > 0 }
+                ? string.Join(", ", columns.Keys.Select(QuoteIdent))
+                : "*";
 
         var query = spec.Options.TryGetValue("query", out var q) ? q?.ToString() : null;
 

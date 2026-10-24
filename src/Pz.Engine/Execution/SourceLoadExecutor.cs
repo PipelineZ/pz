@@ -220,7 +220,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // candidate polled off its drained partition below, and a native scan never drains one -- it
         // would land rows and strand the token every run. Same rule the planner applies.
         if (shape is not (ResolvedReadShape.Feed or ResolvedReadShape.Cdc) &&
-            ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.NativeScan && source.TryGetNativeScan(spec, out var scan))
+            ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.NativeScan && TryGetScan(source, spec, def.Hints, out var scan))
         {
             // No separate extract/ingest split for the native-scan tier: DuckDB reads and loads in one
             // statement, so there is no seam to split on.
@@ -248,8 +248,14 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 {
                     // A hinted column the scan does not expose: read everything and let the pipeline's own SQL
                     // report any column that is genuinely missing, as it does for an unhinted scan.
+                    // A projecting scan's fragment may be the one that lacks the column, so re-ask for the plain scan.
+                    if (!source.TryGetNativeScan(spec, out var plain))
+                    {
+                        throw;
+                    }
+
                     await ctx.Duck.ExecuteAsync(
-                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(scan.SqlFragment, null)}", ct)
+                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(plain.SqlFragment, null)}", ct)
                         .ConfigureAwait(false);
                 }
             }
@@ -534,17 +540,25 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// are polled after the pump joins, THEN the two collapse statements, THEN
     /// counts. Identifier quoting reuses <see cref="ArrowInterop.QuoteQualified"/> (the same helper
     /// <see cref="CaptureWatermarkAsync"/> uses), never raw concatenation of key names.</summary>
+    /// <summary>The native scan to stage: a projecting source narrows its own read to the hinted columns
+    /// (never the predicate); every other source gives its plain scan.</summary>
+    private static bool TryGetScan(ISource source, DatasetSpec spec, ReadHintPlan? hints,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan) =>
+        source is IProjectingNativeScan projecting && hints is { Columns.Count: > 0 }
+            ? projecting.TryGetNativeScan(spec, hints.Columns, out scan)
+            : source.TryGetNativeScan(spec, out scan);
+
+    /// <summary>The compiler's hints as a native scan applies them: DuckDB honours both halves whatever the
+    /// connector advertises, so nothing is filtered by capability.</summary>
+    internal static ReadHints NativeHints(SourceDatasetDef def) =>
+        def.Hints is { } plan ? new ReadHints(plan.Columns, plan.PredicateSql) : ReadHints.None;
+
     /// <summary>The compiler decided what the single reading pipeline
     /// makes pushable; this decides whether THIS connector gets it. The two halves are gated
     /// independently because a connector may honour one and not the other. An absent capability means
     /// push nothing for that half, silently — this is an optimisation, and the pipeline's own SQL still
     /// runs in DuckDB over whatever landed, so a connector that receives nothing produces exactly the
     /// same rows, just after moving more of them.</summary>
-    /// <summary>The compiler's hints as a native scan applies them: DuckDB honours both halves whatever the
-    /// connector advertises, so nothing is filtered by capability.</summary>
-    internal static ReadHints NativeHints(SourceDatasetDef def) =>
-        def.Hints is { } plan ? new ReadHints(plan.Columns, plan.PredicateSql) : ReadHints.None;
-
     internal static ReadHints HintsFor(SourceDatasetDef def, ConnectorCapabilities caps)
     {
         if (def.Hints is not { } plan)

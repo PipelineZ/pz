@@ -121,6 +121,37 @@ public sealed class MySqlSqlGenTests
     }
 
     [Fact]
+    public void InnerSelect_projects_the_given_columns()
+    {
+        Assert.Equal("SELECT `id`, `v` FROM `orders`", MySqlSql.InnerSelect(Spec(), ["id", "v"]));
+    }
+
+    [Fact]
+    public void Projection_wraps_a_query_option()
+    {
+        var spec = Spec(new Dictionary<string, object?> { ["query"] = "SELECT a, b FROM t1;" });
+        Assert.Equal("SELECT `a` FROM (SELECT a, b FROM t1) pzq", MySqlSql.InnerSelect(spec, ["a"]));
+    }
+
+    [Fact]
+    public void Given_columns_win_over_a_declared_contract()
+    {
+        var spec = Spec(new Dictionary<string, object?>
+        {
+            ["columns"] = new Dictionary<string, string> { ["id"] = "bigint", ["name"] = "varchar" },
+        });
+
+        Assert.Equal("SELECT `name` FROM `orders`", MySqlSql.InnerSelect(spec, ["name"]));
+    }
+
+    [Fact]
+    public void Projection_keeps_the_watermark_window_inside_mysql()
+    {
+        var spec = Spec() with { WatermarkCursor = "id", WatermarkValue = "100" };
+        Assert.Equal("SELECT `v` FROM `orders` WHERE `id` > 100", MySqlSql.InnerSelect(spec, ["v"]));
+    }
+
+    [Fact]
     public void Query_option_goes_to_mysql_verbatim_when_nothing_to_add()
     {
         var spec = Spec(new Dictionary<string, object?> { ["query"] = "SELECT a, b FROM t1 JOIN t2 USING (k);" });

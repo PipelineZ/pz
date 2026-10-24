@@ -83,6 +83,42 @@ public sealed class NativePathTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Projecting_source_receives_hinted_columns_but_no_predicate()
+    {
+        var source = new ProjectingNativeSource(HintedFragment, "(select range as id, range % 10 as k from range(100)) t");
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "k"], "k = 7"));
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", source);
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(["id", "k"], source.ReceivedColumns);
+        Assert.Equal(0, source.PlainCalls);
+        Assert.Equal(10, result.RowsMoved);
+        Assert.Equal(10, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t where k = 7"));
+    }
+
+    [Fact]
+    public async Task Projecting_scan_binder_error_falls_back_to_the_plain_scan()
+    {
+        var source = new ProjectingNativeSource(HintedFragment, "(select range as id from range(100)) t");
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "k"], "k = 7"));
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", source);
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, source.PlainCalls);
+        Assert.Equal(100, result.RowsMoved); // unhinted fallback stages the whole plain scan
+    }
+
+    [Fact]
     public async Task Native_scan_hint_matches_columns_case_insensitively()
     {
         var result = await RunHintedAsync(new ReadHintPlan(["ID", "K"], "K = 7"));
@@ -569,6 +605,46 @@ public sealed class NativePathTests : IAsyncLifetime
                 SchemaInferred = schemaInferred,
                 SniffFragment = sniffFragment,
             };
+            return true;
+        }
+
+        public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+            throw new InvalidOperationException("universal path must not be used");
+
+        public ValueTask DisposeAsync() => default;
+    }
+
+    /// <summary>Native source that also projects: records the columns it was asked for and hands back
+    /// <paramref name="projectedFragment"/>; the plain scan returns <paramref name="plainFragment"/>.</summary>
+    private sealed class ProjectingNativeSource(string plainFragment, string projectedFragment)
+        : ISourceConnector, ISource, IProjectingNativeScan
+    {
+        public IReadOnlyList<string>? ReceivedColumns { get; private set; }
+        public int PlainCalls { get; private set; }
+
+        public ConnectorInfo Info => new("stub-projecting", "0.1.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeScan;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+        public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+            throw new InvalidOperationException("universal path must not be used");
+
+        public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+        {
+            PlainCalls++;
+            scan = new NativeScan(plainFragment, []) { Mechanism = "stub_scan" };
+            return true;
+        }
+
+        public bool TryGetNativeScan(DatasetSpec spec, IReadOnlyList<string> columns, [NotNullWhen(true)] out NativeScan? scan)
+        {
+            ReceivedColumns = columns;
+            scan = new NativeScan(projectedFragment, []) { Mechanism = "stub_scan" };
             return true;
         }
 
