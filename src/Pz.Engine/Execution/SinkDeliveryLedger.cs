@@ -1,3 +1,4 @@
+using System.Globalization;
 using Apache.Arrow;
 using Pz.DuckDb;
 
@@ -35,11 +36,12 @@ internal static class SinkDeliveryLedger
 
     public static async Task<Fingerprint> FingerprintAsync(IDuckSession duck, string relation, CancellationToken ct)
     {
-        var count = await duck.ScalarAsync<long>($"select count(*) from {relation}", ct).ConfigureAwait(false);
-        var hash = await duck.ScalarAsync<string>(
-            $"select cast(coalesce(sum(cast(hash(t) as hugeint)), 0) as varchar) from {relation} t", ct)
+        var packed = await duck.ScalarAsync<string>(
+            "select concat_ws(chr(30), count(*), " +
+            $"cast(coalesce(sum(cast(hash(t) as hugeint)), 0) as varchar)) from {relation} t", ct)
             .ConfigureAwait(false);
-        return new Fingerprint(count, hash);
+        var parts = packed.Split('\u001e');
+        return new Fingerprint(long.Parse(parts[0], CultureInfo.InvariantCulture), parts[1]);
     }
 
     /// <summary>See <see cref="PartitionLedger.ReadDoneAsync"/>'s catalog doc — non-null
