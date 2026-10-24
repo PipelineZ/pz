@@ -31,6 +31,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   utf8/decimal/timestamp/date: 576 to 102 ms). `scripts/macro-bench.sh` times the built CLI instead of
   `dotnet run`, `scripts/scale-bench.sh` measures project-size scaling, and `PZ_BENCH_INPROCESS=1` switches the
   benchmarks to BenchmarkDotNet.
+- **Egress concatenates straight into pooled native memory.** Universal egress writes each concatenated
+  column directly into the pooled allocator instead of staging it on the managed heap. Managed allocation per
+  1M-row egress drops from ~38.5 MB to ~1.1 MB (mixed types: ~63.7 to ~1.3 MB), and Gen2 collections from
+  10,000 to 6,000 and from 17,000 to ~10,000 per 1k operations (BenchmarkDotNet, in-process).
 - **Native scans stage only the columns and rows the pipeline reads; less per-node overhead.** A wide Parquet source
   (2M rows, 50 columns) read by `select id, c1 from … where k = 7` now stages 3 columns and 20,000 rows instead of
   50 columns and 2,000,000 rows (SourceLoad 19.8 s to 63 ms, min of 3). A native SourceLoad's `rows`
