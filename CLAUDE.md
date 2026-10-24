@@ -162,9 +162,11 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   native pending-query state). Channel-path ingest takes the gate once to create the table and once per
   batch, so a slow source (Postgres, SqlServer, Sftp, Azure Blob, GCS) no longer serializes the run.
   Egress drains and transactions still hold the gate for their whole duration, so a slow sink still does.
-  The gate probe's concurrent/sequential ratio is 0.93–1.00 (its slow leg is an egress drain), and
-  connection-per-operation measured the same, so removing the gate buys nothing there. Concurrency comes
-  from the topological dispatcher + bounded channels, not parallel connections.
+  The earlier "~free" measurement holds only for DuckDB-local work; it does not cover a slow external source
+  or sink. The gate probe's concurrent/sequential ratio is 0.93–1.00 (the probe's slow leg is an egress
+  query, which holds the gate throughout), and connection-per-operation measured 0.85–0.94 on the same
+  DuckDB-local work, so a second connection buys nothing there. Concurrency comes from the topological
+  dispatcher + bounded channels, not parallel connections.
 - **Execution is always staged materialize-then-drain**, never statement-scoped DML — even for the
   inline `INSERT INTO {{ sink(...) }}` form, which the compiler strips.
 - **Native setup statements run once per run** (`NativeSetupLedger` on `RunContext`, keyed by exact
