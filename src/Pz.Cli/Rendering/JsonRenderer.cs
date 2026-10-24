@@ -21,6 +21,8 @@ public sealed class JsonRenderer(TextWriter? writer = null) : IEventRenderer
     private TextWriter Writer => writer ?? Console.Out;
 
     private readonly ArrayBufferWriter<byte> _buffer = new();
+    // Utf8JsonWriter needs an output at construction; Render re-targets it to _buffer via Reset, so this
+    // initial buffer is never written to.
     private readonly Utf8JsonWriter _json = new(new ArrayBufferWriter<byte>(), new JsonWriterOptions { Indented = false });
     private readonly Lock _gate = new();
 

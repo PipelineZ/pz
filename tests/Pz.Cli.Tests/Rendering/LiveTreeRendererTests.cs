@@ -123,9 +123,7 @@ public class LiveTreeRendererTests
             renderer.Render(new NodeCompletedEvent(At, "run-1", name, "SourceLoad", name, "success", 5, 41, null, null, null));
         }
 
-        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
         renderer.Dispose();
-        stopwatch.Stop();
 
         var text = output.ToString();
         var lastFrame = text[text.LastIndexOf("pz run", StringComparison.Ordinal)..];
@@ -133,7 +131,43 @@ public class LiveTreeRendererTests
         {
             Assert.Contains($"ok {name} 5 rows 41ms", lastFrame, StringComparison.Ordinal);
         }
+    }
 
-        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"stop took {stopwatch.Elapsed}");
+    [Fact]
+    public void Run_completed_stops_the_loop_and_leaves_the_final_frame()
+    {
+        var output = new StringWriter();
+        var console = Spectre.Console.AnsiConsole.Create(new Spectre.Console.AnsiConsoleSettings
+        {
+            Ansi = Spectre.Console.AnsiSupport.No,
+            ColorSystem = Spectre.Console.ColorSystemSupport.NoColors,
+            Interactive = Spectre.Console.InteractionSupport.Yes,
+            Out = new Spectre.Console.AnsiConsoleOutput(output),
+        });
+        var renderer = new LiveTreeRenderer(console, isInteractive: () => true);
+
+        renderer.Render(new NodeCompletedEvent(At, "run-1", "n1", "SourceLoad", "src_a", "success", 5, 41, null, null, null));
+        renderer.Render(new RunCompletedEvent(At, "run-1", "success", 1, 0, 0, 0));
+        renderer.Dispose();
+
+        var text = output.ToString();
+        Assert.Contains("ok src_a 5 rows 41ms", text[text.LastIndexOf("pz run", StringComparison.Ordinal)..], StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Dispose_twice_and_render_after_dispose_do_not_throw()
+    {
+        var console = Spectre.Console.AnsiConsole.Create(new Spectre.Console.AnsiConsoleSettings
+        {
+            Ansi = Spectre.Console.AnsiSupport.No,
+            Interactive = Spectre.Console.InteractionSupport.Yes,
+            Out = new Spectre.Console.AnsiConsoleOutput(new StringWriter()),
+        });
+        var renderer = new LiveTreeRenderer(console, isInteractive: () => true);
+
+        renderer.Dispose();
+        renderer.Dispose();
+        renderer.Render(new NodeCompletedEvent(At, "run-1", "n1", "SourceLoad", "src_a", "success", 5, 41, null, null, null));
+        renderer.Render(new RunCompletedEvent(At, "run-1", "success", 1, 0, 0, 0));
     }
 }

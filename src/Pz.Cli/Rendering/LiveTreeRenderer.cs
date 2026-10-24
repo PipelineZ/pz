@@ -18,6 +18,8 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
     private readonly Task? _liveTask;
     private bool _dirty;
     private volatile bool _stopping;
+    private volatile bool _disposed;
+    private int _disposedFlag;
 
     private sealed class NodeRow
     {
@@ -174,23 +176,26 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
 
                 case RetentionSweptEvent:
                     // The stream's first (and only) event after RunCompletedEvent, which already set
-                    // _stopping above. The live loop only polls _stopping every 100ms, and a GB-scale sweep easily
-                    // outlasts that window, so the Spectre LiveDisplay backing _ctx may already have
-                    // ended by the time this arrives. Nothing to render here anyway: RunCommand prints
-                    // its own "cleaned ..." summary line, so a tree update would risk a duplicate render
-                    // (or a throw against a finished context) for no visible gain.
+                    // _stopping above. A GB-scale sweep easily outlasts the live loop's final frame, so
+                    // the Spectre LiveDisplay may already have ended by the time this arrives. Nothing
+                    // to render here anyway: RunCommand prints its own "cleaned ..." summary line, and
+                    // leaving _dirty untouched means no further frame is requested.
                     return;
             }
-        }
 
-        lock (_gate)
-        {
             _dirty = true;
         }
 
-        if (_stopping)
+        if (_stopping && !_disposed)
         {
-            _wake.Release();
+            try
+            {
+                _wake.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // Lost the race with Dispose; the final frame was already taken.
+            }
         }
     }
 
@@ -274,7 +279,13 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
 
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposedFlag, 1) != 0)
+        {
+            return;
+        }
+
         _stopping = true;
+        _disposed = true;
         _wake.Release();
         try
         {
