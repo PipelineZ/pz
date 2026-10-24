@@ -576,6 +576,7 @@ internal static class RunCommand
         // refuses a "running" prior run with PZ0503 ("prior run was interrupted … re-run 'pz run'") --
         // an honest, actionable outcome instead of a false success. Node-level crash safety is
         // unaffected: every NodeResult is durable at this exact point.
+        // TryWriteSnapshot also flushes; explicit here so the ordering is visible at the call site.
         snapshotEvents.Flush();
         snapshotEvents.TryWriteSnapshot(result.Nodes, "running");
 
@@ -696,6 +697,7 @@ internal static class RunCommand
                     "may be incomplete for this run");
             }
 
+            // TryWriteSnapshot also flushes; explicit here so the ordering is visible at the call site.
             snapshotEvents.Flush();
             snapshotEvents.TryWriteSnapshot(result.Nodes, "running", eventsDropped);
         }
@@ -810,6 +812,7 @@ internal static class RunCommand
         // by the try/catch discipline immediately above (a persist failure prints a note and falls
         // through to the status-derived exit code), NOT by writing run_results first.
         finalize.Dispose();
+        // TryWriteSnapshot also flushes; explicit here so the ordering is visible at the call site.
         snapshotEvents.Flush();
         snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped, phases.Snapshot());
         runSpan.Finish();

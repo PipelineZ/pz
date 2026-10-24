@@ -10,6 +10,9 @@ namespace Pz.Cli.Tests;
 /// its completion callback returns, other completions coalesce onto a background writer, and after
 /// <see cref="SnapshotRunEvents.Flush"/> nothing written in the background can land after a direct
 /// terminal write.</summary>
+// Injected store failures print the latched warning to Console.Error, so this class serializes with the
+// classes that capture it.
+[Collection("console-and-env-serialized")]
 public class SnapshotRunEventsTests
 {
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(30);
@@ -136,21 +139,71 @@ public class SnapshotRunEventsTests
         Assert.Equal(["pipe_a", "sink_a"], store.Writes[^1].Ids);
     }
 
+    // The background write holding the write lock copied its snapshot before the sink completed, then
+    // fails; the sink's own write must still run and succeed before NodeCompleted returns.
+    [Fact]
+    public async Task Sink_commit_is_persisted_even_when_an_in_flight_background_write_fails()
+    {
+        var store = new RecordingStore();
+        store.BlockFirstWrite();
+        store.Fail(1);
+        using var events = NewEvents(store);
+
+        events.NodeCompleted(Result("pipe_a", NodeKind.Pipeline));
+        Assert.True(store.BlockedWriteEntered.Wait(Bound), "background write never started");
+
+        var sink = Task.Run(() => events.NodeCompleted(Result("sink_a", NodeKind.SinkWrite)));
+        store.Release();
+        await sink.WaitAsync(Bound);
+
+        Assert.Contains("sink_a", store.Persisted[^1].Ids);
+    }
+
+    // A failed write must not mark its state as persisted: the next write of the same state (here the
+    // final background write at Flush) has to retry it rather than skip it.
+    [Fact]
+    public async Task A_failed_write_is_retried_by_the_next_write_of_the_same_state()
+    {
+        var store = new RecordingStore();
+        store.BlockFirstWrite();
+        store.Fail(2);
+        using var events = NewEvents(store);
+
+        events.NodeCompleted(Result("pipe_a", NodeKind.Pipeline));
+        Assert.True(store.BlockedWriteEntered.Wait(Bound), "background write never started");
+
+        // The sink waits for the blocked write to release the write lock, so its own write is store call 2.
+        var sink = Task.Run(() => events.NodeCompleted(Result("sink_a", NodeKind.SinkWrite)));
+        store.Release();
+        await sink.WaitAsync(Bound);
+        Assert.False(store.Writes[^1].Succeeded);
+
+        events.Flush();
+
+        Assert.Equal(["pipe_a", "sink_a"], store.Persisted[^1].Ids);
+    }
+
     private static SnapshotRunEvents NewEvents(IRunArtifactStore store) =>
         new(store, "fixed-run-id", "2026-10-24T00:00:00.000Z");
 
     private static NodeResult Result(string name, NodeKind kind, NodeStatus status = NodeStatus.Success) =>
         new(new NodeId(name), kind, name, status, 1, TimeSpan.FromMilliseconds(1), null);
 
-    private sealed record Write(string Status, int Count, IReadOnlyList<string> Ids);
+    private sealed record Write(string Status, int Count, IReadOnlyList<string> Ids, bool Succeeded);
 
     private sealed class RecordingStore : IRunArtifactStore
     {
         private readonly Lock _gate = new();
         private readonly List<Write> _writes = [];
         private readonly ManualResetEventSlim _release = new(initialState: true);
+        private readonly HashSet<int> _failing = [];
         private bool _blockNext;
+        private int _calls;
 
+        /// <summary>Set once a blocked write has entered the store (after its snapshot was copied).</summary>
+        public ManualResetEventSlim BlockedWriteEntered { get; } = new();
+
+        /// <summary>Every recorded write, failed ones included.</summary>
         public IReadOnlyList<Write> Writes
         {
             get
@@ -162,10 +215,21 @@ public class SnapshotRunEventsTests
             }
         }
 
+        public IReadOnlyList<Write> Persisted => [.. Writes.Where(w => w.Succeeded)];
+
         public void BlockFirstWrite()
         {
             _release.Reset();
             _blockNext = true;
+        }
+
+        /// <summary>Fails the store calls with these 1-based ordinals.</summary>
+        public void Fail(params int[] ordinals)
+        {
+            lock (_gate)
+            {
+                _failing.UnionWith(ordinals);
+            }
         }
 
         public void Release() => _release.Set();
@@ -174,20 +238,28 @@ public class SnapshotRunEventsTests
             string status, long? eventsDropped = null, RunPhasesPayload? phases = null)
         {
             bool block;
+            bool fail;
             lock (_gate)
             {
                 block = _blockNext;
                 _blockNext = false;
+                fail = _failing.Contains(++_calls);
             }
 
             if (block)
             {
+                BlockedWriteEntered.Set();
                 _release.Wait();
             }
 
             lock (_gate)
             {
-                _writes.Add(new Write(status, completed.Count, [.. completed.Select(r => r.Name)]));
+                _writes.Add(new Write(status, completed.Count, [.. completed.Select(r => r.Name)], !fail));
+            }
+
+            if (fail)
+            {
+                throw new IOException("injected snapshot failure");
             }
         }
 

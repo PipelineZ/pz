@@ -138,7 +138,8 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
             worker = _worker;
         }
 
-        if (worker is null)
+        // Never join from the worker itself (a store calling back into this instance would deadlock).
+        if (worker is null || worker == Thread.CurrentThread)
         {
             return;
         }
@@ -203,8 +204,12 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
                 snapshot = [.. _completed];
             }
 
-            WriteSnapshotCore(snapshot, "running", null, null);
-            _writtenVersion = version;
+            // A failed write must not count: a successful sink waiting on this lock would otherwise
+            // see its version as persisted and return without recording its commit.
+            if (WriteSnapshotCore(snapshot, "running", null, null))
+            {
+                _writtenVersion = version;
+            }
         }
     }
 
@@ -224,12 +229,14 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
         }
     }
 
-    private void WriteSnapshotCore(IReadOnlyList<NodeResult> completed, string status, long? eventsDropped,
+    // Returns false when the store write failed (the failure is swallowed and warned about once).
+    private bool WriteSnapshotCore(IReadOnlyList<NodeResult> completed, string status, long? eventsDropped,
         RunPhasesPayload? phases)
     {
         try
         {
             artifacts.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped, phases);
+            return true;
         }
         catch (Exception ex)
         {
@@ -254,6 +261,8 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
                 Console.Error.WriteLine(
                     $"warning: could not write {target} ({ex.Message}) — resume/retry data may be stale");
             }
+
+            return false;
         }
     }
 }
