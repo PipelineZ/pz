@@ -7,6 +7,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **`IProjectingNativeScan`**, for connector authors whose native scan can read only the requested columns.
+
 ### Fixed
 
 - **DECIMAL(38) values beyond `System.Decimal` are no longer silently corrupted.** Arrow's
@@ -28,14 +32,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `dotnet run`, `scripts/scale-bench.sh` measures project-size scaling, and `PZ_BENCH_INPROCESS=1` switches the
   benchmarks to BenchmarkDotNet.
 - **Native scans stage only the columns and rows the pipeline reads; less per-node overhead.** A wide Parquet source
-  (2M rows, 50 columns) read by `select id, c1 ... where k = 7` now stages 3 columns and 20,000 rows instead of 50
-  columns and 2,000,000 rows (SourceLoad 19.8 s to 63 ms, min of 3). Per-node overhead drops too: `run_results.json`
-  is written in the background (except right after a sink commit), watermark and sync-state writes are batched, and
-  the dry compile runs in memory (a 600-node project, execute phase 2014 to 1963 ms; the 1.0 s target was not met,
-  `scripts/scale-bench.sh`). The drift baseline re-seeds once on the first run after upgrading. Drift detection on
-  native scans now covers the columns the pipeline reads, so an added column the pipeline never reads is no longer
-  reported, as on the universal tier's pruning connectors. Connector authors: `IProjectingNativeScan` is new, for
-  native scans that can read only the requested columns and rows.
+  (2M rows, 50 columns) read by `select id, c1 from … where k = 7` now stages 3 columns and 20,000 rows instead of
+  50 columns and 2,000,000 rows (SourceLoad 19.8 s to 63 ms, min of 3). A native SourceLoad's `rows`
+  (`run_results.json` and NDJSON) now counts the filtered staged rows, and `pz plan` reports pushdown for native
+  scans. Per-node overhead drops too: `run_results.json` is written in the background (except right after a sink
+  commit), watermark and sync-state writes are batched for the local state store (the HTTP and SQL Server backends
+  still write per key), and the dry compile runs in memory (`scripts/scale-bench.sh`, wide-200, 600 nodes: execute
+  2014 to 1963 ms). The drift baseline re-seeds once on the first run after upgrading. Drift detection on native
+  scans now covers the columns the pipeline reads, so an added column the pipeline never reads is no longer
+  reported, as on the universal tier's pruning connectors.
 
 ## [0.11.3] - 2026-10-16
 
