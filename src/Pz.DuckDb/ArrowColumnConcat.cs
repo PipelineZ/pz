@@ -273,7 +273,9 @@ internal static class ArrowColumnConcat
         var owner = allocator.Allocate(padded);
         try
         {
-            span = owner.Memory.Span[..length];
+            var memory = owner.Memory.Span;
+            memory[length..].Clear(); // padding is never written, and an allocator need not zero it
+            span = memory[..length];
             return WrapOwned(owner);
         }
         catch

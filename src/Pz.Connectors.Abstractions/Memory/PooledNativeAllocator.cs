@@ -9,11 +9,13 @@ namespace Pz.Connectors.Abstractions.Memory;
 /// pass through unpooled). Thread-safe. Dispose returns memory to the pool; in DEBUG builds,
 /// double-dispose and post-dispose access throw.
 ///
-/// This is the sanctioned seam Apache.Arrow 23 exposes for pooling: every v0-matrix builder's
-/// <c>Build(MemoryAllocator?)</c> copies its final validity/offsets/value buffers through the
-/// allocator passed in — only those final buffers, never the builders' own managed scratch.
+/// Buffers reach this pool by two seams. Every v0-matrix builder's <c>Build(MemoryAllocator?)</c>
+/// copies its final validity/offsets/value buffers through the allocator passed in — only those final
+/// buffers, never the builders' own managed scratch.
 /// <see cref="Pz.Connectors.Abstractions.Batches.ArrowBatchBuilder"/> uses <see cref="Shared"/> by
-/// default.</summary>
+/// default. Code that writes buffers itself (egress chunk concatenation) calls
+/// <see cref="Apache.Arrow.Memory.MemoryAllocator.Allocate"/> directly and wraps the returned owner in an
+/// <c>ArrowBuffer</c> that owns it, so disposing the array returns the memory here.</summary>
 public sealed class PooledNativeAllocator : Apache.Arrow.Memory.MemoryAllocator
 {
     /// <summary>Smallest pooled size class: 64KB. Requests at or below this round up to it.</summary>

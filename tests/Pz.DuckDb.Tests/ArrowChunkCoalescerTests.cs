@@ -170,6 +170,7 @@ public sealed class ArrowChunkCoalescerTests
 
         Assert.Equal(baseline, allocator.RentedBytes);
     }
+
     // The whole v0 egress type matrix, so every column kind crosses concatenation seams and slice
     // boundaries together.
     private static readonly Schema MatrixSchema = new Schema.Builder()
@@ -412,6 +413,7 @@ public sealed class ArrowChunkCoalescerTests
             () => new ArrowChunkCoalescer(schema, LargeTarget, LargeCap, new PooledNativeAllocator()));
         Assert.Contains("'f'", error.Message, StringComparison.Ordinal);
     }
+
     [Fact]
     public void Bit_copy_matches_a_bit_by_bit_copy_at_every_offset_pair()
     {
