@@ -120,4 +120,21 @@ public class NdjsonCodecWriteTests
             "{\"price\":null}\n{\"price\":null}\n{\"price\":null}\n",
             text);
     }
+
+    [Fact]
+    public async Task Decimal_beyond_system_decimal_is_written_with_every_digit()
+    {
+        var schema = new Schema([new Field("amt", new Decimal128Type(38, 9), nullable: true)], null);
+        var amt = new Decimal128Array.Builder(new Decimal128Type(38, 9))
+            .Append(System.Data.SqlTypes.SqlDecimal.Parse("12345678901234567890123456789.123456789"))
+            .Append(12345.678901234m);
+        using var batch = new RecordBatch(schema, [amt.Build()], 2);
+
+        using var ms = new MemoryStream();
+        await NdjsonCodec.WriteAsync(batch, ms, default);
+
+        Assert.Equal(
+            "{\"amt\":12345678901234567890123456789.123456789}\n{\"amt\":12345.678901234}\n",
+            Encoding.UTF8.GetString(ms.ToArray()));
+    }
 }

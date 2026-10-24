@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
@@ -116,6 +117,27 @@ public class SftpWindowFilterTests
         var result = filter.Filter(batch)!;
         Assert.Equal(1, result.Length);
         Assert.Equal(20.0m, ((Decimal128Array)result.Column(0)).GetValue(0));
+    }
+
+    [Fact]
+    public void DecimalCursor_BeyondSystemDecimal_ComparesEveryDigit()
+    {
+        var schema = OneColumnSchema("n", new Decimal128Type(38, 9));
+        var batch = BuildBatch(schema,
+        [
+            [SqlDecimal.Parse("12345678901234567890123456789.000000001")],
+            [SqlDecimal.Parse("12345678901234567890123456789.000000002")],
+            [SqlDecimal.Parse("12345678901234567890123456789.000000003")],
+        ]);
+
+        // Truncated to decimal all three rows read as the same value, which sits on the lower bound and
+        // is excluded; compared exactly, only the middle row is inside the window.
+        var spec = WindowedSpec("n", "12345678901234567890123456789.000000001", "12345678901234567890123456789.000000002");
+        var filter = new SftpWindowFilter(spec, schema, "decimal");
+
+        var result = filter.Filter(batch)!;
+        Assert.Equal(1, result.Length);
+        Assert.Equal("12345678901234567890123456789.000000002", ((Decimal128Array)result.Column(0)).GetString(0));
     }
 
     [Fact]

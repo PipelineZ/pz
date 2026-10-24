@@ -223,6 +223,41 @@ public class NdjsonCodecReadTests
         Assert.Equal("widget", rows.GetString("name", 0));
     }
 
+    [Fact]
+    public async Task Decimal_beyond_system_decimal_round_trips_every_digit()
+    {
+        const string beyond = "12345678901234567890123456789.123456789";
+        var schema = new Schema([new Field("amt", new Decimal128Type(38, 9), nullable: true)], null);
+        var amt = new Decimal128Array.Builder(new Decimal128Type(38, 9))
+            .Append(System.Data.SqlTypes.SqlDecimal.Parse(beyond))
+            .Append(System.Data.SqlTypes.SqlDecimal.Parse("-" + beyond))
+            .Append(1.5m);
+        using var written = new RecordBatch(schema, [amt.Build()], 3);
+
+        using var ms = new MemoryStream();
+        await NdjsonCodec.WriteAsync(written, ms, default);
+        ms.Position = 0;
+
+        var rows = await Collect(NdjsonCodec.ReadAsync(
+            ms, new Dictionary<string, string> { ["amt"] = "decimal" }, null, BatchOptions.Default, default));
+
+        Assert.Equal(beyond, rows.GetDecimalText("amt", 0));
+        Assert.Equal("-" + beyond, rows.GetDecimalText("amt", 1));
+        Assert.Equal(1.5m, rows.GetDecimal("amt", 2));
+    }
+
+    [Fact]
+    public async Task Decimal_literal_beyond_38_digits_is_a_named_permanent_failure()
+    {
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await Collect(NdjsonCodec.ReadAsync(
+                ToStream("{\"amt\":123456789012345678901234567890123456789.5}\n"),
+                new Dictionary<string, string> { ["amt"] = "decimal" }, null, BatchOptions.Default, default)));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("'amt'", ex.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>Flattens the batches an <c>await foreach</c> collected into simple by-name, by-row-index
     /// accessors so tests read declaratively instead of re-deriving Arrow column/row arithmetic each time.</summary>
     private sealed class CollectedRows(IReadOnlyList<RecordBatch> batches)
@@ -244,6 +279,8 @@ public class NdjsonCodecReadTests
         public double GetDouble(string column, int row) => ((DoubleArray)Array(column, row, out var i)).GetValue(i)!.Value;
 
         public decimal GetDecimal(string column, int row) => ((Decimal128Array)Array(column, row, out var i)).GetValue(i)!.Value;
+
+        public string GetDecimalText(string column, int row) => ((Decimal128Array)Array(column, row, out var i)).GetString(i);
 
         public bool GetBool(string column, int row) => ((BooleanArray)Array(column, row, out var i)).GetValue(i)!.Value;
 

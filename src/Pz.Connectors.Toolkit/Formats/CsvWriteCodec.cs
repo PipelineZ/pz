@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Text;
 using Apache.Arrow;
+using Pz.Connectors.Abstractions.Batches;
 
 namespace Pz.Connectors.Toolkit.Formats;
 
@@ -425,7 +426,7 @@ public sealed class CsvWriteCodec : IAsyncDisposable
                 break;
             case CellKind.Decimal128:
                 var decimals = (Decimal128Array)column.Array;
-                if (FitsSystemDecimal(decimals, row))
+                if (Decimal128Cells.FitsSystemDecimal(decimals, row))
                 {
                     decimals.GetValue(row)!.Value.TryFormat(destination, out written, default, CultureInfo.InvariantCulture);
                 }
@@ -450,21 +451,6 @@ public sealed class CsvWriteCodec : IAsyncDisposable
         }
 
         return written;
-    }
-
-    /// <summary>True when the cell's 128-bit unscaled integer fits System.Decimal's 96-bit mantissa and
-    /// its scale is at most 28. Arrow's <c>GetValue</c> and <c>TryGetValue</c> both wrap silently outside
-    /// that range, so the range is checked on the raw little-endian two's-complement bytes.</summary>
-    private static bool FitsSystemDecimal(Decimal128Array array, int row)
-    {
-        if (((Apache.Arrow.Types.Decimal128Type)array.Data.DataType).Scale > 28)
-        {
-            return false;
-        }
-
-        var unscaled = MemoryMarshal.Read<Int128>(array.ValueBuffer.Span.Slice((array.Offset + row) * 16, 16));
-        var limit = Int128.One << 96;
-        return unscaled > -limit && unscaled < limit;
     }
 
     /// <summary>Copies one string cell's UTF-8 bytes straight from the pinned Arrow value buffer,

@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Text;
 using Apache.Arrow;
 using Apache.Arrow.Memory;
@@ -11,7 +12,8 @@ namespace Pz.Connectors.Abstractions.Batches;
 /// <see cref="AppendRow"/> (a boxed <c>object?[]</c> row) or, for a source that is already columnar
 /// Arrow, the typed non-boxing <see cref="AppendFrom"/>. v0 supports a fixed
 /// type matrix (int32/int64/double/decimal128(38,9)/utf8/bool/date32/timestamp-µs-UTC,
-/// all nullable); any other schema field type fails fast in the constructor. Byte accounting is an
+/// all nullable; a decimal value may be a <see cref="decimal"/> or, for one beyond its range, a
+/// <see cref="SqlDecimal"/>); any other schema field type fails fast in the constructor. Byte accounting is an
 /// estimate (fixed-width columns count exactly, utf8 counts UTF-8 bytes + a 4-byte offset, every column
 /// adds one validity bit per value) used only to decide when to emit a batch.
 ///
@@ -91,9 +93,13 @@ public sealed class ArrowBatchBuilder
                     allocator),
                 ArrowTypeId.Decimal128 => MakeColumn<Decimal128Array, Decimal128Array.Builder>(
                     () => new Decimal128Array.Builder((Decimal128Type)field.DataType),
-                    static (b, v) => b.Append((decimal)v),
+                    static (b, v) =>
+                    {
+                        if (v is SqlDecimal exact) b.Append(exact);
+                        else b.Append((decimal)v);
+                    },
                     static _ => 16d,
-                    static (b, src, row) => { b.Append(((Decimal128Array)src).GetValue(row)!.Value); return 16d; },
+                    static (b, src, row) => { AppendDecimal(b, (Decimal128Array)src, row); return 16d; },
                     allocator),
                 ArrowTypeId.String => MakeColumn<StringArray, StringArray.Builder>(
                     () => new StringArray.Builder(),
@@ -202,6 +208,20 @@ public sealed class ArrowBatchBuilder
         PendingRows = 0;
         _bytesEstimate = 0;
         return batch;
+    }
+
+    /// <summary>Copies one non-null decimal cell without the lossy <c>GetValue</c> conversion for a value
+    /// beyond <see cref="decimal"/>'s range.</summary>
+    private static void AppendDecimal(Decimal128Array.Builder builder, Decimal128Array source, int row)
+    {
+        if (Decimal128Cells.FitsSystemDecimal(source, row))
+        {
+            builder.Append(source.GetValue(row)!.Value);
+        }
+        else
+        {
+            builder.Append(source.GetSqlDecimal(row)!.Value);
+        }
     }
 
     /// <summary>Builds the append/build-and-reset/copy-from closures for one column, deferring

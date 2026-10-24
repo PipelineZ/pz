@@ -1,14 +1,18 @@
 using System.Collections;
 using System.Data.Common;
+using System.Data.SqlTypes;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
 
 namespace Pz.Connector.SqlServer;
 
 /// <summary>Forward-only DbDataReader over ONE engine-owned RecordBatch: the bridge that
 /// lets SqlBulkCopy stream Arrow data without a DataTable or row materialization. Values convert to
 /// the CLR shapes SqlClient's TDS writer expects: date32 → DateTime (date), timestamp(µs, UTC) →
-/// UtcDateTime (Kind=Utc; SqlClient's datetime2 writer serializes wall-clock components and ignores Kind).
+/// UtcDateTime (Kind=Utc; SqlClient's datetime2 writer serializes wall-clock components and ignores Kind),
+/// decimal128 → decimal, or SqlDecimal for a value beyond decimal's range (SqlBulkCopy writes either into
+/// decimal(38,x) exactly).
 /// The batch must stay valid for this reader's lifetime — the sink session's WriteBatchAsync completes
 /// the bulk write before returning, inside the engine's ownership window.</summary>
 internal sealed class ArrowBatchDataReader(RecordBatch batch) : DbDataReader
@@ -26,7 +30,7 @@ internal sealed class ArrowBatchDataReader(RecordBatch batch) : DbDataReader
             Int32Array a => a.GetValue(_row)!.Value,
             Int64Array a => a.GetValue(_row)!.Value,
             DoubleArray a => a.GetValue(_row)!.Value,
-            Decimal128Array a => ReadDecimal(a, ordinal),
+            Decimal128Array a => Decimal128Cells.GetExactValue(a, _row),
             StringArray a => a.GetString(_row),
             BooleanArray a => a.GetValue(_row)!.Value,
             Date32Array => Date32(column, _row),
@@ -76,7 +80,11 @@ internal sealed class ArrowBatchDataReader(RecordBatch batch) : DbDataReader
     public override byte GetByte(int o) => (byte)GetValue(o);
     public override char GetChar(int o) => throw new NotSupportedException();
     public override DateTime GetDateTime(int o) => (DateTime)GetValue(o);
-    public override decimal GetDecimal(int o) => (decimal)GetValue(o);
+    public override decimal GetDecimal(int o) => GetValue(o) switch
+    {
+        SqlDecimal => throw BeyondDecimal(o),
+        var value => (decimal)value,
+    };
     public override double GetDouble(int o) => (double)GetValue(o);
     public override float GetFloat(int o) => (float)GetValue(o);
     public override Guid GetGuid(int o) => (Guid)GetValue(o);
@@ -92,18 +100,8 @@ internal sealed class ArrowBatchDataReader(RecordBatch batch) : DbDataReader
     public override System.IO.TextReader GetTextReader(int ordinal) =>
         new System.IO.StringReader(GetString(ordinal));
 
-    private decimal ReadDecimal(Decimal128Array a, int ordinal)
-    {
-        try
-        {
-            return a.GetValue(_row)!.Value;
-        }
-        catch (OverflowException ex)
-        {
-            throw new PzConnectorException(
-                $"column '{batch.Schema.FieldsList[ordinal].Name}': decimal value exceeds .NET decimal range " +
-                "during bulk write -- reduce the column's precision in the pipeline (e.g. round/cast) before sinking",
-                isTransient: false, innerException: ex);
-        }
-    }
+    private PzConnectorException BeyondDecimal(int ordinal) => new(
+        $"column '{batch.Schema.FieldsList[ordinal].Name}': decimal value exceeds .NET decimal range " +
+        "during bulk write -- reduce the column's precision in the pipeline (e.g. round/cast) before sinking",
+        isTransient: false);
 }

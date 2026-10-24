@@ -2,6 +2,7 @@ using Apache.Arrow;
 using Npgsql;
 using NpgsqlTypes;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
 
 namespace Pz.Connector.Postgres;
 
@@ -197,7 +198,7 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
                 _importer.StartRow();
                 for (var col = 0; col < _columnTypes.Length; col++)
                 {
-                    WriteCell(_importer, batch.Column(col), row, _columnTypes[col]);
+                    WriteCell(_importer, batch, col, row, _columnTypes[col]);
                 }
             }
 
@@ -261,7 +262,7 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
                 _deleteImporter.StartRow();
                 for (var col = 0; col < _deleteKeyTypes!.Length; col++)
                 {
-                    WriteCell(_deleteImporter, keyBatch.Column(col), row, _deleteKeyTypes[col]);
+                    WriteCell(_deleteImporter, keyBatch, col, row, _deleteKeyTypes[col]);
                 }
             }
         }
@@ -272,8 +273,9 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
         }
     }
 
-    private static void WriteCell(NpgsqlBinaryImporter importer, IArrowArray array, int row, NpgsqlDbType type)
+    private static void WriteCell(NpgsqlBinaryImporter importer, RecordBatch batch, int col, int row, NpgsqlDbType type)
     {
+        var array = batch.Column(col);
         if (array.IsNull(row))
         {
             importer.WriteNull();
@@ -292,6 +294,17 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
                 importer.Write(a.GetValue(row)!.Value, type);
                 break;
             case Decimal128Array a:
+                // Npgsql writes numeric only from decimal (or an integral BigInteger), so a value beyond
+                // decimal's range cannot be carried; GetValue would silently drop its digits.
+                if (!Decimal128Cells.FitsSystemDecimal(a, row))
+                {
+                    throw new PzConnectorException(
+                        $"column '{batch.Schema.FieldsList[col].Name}': decimal value exceeds .NET decimal range " +
+                        "(more than 28 significant digits) during bulk write -- reduce the column's precision in " +
+                        "the pipeline (e.g. round/cast) before sinking",
+                        isTransient: false);
+                }
+
                 importer.Write(a.GetValue(row)!.Value, type);
                 break;
             case BooleanArray a:

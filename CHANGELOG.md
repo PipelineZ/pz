@@ -9,11 +9,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
-- **DECIMAL(38) values beyond `System.Decimal` no longer wrap on universal-tier egress.** Arrow's
-  `Decimal128Array.GetValue` wraps silently instead of throwing, so such values left DuckDB changed. Egress now
-  copies them exactly, and the CSV writer writes them exactly. The NDJSON writer, the Postgres and SqlServer sinks,
-  the Azure/GCS/SFTP partitioned writers and check result formatting still use `GetValue` and are tracked as a
-  follow-up.
+- **DECIMAL(38) values beyond `System.Decimal` are no longer silently corrupted.** Arrow's
+  `Decimal128Array.GetValue` cannot hold a value with more than 28 significant digits (or a scale above 28) and
+  drops digits without an error, so such values left DuckDB changed. Universal-tier egress, the CSV and NDJSON
+  writers (and the NDJSON reader), the SqlServer sink, the Azure/GCS/SFTP partitioned writers, the SFTP
+  incremental window filter and check result formatting now carry every digit. The Postgres sink cannot (Npgsql
+  writes `numeric` only from `System.Decimal`), so a universal-tier write of such a value now fails, naming the
+  column, instead of committing a wrong number; round or cast the column in the pipeline. Connector authors get
+  `Decimal128Cells` in `Pz.Connectors.Abstractions.Batches` for exact reads, `ArrowBatchBuilder` accepts a
+  `SqlDecimal` for a decimal column, and the TestKit sink suite gains a beyond-range decimal fact on the
+  type-matrix hooks.
 
 ### Changed
 

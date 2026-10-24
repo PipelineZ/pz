@@ -225,7 +225,7 @@ internal sealed class GcsPartitionedWriteSession : ISinkWriteSession
             Int64Array a => a.GetValue(row)!.Value,
             DoubleArray a => a.GetValue(row)!.Value,
             BooleanArray a => a.GetValue(row)!.Value,
-            Decimal128Array a => a.GetValue(row)!.Value,
+            Decimal128Array a => Decimal128Cells.GetExactValue(a, row),
             StringArray a => a.GetString(row),
             Date32Array a => a.GetDateOnly(row)!.Value,
             TimestampArray a => a.GetTimestamp(row)!.Value,
