@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Diagnostics;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
@@ -61,10 +62,22 @@ public sealed class SinkWriteExecutor : INodeExecutor
         // NULL value in the staged input is the defect.
         if (string.Equals(def.Output.Mode, "merge", StringComparison.Ordinal) && def.Output.Keys.Count > 0)
         {
-            var nullKeyPredicate = string.Join(
-                " or ", def.Output.Keys.Select(k => ArrowInterop.QuoteQualified(k) + " is null"));
-            var nullKeyRows = await ctx.Duck.ScalarAsync<long>(
-                $"select count(*) from {relation} where {nullKeyPredicate}", ct).ConfigureAwait(false);
+            // One grouped scan answers both guards: null-key rows (summed per group, so a NULL in any
+            // key column counts) and the duplicate groups / extra rows. Packed into one string since a
+            // scalar read returns a single value.
+            var keyColumns = def.Output.Keys.Select(ArrowInterop.QuoteQualified).ToList();
+            var keyList = string.Join(", ", keyColumns);
+            var nullKeyPredicate = string.Join(" or ", keyColumns.Select(k => k + " is null"));
+            var guardCounts = (await ctx.Duck.ScalarAsync<string>(
+                "select concat_ws(chr(30), " +
+                "coalesce(sum(cnt) filter (where null_key), 0), " +
+                "count(*) filter (where cnt > 1), " +
+                "coalesce(sum(cnt - 1) filter (where cnt > 1), 0)) " +
+                $"from (select count(*) as cnt, ({nullKeyPredicate}) as null_key from {relation} group by {keyList}) g",
+                ct).ConfigureAwait(false)).Split('\u001e');
+            var nullKeyRows = long.Parse(guardCounts[0], CultureInfo.InvariantCulture);
+            var duplicateGroups = long.Parse(guardCounts[1], CultureInfo.InvariantCulture);
+            var extraRows = long.Parse(guardCounts[2], CultureInfo.InvariantCulture);
             if (nullKeyRows > 0)
             {
                 var nullMergeKeyError = new PzError(PzErrorCode.MergeKeyNull,
@@ -86,16 +99,8 @@ public sealed class SinkWriteExecutor : INodeExecutor
             // for event-log-shaped inputs, so unlike the NULL-key guard above this stays a warning, not a
             // failure: an event with counts only (never row values), so the author can dedup
             // deterministically in the pipeline when a specific row must win.
-            var keyList = string.Join(", ", def.Output.Keys.Select(ArrowInterop.QuoteQualified));
-            var extraRows = await ctx.Duck.ScalarAsync<long>(
-                "select cast(coalesce(sum(cnt - 1), 0) as bigint) from " +
-                $"(select count(*) as cnt from {relation} group by {keyList} having count(*) > 1) t",
-                ct).ConfigureAwait(false);
             if (extraRows > 0)
             {
-                var duplicateGroups = await ctx.Duck.ScalarAsync<long>(
-                    $"select count(*) from (select 1 from {relation} group by {keyList} having count(*) > 1) t",
-                    ct).ConfigureAwait(false);
                 ctx.Events.SafeMergeKeyDuplicatesDetected(node, def.Output.Name, def.Output.Keys,
                     duplicateGroups, extraRows);
             }

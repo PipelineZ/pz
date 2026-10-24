@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
 using Apache.Arrow;
@@ -220,7 +221,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // candidate polled off its drained partition below, and a native scan never drains one -- it
         // would land rows and strand the token every run. Same rule the planner applies.
         if (shape is not (ResolvedReadShape.Feed or ResolvedReadShape.Cdc) &&
-            ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.NativeScan && source.TryGetNativeScan(spec, out var scan))
+            ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.NativeScan && TryGetScan(source, spec, def.Hints, out var scan))
         {
             // No separate extract/ingest split for the native-scan tier: DuckDB reads and loads in one
             // statement, so there is no seam to split on.
@@ -233,10 +234,44 @@ public sealed class SourceLoadExecutor : INodeExecutor
             }
 
             var nativeTable = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
+            var nativeHints = def.Hints;
+            var hinted = nativeHints is not null &&
+                (nativeHints.Columns is { Count: > 0 } || !string.IsNullOrWhiteSpace(nativeHints.PredicateSql));
+            var stagedUnhinted = false;
             try
             {
-                await ctx.Duck.ExecuteAsync($"create or replace table {nativeTable} as select * from {scan.SqlFragment}", ct)
-                    .ConfigureAwait(false);
+                try
+                {
+                    await ctx.Duck.ExecuteAsync(
+                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(scan.SqlFragment, nativeHints)}", ct)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex) when (hinted && ex is not OperationCanceledException &&
+                    ex.Message.Contains("Binder Error", StringComparison.Ordinal))
+                {
+                    // A hinted column the scan does not expose: read everything and let the pipeline's own SQL
+                    // report any column that is genuinely missing, as it does for an unhinted scan.
+                    // A projecting scan's fragment may be the one that lacks the column, so re-ask for the plain scan.
+                    if (!source.TryGetNativeScan(spec, out var plain))
+                    {
+                        throw;
+                    }
+
+                    // The plain scan may need its own setup; the ledger skips any statement already issued.
+                    foreach (var statement in plain.SetupStatements)
+                    {
+                        await ctx.SetupLedger.ExecuteOnceAsync(statement, ct).ConfigureAwait(false);
+                    }
+
+                    await ctx.Duck.ExecuteAsync(
+                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(plain.SqlFragment, null)}", ct)
+                        .ConfigureAwait(false);
+                    stagedUnhinted = true;
+                    // Never the engine message or the statement: either can carry the scan fragment.
+                    ctx.Notice?.Invoke(
+                        $"source '{def.Source.Name}.{def.Dataset.Name}': the pushed-down columns or predicate do not " +
+                        "bind against the scan; staged the full read instead");
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -287,11 +322,16 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             // The drift gate covers both data-plane tiers uniformly --
             // native scan never surfaces Arrow batches to .NET, but it always produces a staging
-            // table, and that materialized table is the gate's only input. HintsFor (not the
-            // universal branch's ProjectToHints-reconciled `hints`, which requires a queried logical
-            // schema this tier never resolves) is the native tier's own stable read-shape hash input.
-            return Stamp(await SchemaDriftGate.ApplyAsync(nativeSuccess, node, def, HintsFor(def, connector.Capabilities),
-                nativeTable, ctx, ct).ConfigureAwait(false));
+            // table, and that materialized table is the gate's only input. NativeHints (capabilities do
+            // not gate a native scan, and the universal branch's ProjectToHints-reconciled `hints` requires
+            // a queried logical schema this tier never resolves) is the native tier's stable read-shape hash input.
+            // An unhinted fallback staged every column, but the baseline under this hints hash holds only the
+            // hinted ones; comparing the full width would report every unread column as added.
+            var driftColumns = stagedUnhinted && nativeHints?.Columns is { Count: > 0 } hintedColumns
+                ? hintedColumns
+                : null;
+            return Stamp(await SchemaDriftGate.ApplyAsync(nativeSuccess, node, def, NativeHints(def),
+                nativeTable, ctx, ct, driftColumns).ConfigureAwait(false));
         }
 
         var schema = (await source.GetSchemaAsync(spec, ct).ConfigureAwait(false)).Schema;
@@ -509,16 +549,19 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
     }
 
-    /// <summary>Collapses the raw change window landed in
-    /// <paramref name="changesTable"/> (<c>&lt;staging&gt;__changes</c>) into last-event-per-key upserts
-    /// (canonical <paramref name="canonicalTable"/>) plus a <c>&lt;staging&gt;__deletes</c> side table of
-    /// net-deleted keys, and returns the raw per-op counts. Guards, in order: (1) the `_pz_op`/`_pz_lsn`
-    /// change-row contract must be present in the landed schema; (2) the connector must report change key
-    /// columns (<see cref="IChangeCapturePartition"/>) — an empty window with none is legitimate (empty
-    /// collapse), a non-empty window with none is a connector defect. Ordering matters: candidate + keys
-    /// are polled after the pump joins, THEN the two collapse statements, THEN
-    /// counts. Identifier quoting reuses <see cref="ArrowInterop.QuoteQualified"/> (the same helper
-    /// <see cref="CaptureWatermarkAsync"/> uses), never raw concatenation of key names.</summary>
+    /// <summary>The native scan to stage: a projecting source narrows its own read to the hinted columns
+    /// (never the predicate); every other source gives its plain scan.</summary>
+    private static bool TryGetScan(ISource source, DatasetSpec spec, ReadHintPlan? hints,
+        [NotNullWhen(true)] out NativeScan? scan) =>
+        source is IProjectingNativeScan projecting && hints is { Columns.Count: > 0 }
+            ? projecting.TryGetNativeScan(spec, hints.Columns, out scan)
+            : source.TryGetNativeScan(spec, out scan);
+
+    /// <summary>The compiler's hints as a native scan applies them: DuckDB honours both halves whatever the
+    /// connector advertises, so nothing is filtered by capability.</summary>
+    internal static ReadHints NativeHints(SourceDatasetDef def) =>
+        def.Hints is { } plan ? new ReadHints(plan.Columns, plan.PredicateSql) : ReadHints.None;
+
     /// <summary>The compiler decided what the single reading pipeline
     /// makes pushable; this decides whether THIS connector gets it. The two halves are gated
     /// independently because a connector may honour one and not the other. An absent capability means
@@ -562,6 +605,16 @@ public sealed class SourceLoadExecutor : INodeExecutor
         return (hints with { Columns = [.. fields.Select(f => f.Name)] }, new Schema(fields, schema.Metadata));
     }
 
+    /// <summary>Collapses the raw change window landed in
+    /// <paramref name="changesTable"/> (<c>&lt;staging&gt;__changes</c>) into last-event-per-key upserts
+    /// (canonical <paramref name="canonicalTable"/>) plus a <c>&lt;staging&gt;__deletes</c> side table of
+    /// net-deleted keys, and returns the raw per-op counts. Guards, in order: (1) the `_pz_op`/`_pz_lsn`
+    /// change-row contract must be present in the landed schema; (2) the connector must report change key
+    /// columns (<see cref="IChangeCapturePartition"/>) — an empty window with none is legitimate (empty
+    /// collapse), a non-empty window with none is a connector defect. Ordering matters: candidate + keys
+    /// are polled after the pump joins, THEN the two collapse statements, THEN
+    /// counts. Identifier quoting reuses <see cref="ArrowInterop.QuoteQualified"/> (the same helper
+    /// <see cref="CaptureWatermarkAsync"/> uses), never raw concatenation of key names.</summary>
     private static async Task<(PzError? Error, CdcStats? Stats)> CollapseCdcAsync(
         RunContext ctx, SourceDatasetDef def, string canonicalTable, string changesTable,
         IChangeCapturePartition? partition, long changeRows, CancellationToken ct)
@@ -1407,7 +1460,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         try
         {
             duckType = await ctx.Duck.ScalarAsync<string>(
-                $"select column_type from (describe {tableName}) where column_name = '{cursor.Replace("'", "''")}'", ct)
+                $"select column_type from (describe {tableName}) where lower(column_name) = lower('{cursor.Replace("'", "''")}')", ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)

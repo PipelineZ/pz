@@ -487,4 +487,31 @@ public sealed class ExecutionPlannerTests
         Assert.Equal(new PushdownInfo(null, PredicatePushed: true),
             Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SourceLoad).Pushdown);
     }
+
+    [Fact]
+    public async Task Native_scan_with_hints_reports_pushdown()
+    {
+        var dataset = new DatasetDef("orders", new Dictionary<string, object?>(), null);
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSource(dataset, new StubNativeSource(),
+            hints: new ReadHintPlan(["a", "b"], "k = 7"));
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SourceLoad);
+        Assert.Equal(EdgeStrategy.NativeScan, node.Strategy);
+        Assert.Equal(new PushdownInfo(2, PredicatePushed: true), node.Pushdown);
+    }
+
+    [Fact]
+    public async Task Native_scan_without_hints_reports_no_pushdown()
+    {
+        var dataset = new DatasetDef("orders", new Dictionary<string, object?>(), null);
+        var (dag, registry) = TestDags.DagAndRegistryWithStubSource(dataset, new StubNativeSource());
+
+        var plan = await new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default);
+
+        var node = Assert.Single(plan.Nodes, n => n.Kind == NodeKind.SourceLoad);
+        Assert.Equal(EdgeStrategy.NativeScan, node.Strategy);
+        Assert.Null(node.Pushdown);
+    }
 }

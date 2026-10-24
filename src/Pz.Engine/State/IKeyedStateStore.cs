@@ -24,5 +24,27 @@ public interface IKeyedStateStore<T> where T : class
 
     void Set(string key, T value);
 
+    /// <summary>Writes every entry, each with <see cref="Set"/>'s semantics, and returns the keys that were
+    /// NOT written, each with the exception that stopped it (empty when all landed). One key's failure never
+    /// stops the others. An implementation that can write a batch in one round trip overrides this; this
+    /// default writes key by key. Cancellation is not a key's failure: it propagates.</summary>
+    IReadOnlyList<KeyValuePair<string, Exception>> SetMany(IReadOnlyList<KeyValuePair<string, T>> entries)
+    {
+        var failures = new List<KeyValuePair<string, Exception>>();
+        foreach (var (key, value) in entries)
+        {
+            try
+            {
+                Set(key, value);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                failures.Add(new(key, ex));
+            }
+        }
+
+        return failures;
+    }
+
     void Remove(string key);
 }

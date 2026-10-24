@@ -66,6 +66,23 @@ public sealed class SinkDeliveryLedgerTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Fingerprint_is_one_statement_with_unchanged_values()
+    {
+        await _duck.ExecuteAsync("create table staging.five (id bigint, name varchar)");
+        await _duck.ExecuteAsync("insert into staging.five values (1,'a'),(2,'b'),(3,null),(4,'d'),(5,'e')");
+        var expectedCount = await _duck.ScalarAsync<long>("select count(*) from staging.five");
+        var expectedHash = await _duck.ScalarAsync<string>(
+            "select cast(coalesce(sum(cast(hash(t) as hugeint)), 0) as varchar) from staging.five t");
+        var counting = new CountingDuckSession(_duck);
+
+        var fp = await SinkDeliveryLedger.FingerprintAsync(counting, "staging.five", default);
+
+        Assert.Equal(new SinkDeliveryLedger.Fingerprint(expectedCount, expectedHash), fp);
+        Assert.Equal(5, fp.Count);
+        Assert.Single(counting.Statements);
+    }
+
+    [Fact]
     public async Task Empty_relation_fingerprints_to_zero_hash_not_null()
     {
         await _duck.ExecuteAsync("create table staging.empty (id bigint)");

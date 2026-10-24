@@ -13,7 +13,7 @@ namespace Pz.Connector.MySql;
 /// a whole production table defeats incremental EL — and DatasetSpec's contract explicitly permits
 /// the pushdown ("connectors MAY apply cursor &gt; value"; ignoring it is the safe floor, not the
 /// goal). The windowed pair (BoundedWindow) is MUST-apply as everywhere else.</summary>
-internal sealed class MySqlSource(ConnectorConfig config) : ISource
+internal sealed class MySqlSource(ConnectorConfig config) : ISource, IProjectingNativeScan
 {
     /// <summary>With a declared `columns:` contract, the contract IS the schema (the Azure
     /// json precedent — there is nothing to probe without a driver, and the contract is what the
@@ -36,6 +36,19 @@ internal sealed class MySqlSource(ConnectorConfig config) : ISource
         var alias = MySqlSql.SourceAlias(spec.Source);
         scan = new NativeScan(
             MySqlSql.ScanFragment(alias, spec),
+            MySqlSql.SetupStatements(config, alias, readOnly: true))
+        {
+            Mechanism = "mysql_query",
+        };
+        return true;
+    }
+
+    public bool TryGetNativeScan(DatasetSpec spec, IReadOnlyList<string> columns,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
+    {
+        var alias = MySqlSql.SourceAlias(spec.Source);
+        scan = new NativeScan(
+            MySqlSql.ScanFragment(alias, spec, columns),
             MySqlSql.SetupStatements(config, alias, readOnly: true))
         {
             Mechanism = "mysql_query",

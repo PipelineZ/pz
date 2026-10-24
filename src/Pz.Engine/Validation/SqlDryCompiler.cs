@@ -13,8 +13,8 @@ public sealed record DryCompileResult(
 
 /// <summary>
 /// Tier 4: EXPLAIN-by-materialization against contract-derived empty tables in a
-/// throwaway file-backed DuckDB session (the temp file is deleted in a <c>finally</c> before returning,
-/// independent of run state -- this never touches <c>.pz/target</c> or any real run's staging database).
+/// throwaway in-memory DuckDB session (nothing is written to disk, and it never touches <c>.pz/target</c>
+/// or any real run's staging database).
 /// Walks <see cref="CompiledDag.Nodes"/>, which <see cref="Pz.Core.Dag.DagCompiler"/> already produces in
 /// topological order: a <see cref="NodeKind.SourceLoad"/> with a declared non-empty <c>columns:</c>
 /// contract gets an empty table built from the contract's DDL types and becomes "available"; one without
@@ -29,55 +29,40 @@ public sealed record DryCompileResult(
 /// </summary>
 public static class SqlDryCompiler
 {
-    /// <param name="tempRoot">Directory for the throwaway session's temp .duckdb file; defaults to the
-    /// machine-global <c>%TMP%/pz-dry-compile</c> (safe across concurrent processes — file names are
-    /// GUIDs and cleanup is per-file). Injectable so tests can observe leftover-file behavior over an
-    /// isolated directory instead of the shared one.</param>
-    public static async Task<DryCompileResult> RunAsync(CompiledDag dag, CancellationToken ct, string? tempRoot = null)
+    public static async Task<DryCompileResult> RunAsync(CompiledDag dag, CancellationToken ct)
     {
-        var root = tempRoot ?? Path.Combine(Path.GetTempPath(), "pz-dry-compile");
-        var tempDbPath = Path.Combine(root, $"{Guid.NewGuid():N}.duckdb");
-        Directory.CreateDirectory(root);
-
         var errors = new List<PzError>();
         var skipped = new List<string>();
         var undeclared = new List<string>();
 
-        try
+        // Nodes available to downstream pipelines: a SourceLoad with a declared contract, or a
+        // Pipeline that dry-materialized without error. Keyed by NodeId so it lines up directly with
+        // DagNode.DependsOn without any name-based re-derivation.
+        var available = new HashSet<NodeId>();
+
+        await using (var duck = DuckSession.Open(":memory:"))
         {
-            // Nodes available to downstream pipelines: a SourceLoad with a declared contract, or a
-            // Pipeline that dry-materialized without error. Keyed by NodeId so it lines up directly with
-            // DagNode.DependsOn without any name-based re-derivation.
-            var available = new HashSet<NodeId>();
+            await duck.ExecuteAsync("create schema if not exists staging", ct).ConfigureAwait(false);
 
-            await using (var duck = DuckSession.Open(tempDbPath))
+            foreach (var node in dag.Nodes)
             {
-                await duck.ExecuteAsync("create schema if not exists staging", ct).ConfigureAwait(false);
+                ct.ThrowIfCancellationRequested();
 
-                foreach (var node in dag.Nodes)
+                switch (node.Kind)
                 {
-                    ct.ThrowIfCancellationRequested();
-
-                    switch (node.Kind)
-                    {
-                        case NodeKind.SourceLoad:
-                            await HandleSourceLoadAsync(node, duck, available, undeclared, ct).ConfigureAwait(false);
-                            break;
-                        case NodeKind.Pipeline:
-                            await HandlePipelineAsync(node, duck, available, errors, skipped, ct).ConfigureAwait(false);
-                            break;
-                        case NodeKind.Check:
-                        case NodeKind.SinkWrite:
-                            break; // not dry-compiled
-                        default:
-                            throw new ArgumentOutOfRangeException(nameof(dag), node.Kind, "unknown node kind");
-                    }
+                    case NodeKind.SourceLoad:
+                        await HandleSourceLoadAsync(node, duck, available, undeclared, ct).ConfigureAwait(false);
+                        break;
+                    case NodeKind.Pipeline:
+                        await HandlePipelineAsync(node, duck, available, errors, skipped, ct).ConfigureAwait(false);
+                        break;
+                    case NodeKind.Check:
+                    case NodeKind.SinkWrite:
+                        break; // not dry-compiled
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(dag), node.Kind, "unknown node kind");
                 }
             }
-        }
-        finally
-        {
-            TryDeleteFile(tempDbPath);
         }
 
         return new DryCompileResult(errors, skipped, undeclared);
@@ -141,20 +126,4 @@ public static class SqlDryCompiler
     private static string QuoteIdentifier(string identifier) => ArrowInterop.QuoteQualified(identifier);
 
     private static string StagingRelation(string name) => $"staging.{QuoteIdentifier(name)}";
-
-    private static void TryDeleteFile(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch
-        {
-            // Suppressed by design: best-effort cleanup of the throwaway dry-compile session's temp
-            // file must never mask whatever result RunAsync is about to return.
-        }
-    }
 }

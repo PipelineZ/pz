@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using Pz.Core.Artifacts;
@@ -21,10 +22,10 @@ namespace Pz.Engine.State;
 /// therefore happens under an OS-held lock on a sibling <c>.lock</c> file, so two runs advancing
 /// different keys never drop each other's entry. For the SAME key the store keeps the contract the
 /// remote backends keep with a version column: this instance remembers what each <see cref="Get"/>
-/// saw, and a <see cref="Set"/> that finds something else there now lost a race with another run —
+/// saw, and a <see cref="Set"/> (or a key of <see cref="SetMany"/>) that finds something else there now lost a race with another run —
 /// PZ0520, never a silent overwrite, because the later finisher may carry the older MAX(cursor) and
 /// would regress the watermark. The token stays off <see cref="IKeyedStateStore{T}"/> for the same
-/// reason it does there: it matches the run's access pattern (Get at plan time, Set once at
+/// reason it does there: it matches the run's access pattern (Get at plan time, one write per key at
 /// advancement, one instance per run). A key this instance never read was never observed, so it
 /// cannot have gone stale: the state-editing verbs write that way and simply overwrite.</summary>
 public sealed class KeyedJsonStateStore<T>(
@@ -95,33 +96,79 @@ public sealed class KeyedJsonStateStore<T>(
 
     public void Set(string key, T value)
     {
-        var path = Path.Combine(stateDir, fileName);
-        using var fileLock = AcquireLock(path);
-        // If the file is corrupt (exists but fails to parse), treat it as empty. This is safe:
-        // corrupt state means no entries (never an error); the engine always reads Get()
-        // before writing Set(), and the read-side surfaces a notice so the operator knows a full
-        // extract will occur; thus overwriting here re-establishes valid state rather than losing
-        // recoverable data.
-        var entries = File.Exists(path) && TryReadAll(path, out var existing)
-            ? new Dictionary<string, T>(existing, StringComparer.Ordinal)
-            : new Dictionary<string, T>(StringComparer.Ordinal);
-
-        if (_seen.TryGetValue(key, out var seen))
+        if (SetMany([new(key, value)]) is [var failure])
         {
-            var current = entries.TryGetValue(key, out var stored) ? Serialize(stored) : Absent;
-            if (!string.Equals(current, seen, StringComparison.Ordinal))
-            {
-                throw new PzConfigException(new PzError(PzErrorCode.StateConcurrencyConflict,
-                    $"state key '{key}' in '{path}' was advanced by another run while this run was executing.",
-                    "project.yml", null,
-                    "re-run; if concurrent runs over the same datasets are intended, split them by dataset"));
-            }
+            ExceptionDispatchInfo.Throw(failure.Value);
+        }
+    }
+
+    /// <summary>The whole batch is one lock, one read and one rewrite of the file. Each key still gets
+    /// <see cref="Set"/>'s stale-read check on its own: a key another run advanced since this instance read
+    /// it is reported as PZ0520 and left as that run wrote it, while the rest of the batch lands. A lock or
+    /// IO failure stops the rewrite, so every key that would have been written is reported with it.</summary>
+    public IReadOnlyList<KeyValuePair<string, Exception>> SetMany(IReadOnlyList<KeyValuePair<string, T>> entries)
+    {
+        if (entries.Count == 0)
+        {
+            return [];
         }
 
-        entries[key] = value;
-        WriteAll(entries, path);
-        _seen[key] = Serialize(value);
+        var path = Path.Combine(stateDir, fileName);
+        var conflicts = new List<KeyValuePair<string, Exception>>();
+        var written = new Dictionary<string, string>(StringComparer.Ordinal);
+        try
+        {
+            using var fileLock = AcquireLock(path);
+            // If the file is corrupt (exists but fails to parse), treat it as empty. This is safe:
+            // corrupt state means no entries (never an error); the engine always reads Get()
+            // before writing Set(), and the read-side surfaces a notice so the operator knows a full
+            // extract will occur; thus overwriting here re-establishes valid state rather than losing
+            // recoverable data.
+            var stored = File.Exists(path) && TryReadAll(path, out var existing)
+                ? new Dictionary<string, T>(existing, StringComparer.Ordinal)
+                : new Dictionary<string, T>(StringComparer.Ordinal);
+
+            foreach (var (key, value) in entries)
+            {
+                // A key written earlier in this batch was last seen as that write.
+                if (written.TryGetValue(key, out var seen) || _seen.TryGetValue(key, out seen))
+                {
+                    var current = stored.TryGetValue(key, out var entry) ? Serialize(entry) : Absent;
+                    if (!string.Equals(current, seen, StringComparison.Ordinal))
+                    {
+                        conflicts.Add(new(key, Conflict(key, path)));
+                        continue;
+                    }
+                }
+
+                stored[key] = value;
+                written[key] = Serialize(value);
+            }
+
+            if (written.Count > 0)
+            {
+                WriteAll(stored, path);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            var conflicted = conflicts.Select(c => c.Key).ToHashSet(StringComparer.Ordinal);
+            return [.. conflicts, .. entries.Where(e => !conflicted.Contains(e.Key)).Select(e => new KeyValuePair<string, Exception>(e.Key, ex))];
+        }
+
+        foreach (var (key, serialized) in written)
+        {
+            _seen[key] = serialized;
+        }
+
+        return conflicts;
     }
+
+    private static PzConfigException Conflict(string key, string path) =>
+        new(new PzError(PzErrorCode.StateConcurrencyConflict,
+            $"state key '{key}' in '{path}' was advanced by another run while this run was executing.",
+            "project.yml", null,
+            "re-run; if concurrent runs over the same datasets are intended, split them by dataset"));
 
     /// <summary>Removes one entry (`pz cdc drop`) so the next run treats the dataset as never-synced.
     /// Mirrors <see cref="Set"/>'s read-modify-write + byte-stable rewrite;

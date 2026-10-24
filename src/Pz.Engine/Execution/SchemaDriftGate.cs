@@ -12,8 +12,11 @@ namespace Pz.Engine.Execution;
 /// reach the DESCRIBE.</summary>
 internal static class SchemaDriftGate
 {
+    /// <param name="onlyColumns">When non-null, only staged columns with these names (case-insensitive) are
+    /// observed: the read shape the baseline describes, when the staged table is wider than it.</param>
     internal static async Task<NodeResult> ApplyAsync(NodeResult success, DagNode node,
-        SourceDatasetDef def, ReadHints hints, string tableName, RunContext ctx, CancellationToken ct)
+        SourceDatasetDef def, ReadHints hints, string tableName, RunContext ctx, CancellationToken ct,
+        IReadOnlyCollection<string>? onlyColumns = null)
     {
         if (ctx.OnSourceDrift == DriftPolicy.Ignore || ctx.SchemaBaselines is null ||
             def.Dataset.Columns is { Count: > 0 })
@@ -22,6 +25,12 @@ internal static class SchemaDriftGate
         }
 
         var observed = await FetchObservedAsync(ctx, tableName, ct).ConfigureAwait(false);
+        if (onlyColumns is not null)
+        {
+            var wanted = new HashSet<string>(onlyColumns, StringComparer.OrdinalIgnoreCase);
+            observed = [.. observed.Where(c => wanted.Contains(c.Name))];
+        }
+
         var hintsHash = SchemaDriftDiffer.HashHints(hints);
         var result = success with { Observed = new ObservedSchema(observed, hintsHash) };
 

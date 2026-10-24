@@ -52,6 +52,182 @@ public sealed class NativePathTests : IAsyncLifetime
     private static ExecutionPlan SingleNodePlan(DagNode node, EdgeStrategy strategy) =>
         new([new PlannedNode(node.Id, node.Kind, node.Name, strategy, 1, "test")], MemoryBudget.Compute(new EngineConfig()));
 
+    private const string HintedFragment =
+        "(select range as id, range % 10 as k, 'x' || range as c1, 'y' as c2 from range(100)) t";
+
+    private static DagNode HintedSourceLoadNode(ReadHintPlan hints)
+    {
+        var node = SourceLoadNode("stub", "t");
+        return node with { Definition = ((SourceDatasetDef)node.Definition) with { Hints = hints } };
+    }
+
+    private async Task<NodeResult> RunHintedAsync(ReadHintPlan hints)
+    {
+        var node = HintedSourceLoadNode(hints);
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", new ConfigurableNativeSource(HintedFragment, []));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+        return await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+    }
+
+    [Fact]
+    public async Task Native_scan_stages_only_hinted_columns_and_rows()
+    {
+        var result = await RunHintedAsync(new ReadHintPlan(["id", "k"], "k = 7"));
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(10, result.RowsMoved);
+        Assert.Equal(2, await _duck.ScalarAsync<long>("select count(*) from pragma_table_info('staging.src_stub__t')"));
+        Assert.Equal(10, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t"));
+    }
+
+    [Fact]
+    public async Task Projecting_source_receives_hinted_columns_but_no_predicate()
+    {
+        var source = new ProjectingNativeSource(HintedFragment, "(select range as id, range % 10 as k from range(100)) t");
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "k"], "k = 7"));
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", source);
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(["id", "k"], source.ReceivedColumns);
+        Assert.Equal(0, source.PlainCalls);
+        Assert.Equal(10, result.RowsMoved);
+        Assert.Equal(10, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t where k = 7"));
+    }
+
+    [Fact]
+    public async Task Projecting_scan_binder_error_falls_back_to_the_plain_scan()
+    {
+        var source = new ProjectingNativeSource(HintedFragment, "(select range as id from range(100)) t");
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "k"], "k = 7"));
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", source);
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, source.PlainCalls);
+        Assert.Equal(100, result.RowsMoved); // unhinted fallback stages the whole plain scan
+    }
+
+    [Fact]
+    public async Task Native_scan_hint_matches_columns_case_insensitively()
+    {
+        var result = await RunHintedAsync(new ReadHintPlan(["ID", "K"], "K = 7"));
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(10, result.RowsMoved);
+        Assert.Equal(2, await _duck.ScalarAsync<long>("select count(*) from pragma_table_info('staging.src_stub__t')"));
+        Assert.Equal(10, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t"));
+    }
+
+    [Fact]
+    public async Task Native_scan_hint_naming_an_absent_column_falls_back_to_the_full_read()
+    {
+        var result = await RunHintedAsync(new ReadHintPlan(["id", "nope"], "k = 7"));
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(4, await _duck.ScalarAsync<long>("select count(*) from pragma_table_info('staging.src_stub__t')"));
+        Assert.Equal(100, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t"));
+    }
+
+    [Fact]
+    public async Task Binder_error_fallback_drift_compares_only_the_hinted_columns()
+    {
+        var hints = new ReadHintPlan(["id", "k", "c1"], "k = 7");
+        var store = SchemaBaselineStore.Local(Path.Combine(_dir, "state"));
+        var events = new LintRecordingEvents();
+
+        RunContext Ctx(string runId) => new(_duck, Registry(new ConfigurableNativeSource(
+                runId == "run-1" ? HintedFragment : "(select range as id, range % 10 as k, 'y' as c2 from range(100)) t", [])),
+            new RunPaths(_dir, runId), events, SingleNodePlan(HintedSourceLoadNode(hints), EdgeStrategy.NativeScan),
+            SchemaBaselines: store, OnSourceDrift: DriftPolicy.Warn);
+
+        var first = await new KindDispatchingExecutor().ExecuteAsync(HintedSourceLoadNode(hints), Ctx("run-1"), default);
+        Assert.Equal(NodeStatus.Success, first.Status);
+        Assert.Empty(events.Drifts);
+
+        var second = await new KindDispatchingExecutor().ExecuteAsync(HintedSourceLoadNode(hints), Ctx("run-2"), default);
+
+        Assert.Equal(NodeStatus.Success, second.Status);
+        var drift = Assert.Single(events.Drifts);
+        var change = Assert.Single(drift);
+        Assert.Equal("removed", change.Kind);
+        Assert.Equal("c1", change.Column);
+    }
+
+    [Fact]
+    public async Task Binder_error_fallback_is_reported_as_a_notice_without_sql()
+    {
+        var notices = new List<string>();
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "nope"], "k = 7"));
+        var ctx = new RunContext(_duck, Registry(new ConfigurableNativeSource(HintedFragment, [])),
+            new RunPaths(_dir, "run"), NullRunEvents.Instance, SingleNodePlan(node, EdgeStrategy.NativeScan),
+            Notice: notices.Add);
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        var notice = Assert.Single(notices);
+        Assert.Contains("stub.t", notice, StringComparison.Ordinal);
+        Assert.DoesNotContain("select", notice, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("range(", notice, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Binder_error_fallback_runs_the_plain_scans_setup_statements()
+    {
+        var source = new ProjectingNativeSource(HintedFragment, "(select range as id from range(100)) t",
+            plainSetup: ["create or replace table staging.plain_setup_marker as select 1 as x"]);
+        var node = HintedSourceLoadNode(new ReadHintPlan(["id", "k"], "k = 7"));
+        var ctx = new RunContext(_duck, Registry(source), new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, await _duck.ScalarAsync<long>("select count(*) from staging.plain_setup_marker"));
+    }
+
+    [Fact]
+    public async Task Native_watermark_capture_matches_the_cursor_case_insensitively()
+    {
+        var node = SourceLoadNode("stub", "t");
+        var def = (SourceDatasetDef)node.Definition;
+        node = node with
+        {
+            Definition = def with
+            {
+                Dataset = def.Dataset with { SyncMode = new SyncModeDef(SyncMode.Incremental, new IncrementalDef("updated_at")) },
+            },
+        };
+        var ctx = new RunContext(_duck,
+            Registry(new ConfigurableNativeSource("(select range as id, range as UPDATED_AT from range(10)) t", [])),
+            new RunPaths(_dir, "run"), NullRunEvents.Instance, SingleNodePlan(node, EdgeStrategy.NativeScan));
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.NotNull(result.WatermarkCandidate);
+        Assert.Equal("9", result.WatermarkCandidate!.Value);
+        Assert.Equal("bigint", result.WatermarkCandidate.TypeName);
+    }
+
+    private static ConnectorRegistry Registry(ISourceConnector source)
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", source);
+        return registry;
+    }
+
     [Fact]
     public async Task Native_scan_lands_rows_without_connector_batches()
     {
@@ -347,8 +523,8 @@ public sealed class NativePathTests : IAsyncLifetime
         Assert.Empty(events.Lints);
     }
 
-    /// <summary>Records every <see cref="IRunEvents.LossyIntegerInferenceDetected"/> call — every
-    /// other member is a no-op, mirroring <c>SchemaDriftGateTests.RecordingEvents</c>'s shape.</summary>
+    /// <summary>Records every <see cref="IRunEvents.LossyIntegerInferenceDetected"/> and
+    /// <see cref="IRunEvents.SourceDriftDetected"/> call — every other member is a no-op, mirroring <c>SchemaDriftGateTests.RecordingEvents</c>'s shape.</summary>
     private sealed class LintRecordingEvents : IRunEvents
     {
         public readonly List<(string Connection, string Entity, IReadOnlyList<string> Columns)> Lints = [];
@@ -359,9 +535,10 @@ public sealed class NativePathTests : IAsyncLifetime
         public void RetryScheduled(DagNode node, int attempt, int maxAttempts, TimeSpan delay, string reason) { }
         public void BreakerStateChanged(string instance, string oldState, string newState, string trigger,
             TimeSpan coolDown) { }
+        public readonly List<IReadOnlyList<Pz.Engine.State.SchemaDriftDiffer.Change>> Drifts = [];
         public void SourceDriftDetected(DagNode node, string connection, string entity, string policy,
             IReadOnlyList<Pz.Engine.State.SchemaDriftDiffer.Change> changes,
-            IReadOnlyList<Pz.Engine.State.SchemaColumn> observed, string hintsHash) { }
+            IReadOnlyList<Pz.Engine.State.SchemaColumn> observed, string hintsHash) => Drifts.Add(changes);
         public void MergeKeyDuplicatesDetected(DagNode node, string output, IReadOnlyList<string> keys,
             long duplicateGroups, long extraRows) { }
         public void LossyIntegerInferenceDetected(DagNode node, string connection, string entity,
@@ -518,6 +695,47 @@ public sealed class NativePathTests : IAsyncLifetime
                 SchemaInferred = schemaInferred,
                 SniffFragment = sniffFragment,
             };
+            return true;
+        }
+
+        public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+            throw new InvalidOperationException("universal path must not be used");
+
+        public ValueTask DisposeAsync() => default;
+    }
+
+    /// <summary>Native source that also projects: records the columns it was asked for and hands back
+    /// <paramref name="projectedFragment"/>; the plain scan returns <paramref name="plainFragment"/>.</summary>
+    private sealed class ProjectingNativeSource(string plainFragment, string projectedFragment,
+        IReadOnlyList<string>? plainSetup = null)
+        : ISourceConnector, ISource, IProjectingNativeScan
+    {
+        public IReadOnlyList<string>? ReceivedColumns { get; private set; }
+        public int PlainCalls { get; private set; }
+
+        public ConnectorInfo Info => new("stub-projecting", "0.1.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.NativeScan;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+        public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+            throw new InvalidOperationException("universal path must not be used");
+
+        public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+        {
+            PlainCalls++;
+            scan = new NativeScan(plainFragment, plainSetup ?? []) { Mechanism = "stub_scan" };
+            return true;
+        }
+
+        public bool TryGetNativeScan(DatasetSpec spec, IReadOnlyList<string> columns, [NotNullWhen(true)] out NativeScan? scan)
+        {
+            ReceivedColumns = columns;
+            scan = new NativeScan(projectedFragment, []) { Mechanism = "stub_scan" };
             return true;
         }
 

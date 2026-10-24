@@ -14,18 +14,23 @@ public sealed class AdvancementFailureTests
 {
     private static readonly string[] Datasets = ["a", "b", "c"];
 
-    private static (CompiledDag Dag, List<NodeResult> Results) ThreeIncrementalDatasets()
+    private static (CompiledDag Dag, List<NodeResult> Results) ThreeIncrementalDatasets() => IncrementalDatasets(Datasets);
+
+    private static (CompiledDag Dag, List<NodeResult> Results) TwoDatasets(string first, string second) =>
+        IncrementalDatasets([first, second]);
+
+    private static (CompiledDag Dag, List<NodeResult> Results) IncrementalDatasets(string[] datasets)
     {
         var nodes = new List<DagNode>();
         var results = new List<NodeResult>();
-        for (var i = 0; i < Datasets.Length; i++)
+        for (var i = 0; i < datasets.Length; i++)
         {
             var id = new NodeId(new string((char)('a' + i), 16));
-            var dataset = new DatasetDef(Datasets[i], new Dictionary<string, object?>(), null);
+            var dataset = new DatasetDef(datasets[i], new Dictionary<string, object?>(), null);
             var source = new ConnectionDef("crm", "inmemory", new Dictionary<string, object?>(), [dataset], "connections.yml");
-            nodes.Add(new DagNode(id, NodeKind.SourceLoad, $"src_crm__{Datasets[i]}", [], null,
+            nodes.Add(new DagNode(id, NodeKind.SourceLoad, $"src_crm__{datasets[i]}", [], null,
                 new SourceDatasetDef(source, dataset)));
-            results.Add(new NodeResult(id, NodeKind.SourceLoad, $"src_crm__{Datasets[i]}", NodeStatus.Success, 1,
+            results.Add(new NodeResult(id, NodeKind.SourceLoad, $"src_crm__{datasets[i]}", NodeStatus.Success, 1,
                 TimeSpan.Zero, null, WatermarkCandidate: new Watermark("updated_at", "BIGINT", "10", "run-1")));
         }
 
@@ -130,6 +135,54 @@ public sealed class AdvancementFailureTests
         Advance(store, []);
 
         Assert.Equal(1, store.Attempts["crm.a"]);
+    }
+
+    /// <summary>The batch is written once; only the keys the store could not reach go round again, so a
+    /// retry never re-sends a key that already landed or one that lost its race.</summary>
+    [Fact]
+    public void Advance_retries_only_unavailable_keys()
+    {
+        var (dag, results) = TwoDatasets("x", "y");
+        var batches = new List<string[]>();
+        var waits = new List<TimeSpan>();
+
+        var failures = CommitGatedAdvancement.Advance(dag, results,
+            static r => r.WatermarkCandidate,
+            static def => def.Dataset.Name,
+            entries =>
+            {
+                var keys = entries.Select(e => e.Key).ToArray();
+                batches.Add(keys);
+                var failed = new List<KeyValuePair<string, Exception>>();
+                if (batches.Count == 1)
+                {
+                    failed.Add(new("x", StoreError(PzErrorCode.StateStoreUnavailable)));
+                    failed.Add(new("y", StoreError(PzErrorCode.StateConcurrencyConflict)));
+                }
+
+                return failed;
+            },
+            d => waits.Add(d));
+
+        Assert.Equal(2, batches.Count);
+        Assert.Equal(["x", "y"], batches[0]);
+        Assert.Equal(["x"], batches[1]);
+        Assert.Equal([TimeSpan.FromMilliseconds(250)], waits);
+        var failure = Assert.Single(failures);
+        Assert.Equal("y", failure.Key);
+        Assert.Contains(PzErrorCode.StateConcurrencyConflict, failure.Reason);
+    }
+
+    [Fact]
+    public void A_cancellation_reported_by_the_batch_propagates()
+    {
+        var (dag, results) = TwoDatasets("x", "y");
+
+        Assert.Throws<OperationCanceledException>(() => CommitGatedAdvancement.Advance(dag, results,
+            static r => r.WatermarkCandidate,
+            static def => def.Dataset.Name,
+            entries => [new("x", new OperationCanceledException())],
+            _ => { }));
     }
 
     [Fact]

@@ -174,6 +174,38 @@ public sealed class MergeKeyGuardTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Merge_guards_scan_the_staged_input_once()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'newer'), (1, 'older'), (2, 'only')) t(id, name)");
+        var counting = new CountingDuckSession(_duck);
+        var events = new RecordingEvents();
+        var ctx = new RunContext(counting, Registry(new PlainSinkConnector()), new RunPaths(_dir, "test-run"), events,
+            Batch: new BatchOptions(TargetBatchBytes: 256));
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(MergeSinkNode(), ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Single(counting.Statements, s => s.Contains(Canonical, StringComparison.Ordinal));
+        var warning = Assert.Single(events.DuplicateWarnings);
+        Assert.Equal(1, warning.Groups);
+        Assert.Equal(1, warning.ExtraRows);
+    }
+
+    [Fact]
+    public async Task Empty_staged_input_passes_the_guards_without_a_warning()
+    {
+        await _duck.ExecuteAsync($"create table {Canonical} as select 1::bigint as id, 'x' as name where false");
+        var events = new RecordingEvents();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(
+            MergeSinkNode(), Context(new PlainSinkConnector(), events), default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Empty(events.DuplicateWarnings);
+    }
+
+    [Fact]
     public async Task Unique_merge_keys_publish_no_duplicate_warning()
     {
         await _duck.ExecuteAsync(
