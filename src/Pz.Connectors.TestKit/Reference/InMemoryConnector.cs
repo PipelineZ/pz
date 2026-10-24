@@ -48,9 +48,11 @@ public sealed class InMemoryConnector : ISourceConnector, ISinkConnector
     // makes InMemorySource's SOURCE read-fault path throw a foreign (non-Pz-family) exception type
     // -- InvalidOperationException instead of PzConnectorException -- so a redaction-boundary test can
     // prove MessageRedaction.Redact(Exception) still redacts an exception that didn't come from a
-    // Pz-family type (see Node_failure_message_is_redacted).
+    // Pz-family type (see Node_failure_message_is_redacted). before_batch_hook is a test-only,
+    // unconstrained-type Func<int, CancellationToken, Task> awaited before each batch is yielded with its
+    // zero-based index in the partition, letting a test park a source between batches.
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "rows": { "type": "integer" }, "partitions": { "type": "integer" }, "partition_sizes": { "type": "array", "items": { "type": "integer" } }, "rows_read_hook": {}, "fail_read_at_batch": { "type": "integer" }, "fail_read_retry_limit": {}, "fail_message": { "type": "string" }, "fail_retry_after": { "type": "number" }, "read_delay_ms": { "type": "integer" }, "fail_write_at_batch": { "type": "integer" }, "fail_transient": { "type": "boolean" }, "fail_commit": { "type": "boolean" }, "ignore_watermark_bounds": { "type": "boolean" }, "fail_foreign": { "type": "boolean" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "rows": { "type": "integer" }, "partitions": { "type": "integer" }, "partition_sizes": { "type": "array", "items": { "type": "integer" } }, "rows_read_hook": {}, "fail_read_at_batch": { "type": "integer" }, "fail_read_retry_limit": {}, "fail_message": { "type": "string" }, "fail_retry_after": { "type": "number" }, "read_delay_ms": { "type": "integer" }, "before_batch_hook": {}, "fail_write_at_batch": { "type": "integer" }, "fail_transient": { "type": "boolean" }, "fail_commit": { "type": "boolean" }, "ignore_watermark_bounds": { "type": "boolean" }, "fail_foreign": { "type": "boolean" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
 
     /// <summary>Committed write sessions, in commit order.</summary>
     public IReadOnlyList<CommittedWrite> Committed

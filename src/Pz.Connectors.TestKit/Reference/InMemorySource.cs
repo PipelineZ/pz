@@ -133,6 +133,13 @@ internal sealed class InMemoryPartition(long rangeStart, long rangeCount, Datase
         // `OnBatchConsumedForTests` seam that slows the ingest side instead. Absent: no delay.
         var readDelayMs = FaultInjection.GetInt(spec.Options, "read_delay_ms");
 
+        // Test-only gate: awaited before each batch is yielded, after read_delay_ms, with that batch's
+        // zero-based index within this partition. Lets a test park a source between batches
+        // deterministically. Absent: no wait.
+        var beforeBatchHook = spec.Options.TryGetValue("before_batch_hook", out var beforeBatchValue)
+            ? beforeBatchValue as Func<int, CancellationToken, Task>
+            : null;
+
         // A deterministic delta lever for tests -- when the executor set a
         // watermark on the spec (see SpecBuilder.ForSourceLoad's execution-time overload), skip every row
         // whose `id` (the fixed schema's int64 column) is <= the parsed cursor value, simulating a
@@ -199,6 +206,11 @@ internal sealed class InMemoryPartition(long rangeStart, long rangeCount, Datase
                     throw new PzConnectorException(failMessage, failTransient, failRetryAfter);
                 }
 
+                if (beforeBatchHook is not null)
+                {
+                    await beforeBatchHook(batchOrdinal, ct).ConfigureAwait(false);
+                }
+
                 batchOrdinal++;
                 yield return batch!;
             }
@@ -221,6 +233,11 @@ internal sealed class InMemoryPartition(long rangeStart, long rangeCount, Datase
                 }
 
                 throw new PzConnectorException(failMessage, failTransient, failRetryAfter);
+            }
+
+            if (beforeBatchHook is not null)
+            {
+                await beforeBatchHook(batchOrdinal, ct).ConfigureAwait(false);
             }
 
             yield return remainder;
