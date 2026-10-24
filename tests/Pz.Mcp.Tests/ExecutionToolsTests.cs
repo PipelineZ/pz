@@ -70,7 +70,9 @@ public class ExecutionToolsTests
     // `on_source_drift: warn` drift warnings are RUN-TIME events --
     // `pz run` prints them via the console renderer, but an MCP caller has no console, so they must
     // ride the envelope's `warnings` array or agent-driven operation gets silent drift. First run
-    // seeds the baseline silently; the second run, against a reshaped file, must warn.
+    // seeds the baseline silently; the second run, against a file that retypes a column the pipeline
+    // reads, must warn. (Native scans stage only the columns the pipeline reads, so an added unread
+    // column is not observable drift.)
     [Fact]
     public async Task Run_surfaces_run_time_drift_warnings_in_the_result()
     {
@@ -83,7 +85,7 @@ public class ExecutionToolsTests
         Assert.True(first.RootElement.GetProperty("ok").GetBoolean());
         Assert.Equal(0, first.RootElement.GetProperty("result").GetProperty("warnings").GetArrayLength());
 
-        File.WriteAllText(Path.Combine(p.Dir, "data", "orders.csv"), "id,amount,extra\n1,10,x\n2,20,y\n");
+        File.WriteAllText(Path.Combine(p.Dir, "data", "orders.csv"), "id,amount\n1,ten\n2,twenty\n");
 
         var second = JsonDocument.Parse(await ExecutionTools.RunAsync(
             p.Dir, ["orders_out"], false, false, RealServices(), CancellationToken.None));
@@ -94,7 +96,7 @@ public class ExecutionToolsTests
         var drift = Assert.Single(warnings);
         Assert.Equal("PZ0331", drift.GetProperty("code").GetString());
         Assert.Contains("schema drift", drift.GetProperty("message").GetString(), StringComparison.Ordinal);
-        Assert.Contains("extra", drift.GetProperty("message").GetString(), StringComparison.Ordinal);
+        Assert.Contains("amount", drift.GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
     // A contract-less csv whose integer column
