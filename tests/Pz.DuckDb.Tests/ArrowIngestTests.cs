@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using DuckDB.NET.Data;
 using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.Abstractions.Memory;
 using Pz.DuckDb;
@@ -419,6 +420,53 @@ public sealed class ArrowIngestTests : IDisposable
     }
 
     [Fact]
+    public async Task Ingest_cancelled_while_an_egress_holds_the_gate_returns_promptly_and_drops_the_table_later()
+    {
+        var duck = Open();
+        try
+        {
+            await duck.ExecuteAsync("create table main.big as select range as v from range(200000)");
+
+            // The ingest has created its table and appended its first batch; it now waits on its
+            // source without the gate.
+            using var cts = new CancellationTokenSource();
+            var source = new ParkedSource();
+            var ingest = duck.IngestArrowAsync("main.slow", MatrixSchema(), source.Batches(), cts.Token);
+            await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+            // An egress holds the gate for its whole drain. With tiny batches and a Bounded(1) hand-off
+            // channel, taking one batch and then not advancing leaves the producer blocked on a write
+            // while still holding the gate.
+            var egress = duck.QueryArrowAsync("select v from main.big", targetBatchBytes: 1024)
+                .GetAsyncEnumerator();
+            Assert.True(await egress.MoveNextAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30)));
+            egress.Current.Dispose();
+
+            // Started while the egress holds the gate; it can complete only once the gate is free.
+            var probe = duck.ScalarAsync<long>("select 1");
+
+            cts.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+            Assert.False(probe.IsCompleted);
+
+            // Joins the producer, which releases the gate to the deferred drop and the probe.
+            await egress.DisposeAsync();
+            Assert.Equal(1L, await probe.WaitAsync(TimeSpan.FromSeconds(30)));
+        }
+        finally
+        {
+            // DisposeAsync awaits every deferred drop before closing the connection, so once it returns
+            // the drop has run -- a deterministic point to inspect, unlike racing the drop for the gate.
+            await duck.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(30));
+        }
+
+        await using var reopened = Open();
+        Assert.Equal(0L, await reopened.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'slow'"));
+    }
+
+    [Fact]
     public async Task Ingest_batch_with_a_different_shape_fails_and_drops_the_table()
     {
         await using var duck = Open();
@@ -432,7 +480,7 @@ public sealed class ArrowIngestTests : IDisposable
                 [new Int64Array.Builder().Append(1).Build()], 1, () => disposed = true);
         }
 
-        await Assert.ThrowsAnyAsync<Exception>(
+        await Assert.ThrowsAsync<InvalidOperationException>(
             () => duck.IngestArrowAsync("main.mixed", MatrixSchema(), Mixed()).WaitAsync(TimeSpan.FromSeconds(30)));
 
         Assert.True(disposed);
@@ -448,7 +496,7 @@ public sealed class ArrowIngestTests : IDisposable
         var ingest = duck.IngestArrowAsync("main.slow", MatrixSchema(), source.Batches());
         await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
-        await Assert.ThrowsAnyAsync<Exception>(
+        await Assert.ThrowsAsync<DuckDBException>(
             () => duck.ExecuteAsync("select * from no_such_table").WaitAsync(TimeSpan.FromSeconds(30)));
 
         source.Release.SetResult();

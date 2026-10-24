@@ -34,6 +34,11 @@ public sealed class DuckSession : IDuckSession
     // appender state spans a release and the gate is free while awaiting the next upstream batch.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
+    // Drops of cancelled ingests' tables that were waiting for the gate when the ingest returned (see
+    // DropTableOnCancellation). DisposeAsync awaits them so none reaches a native call on a disposed
+    // connection. Guarded by its own lock.
+    private readonly HashSet<Task> _deferredDrops = [];
+
     private DuckSession(DuckDBConnection connection)
     {
         _connection = connection;
@@ -169,11 +174,19 @@ public sealed class DuckSession : IDuckSession
             ct);
     }
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
+        Task[] deferredDrops;
+        lock (_deferredDrops)
+        {
+            deferredDrops = [.. _deferredDrops];
+        }
+
+        // Never faults: DropTableWhenGateFreeAsync swallows everything.
+        await Task.WhenAll(deferredDrops).ConfigureAwait(false);
+
         _connection.Dispose();
         _gate.Dispose();
-        return ValueTask.CompletedTask;
     }
 
     /// <summary>Test-only hook invoked (on the ingest background thread) after each Arrow batch has been
@@ -190,7 +203,8 @@ public sealed class DuckSession : IDuckSession
     /// <summary>Takes <see cref="_gate"/> once to create the table and once per batch (fresh appender per
     /// batch, closed before release); never while awaiting the next upstream batch. Rows are therefore
     /// visible to other statements as each batch lands. A failed or cancelled ingest drops the table; a
-    /// successful return is the only way it survives.</summary>
+    /// successful return is the only way it survives. A failed ingest drops it before returning; a
+    /// cancelled one returns at once and, when the gate is busy, drops it once the gate is free.</summary>
     private async Task<long> IngestArrowPerBatchAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
     {
@@ -232,8 +246,16 @@ public sealed class DuckSession : IDuckSession
 
             return rows;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Cancellation must return promptly even while another operation (an egress drain, a
+            // transaction) holds the gate for its whole duration, so the drop may outlive this call.
+            DropTableOnCancellation(targetTable);
+            throw;
+        }
         catch
         {
+            // Synchronous: a transient retry re-creates the same table right after this returns.
             await DropTableBestEffortAsync(targetTable).ConfigureAwait(false);
             throw;
         }
@@ -251,6 +273,60 @@ public sealed class DuckSession : IDuckSession
         writer.AppendBatch(batch);
         writer.Complete();
         return batch.Length;
+    }
+
+    /// <summary>Drops a cancelled ingest's table without waiting for the gate: at once if the gate is
+    /// free, otherwise from a background task that takes the gate when it frees up (tracked so
+    /// <see cref="DisposeAsync"/> awaits it). Safe only because a cancelled ingest's table name is not
+    /// re-created in the same session before that drop runs. Never throws.</summary>
+    private void DropTableOnCancellation(string targetTable)
+    {
+        try
+        {
+            if (_gate.Wait(0))
+            {
+                try
+                {
+                    ExecuteSync($"DROP TABLE IF EXISTS {ArrowInterop.QuoteQualified(targetTable)}");
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+
+                return;
+            }
+        }
+        catch
+        {
+            // Suppressed by design: never mask the cancellation with a cleanup failure.
+            return;
+        }
+
+        var drop = DropTableWhenGateFreeAsync(targetTable);
+        lock (_deferredDrops)
+        {
+            _deferredDrops.Add(drop);
+        }
+
+        _ = drop.ContinueWith(
+            completed =>
+            {
+                lock (_deferredDrops)
+                {
+                    _deferredDrops.Remove(completed);
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task DropTableWhenGateFreeAsync(string targetTable)
+    {
+        // Off the cancelled ingest's thread, so the caller sees the cancellation before the wait begins.
+        await Task.Yield();
+        await DropTableBestEffortAsync(targetTable).ConfigureAwait(false);
     }
 
     /// <summary>Best-effort cleanup after a failed or cancelled ingest: drops the table the failed ingest

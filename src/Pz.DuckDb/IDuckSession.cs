@@ -15,7 +15,9 @@ public interface IDuckSession : IAsyncDisposable
     /// The connection gate is held only to create the table and per batch, never while awaiting the next
     /// batch, so other statements run in between and see rows as each batch lands.
     /// On failure or cancellation, the target table is removed; a successful return is the only way the
-    /// table exists.</summary>
+    /// table exists. On failure it is removed before the call returns. On cancellation it is removed once
+    /// the connection is free, which is not necessarily before the call returns: the call does not wait
+    /// behind another operation that holds the connection.</summary>
     Task<long> IngestArrowAsync(string targetTable, Apache.Arrow.Schema schema,
         IAsyncEnumerable<Apache.Arrow.RecordBatch> batches, CancellationToken ct = default);
 

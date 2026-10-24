@@ -79,6 +79,16 @@ public sealed class ChannelIngestConcurrencyTests : IAsyncLifetime
         finally
         {
             releaseA.TrySetResult();
+
+            // A must finish before DisposeAsync closes the connection under it. Its own outcome is
+            // asserted below; an exception here must not replace a failure from the block above.
+            try
+            {
+                await execA.WaitAsync(TimeSpan.FromSeconds(30));
+            }
+            catch
+            {
+            }
         }
 
         var a = await execA.WaitAsync(TimeSpan.FromSeconds(30));
