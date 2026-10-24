@@ -476,7 +476,9 @@ internal static class RunCommand
         // callbacks onto the bus for whichever renderer --log-format selected. Writes go through
         // backends.Artifacts (Local or SQL).
         var startedAtIso = startedAt.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
-        var snapshotEvents = new SnapshotRunEvents(backends.Artifacts, runId, startedAtIso);
+        // Disposed (flushed) on every exit, so an exception path never leaves the background snapshot
+        // writer parked.
+        using var snapshotEvents = new SnapshotRunEvents(backends.Artifacts, runId, startedAtIso);
         var bus = new RunEventBus();
         var publisher = new RunEventPublisher(bus, runId, TimeProvider.System, phases);
         var events = new CompositeRunEvents(snapshotEvents, publisher);
@@ -574,6 +576,7 @@ internal static class RunCommand
         // refuses a "running" prior run with PZ0503 ("prior run was interrupted … re-run 'pz run'") --
         // an honest, actionable outcome instead of a false success. Node-level crash safety is
         // unaffected: every NodeResult is durable at this exact point.
+        snapshotEvents.Flush();
         snapshotEvents.TryWriteSnapshot(result.Nodes, "running");
 
         // Reclaim .pz/runs disk before the bus closes. Placed here
@@ -693,6 +696,7 @@ internal static class RunCommand
                     "may be incomplete for this run");
             }
 
+            snapshotEvents.Flush();
             snapshotEvents.TryWriteSnapshot(result.Nodes, "running", eventsDropped);
         }
 
@@ -806,6 +810,7 @@ internal static class RunCommand
         // by the try/catch discipline immediately above (a persist failure prints a note and falls
         // through to the status-derived exit code), NOT by writing run_results first.
         finalize.Dispose();
+        snapshotEvents.Flush();
         snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped, phases.Snapshot());
         runSpan.Finish();
         onResults?.Invoke(result.Nodes);
