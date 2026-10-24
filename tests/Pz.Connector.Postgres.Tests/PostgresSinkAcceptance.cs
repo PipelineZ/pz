@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Npgsql;
@@ -22,6 +23,16 @@ public sealed class PostgresSinkAcceptance(PostgresContainerFixture fixture) : S
     private const string SmallTable = "sink_accept_small";
     private const string MergeTable = "sink_accept_merge";
     private const string ReplaceTable = "sink_accept_replace";
+    private const string TypeMatrixTable = "sink_accept_type_matrix";
+
+    private static readonly Schema TypeMatrixSchema = new(
+    [
+        new Field("id", Int64Type.Default, nullable: false),
+        new Field("amount", new Decimal128Type(38, 9), nullable: true),
+        new Field("ts", new TimestampType(TimeUnit.Microsecond, "UTC"), nullable: true),
+        new Field("d", Date32Type.Default, nullable: true),
+        new Field("active", BooleanType.Default, nullable: true),
+    ], null);
 
     private static readonly Schema IdNameSchema = new(
     [
@@ -53,12 +64,60 @@ public sealed class PostgresSinkAcceptance(PostgresContainerFixture fixture) : S
     protected override OutputSpec? ReplaceOutput => new("pg", ReplaceTable, "replace", "fail_on_change",
         new Dictionary<string, object?>());
 
+    protected override OutputSpec? TypeMatrixOutput => new("pg", TypeMatrixTable, "replace", "fail_on_change",
+        new Dictionary<string, object?>());
+
     protected override Task ResetMergeTargetAsync() => DropAsync(MergeTable);
+
+    /// <summary>numeric is read back as text so a value no .NET decimal holds still compares digit for digit.</summary>
+    protected override async ValueTask<IReadOnlyList<RecordBatch>> ReadTypeMatrixCommittedAsync(
+        ISinkConnector connector, OutputSpec spec)
+    {
+        await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            $"select id, amount::text, ts, d, active from public.\"{spec.Output}\" order by id", connection);
+        await using var reader = await command.ExecuteReaderAsync();
+        var builder = new ArrowBatchBuilder(TypeMatrixSchema);
+        while (await reader.ReadAsync())
+        {
+            builder.AppendRow(
+            [
+                reader.GetInt64(0),
+                reader.IsDBNull(1) ? null : SqlDecimal.Parse(reader.GetString(1)),
+                reader.IsDBNull(2) ? null : reader.GetFieldValue<DateTimeOffset>(2),
+                reader.IsDBNull(3) ? null : reader.GetFieldValue<DateOnly>(3),
+                reader.IsDBNull(4) ? null : reader.GetBoolean(4),
+            ]);
+        }
+
+        return builder.Flush() is { } batch ? [batch] : [];
+    }
 
     protected override async ValueTask<IReadOnlyList<RecordBatch>> ReadCommittedAsync(ISinkConnector connector, OutputSpec spec)
     {
         var table = spec.Output;
         return await ReadIdNameTableAsync(table);
+    }
+
+    [SkippableFact]
+    public async Task Decimal_beyond_system_decimal_is_refused_naming_the_column()
+    {
+        DockerFacts.SkipUnlessDocker();
+        var spec = TypeMatrixOutput!;
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        await using var session = await sink.BeginWriteAsync(spec, TypeMatrixSchema, CancellationToken.None);
+        var builder = new ArrowBatchBuilder(TypeMatrixSchema);
+        builder.AppendRow([1L, SqlDecimal.Parse("12345678901234567890123456789.123456789"), null, null, null]);
+        using var batch = builder.Flush()!;
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await session.WriteBatchAsync(batch, CancellationToken.None));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("'amount'", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("exceeds .NET decimal range", ex.Message, StringComparison.Ordinal);
     }
 
     [SkippableFact]

@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Data.SqlTypes;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -123,8 +124,13 @@ public static partial class NdjsonCodec
                     jw.WriteNumber(name, d);
                 }
                 break;
-            case Decimal128Array a:
+            case Decimal128Array a when Decimal128Cells.FitsSystemDecimal(a, index):
                 jw.WriteNumber(name, a.GetValue(index)!.Value);
+                break;
+            case Decimal128Array a:
+                // Beyond System.Decimal's range: Arrow's exact digit string is itself a valid JSON number.
+                jw.WritePropertyName(name);
+                jw.WriteRawValue(a.GetString(index));
                 break;
             case BooleanArray a:
                 jw.WriteBoolean(name, a.GetValue(index)!.Value);
@@ -299,7 +305,7 @@ public static partial class NdjsonCodec
                 "int" => element.GetInt32(),
                 "bigint" => element.GetInt64(),
                 "double" => element.GetDouble(),
-                "decimal" => element.GetDecimal(),
+                "decimal" => ReadDecimal(element),
                 "varchar" => element.GetString(),
                 "boolean" => element.GetBoolean(),
                 "date" => DateOnly.ParseExact(element.GetString()!, "yyyy-MM-dd", CultureInfo.InvariantCulture),
@@ -308,12 +314,29 @@ public static partial class NdjsonCodec
                     $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false),
             };
         }
-        catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException)
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException or SqlTypeException)
         {
             throw new PzConnectorException(
                 $"NDJSON line {lineNumber}, column '{columnName}': value is not a valid {typeName}",
                 isTransient: false, innerException: ex);
         }
+    }
+
+    /// <summary>A JSON number as a decimal(38,9) cell. <see cref="JsonElement.GetDecimal"/> rounds a literal
+    /// with more than 28 significant digits instead of failing, so a plain (exponent-free) literal that long
+    /// is parsed as a <see cref="SqlDecimal"/>, which carries all 38 digits or throws.</summary>
+    private static object ReadDecimal(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Number)
+        {
+            var raw = element.GetRawText();
+            if (raw.AsSpan().IndexOfAny('e', 'E') < 0 && raw.Count(char.IsAsciiDigit) > 28)
+            {
+                return SqlDecimal.Parse(raw);
+            }
+        }
+
+        return element.GetDecimal();
     }
 
     /// <summary>Parses an ISO-8601 timestamp back to a UTC <see cref="DateTimeOffset"/>, accepting any

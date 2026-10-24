@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Apache.Arrow;
@@ -770,6 +771,60 @@ public abstract class SinkConnectorAcceptanceTests
         Assert.Null(rows[2].Ts);
         Assert.Null(rows[2].D);
         Assert.Null(rows[2].Active);
+    }
+
+    /// <summary>A decimal128(38,9) value beyond System.Decimal's range (a 29-digit integer part with all nine
+    /// fractional digits) must reach the destination with every digit, or the write must be refused with a
+    /// permanent <see cref="PzConnectorException"/> naming the column. Dropping digits silently is the one
+    /// wrong answer. Rides the <see cref="TypeMatrixOutput"/> hooks, so it is a no-op for a sink that has not
+    /// opted in.</summary>
+    [SkippableFact]
+    public async Task Decimal_beyond_system_decimal_commits_exactly_or_fails_permanently()
+    {
+        Gate();
+        if (TypeMatrixOutput is not { } output)
+        {
+            Assert.True(true);
+            return;
+        }
+
+        const string beyond = "12345678901234567890123456789.123456789";
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        await using (var session = await sink.BeginWriteAsync(output, TypeMatrixSchema, CancellationToken.None))
+        {
+            var builder = new ArrowBatchBuilder(TypeMatrixSchema);
+            builder.AppendRow([1L, SqlDecimal.Parse(beyond), null, null, null]);
+            builder.AppendRow([2L, SqlDecimal.Parse("-" + beyond), null, null, null]);
+            builder.AppendRow([3L, 1.5m, null, null, null]);
+            using var batch = builder.Flush()!;
+            try
+            {
+                await session.WriteBatchAsync(batch, CancellationToken.None);
+                await session.CommitAsync(CancellationToken.None);
+            }
+            catch (PzConnectorException ex)
+            {
+                Assert.False(ex.IsTransient, $"refusing an unrepresentable decimal must be permanent: {ex.Message}");
+                Assert.Contains("amount", ex.Message, StringComparison.Ordinal);
+                return;
+            }
+        }
+
+        var amounts = new Dictionary<long, string>();
+        foreach (var batch in await ReadTypeMatrixCommittedAsync(connector, output))
+        {
+            var ids = (Int64Array)batch.Column(0);
+            var column = (Decimal128Array)batch.Column(1);
+            for (var i = 0; i < batch.Length; i++)
+            {
+                amounts[ids.GetValue(i)!.Value] = column.GetString(i);
+            }
+        }
+
+        Assert.Equal(beyond, amounts[1]);
+        Assert.Equal("-" + beyond, amounts[2]);
+        Assert.Equal("1.500000000", amounts[3]);
     }
 
     /// <summary>The output-schema capability's contract: a sink that offers <see cref="IOutputConfigSchema"/> must

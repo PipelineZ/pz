@@ -6,6 +6,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
 using Xunit;
 
 namespace Pz.Connectors.TestKit;
@@ -1114,7 +1115,7 @@ public abstract class SourceConnectorAcceptanceTests
             Int32Array a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
             Int64Array a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
             DoubleArray a => a.GetValue(index)!.Value.ToString("R", CultureInfo.InvariantCulture),
-            Decimal128Array a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
+            Decimal128Array a => Decimal128Cells.GetExactString(a, index),
             BooleanArray a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
             Date32Array a => a.GetDateTime(index)!.Value.ToString("O", CultureInfo.InvariantCulture),
             TimestampArray a => a.GetTimestamp(index)!.Value.ToString("O", CultureInfo.InvariantCulture),
@@ -1299,7 +1300,7 @@ public abstract class SourceConnectorAcceptanceTests
             BooleanArray a => a.GetValue(index),
             Date32Array a => a.GetDateTime(index),
             TimestampArray a => a.GetTimestamp(index),
-            Decimal128Array a => a.GetValue(index),
+            Decimal128Array a => Decimal128Cells.GetExactValue(a, index),
             StringArray a => a.GetString(index),
             _ => throw new NotSupportedException($"unsupported array type {array.GetType()} in TestKit determinism check"),
         };

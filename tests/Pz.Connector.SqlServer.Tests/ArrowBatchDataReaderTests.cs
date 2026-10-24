@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
@@ -102,32 +103,32 @@ public class ArrowBatchDataReaderTests
         Assert.Equal(12.5m, reader.GetValue(3));
     }
 
-    // The source-side analog (SqlServerArrowReaderTests.Decimal_scale_overflow_names_the_column) covers a
-    // decimal that doesn't survive being written INTO an Arrow array; this covers the write path's own
-    // catch (ReadDecimal) -- a value that DOES fit decimal128(38,9) but not .NET's 96-bit decimal, which
-    // only GetValue's conversion (called from Cell, the bulk-write path) can surface.
+    // A value that fits decimal128(38,9) but not .NET's 96-bit decimal: GetValue on the Arrow array would
+    // drop digits (or, further out, throw), so the bulk-write path hands SqlBulkCopy an exact SqlDecimal.
     [Fact]
-    public void Decimal_value_too_large_for_net_decimal_names_the_column_during_bulk_write()
+    public void Decimal_beyond_system_decimal_is_handed_to_bulk_copy_as_an_exact_SqlDecimal()
     {
-        var schema = new Schema(
-        [
-            new Field("amount", new Decimal128Type(38, 9), nullable: true),
-        ], null);
-        // 29-digit integer part -- decimal128(38,9) represents it fine, but it exceeds
-        // decimal.MaxValue's ~7.9228e28. Decimal128Array.Builder.Append(string) parses the digits
-        // directly into the 128-bit mantissa, bypassing .NET decimal parsing at append time -- the
-        // overflow only surfaces later, when GetValue converts to decimal.
-        var amount = new Decimal128Array.Builder(new Decimal128Type(38, 9))
-            .Append("99999999999999999999999999999.000000000")
+        var schema = new Schema([new Field("amount", new Decimal128Type(38, 9), nullable: true)], null);
+        var beyond = SqlDecimal.Parse("12345678901234567890123456789.123456789");
+        var amounts = new Decimal128Array.Builder(new Decimal128Type(38, 9))
+            .Append(beyond)
+            .Append(1.5m)
+            .Append("-99999999999999999999999999999.999999999")
             .Build();
-        using var batch = new RecordBatch(schema, [amount], 1);
+        using var batch = new RecordBatch(schema, [amounts], 3);
         using var reader = new ArrowBatchDataReader(batch);
-        Assert.True(reader.Read());
 
-        var ex = Assert.Throws<PzConnectorException>(() => reader.GetValue(0));
+        Assert.True(reader.Read());
+        Assert.Equal(beyond, Assert.IsType<SqlDecimal>(reader.GetValue(0)));
+        var ex = Assert.Throws<PzConnectorException>(() => reader.GetDecimal(0));
         Assert.False(ex.IsTransient);
-        Assert.Contains("amount", ex.Message, StringComparison.Ordinal);
-        Assert.Contains("exceeds .NET decimal range", ex.Message, StringComparison.Ordinal);
-        Assert.IsType<OverflowException>(ex.InnerException);
+        Assert.Contains("'amount'", ex.Message, StringComparison.Ordinal);
+
+        Assert.True(reader.Read());
+        Assert.Equal(1.5m, Assert.IsType<decimal>(reader.GetValue(0)));
+        Assert.Equal(1.5m, reader.GetDecimal(0));
+
+        Assert.True(reader.Read());
+        Assert.Equal(SqlDecimal.Parse("-99999999999999999999999999999.999999999"), reader.GetValue(0));
     }
 }

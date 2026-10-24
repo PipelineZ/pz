@@ -1,3 +1,4 @@
+using System.Data.SqlTypes;
 using System.Globalization;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
@@ -184,8 +185,10 @@ internal sealed class SftpWindowFilter
 
     private static Func<IArrowArray, int, bool> DecimalRowKept(string loText, string hiText)
     {
-        var lo = decimal.Parse(loText, CultureInfo.InvariantCulture);
-        var hi = decimal.Parse(hiText, CultureInfo.InvariantCulture);
+        // SqlDecimal, not decimal: a decimal(38,x) cursor beyond decimal's range would otherwise compare
+        // with its digits silently dropped and land in the wrong window.
+        var lo = SqlDecimal.Parse(loText);
+        var hi = SqlDecimal.Parse(hiText);
         return (column, row) =>
         {
             var array = (Decimal128Array)column;
@@ -194,8 +197,8 @@ internal sealed class SftpWindowFilter
                 return false;
             }
 
-            var value = array.GetValue(row)!.Value;
-            return value > lo && value <= hi;
+            var value = array.GetSqlDecimal(row)!.Value;
+            return (value > lo).IsTrue && (value <= hi).IsTrue;
         };
     }
 

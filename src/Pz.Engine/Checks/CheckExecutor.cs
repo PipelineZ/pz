@@ -1,5 +1,6 @@
 using System.Globalization;
 using Apache.Arrow;
+using Pz.Connectors.Abstractions.Batches;
 using Pz.Core.Dag;
 using Pz.Core.Loading;
 using Pz.Core.Validation;
@@ -289,7 +290,7 @@ public sealed class CheckExecutor : INodeExecutor
             Int32Array a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
             Int64Array a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
             DoubleArray a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
-            Decimal128Array a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
+            Decimal128Array a => Decimal128Cells.GetExactString(a, index),
             StringArray a => a.GetString(index),
             BooleanArray a => a.GetValue(index)!.Value.ToString(CultureInfo.InvariantCulture),
             Date32Array a => a.GetDateOnly(index)!.Value.ToString("O", CultureInfo.InvariantCulture),

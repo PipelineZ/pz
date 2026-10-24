@@ -1,7 +1,9 @@
+using System.Data.SqlTypes;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.TestKit;
 using Pz.TestSupport;
 
@@ -13,6 +15,16 @@ public sealed class SqlServerSinkAcceptance(MsSqlContainerFixture fixture) : Sin
     private const string SmallTable = "sink_accept_small";
     private const string MergeTable = "sink_accept_merge";
     private const string ReplaceTable = "sink_accept_replace";
+    private const string TypeMatrixTable = "sink_accept_type_matrix";
+
+    private static readonly Schema TypeMatrixSchema = new(
+    [
+        new Field("id", Int64Type.Default, nullable: false),
+        new Field("amount", new Decimal128Type(38, 9), nullable: true),
+        new Field("ts", new TimestampType(TimeUnit.Microsecond, "UTC"), nullable: true),
+        new Field("d", Date32Type.Default, nullable: true),
+        new Field("active", BooleanType.Default, nullable: true),
+    ], null);
 
     private static readonly Schema IdNameSchema = new(
     [
@@ -43,7 +55,36 @@ public sealed class SqlServerSinkAcceptance(MsSqlContainerFixture fixture) : Sin
     protected override OutputSpec? ReplaceOutput => new("ms", ReplaceTable, "replace", "fail_on_change",
         new Dictionary<string, object?>());
 
+    protected override OutputSpec? TypeMatrixOutput => new("ms", TypeMatrixTable, "replace", "fail_on_change",
+        new Dictionary<string, object?>());
+
     protected override Task ResetMergeTargetAsync() => DropAsync(MergeTable);
+
+    /// <summary>decimal is read as SqlDecimal so a value no .NET decimal holds still compares digit for digit;
+    /// datetime2 comes back as a naive UTC DateTime.</summary>
+    protected override async ValueTask<IReadOnlyList<RecordBatch>> ReadTypeMatrixCommittedAsync(
+        ISinkConnector connector, OutputSpec spec)
+    {
+        await using var connection = new SqlConnection(fixture.ConnectionString);
+        await connection.OpenAsync();
+        await using var command = new SqlCommand(
+            $"select id, amount, ts, d, active from dbo.[{spec.Output}] order by id", connection);
+        await using var reader = await command.ExecuteReaderAsync();
+        var builder = new ArrowBatchBuilder(TypeMatrixSchema);
+        while (await reader.ReadAsync())
+        {
+            builder.AppendRow(
+            [
+                reader.GetInt64(0),
+                reader.IsDBNull(1) ? null : reader.GetSqlDecimal(1),
+                reader.IsDBNull(2) ? null : new DateTimeOffset(DateTime.SpecifyKind(reader.GetDateTime(2), DateTimeKind.Utc)),
+                reader.IsDBNull(3) ? null : DateOnly.FromDateTime(reader.GetDateTime(3)),
+                reader.IsDBNull(4) ? null : reader.GetBoolean(4),
+            ]);
+        }
+
+        return builder.Flush() is { } batch ? [batch] : [];
+    }
 
     protected override async ValueTask<IReadOnlyList<RecordBatch>> ReadCommittedAsync(ISinkConnector connector, OutputSpec spec)
     {
@@ -73,6 +114,27 @@ public sealed class SqlServerSinkAcceptance(MsSqlContainerFixture fixture) : Sin
         await using var connection = new SqlConnection(fixture.ConnectionString);
         await connection.OpenAsync();
         await MsSqlContainerFixture.ExecuteAsync(connection, sql);
+    }
+
+    [SkippableFact]
+    public async Task Decimal_beyond_system_decimal_is_carried_exactly_by_bulk_copy()
+    {
+        DockerFacts.SkipUnlessDocker();
+        const string beyond = "12345678901234567890123456789.123456789";
+        var spec = TypeMatrixOutput!;
+        var connector = CreateSink();
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+        await using (var session = await sink.BeginWriteAsync(spec, TypeMatrixSchema, CancellationToken.None))
+        {
+            var builder = new ArrowBatchBuilder(TypeMatrixSchema);
+            builder.AppendRow([1L, SqlDecimal.Parse(beyond), null, null, null]);
+            using var batch = builder.Flush()!;
+            await session.WriteBatchAsync(batch, CancellationToken.None);
+            await session.CommitAsync(CancellationToken.None);
+        }
+
+        var committed = Assert.Single(await ReadTypeMatrixCommittedAsync(connector, spec));
+        Assert.Equal(beyond, ((Decimal128Array)committed.Column(1)).GetString(0));
     }
 
     [SkippableFact]

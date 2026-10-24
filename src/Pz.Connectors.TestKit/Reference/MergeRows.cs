@@ -84,7 +84,7 @@ internal static class MergeRows
             Int32Array a => a.GetValue(index),
             Int64Array a => a.GetValue(index),
             DoubleArray a => a.GetValue(index),
-            Decimal128Array a => a.GetValue(index),
+            Decimal128Array a => Decimal128Cells.GetExactValue(a, index),
             BooleanArray a => a.GetValue(index),
             Date32Array a => DateOnly.FromDateTime(a.GetDateTime(index)!.Value),
             TimestampArray a => a.GetTimestamp(index),
