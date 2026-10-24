@@ -20,16 +20,25 @@ public sealed class JsonRenderer(TextWriter? writer = null) : IEventRenderer
 
     private TextWriter Writer => writer ?? Console.Out;
 
+    private readonly ArrayBufferWriter<byte> _buffer = new();
+    private readonly Utf8JsonWriter _json = new(new ArrayBufferWriter<byte>(), new JsonWriterOptions { Indented = false });
+    private readonly Lock _gate = new();
+
     public void Render(RunEvent evt)
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var json = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = false }))
+        lock (_gate)
         {
-            WriteEvent(json, evt);
-        }
+            _buffer.Clear();
+            _json.Reset(_buffer);
+            WriteEvent(_json, evt);
+            _json.Flush();
+            var span = _buffer.GetSpan(1);
+            span[0] = (byte)'\n';
+            _buffer.Advance(1);
 
-        Writer.Write(Encoding.UTF8.GetString(buffer.WrittenSpan));
-        Writer.Write('\n');
+            // One Write per event so concurrent writers to the same stream never interleave a line.
+            Writer.Write(Encoding.UTF8.GetString(_buffer.WrittenSpan));
+        }
     }
 
     // The event-name mapping and per-event field writer live in Pz.Diagnostics.Events.RunEventFields so

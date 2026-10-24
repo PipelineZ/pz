@@ -98,4 +98,42 @@ public class LiveTreeRendererTests
         var renderer = new LiveTreeRenderer(fallbackWriter: new StringWriter(), isInteractive: () => false);
         renderer.Dispose();
     }
+
+    [Fact]
+    public void Final_frame_shows_every_node_and_stop_is_prompt()
+    {
+        var output = new StringWriter();
+        var console = Spectre.Console.AnsiConsole.Create(new Spectre.Console.AnsiConsoleSettings
+        {
+            Ansi = Spectre.Console.AnsiSupport.No,
+            ColorSystem = Spectre.Console.ColorSystemSupport.NoColors,
+            Interactive = Spectre.Console.InteractionSupport.Yes,
+            Out = new Spectre.Console.AnsiConsoleOutput(output),
+        });
+        var renderer = new LiveTreeRenderer(console, isInteractive: () => true);
+
+        string[] names = ["src_a", "src_b", "src_c"];
+        foreach (var name in names)
+        {
+            renderer.Render(new NodeStartedEvent(At, "run-1", name, "SourceLoad", name));
+        }
+
+        foreach (var name in names)
+        {
+            renderer.Render(new NodeCompletedEvent(At, "run-1", name, "SourceLoad", name, "success", 5, 41, null, null, null));
+        }
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        renderer.Dispose();
+        stopwatch.Stop();
+
+        var text = output.ToString();
+        var lastFrame = text[text.LastIndexOf("pz run", StringComparison.Ordinal)..];
+        foreach (var name in names)
+        {
+            Assert.Contains($"ok {name} 5 rows 41ms", lastFrame, StringComparison.Ordinal);
+        }
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"stop took {stopwatch.Elapsed}");
+    }
 }

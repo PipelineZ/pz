@@ -14,9 +14,9 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
     private readonly IEventRenderer? _fallback;
     private readonly Dictionary<string, NodeRow> _nodes = [];
     private readonly Lock _gate = new();
-    private readonly ManualResetEventSlim _ctxReady = new(initialState: false);
+    private readonly SemaphoreSlim _wake = new(0);
     private readonly Task? _liveTask;
-    private LiveDisplayContext? _ctx;
+    private bool _dirty;
     private volatile bool _stopping;
 
     private sealed class NodeRow
@@ -45,11 +45,32 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
         var ansiConsole = console ?? AnsiConsole.Console;
         _liveTask = ansiConsole.Live(BuildTree()).StartAsync(async ctx =>
         {
-            _ctx = ctx;
-            _ctxReady.Set();
-            while (!_stopping)
+            // Events only mark the state dirty; this loop is the sole place the tree is rebuilt, so
+            // the cost is O(frames), not O(events). The wait times out at 100 ms to coalesce bursts
+            // and is released immediately by stop.
+            while (true)
             {
-                await Task.Delay(100).ConfigureAwait(false);
+                await _wake.WaitAsync(TimeSpan.FromMilliseconds(100)).ConfigureAwait(false);
+                var stopping = _stopping;
+                bool dirty;
+                lock (_gate)
+                {
+                    dirty = _dirty;
+                    _dirty = false;
+                }
+
+                // After stop one last rebuild runs regardless of the flag, so the final frame always
+                // reflects the complete state.
+                if (dirty || stopping)
+                {
+                    ctx.UpdateTarget(BuildTree());
+                    ctx.Refresh();
+                }
+
+                if (stopping)
+                {
+                    break;
+                }
             }
         });
     }
@@ -162,13 +183,14 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
             }
         }
 
-        // The live loop's ctx is assigned asynchronously right after StartAsync begins; give it a
-        // moment to show up rather than silently dropping the very first render.
-        _ctxReady.Wait(TimeSpan.FromSeconds(1));
-        if (_ctx is { } ctx)
+        lock (_gate)
         {
-            ctx.UpdateTarget(BuildTree());
-            ctx.Refresh();
+            _dirty = true;
+        }
+
+        if (_stopping)
+        {
+            _wake.Release();
         }
     }
 
@@ -253,6 +275,7 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
     public void Dispose()
     {
         _stopping = true;
+        _wake.Release();
         try
         {
             _liveTask?.Wait(TimeSpan.FromSeconds(2));
@@ -262,6 +285,6 @@ public sealed class LiveTreeRenderer : IEventRenderer, IDisposable
             // Best-effort teardown only — a wedged live-display task must never fault Dispose.
         }
 
-        _ctxReady.Dispose();
+        _wake.Dispose();
     }
 }
