@@ -29,7 +29,7 @@ public sealed record DryCompileResult(
 /// </summary>
 public static class SqlDryCompiler
 {
-    public static async Task<DryCompileResult> RunAsync(CompiledDag dag, CancellationToken ct)
+    public static async Task<DryCompileResult> RunAsync(CompiledDag dag, CancellationToken ct, DuckOptions? options = null)
     {
         var errors = new List<PzError>();
         var skipped = new List<string>();
@@ -40,7 +40,7 @@ public static class SqlDryCompiler
         // DagNode.DependsOn without any name-based re-derivation.
         var available = new HashSet<NodeId>();
 
-        await using (var duck = DuckSession.Open(":memory:"))
+        await using (var duck = DuckSession.Open(":memory:", options))
         {
             await duck.ExecuteAsync("create schema if not exists staging", ct).ConfigureAwait(false);
 

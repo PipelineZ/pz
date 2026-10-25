@@ -32,7 +32,8 @@ public sealed record PzProject(string Name, string Version, EngineConfig Engine,
 /// starts failing because of a limit nobody set.</summary>
 public sealed record EngineConfig(int Threads = 4, DuckOptionsConfig? DuckDb = null, bool ForceUniversal = false,
     int? BatchBytes = null, bool CheckSamples = true, BreakerConfig? Breaker = null, TimeSpan? NodeTimeout = null);
-public sealed record DuckOptionsConfig(string? MemoryLimit = null, int? Threads = null, string? TempDirectory = null);
+public sealed record DuckOptionsConfig(string? MemoryLimit = null, int? Threads = null, string? TempDirectory = null,
+    IReadOnlyList<string>? Extensions = null, IReadOnlyDictionary<string, object?>? Settings = null);
 /// <summary><c>engine.breaker</c> — config for the engine-owned
 /// <c>Pz.Engine.Resilience.CircuitBreaker</c>. Absent -> the breaker is off entirely (no instance
 /// trips, matching <c>retry:</c>/<c>max_concurrency:</c>'s "absent means off/unbounded" convention).

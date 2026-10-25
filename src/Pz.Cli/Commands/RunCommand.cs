@@ -224,7 +224,8 @@ internal static class RunCommand
             IReadOnlySet<NodeId>? selection;
             using (phases.Begin(RunPhaseClock.Validate))
             {
-                var dry = await SqlDryCompiler.RunAsync(fullDag, ct);
+                var dry = await SqlDryCompiler.RunAsync(fullDag, ct, project.Engine.DuckDb is { } dryCfg
+                    ? new DuckOptions(Extensions: dryCfg.Extensions, Settings: dryCfg.Settings) : null);
                 if (dry.Errors.Count > 0)
                 {
                     foreach (var error in dry.Errors)
@@ -418,7 +419,7 @@ internal static class RunCommand
         }
 
         var duckOptions = project.Engine.DuckDb is { } cfg
-            ? new DuckOptions(cfg.MemoryLimit, cfg.Threads, cfg.TempDirectory)
+            ? new DuckOptions(cfg.MemoryLimit, cfg.Threads, cfg.TempDirectory, cfg.Extensions, cfg.Settings)
             : null;
 
         await using var duck = DuckSession.Open(paths.StagingDbPath, duckOptions);

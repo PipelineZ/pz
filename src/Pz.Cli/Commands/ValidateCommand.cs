@@ -1,3 +1,4 @@
+using Pz.DuckDb;
 using System.CommandLine;
 using Pz.Core.Dag;
 using Pz.Core.Loading;
@@ -121,7 +122,8 @@ internal static class ValidateCommand
         }
 
         // Tier 4: SQL dry-compile against contract-derived empty tables (throwaway DuckDB session).
-        var dry = await SqlDryCompiler.RunAsync(dag, ct);
+        var dry = await SqlDryCompiler.RunAsync(dag, ct, project.Engine.DuckDb is { } dryCfg
+            ? new DuckOptions(Extensions: dryCfg.Extensions, Settings: dryCfg.Settings) : null);
         if (dry.Errors.Count > 0)
         {
             foreach (var error in dry.Errors)

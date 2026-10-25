@@ -300,7 +300,7 @@ public static class ProjectLoader
 
     private static readonly string[] KnownEngineKeys =
         ["threads", "duckdb", "force_universal", "batch_bytes", "check_samples", "breaker", "node_timeout"];
-    private static readonly string[] KnownDuckDbKeys = ["memory_limit", "threads", "temp_directory"];
+    private static readonly string[] KnownDuckDbKeys = ["memory_limit", "threads", "temp_directory", "extensions", "settings"];
 
     private static EngineConfig ParseEngineConfig(Dictionary<string, object?> engineYaml, string relativePath,
         List<PzError> errors)
@@ -329,7 +329,9 @@ public static class ProjectLoader
             duckDb = new DuckOptionsConfig(
                 TryGetString(duckDbYaml, "memory_limit"),
                 TryGetInt(duckDbYaml, "threads"),
-                TryGetString(duckDbYaml, "temp_directory"));
+                TryGetString(duckDbYaml, "temp_directory"),
+                [.. GetList(duckDbYaml, "extensions").Select(e => Convert.ToString(e, CultureInfo.InvariantCulture) ?? "")],
+                GetDict(duckDbYaml, "settings"));
         }
         else if (duckDbValue is not (null or ""))
         {

@@ -1,0 +1,15 @@
+name: jev_spike
+version: 0.1.0
+
+connectors:
+  - package: Pz.Connector.LocalFiles
+    version: 0.1.0
+
+engine:
+  threads: 2
+  duckdb:
+    extensions: [jev]
+    settings:
+      # The key comes from TYPESAFE_API_KEY in the environment; jev reads it itself.
+      jev_api_url: http://127.0.0.1:18765/v1/systemone
+      jev_max_rows_per_statement: 1000

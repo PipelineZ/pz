@@ -113,6 +113,25 @@ public sealed class DuckSession : IDuckSession
         {
             ExecuteSync($"SET temp_directory = {QuoteLiteral(options.TempDirectory)}");
         }
+
+        // SPIKE: community extensions (e.g. jev) loaded before any pipeline SQL binds.
+        foreach (var extension in options.Extensions ?? [])
+        {
+            var ident = "\"" + extension.Replace("\"", "\"\"") + "\"";
+            ExecuteSync($"INSTALL {ident} FROM community");
+            ExecuteSync($"LOAD {ident}");
+        }
+
+        foreach (var (name, value) in options.Settings ?? new Dictionary<string, object?>())
+        {
+            var literal = value switch
+            {
+                bool b => b ? "true" : "false",
+                int or long or double => Convert.ToString(value, CultureInfo.InvariantCulture)!,
+                _ => QuoteLiteral(Convert.ToString(value, CultureInfo.InvariantCulture) ?? ""),
+            };
+            ExecuteSync($"SET \"{name.Replace("\"", "\"\"")}\" = {literal}");
+        }
     }
 
     private void WaitForGate(CancellationToken ct)
@@ -886,4 +905,5 @@ public sealed class DuckSession : IDuckSession
     }
 }
 
-public sealed record DuckOptions(string? MemoryLimit = null, int? Threads = null, string? TempDirectory = null);
+public sealed record DuckOptions(string? MemoryLimit = null, int? Threads = null, string? TempDirectory = null,
+    IReadOnlyList<string>? Extensions = null, IReadOnlyDictionary<string, object?>? Settings = null);

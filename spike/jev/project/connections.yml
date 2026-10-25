@@ -1,0 +1,15 @@
+raw:
+  connector: localfiles
+  entities:
+    tickets:
+      read:
+        path: data/tickets.csv
+        format: csv
+        columns:
+          id: bigint
+          subject: varchar
+          body: varchar
+
+lake:
+  connector: localfiles
+  root: out
