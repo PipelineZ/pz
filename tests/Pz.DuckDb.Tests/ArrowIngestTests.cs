@@ -367,8 +367,9 @@ public sealed class ArrowIngestTests : IDisposable
     }
 
     /// <summary>Yields <paramref name="readyBatches"/> 20-row batches synchronously, then parks until
-    /// <see cref="Release"/> before yielding the rest.</summary>
-    private sealed class ParkedSource(int readyBatches = 1, int rows = 40)
+    /// <see cref="Release"/> before yielding the rest. With <paramref name="ignoreCancellation"/> the park
+    /// does not observe the enumerator's token.</summary>
+    private sealed class ParkedSource(int readyBatches = 1, int rows = 40, bool ignoreCancellation = false)
     {
         public readonly TaskCompletionSource Parked = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -387,7 +388,7 @@ public sealed class ArrowIngestTests : IDisposable
                     if (yielded >= readyBatches)
                     {
                         Parked.TrySetResult();
-                        await Release.Task.WaitAsync(ct);
+                        await (ignoreCancellation ? Release.Task : Release.Task.WaitAsync(ct));
                     }
                     yielded++;
                     Interlocked.Increment(ref _undisposedBatches);
@@ -432,7 +433,7 @@ public sealed class ArrowIngestTests : IDisposable
     }
 
     [Fact]
-    public async Task Ingest_releases_the_gate_before_awaiting_a_batch_that_is_not_ready()
+    public async Task Ingest_hands_the_gate_over_while_awaiting_a_batch_that_is_not_ready()
     {
         await using var duck = Open();
         var closes = 0;
@@ -441,7 +442,8 @@ public sealed class ArrowIngestTests : IDisposable
         var ingest = duck.IngestArrowAsync("main.parked", MatrixSchema(), source.Batches());
         await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
 
-        // The three ready batches were committed together before the ingest began awaiting the fourth.
+        // The statement takes the gate from the ingest awaiting its fourth batch, which first commits the
+        // three it appended under one appender.
         Assert.Equal(60L, await duck.ScalarAsync<long>("select count(*) from main.parked")
             .WaitAsync(TimeSpan.FromSeconds(30)));
         Assert.Equal(1, Volatile.Read(ref closes));
@@ -457,12 +459,16 @@ public sealed class ArrowIngestTests : IDisposable
     {
         await using var duck = Open();
         var source = new ParkedSource();
-        // Throws after the hold has started the move for batch 2, which parks: the failure must not
-        // wait for that move, and the source is disposed once the move finishes.
+        // Throws when the hold, awaiting the parked batch 2, hands the gate over to the statement below:
+        // the failure must not wait for that move, and the source is disposed once the move finishes.
         duck.OnAppenderClosedForTests = () => throw new InvalidOperationException("injected close failure");
 
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => duck.IngestArrowAsync("main.pending", MatrixSchema(), source.Batches()).WaitAsync(TimeSpan.FromSeconds(30)));
+        var ingest = duck.IngestArrowAsync("main.pending", MatrixSchema(), source.Batches());
+        await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        var probe = duck.ScalarAsync<long>("select 1");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal(1L, await probe.WaitAsync(TimeSpan.FromSeconds(30)));
 
         Assert.True(source.Parked.Task.IsCompleted);
         Assert.False(source.Disposed.Task.IsCompleted);
@@ -471,6 +477,67 @@ public sealed class ArrowIngestTests : IDisposable
 
         source.Release.SetResult();
         await source.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(0, source.UndisposedBatches);
+    }
+
+    [Fact]
+    public async Task Ingest_fed_through_a_bounded_channel_commits_once_when_uncontended()
+    {
+        await using var duck = Open();
+        var closes = 0;
+        duck.OnAppenderClosedForTests = () => Interlocked.Increment(ref closes);
+
+        var channel = System.Threading.Channels.Channel.CreateBounded<RecordBatch>(4);
+        var producer = Task.Run(async () =>
+        {
+            await foreach (var b in LongBatches(10_000, 1)) { await channel.Writer.WriteAsync(b); }
+            channel.Writer.Complete();
+        });
+
+        var rows = await duck.IngestArrowAsync("main.channelled", LongSchema, channel.Reader.ReadAllAsync())
+            .WaitAsync(TimeSpan.FromSeconds(30));
+        await producer.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(10_000, rows);
+        Assert.Equal(10_000L, await duck.ScalarAsync<long>("select count(*) from main.channelled"));
+        Assert.Equal(1, closes);
+    }
+
+    [Fact]
+    public async Task Ingest_cancelled_while_holding_the_gate_for_a_batch_returns_without_waiting_for_the_source()
+    {
+        await using var duck = Open();
+        using var cts = new CancellationTokenSource();
+        // The park ignores the token, so only the ingest itself can make the cancellation prompt.
+        var source = new ParkedSource(ignoreCancellation: true);
+        var ingest = duck.IngestArrowAsync("main.held", MatrixSchema(), source.Batches(), cts.Token);
+        await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.Equal(0L, await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'held'").WaitAsync(TimeSpan.FromSeconds(30)));
+
+        source.Release.SetResult();
+        await source.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(0, source.UndisposedBatches);
+    }
+
+    [Fact]
+    public async Task Ingest_whose_source_fails_while_the_gate_is_held_for_it_drops_the_table_and_frees_the_gate()
+    {
+        await using var duck = Open();
+        var source = new ParkedSource();
+        var ingest = duck.IngestArrowAsync("main.faulted", MatrixSchema(), source.Batches());
+        await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        source.Release.SetException(new IOException("source failed"));
+        var ex = await Assert.ThrowsAsync<IOException>(() => ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal("source failed", ex.Message);
+
+        Assert.Equal(0L, await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'faulted'").WaitAsync(TimeSpan.FromSeconds(30)));
         Assert.Equal(0, source.UndisposedBatches);
     }
 

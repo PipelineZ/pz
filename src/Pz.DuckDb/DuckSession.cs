@@ -29,11 +29,19 @@ public sealed class DuckSession : IDuckSession
     // `_connection`/`NativeConnection` so concurrent nodes queue instead of corrupting shared state.
     // Operations holding live per-connection state across calls hold the gate for their full duration:
     // egress streams (a live pending result must not be interleaved with any other statement) and
-    // ExecuteTransactionAsync (BEGIN..COMMIT). Partition-mode appends hold it per batch. Ingest holds it
-    // per run of batches the source has already produced (capped at MaxRowsPerGateHold rows) and never
-    // while awaiting one that is not ready. Each hold uses a fresh appender that is closed before the gate
-    // is released, so no appender state spans a release.
+    // ExecuteTransactionAsync (BEGIN..COMMIT). Partition-mode appends hold it per batch. Ingest holds it,
+    // with one open appender, until another operation waits for it or MaxRowsPerGateHold rows have been
+    // appended -- including while awaiting its next batch, but only while nothing else is waiting. The
+    // appender is closed before the gate is released, so no appender state spans a release.
     private readonly SemaphoreSlim _gate = new(1, 1);
+
+    // Operations currently waiting for _gate. Every wait goes through WaitForGate/WaitForGateAsync, which
+    // count themselves here and then complete _gateWanted, so an ingest holding the gate while it awaits
+    // its next batch hands the gate over as soon as anything else wants it.
+    private int _gateWaiters;
+
+    // Armed (non-null) only while an ingest holds the gate awaiting a batch; completed by the next waiter.
+    private TaskCompletionSource? _gateWanted;
 
     // Drops of cancelled ingests' tables that were waiting for the gate when the ingest returned (see
     // DropTableOnCancellation). DisposeAsync awaits them so none reaches a native call on a disposed
@@ -107,6 +115,34 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
+    private void WaitForGate(CancellationToken ct)
+    {
+        Interlocked.Increment(ref _gateWaiters);
+        try
+        {
+            Volatile.Read(ref _gateWanted)?.TrySetResult();
+            _gate.Wait(ct);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _gateWaiters);
+        }
+    }
+
+    private async Task WaitForGateAsync(CancellationToken ct)
+    {
+        Interlocked.Increment(ref _gateWaiters);
+        try
+        {
+            Volatile.Read(ref _gateWanted)?.TrySetResult();
+            await _gate.WaitAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _gateWaiters);
+        }
+    }
+
     private static string QuoteLiteral(string value) => "'" + value.Replace("'", "''") + "'";
 
     private void ExecuteSync(string sql, CancellationToken ct = default)
@@ -141,7 +177,7 @@ public sealed class DuckSession : IDuckSession
         return Task.Run(
             () =>
             {
-                _gate.Wait(ct);
+                WaitForGate(ct);
                 try
                 {
                     ExecuteSync(sql, ct);
@@ -159,7 +195,7 @@ public sealed class DuckSession : IDuckSession
         return Task.Run(
             () =>
             {
-                _gate.Wait(ct);
+                WaitForGate(ct);
                 try
                 {
                     using var command = _connection.CreateCommand();
@@ -206,22 +242,22 @@ public sealed class DuckSession : IDuckSession
         return Task.Run(() => IngestArrowPerBatchAsync(targetTable, schema, batches, ct), ct);
     }
 
-    /// <summary>Rows after which an ingest's gate hold ends even when the next batch is already available.
-    /// Equal to the default maximum batch size, so default-sized batches take the gate once each and a
-    /// long run of ready batches cannot keep other statements out indefinitely.</summary>
+    /// <summary>Rows after which an ingest's gate hold ends even when nothing else is waiting for the gate.
+    /// Equal to the default maximum batch size, so default-sized batches commit once each.</summary>
     private const long MaxRowsPerGateHold = 122_880;
 
-    /// <summary>Takes <see cref="_gate"/> once to create the table, then once per run of batches the
-    /// source has already produced: one appender, closed (committed) before release, covers every batch
-    /// whose <c>MoveNextAsync</c> completes synchronously, up to <see cref="MaxRowsPerGateHold"/> rows.
-    /// The gate is never held while awaiting a batch that is not ready, so other statements run in between
-    /// and see each run's rows once it is committed. A failed or cancelled ingest drops the table; a
+    /// <summary>Takes <see cref="_gate"/> once to create the table, then holds it with one appender until
+    /// another operation waits for the gate or <see cref="MaxRowsPerGateHold"/> rows have been appended,
+    /// closing (committing) the appender before each release. Awaiting a batch that is not ready keeps the
+    /// gate only while nothing else is waiting for it, so an uncontended ingest commits once and other
+    /// statements still run in between, seeing every batch appended before they took the gate. A failed
+    /// or cancelled ingest drops the table; a
     /// successful return is the only way it survives. A failed ingest drops it before returning; a
     /// cancelled one returns at once and, when the gate is busy, drops it once the gate is free.</summary>
     private async Task<long> IngestArrowPerBatchAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
     {
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        await WaitForGateAsync(ct).ConfigureAwait(false);
         try
         {
             ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema));
@@ -265,7 +301,7 @@ public sealed class DuckSession : IDuckSession
             while (hasBatch)
             {
                 bool? nextReady = null;
-                await _gate.WaitAsync(ct).ConfigureAwait(false);
+                await WaitForGateAsync(ct).ConfigureAwait(false);
                 try
                 {
                     var connectionHandle = _connection.NativeConnection.DangerousGetHandle();
@@ -293,16 +329,32 @@ public sealed class DuckSession : IDuckSession
 
                         // Runs upstream code with the gate held, up to its first incomplete await.
                         var move = enumerator.MoveNextAsync();
+                        if (!move.IsCompleted)
+                        {
+                            var pending = move.AsTask();
+                            move = new ValueTask<bool>(pending);
+                            if (!await AwaitMoveHoldingGateAsync(pending, ct).ConfigureAwait(false))
+                            {
+                                // Another operation wants the gate, or the ingest is cancelled: the move is
+                                // observed only after the gate is released, and a cancelled ingest does not
+                                // wait for it at all.
+                                running = move;
+                                moveRunning = true;
+                                ct.ThrowIfCancellationRequested();
+                                break;
+                            }
+                        }
+
                         if (!move.IsCompletedSuccessfully)
                         {
-                            // Not ready, faulted or cancelled: observed only after the gate is released.
+                            // Faulted or cancelled: observed only after the gate is released.
                             running = move;
                             moveRunning = true;
                             break;
                         }
 
                         var more = move.Result;
-                        if (!more || holdRows >= MaxRowsPerGateHold)
+                        if (!more || holdRows >= MaxRowsPerGateHold || Volatile.Read(ref _gateWaiters) > 0)
                         {
                             nextReady = more;
                             break;
@@ -343,6 +395,32 @@ public sealed class DuckSession : IDuckSession
             {
                 await enumerator.DisposeAsync().ConfigureAwait(false);
             }
+        }
+    }
+
+    /// <summary>Waits, with the gate held, for <paramref name="move"/> to complete. Returns false without
+    /// waiting further as soon as another operation waits for the gate or <paramref name="ct"/> is
+    /// cancelled; the caller then releases the gate. The only await an ingest makes while holding it.</summary>
+    private async Task<bool> AwaitMoveHoldingGateAsync(Task<bool> move, CancellationToken ct)
+    {
+        var wanted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Armed before the waiter count is read: a waiter either counted itself before this read or sees
+        // the armed signal after its own count, so none is missed.
+        Interlocked.Exchange(ref _gateWanted, wanted);
+        try
+        {
+            if (Volatile.Read(ref _gateWaiters) > 0 || ct.IsCancellationRequested)
+            {
+                return false;
+            }
+
+            using var registration = ct.UnsafeRegister(static state => ((TaskCompletionSource)state!).TrySetResult(), wanted);
+            var first = await Task.WhenAny(move, wanted.Task).ConfigureAwait(false);
+            return ReferenceEquals(first, move);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _gateWanted, null);
         }
     }
 
@@ -452,7 +530,7 @@ public sealed class DuckSession : IDuckSession
     {
         try
         {
-            await _gate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+            await WaitForGateAsync(CancellationToken.None).ConfigureAwait(false);
             try
             {
                 ExecuteSync($"DROP TABLE IF EXISTS {ArrowInterop.QuoteQualified(targetTable)}");
@@ -473,7 +551,7 @@ public sealed class DuckSession : IDuckSession
         return Task.Run(
             () =>
             {
-                _gate.Wait(ct);
+                WaitForGate(ct);
                 try
                 {
                     ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema));
@@ -494,14 +572,14 @@ public sealed class DuckSession : IDuckSession
         // delegate at all — which would skip the `finally { batch.Dispose(); }` below and leak the
         // engine-owned pooled Arrow batch (this method's contract, and IDuckSession's doc comment,
         // require the batch to always be disposed, success or failure). Cancellation responsiveness
-        // is preserved by `_gate.Wait(ct)` and the explicit `ThrowIfCancellationRequested()` inside
+        // is preserved by `WaitForGate(ct)` and the explicit `ThrowIfCancellationRequested()` inside
         // the delegate, which the (always-running) finally then unwinds through.
         return Task.Run(
             () =>
             {
                 try
                 {
-                    _gate.Wait(ct);
+                    WaitForGate(ct);
                     try
                     {
                         ct.ThrowIfCancellationRequested();
@@ -524,7 +602,7 @@ public sealed class DuckSession : IDuckSession
         return Task.Run(
             () =>
             {
-                _gate.Wait(ct);
+                WaitForGate(ct);
                 try
                 {
                     ExecuteSync("BEGIN TRANSACTION");
@@ -588,7 +666,7 @@ public sealed class DuckSession : IDuckSession
         return Task.Run(
             () =>
             {
-                _gate.Wait(ct);
+                WaitForGate(ct);
                 try
                 {
                     return PeekSchema(sql);
@@ -717,7 +795,7 @@ public sealed class DuckSession : IDuckSession
             // batch stream is per-connection state that must not interleave with any other statement on
             // `_connection`, so this holds the gate from before ExecuteArrowBatchesAsync() until the
             // stream is fully drained below, not just around individual native calls.
-            await _gate.WaitAsync(ct).ConfigureAwait(false);
+            await WaitForGateAsync(ct).ConfigureAwait(false);
             gateAcquired = true;
 
             using var command = _connection.CreateCommand();

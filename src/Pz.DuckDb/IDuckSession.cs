@@ -12,9 +12,9 @@ public interface IDuckSession : IAsyncDisposable
     /// <summary>Creates <paramref name="targetTable"/> (qualified name, e.g. "staging.src_a__b") from the
     /// Arrow stream, consuming batches as they arrive (streaming — never buffers the full input) and
     /// disposing each batch after it is consumed. Returns rows ingested.
-    /// The connection gate is held to create the table and then per run of batches the source has already
-    /// produced (one commit per run, capped at 122,880 rows), never while awaiting a batch that is not
-    /// ready, so other statements run in between and see each run's rows once it is committed.
+    /// The connection gate is held while appending and while awaiting the next batch, but only until another
+    /// operation waits for it (or 122,880 rows have been appended in one hold): the rows appended so far
+    /// are committed and the gate handed over, so other statements run in between and see them.
     /// On failure or cancellation, the target table is removed; a successful return is the only way the
     /// table exists. On failure it is removed before the call returns. On cancellation it is removed once
     /// the connection is free, which is not necessarily before the call returns: the call does not wait
