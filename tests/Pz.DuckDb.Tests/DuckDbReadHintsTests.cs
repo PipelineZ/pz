@@ -13,6 +13,34 @@ public sealed class DuckDbReadHintsTests
         return reader.ExtractReadHints(sql, baseTable, cursorColumn);
     }
 
+    // -- whole-row references (jev(t, ...)) ---------------------------------------------------
+
+    [Fact]
+    public void A_whole_row_argument_disables_column_projection()
+    {
+        var plan = Extract("select t.id, jev_prob(t, 'q') as p from src_a t");
+
+        Assert.Null(plan.Columns);
+    }
+
+    [Fact]
+    public void A_whole_row_predicate_is_not_pushed()
+    {
+        var plan = Extract("select t.id from src_a t where jev(t, 'q') and t.id > 1");
+
+        Assert.NotNull(plan.PredicateSql);
+        Assert.DoesNotContain("jev", plan.PredicateSql!, StringComparison.Ordinal);
+        Assert.Contains("id", plan.PredicateSql!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void An_unaliased_whole_row_reference_disables_projection()
+    {
+        var plan = Extract("select id, jev_prob(src_a, 'q') as p from src_a");
+
+        Assert.Null(plan.Columns);
+    }
+
     // -- the hazard this whole feature is gated on ---------------------------------------------
 
     [Fact]

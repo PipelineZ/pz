@@ -411,6 +411,13 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
         if (names.Count == 1)
         {
             column = names[0]!.GetValue<string>();
+            // A bare relation name is a whole-row reference (jev(t, ...)), which no source column can
+            // satisfy.
+            if (scope.Aliases.Contains(column))
+            {
+                return ColumnOwner.Unknown;
+            }
+
             return scope.SoleRelation ? ColumnOwner.Target : ColumnOwner.Unknown;
         }
 
