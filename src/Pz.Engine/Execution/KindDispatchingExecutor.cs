@@ -172,9 +172,10 @@ public sealed class KindDispatchingExecutor(
             catch (NodeTimedOutException ex)
             {
                 // The instance is evidently unhealthy, which is the breaker's business; but the attempt
-                // is not retried here. SourceLoad drops its half-built staging table only on a failure it
-                // observes as one, never on cancellation, so a second attempt in this run could collide
-                // with what the cancelled one left. `pz retry` starts from a fresh staging database.
+                // is not retried here. A cancelled SourceLoad's staging table is dropped once the DuckDB
+                // connection is free, which may be after the attempt returns, so a second attempt in this
+                // run could collide with what the cancelled one left. `pz retry` starts from a fresh
+                // staging database.
                 breaker?.RecordTransientFailure(ticket, null);
                 ctx.DeliveryFailures.TryRemove(node.Id, out var delivery);
                 return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed,

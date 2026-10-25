@@ -6,7 +6,8 @@
 // Quantifies the DuckSession gate's serialization
 // cost -- the correctness fix from the full-suite-parallel-flake investigation (see DuckSession._gate's
 // doc comment) that made every operation touching the one shared native connection queue instead of
-// racing, at the cost of zero real overlap between concurrent nodes. This probe measures that cost
+// racing. Ingest takes the gate per batch; an egress query or drain holds it for its whole duration, so
+// a slow sink-style query serializes every other node's DuckDB work. This probe measures that cost
 // directly against the real DuckSession/ArrowBatchBuilder production code (no test doubles).
 //
 // Three operations -- two source-style ingests and one deliberately slow "sink" egress query (a
@@ -18,8 +19,8 @@
 //   2. CONCURRENT: issued together via Task.WhenAll -- the same shape RunOrchestrator's concurrent
 //      node dispatch uses in a real run.
 //
-// If the gate produces zero real overlap (the documented, correctness-first behavior), concurrent
-// elapsed ~= sequential elapsed: asking for concurrency bought nothing. Any daylight where concurrent
+// If the slow egress query dominates and holds the gate throughout, concurrent elapsed ~= sequential
+// elapsed: asking for concurrency bought nothing. Any daylight where concurrent
 // is faster is overlap the single-connection gate still permits (e.g. between DuckDB's own internal
 // query threads and .NET-side work); any daylight the other way is pure Task.WhenAll/dispatch overhead.
 

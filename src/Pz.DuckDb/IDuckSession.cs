@@ -12,8 +12,13 @@ public interface IDuckSession : IAsyncDisposable
     /// <summary>Creates <paramref name="targetTable"/> (qualified name, e.g. "staging.src_a__b") from the
     /// Arrow stream, consuming batches as they arrive (streaming — never buffers the full input) and
     /// disposing each batch after it is consumed. Returns rows ingested.
+    /// The connection gate is held while appending and while awaiting the next batch, but only until another
+    /// operation waits for it (or 122,880 rows have been appended in one hold): the rows appended so far
+    /// are committed and the gate handed over, so other statements run in between and see them.
     /// On failure or cancellation, the target table is removed; a successful return is the only way the
-    /// table exists.</summary>
+    /// table exists. On failure it is removed before the call returns. On cancellation it is removed once
+    /// the connection is free, which is not necessarily before the call returns: the call does not wait
+    /// behind another operation that holds the connection.</summary>
     Task<long> IngestArrowAsync(string targetTable, Apache.Arrow.Schema schema,
         IAsyncEnumerable<Apache.Arrow.RecordBatch> batches, CancellationToken ct = default);
 

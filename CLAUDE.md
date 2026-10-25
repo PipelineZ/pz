@@ -159,9 +159,16 @@ and `pz init`'s only source, bound to `TemplateCatalog` by set-equality tests.
   Hand-rolled or regex SQL parsing remains forbidden.
 - **One serialized DuckDB connection per run** gated by a `SemaphoreSlim` — a correctness fix (one
   `DuckDBConnection` is not safe for concurrent statement execution; concurrent dispatch raced on
-  native pending-query state), and measured ~free: concurrent/sequential ratio 0.94–1.04, and
-  connection-per-operation measured the same, so removing the gate buys nothing. Concurrency comes
-  from the topological dispatcher + bounded channels, not parallel connections.
+  native pending-query state). Channel-path ingest keeps the gate (and one open appender) only while
+  nothing else waits for it, and hands it over when something does, so a slow source (Postgres, SqlServer,
+  Sftp, Azure Blob, GCS) no longer serializes the run. Every gate wait must go through `DuckSession`'s
+  counted wait helpers, or it sits behind an idle ingest. Transactions hold the gate throughout, and an egress
+  drain holds it until all but its last buffered batches are read out, so a slow multi-batch sink still does.
+  The earlier "~free" measurement holds only for DuckDB-local work; it does not cover a slow external source
+  or sink. The gate probe's concurrent/sequential ratio is 0.93–1.00 (the probe's slow leg is an egress
+  query, which holds the gate throughout), and connection-per-operation measured 0.85–0.94 on the same
+  DuckDB-local work, so a second connection buys nothing there. Concurrency comes from the topological
+  dispatcher + bounded channels, not parallel connections.
 - **Execution is always staged materialize-then-drain**, never statement-scoped DML — even for the
   inline `INSERT INTO {{ sink(...) }}` form, which the compiler strips.
 - **Native setup statements run once per run** (`NativeSetupLedger` on `RunContext`, keyed by exact
