@@ -26,6 +26,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- Nodes waiting out a retry backoff or an open circuit breaker no longer hold a dispatch slot: other nodes,
+  including the same connection's under `max_concurrency`, run in the meantime.
 - **A slow source no longer blocks other nodes' DuckDB work.** Channel-path ingest (Postgres, SqlServer, Sftp,
   Azure Blob and GCS reads, and LocalFiles under `force_universal`) held the session gate for the whole stream, so
   every other node's DuckDB work waited for the slowest source. It now holds the gate while waiting for a batch
