@@ -370,8 +370,9 @@ public class ExecutionToolsTests
     {
         public void WriteSnapshot(string runId, string startedAtIso,
             IReadOnlyList<Pz.Engine.Execution.NodeResult> completed, string status, long? eventsDropped = null,
-            Pz.Diagnostics.Events.RunPhasesPayload? phases = null) =>
-            inner.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped, phases);
+            Pz.Diagnostics.Events.RunPhasesPayload? phases = null,
+            IReadOnlyList<Pz.DuckDb.LoadedExtension>? extensions = null) =>
+            inner.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped, phases, extensions);
 
         public Pz.Engine.Artifacts.PriorRun? ReadLatest() => inner.ReadLatest();
 

@@ -1,4 +1,5 @@
 using Pz.Diagnostics.Events;
+using Pz.DuckDb;
 using Pz.Engine.Execution;
 
 namespace Pz.Engine.Artifacts;
@@ -19,7 +20,7 @@ public sealed class LocalRunArtifactStore(string projectDir, TimeProvider? time 
     private readonly Lock _writersLock = new();
 
     public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed, string status,
-        long? eventsDropped = null, RunPhasesPayload? phases = null)
+        long? eventsDropped = null, RunPhasesPayload? phases = null, IReadOnlyList<LoadedExtension>? extensions = null)
     {
         // eventsDropped: not applicable -- run_results.json has no events_dropped column (the local
         // backend has no persisted event stream at all).
@@ -33,7 +34,7 @@ public sealed class LocalRunArtifactStore(string projectDir, TimeProvider? time 
             }
         }
 
-        writer.WriteSnapshot(completed, status, phases);
+        writer.WriteSnapshot(completed, status, phases, extensions);
     }
 
     public PriorRun? ReadLatest() => RunResultsReader.ReadLatest(projectDir);

@@ -36,6 +36,37 @@ public sealed class RunResultsWriterTests : IDisposable
     }
 
     [Fact]
+    public void Extensions_are_written_on_the_terminal_snapshot()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+
+        writer.WriteSnapshot([], "success", extensions: [new Pz.DuckDb.LoadedExtension("jev", "58e5484")]);
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(Paths.RunResultsPath));
+        var extension = doc.RootElement.GetProperty("extensions")[0];
+        Assert.Equal("jev", extension.GetProperty("name").GetString());
+        Assert.Equal("58e5484", extension.GetProperty("version").GetString());
+    }
+
+    [Fact]
+    public void No_extensions_writes_no_key()
+    {
+        var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");
+
+        writer.WriteSnapshot([], "success", extensions: null);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(Paths.RunResultsPath)))
+        {
+            Assert.False(doc.RootElement.TryGetProperty("extensions", out _));
+        }
+
+        writer.WriteSnapshot([], "success", extensions: []);
+        using (var doc = JsonDocument.Parse(File.ReadAllText(Paths.RunResultsPath)))
+        {
+            Assert.False(doc.RootElement.TryGetProperty("extensions", out _));
+        }
+    }
+
+    [Fact]
     public void Facts_are_appended_after_caught_up_and_omitted_when_null()
     {
         var writer = new RunResultsWriter(Paths, "2026-07-02T10:15:00.123Z");

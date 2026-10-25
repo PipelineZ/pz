@@ -5,6 +5,7 @@ using System.Text.Json;
 using Microsoft.Data.SqlClient;
 using Pz.Core.Validation;
 using Pz.Diagnostics.Events;
+using Pz.DuckDb;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
@@ -91,9 +92,9 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// upserts the same rows again: every statement here is `UPDATE ... IF @@ROWCOUNT = 0 INSERT`, so
     /// replaying it produces the same end state, never a duplicate.</summary>
     public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed, string status,
-        long? eventsDropped = null, RunPhasesPayload? phases = null)
+        long? eventsDropped = null, RunPhasesPayload? phases = null, IReadOnlyList<LoadedExtension>? extensions = null)
     {
-        // phases: not stored -- the SQL backend keeps node results and the run header only.
+        // phases, extensions: not stored -- the SQL backend keeps node results and the run header only.
         // Checked up front, before any connection/transaction opens: SQL Server assigns an over-long
         // input value into the matching sp_executesql declared length silently (no truncation warning,
         // no error), so a value past that length would be stored -- and later read back -- truncated
