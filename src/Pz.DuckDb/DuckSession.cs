@@ -29,9 +29,10 @@ public sealed class DuckSession : IDuckSession
     // `_connection`/`NativeConnection` so concurrent nodes queue instead of corrupting shared state.
     // Operations holding live per-connection state across calls hold the gate for their full duration:
     // egress streams (a live pending result must not be interleaved with any other statement) and
-    // ExecuteTransactionAsync (BEGIN..COMMIT). Ingest and partition-mode appends hold it per batch
-    // instead: each batch uses a fresh appender that is closed before the gate is released, so no
-    // appender state spans a release and the gate is free while awaiting the next upstream batch.
+    // ExecuteTransactionAsync (BEGIN..COMMIT). Partition-mode appends hold it per batch. Ingest holds it
+    // per run of batches the source has already produced (capped at MaxRowsPerGateHold rows) and never
+    // while awaiting one that is not ready. Each hold uses a fresh appender that is closed before the gate
+    // is released, so no appender state spans a release.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     // Drops of cancelled ingests' tables that were waiting for the gate when the ingest returned (see
@@ -194,15 +195,27 @@ public sealed class DuckSession : IDuckSession
     /// exercising ingest concurrently don't race on a shared hook.</summary>
     internal Action? OnBatchConsumedForTests { get; set; }
 
+    /// <summary>Test-only hook invoked (on the ingest background thread) each time an ingest closes an
+    /// appender, i.e. once per commit. Instance member for the same reason as
+    /// <see cref="OnBatchConsumedForTests"/>.</summary>
+    internal Action? OnAppenderClosedForTests { get; set; }
+
     public Task<long> IngestArrowAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct = default)
     {
         return Task.Run(() => IngestArrowPerBatchAsync(targetTable, schema, batches, ct), ct);
     }
 
-    /// <summary>Takes <see cref="_gate"/> once to create the table and once per batch (fresh appender per
-    /// batch, closed before release); never while awaiting the next upstream batch. Rows are therefore
-    /// visible to other statements as each batch lands. A failed or cancelled ingest drops the table; a
+    /// <summary>Rows after which an ingest's gate hold ends even when the next batch is already available.
+    /// Equal to the default maximum batch size, so default-sized batches take the gate once each and a
+    /// long run of ready batches cannot keep other statements out indefinitely.</summary>
+    private const long MaxRowsPerGateHold = 122_880;
+
+    /// <summary>Takes <see cref="_gate"/> once to create the table, then once per run of batches the
+    /// source has already produced: one appender, closed (committed) before release, covers every batch
+    /// whose <c>MoveNextAsync</c> completes synchronously, up to <see cref="MaxRowsPerGateHold"/> rows.
+    /// The gate is never held while awaiting a batch that is not ready, so other statements run in between
+    /// and see each run's rows once it is committed. A failed or cancelled ingest drops the table; a
     /// successful return is the only way it survives. A failed ingest drops it before returning; a
     /// cancelled one returns at once and, when the gate is busy, drops it once the gate is free.</summary>
     private async Task<long> IngestArrowPerBatchAsync(
@@ -220,31 +233,7 @@ public sealed class DuckSession : IDuckSession
 
         try
         {
-            var rows = 0L;
-            await foreach (var batch in batches.WithCancellation(ct).ConfigureAwait(false))
-            {
-                try
-                {
-                    ct.ThrowIfCancellationRequested();
-                    await _gate.WaitAsync(ct).ConfigureAwait(false);
-                    try
-                    {
-                        rows += AppendUnderGate(targetTable, batch, schema);
-                    }
-                    finally
-                    {
-                        _gate.Release();
-                    }
-                }
-                finally
-                {
-                    batch.Dispose();
-                }
-
-                OnBatchConsumedForTests?.Invoke();
-            }
-
-            return rows;
+            return await AppendRunsAsync(targetTable, schema, batches, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -261,8 +250,133 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
+    private async Task<long> AppendRunsAsync(
+        string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
+    {
+        var enumerator = batches.GetAsyncEnumerator(ct);
+        // A move that is still running when the gate is released. Set only between the hold that started
+        // it and the await that observes it; an async enumerator must not be disposed while a move runs.
+        ValueTask<bool> running = default;
+        var moveRunning = false;
+        try
+        {
+            var rows = 0L;
+            var hasBatch = await enumerator.MoveNextAsync().ConfigureAwait(false);
+            while (hasBatch)
+            {
+                bool? nextReady = null;
+                await _gate.WaitAsync(ct).ConfigureAwait(false);
+                try
+                {
+                    var connectionHandle = _connection.NativeConnection.DangerousGetHandle();
+                    // Appender state is per-connection pending state (see _gate's doc comment): it is
+                    // closed before the gate is released. Close errors (duckdb_appender_close) surface from
+                    // Complete() inside the hold. The explicit schema makes a batch of a different shape fail.
+                    using var writer = ArrowInterop.ArrowIngestWriter.Create(connectionHandle, targetTable, schema);
+                    var holdRows = 0L;
+                    while (true)
+                    {
+                        var batch = enumerator.Current;
+                        try
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            writer.AppendBatch(batch);
+                            holdRows += batch.Length;
+                        }
+                        finally
+                        {
+                            // The append copied the batch into the appender.
+                            batch.Dispose();
+                        }
+
+                        OnBatchConsumedForTests?.Invoke();
+
+                        // Runs upstream code with the gate held, up to its first incomplete await.
+                        var move = enumerator.MoveNextAsync();
+                        if (!move.IsCompletedSuccessfully)
+                        {
+                            // Not ready, faulted or cancelled: observed only after the gate is released.
+                            running = move;
+                            moveRunning = true;
+                            break;
+                        }
+
+                        var more = move.Result;
+                        if (!more || holdRows >= MaxRowsPerGateHold)
+                        {
+                            nextReady = more;
+                            break;
+                        }
+                    }
+
+                    writer.Complete();
+                    OnAppenderClosedForTests?.Invoke();
+                    rows += holdRows;
+                }
+                finally
+                {
+                    _gate.Release();
+                }
+
+                if (nextReady is { } ready)
+                {
+                    hasBatch = ready;
+                }
+                else
+                {
+                    moveRunning = false;
+                    hasBatch = await running.ConfigureAwait(false);
+                }
+            }
+
+            return rows;
+        }
+        finally
+        {
+            if (moveRunning)
+            {
+                // A failure inside the hold left a move running: dispose once it finishes, without
+                // waiting on a source that may never produce again.
+                DisposeAfterMove(enumerator, running);
+            }
+            else
+            {
+                await enumerator.DisposeAsync().ConfigureAwait(false);
+            }
+        }
+    }
+
+    private static void DisposeAfterMove(IAsyncEnumerator<RecordBatch> enumerator, ValueTask<bool> running)
+    {
+        _ = running.AsTask().ContinueWith(
+                static (move, state) =>
+                {
+                    // The ingest is already failing with the hold's exception; the move's outcome is moot,
+                    // but a batch it produced is still ours to dispose.
+                    _ = move.Exception;
+                    var source = (IAsyncEnumerator<RecordBatch>)state!;
+                    if (move.IsCompletedSuccessfully && move.Result)
+                    {
+                        source.Current.Dispose();
+                    }
+
+                    return source.DisposeAsync().AsTask();
+                },
+                enumerator,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default)
+            .Unwrap()
+            .ContinueWith(
+                static t => _ = t.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+    }
+
     /// <summary>Appends <paramref name="batch"/> through a fresh appender that is completed (closed) before
-    /// returning. The caller holds <see cref="_gate"/>. Returns the batch's row count.</summary>
+    /// returning. The caller holds <see cref="_gate"/>. Returns the batch's row count. Used by partition
+    /// mode, where each call is one batch.</summary>
     private long AppendUnderGate(string targetTable, RecordBatch batch, Schema schema)
     {
         var connectionHandle = _connection.NativeConnection.DangerousGetHandle();

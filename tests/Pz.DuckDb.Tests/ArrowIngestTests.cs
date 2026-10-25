@@ -366,25 +366,129 @@ public sealed class ArrowIngestTests : IDisposable
         }
     }
 
-    private sealed class ParkedSource
+    /// <summary>Yields <paramref name="readyBatches"/> 20-row batches synchronously, then parks until
+    /// <see cref="Release"/> before yielding the rest.</summary>
+    private sealed class ParkedSource(int readyBatches = 1, int rows = 40)
     {
         public readonly TaskCompletionSource Parked = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly TaskCompletionSource Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public readonly TaskCompletionSource Disposed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _undisposedBatches;
+
+        public int UndisposedBatches => Volatile.Read(ref _undisposedBatches);
 
         public async IAsyncEnumerable<RecordBatch> Batches([System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
         {
-            var first = true;
-            await foreach (var b in MatrixBatches(40, 20).WithCancellation(ct))
+            try
             {
-                if (!first)
+                var yielded = 0;
+                await foreach (var b in MatrixBatches(rows, 20).WithCancellation(ct))
                 {
-                    Parked.TrySetResult();
-                    await Release.Task.WaitAsync(ct);
+                    if (yielded >= readyBatches)
+                    {
+                        Parked.TrySetResult();
+                        await Release.Task.WaitAsync(ct);
+                    }
+                    yielded++;
+                    Interlocked.Increment(ref _undisposedBatches);
+                    yield return new DisposeTrackingBatch(b.Schema, b.Arrays, b.Length,
+                        () => Interlocked.Decrement(ref _undisposedBatches));
                 }
-                first = false;
-                yield return b;
+            }
+            finally
+            {
+                Disposed.TrySetResult();
             }
         }
+    }
+
+    private static readonly Schema LongSchema = new([new Field("v", Int64Type.Default, nullable: true)], null);
+
+    private static async IAsyncEnumerable<RecordBatch> LongBatches(int batches, int rowsPerBatch)
+    {
+        long v = 0;
+        for (var b = 0; b < batches; b++)
+        {
+            var builder = new Int64Array.Builder();
+            for (var r = 0; r < rowsPerBatch; r++) { builder.Append(v++); }
+            yield return new RecordBatch(LongSchema, [builder.Build()], rowsPerBatch);
+        }
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Ingest_appends_already_available_batches_under_one_commit()
+    {
+        await using var duck = Open();
+        var closes = 0;
+        duck.OnAppenderClosedForTests = () => Interlocked.Increment(ref closes);
+
+        var rows = await duck.IngestArrowAsync("main.tiny", LongSchema, LongBatches(10_000, 1))
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(10_000, rows);
+        Assert.Equal(10_000L, await duck.ScalarAsync<long>("select count(*) from main.tiny"));
+        Assert.Equal(1, closes);
+    }
+
+    [Fact]
+    public async Task Ingest_releases_the_gate_before_awaiting_a_batch_that_is_not_ready()
+    {
+        await using var duck = Open();
+        var closes = 0;
+        duck.OnAppenderClosedForTests = () => Interlocked.Increment(ref closes);
+        var source = new ParkedSource(readyBatches: 3, rows: 100);
+        var ingest = duck.IngestArrowAsync("main.parked", MatrixSchema(), source.Batches());
+        await source.Parked.Task.WaitAsync(TimeSpan.FromSeconds(30));
+
+        // The three ready batches were committed together before the ingest began awaiting the fourth.
+        Assert.Equal(60L, await duck.ScalarAsync<long>("select count(*) from main.parked")
+            .WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal(1, Volatile.Read(ref closes));
+
+        source.Release.SetResult();
+        Assert.Equal(100, await ingest.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Equal(100L, await duck.ScalarAsync<long>("select count(*) from main.parked"));
+        Assert.Equal(2, closes);
+    }
+
+    [Fact]
+    public async Task Ingest_failing_while_its_next_batch_is_pending_returns_without_waiting_for_the_source()
+    {
+        await using var duck = Open();
+        var source = new ParkedSource();
+        // Throws after the hold has started the move for batch 2, which parks: the failure must not
+        // wait for that move, and the source is disposed once the move finishes.
+        duck.OnAppenderClosedForTests = () => throw new InvalidOperationException("injected close failure");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => duck.IngestArrowAsync("main.pending", MatrixSchema(), source.Batches()).WaitAsync(TimeSpan.FromSeconds(30)));
+
+        Assert.True(source.Parked.Task.IsCompleted);
+        Assert.False(source.Disposed.Task.IsCompleted);
+        Assert.Equal(0L, await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where table_name = 'pending'"));
+
+        source.Release.SetResult();
+        await source.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(0, source.UndisposedBatches);
+    }
+
+    [Fact]
+    public async Task Ingest_releases_the_gate_once_a_hold_reaches_the_row_cap()
+    {
+        await using var duck = Open();
+        var closes = 0;
+        duck.OnAppenderClosedForTests = () => Interlocked.Increment(ref closes);
+
+        // A hold ends after the batch that brings it to 122,880 rows or more: batches 1+2 (200,000 rows)
+        // share the first commit, batch 3 is the second.
+        var rows = await duck.IngestArrowAsync("main.capped", LongSchema, LongBatches(3, 100_000))
+            .WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Equal(300_000, rows);
+        Assert.Equal(300_000L, await duck.ScalarAsync<long>("select count(*) from main.capped"));
+        Assert.Equal(2, closes);
     }
 
     [Fact]
