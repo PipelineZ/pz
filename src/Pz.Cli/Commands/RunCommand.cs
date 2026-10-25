@@ -224,7 +224,7 @@ internal static class RunCommand
             IReadOnlySet<NodeId>? selection;
             using (phases.Begin(RunPhaseClock.Validate))
             {
-                var dry = await SqlDryCompiler.RunAsync(fullDag, ct);
+                var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct);
                 if (dry.Errors.Count > 0)
                 {
                     foreach (var error in dry.Errors)

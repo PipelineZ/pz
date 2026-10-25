@@ -72,7 +72,7 @@ internal static class VerifyTools
                 return ToolEnvelope.Errors(tier3Errors);
             }
 
-            var dry = await SqlDryCompiler.RunAsync(dag, ct).ConfigureAwait(false);
+            var dry = await SqlDryCompiler.RunAsync(dag, project.Extensions, ct).ConfigureAwait(false);
             if (dry.Errors.Count > 0)
             {
                 return ToolEnvelope.Errors(dry.Errors);

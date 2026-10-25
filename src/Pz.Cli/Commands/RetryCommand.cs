@@ -113,7 +113,7 @@ internal static class RetryCommand
         try
         {
             // Same implicit pre-run dry-compile `pz run`/`pz test` perform (validation tier 4).
-            var dry = await SqlDryCompiler.RunAsync(fullDag, ct);
+            var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct);
             if (dry.Errors.Count > 0)
             {
                 foreach (var error in dry.Errors)

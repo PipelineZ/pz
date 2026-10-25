@@ -121,7 +121,7 @@ internal static class ValidateCommand
         }
 
         // Tier 4: SQL dry-compile against contract-derived empty tables (throwaway DuckDB session).
-        var dry = await SqlDryCompiler.RunAsync(dag, ct);
+        var dry = await SqlDryCompiler.RunAsync(dag, project.Extensions, ct);
         if (dry.Errors.Count > 0)
         {
             foreach (var error in dry.Errors)

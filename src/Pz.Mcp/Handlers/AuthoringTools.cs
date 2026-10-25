@@ -682,7 +682,7 @@ internal static class AuthoringTools
                 return tier3Errors;
             }
 
-            var dry = await SqlDryCompiler.RunAsync(dag, ct).ConfigureAwait(false);
+            var dry = await SqlDryCompiler.RunAsync(dag, project.Extensions, ct).ConfigureAwait(false);
             return dry.Errors;
         }
         catch (PzValidationException ex)

@@ -43,13 +43,38 @@ public sealed class SqlDryCompilerTests
         var pipeline = PipelineNode(Id("2"), "bad", "select idd from staging.src_s__d", [srcId]);
         var dag = new CompiledDag([src, pipeline]);
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
         var error = Assert.Single(result.Errors);
         Assert.Equal(PzErrorCode.SqlDryCompile, error.Code);
         Assert.Contains("idd", error.Message, StringComparison.Ordinal);
         Assert.Equal("pipelines/bad.sql", error.File);
         Assert.Empty(result.SkippedPipelines);
+    }
+
+    [Fact]
+    public async Task Unknown_function_hint_points_at_extensions()
+    {
+        var dag = new CompiledDag([PipelineNode(Id("1"), "fn", "select pz_no_such_fn(1) as x", [])]);
+
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
+
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(PzErrorCode.SqlDryCompile, error.Code);
+        Assert.Contains("extensions:", error.Hint);
+        Assert.Contains("project.yml", error.Hint);
+    }
+
+    [Fact]
+    public async Task Other_dry_compile_errors_keep_their_hint()
+    {
+        var srcId = Id("1");
+        var src = SourceLoadNode(srcId, "s", "d", new Dictionary<string, string> { ["id"] = "bigint" });
+        var dag = new CompiledDag([src, PipelineNode(Id("2"), "bad", "select idd from staging.src_s__d", [srcId])]);
+
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
+
+        Assert.Equal("fix the SQL or the declared columns: contract", Assert.Single(result.Errors).Hint);
     }
 
     // DagCompiler.NormalizeSql strips only ONE trailing semicolon -- a genuine second statement
@@ -63,7 +88,7 @@ public sealed class SqlDryCompilerTests
         var pipeline = PipelineNode(Id("2"), "two_statements", "select id from staging.src_s__d; select 1", [srcId]);
         var dag = new CompiledDag([src, pipeline]);
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
         var error = Assert.Single(result.Errors);
         Assert.Equal(PzErrorCode.SqlDryCompile, error.Code);
@@ -78,7 +103,7 @@ public sealed class SqlDryCompilerTests
         var pipeline = PipelineNode(Id("2"), "good", "select id from staging.src_s__d", [srcId]);
         var dag = new CompiledDag([src, pipeline]);
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
         Assert.Empty(result.Errors);
         Assert.Empty(result.SkippedPipelines);
@@ -93,7 +118,7 @@ public sealed class SqlDryCompilerTests
         var pipeline = PipelineNode(Id("2"), "over_undeclared", "select * from staging.src_s__d", [srcId]);
         var dag = new CompiledDag([src, pipeline]);
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
         Assert.Empty(result.Errors);
         Assert.Contains("s.d", result.UndeclaredDatasets);
@@ -110,7 +135,7 @@ public sealed class SqlDryCompilerTests
         var b = PipelineNode(Id("3"), "b", "select * from staging.a", [aId]);
         var dag = new CompiledDag([src, a, b]);
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
         var error = Assert.Single(result.Errors);
         Assert.Equal("pipelines/a.sql", error.File);
@@ -125,7 +150,7 @@ public sealed class SqlDryCompilerTests
         var pipeline = PipelineNode(Id("2"), "a_view", "select nope from staging.src_s__d", [srcId], "view");
         var dag = new CompiledDag([src, pipeline]);
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
         var error = Assert.Single(result.Errors);
         Assert.Equal(PzErrorCode.SqlDryCompile, error.Code);
@@ -161,7 +186,7 @@ public sealed class SqlDryCompilerTests
         var dag = CompileHelloPz(Path.Combine(FindRepoRoot(), "tests", "Pz.Core.Tests", "Fixtures", "hello-pz"),
             new Dictionary<string, string> { ["DATA_DIR"] = "/tmp/pz-data", ["OUT_DIR"] = "/tmp/pz-out" });
 
-        var result = await SqlDryCompiler.RunAsync(dag, default);
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
         Assert.Empty(result.Errors);
         Assert.Contains("crm.orders", result.UndeclaredDatasets);
@@ -192,7 +217,7 @@ public sealed class SqlDryCompilerTests
 
             var dag = CompileHelloPz(work, new Dictionary<string, string>());
 
-            var result = await SqlDryCompiler.RunAsync(dag, default);
+            var result = await SqlDryCompiler.RunAsync(dag, [], default);
 
             Assert.Empty(result.Errors);
             Assert.Contains("raw.customers", result.UndeclaredDatasets);
