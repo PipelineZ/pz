@@ -28,14 +28,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 - **A slow source no longer blocks other nodes' DuckDB work.** Channel-path ingest (Postgres, SqlServer, Sftp,
   Azure Blob and GCS reads, and LocalFiles under `force_universal`) held the session gate for the whole stream, so
-  every other node's DuckDB work waited for the slowest source. It now takes the gate once to create the table and
-  then once per run of batches the source has already produced (one commit per run, at most 122,880 rows), and
-  never while waiting for a batch that is not ready. With a Postgres source streaming 400k rows over ~9 s next to
-  an independent local 1M-row CSV group-by chain, that chain finished at ~9.25 s before (when the slow source
-  starts first) and ~0.23 s after (alone: ~0.19 s). A slow sink still blocks other nodes' DuckDB work: egress
-  drains and transactions hold the gate for their whole duration. Tiny batches cost what they did before: 10,000
-  one-row batches into a file-backed staging database on an NVMe disk take ~63–73 ms either way, read directly or
-  through the bounded channel a source load feeds.
+  every other node's DuckDB work waited for the slowest source. It now holds the gate while waiting for a batch
+  only while no other operation is waiting for it: the rows appended so far are committed and the gate handed
+  over as soon as one is (and after at most 122,880 rows per hold). With a Postgres source streaming 400k rows
+  over ~9 s next to an independent local 1M-row CSV group-by chain, that chain finished at ~9.25 s before (when
+  the slow source starts first) and ~0.23 s after (alone: ~0.19 s). A slow sink still blocks other nodes' DuckDB
+  work: egress drains and transactions hold the gate for their whole duration. An uncontended ingest still
+  commits once, so tiny batches cost what they did before: 10,000 one-row batches into a file-backed staging
+  database on an NVMe disk take ~53–60 ms either way, read directly or through the bounded channel a source load
+  feeds.
 - **Faster compile and egress.** Compile reuses one DuckDB parse session per command (a wide project with 200
   sources: 2250 to 284 ms). Universal egress concatenates DuckDB chunks by column (1M rows: 246 to 73 ms; mixed
   utf8/decimal/timestamp/date: 576 to 102 ms). `scripts/macro-bench.sh` times the built CLI instead of
