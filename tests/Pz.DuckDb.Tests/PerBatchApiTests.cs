@@ -108,7 +108,7 @@ public sealed class PerBatchApiTests : IAsyncLifetime
         var batch = Batch(2, 3);
         var preCancelled = new CancellationToken(canceled: true);
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => _duck.AppendArrowBatchAsync("staging.t5", batch, ct: preCancelled));
 
         Assert.Equal(1L, await _duck.ScalarAsync<long>("select count(*) from staging.t5"));
