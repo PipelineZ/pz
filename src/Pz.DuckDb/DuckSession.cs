@@ -249,11 +249,11 @@ public sealed class DuckSession : IDuckSession
     /// <summary>Takes <see cref="_gate"/> once to create the table, then holds it with one appender until
     /// another operation waits for the gate or <see cref="MaxRowsPerGateHold"/> rows have been appended,
     /// closing (committing) the appender before each release. Awaiting a batch that is not ready keeps the
-    /// gate only while nothing else is waiting for it, so an uncontended ingest commits once and other
-    /// statements still run in between, seeing every batch appended before they took the gate. A failed
-    /// or cancelled ingest drops the table; a
-    /// successful return is the only way it survives. A failed ingest drops it before returning; a
-    /// cancelled one returns at once and, when the gate is busy, drops it once the gate is free.</summary>
+    /// gate only while nothing else is waiting for it, so an uncontended ingest commits once per
+    /// <see cref="MaxRowsPerGateHold"/> rows and other statements still run in between, seeing every batch
+    /// appended before they took the gate. A successful return is the only way the table survives: a failed
+    /// ingest drops it before returning; a cancelled one returns at once and, when the gate is busy, drops it
+    /// once the gate is free.</summary>
     private async Task<long> IngestArrowPerBatchAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
     {
@@ -424,6 +424,9 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
+    /// <summary>Disposes a failed ingest's upstream enumerator, and any batch its in-flight move produces,
+    /// once that move finishes. Untracked by <see cref="DisposeAsync"/>: it never touches the connection.
+    /// A source whose move never completes is never disposed.</summary>
     private static void DisposeAfterMove(IAsyncEnumerator<RecordBatch> enumerator, ValueTask<bool> running)
     {
         _ = running.AsTask().ContinueWith(
