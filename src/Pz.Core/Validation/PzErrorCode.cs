@@ -505,6 +505,12 @@ public static class PzErrorCode
     public const string RootEscape = "PZ0365";
 
     public const string SqlDryCompile = "PZ0401";
+
+    /// <summary>An extension listed under project.yml's <c>extensions:</c> could not be installed or
+    /// loaded -- a wrong name, no network, or a file DuckDB refuses. Reported for every listed extension
+    /// before any node runs. Next step: check the name, or -- without internet access -- copy the
+    /// extension file into DuckDB's extensions folder for this DuckDB version and platform.</summary>
+    public const string ExtensionLoadFailed = "PZ0402";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";
     public const string NoPriorRun = "PZ0502"; // `pz retry` found no readable prior run to resume from
