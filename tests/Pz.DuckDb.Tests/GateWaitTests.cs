@@ -74,6 +74,8 @@ public sealed class GateWaitTests : IDisposable
         Assert.Equal(1L, await duck.ScalarAsync<long>("select 1").WaitAsync(Guard));
     }
 
+    // Limit: this discriminates only when the queued waiters outnumber the pool's idle threads. If earlier
+    // tests left 64 or more idle pool threads, blocking waiters would reuse them and the pool would not grow.
     [Fact]
     public async Task Waiting_for_the_gate_does_not_occupy_a_pool_thread()
     {

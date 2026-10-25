@@ -82,23 +82,15 @@ public sealed class PerBatchApiTests : IAsyncLifetime
     }
 
     // Guards a pre-start-cancellation batch leak. AppendArrowBatchAsync must NOT pass `ct` as Task.Run's
-    // own CancellationToken argument: an already-cancelled token would then stop Task.Run invoking the
-    // delegate at all, skipping the delegate's `finally { batch.Dispose(); }` and leaking the
-    // engine-owned pooled Arrow batch, in violation of IDuckSession.AppendArrowBatchAsync's doc comment
-    // ("Disposes batch before returning, success or failure"). With `ct` withheld from Task.Run the
-    // delegate (and its finally) always runs, while `_gate.Wait(ct)` and the explicit
-    // ThrowIfCancellationRequested() inside keep the call cancellation-responsive.
+    // own CancellationToken argument, and its outer finally must dispose the batch on every path,
+    // including a cancelled gate wait: the engine owns the pooled Arrow batch until the call returns
+    // (IDuckSession.AppendArrowBatchAsync: "Disposes batch before returning, success or failure").
     //
-    // Disposal itself isn't reachable from the test as a stable, documented signal: RecordBatch/IArrowArray
-    // don't expose an IsDisposed flag, and while this repo's Apache.Arrow version (23.0.0) happens to throw
-    // NullReferenceException when a disposed batch's column data is accessed, that's an
-    // internal-implementation accident (returned pooled buffers going away), not a public contract -- it
-    // isn't safe to assert on across Arrow versions. So, per the same precedent already used in this repo
-    // for objects that aren't reachable post-dispose (see
-    // PostgresSourceAcceptance.ReadAsync_surfaces_clean_cancellation_when_cancelled_before_connect), we
-    // assert the behavior that IS a stable contract: the call throws OperationCanceledException cleanly
-    // (not, say, a hang or some other exception type) and the table is left completely unchanged. Disposal
-    // is guaranteed structurally instead, by the delegate being invoked unconditionally.
+    // Disposal isn't observable here as a stable signal: RecordBatch/IArrowArray expose no IsDisposed flag,
+    // and the NullReferenceException Apache.Arrow 23.0.0 throws on a disposed batch's column data is an
+    // implementation accident, not a contract. So this test asserts the stable contract: the call throws an
+    // OperationCanceledException (possibly a subclass such as TaskCanceledException) rather than hanging or
+    // throwing another type, and the table is left unchanged. Disposal itself is asserted in GateWaitTests.
     [Fact]
     public async Task AppendArrowBatchAsync_disposes_batch_and_leaves_table_unchanged_on_pre_start_cancellation()
     {

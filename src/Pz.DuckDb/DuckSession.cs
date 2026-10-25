@@ -37,7 +37,7 @@ public sealed class DuckSession : IDuckSession
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     // Operations currently waiting for _gate. Every wait goes through WaitForGateAsync, which
-    // counts itself here and then complete _gateWanted, so an ingest holding the gate while it awaits
+    // counts itself here and then completes _gateWanted, so an ingest holding the gate while it awaits
     // its next batch hands the gate over as soon as anything else wants it.
     private int _gateWaiters;
 
