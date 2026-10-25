@@ -18,7 +18,7 @@ public static class ProjectLoader
         WarnIfYamlSiblingIgnored(projectDir, Path.Combine(projectDir, "project.yaml"), warnings);
         WarnIfYamlSiblingIgnored(projectDir, Path.Combine(projectDir, "connections.yaml"), warnings);
 
-        var (name, version, connectors, vars, engine, retention, state, onSourceDrift) =
+        var (name, version, connectors, vars, engine, retention, state, onSourceDrift, extensions) =
             LoadProjectFile(projectDir, env, errors);
         var connections = ConnectionsLoader.Load(projectDir, env, errors, warnings);
         RetiredConnectionDirectories.Refuse(projectDir, errors);
@@ -44,6 +44,7 @@ public static class ProjectLoader
             onSourceDrift)
         {
             Warnings = warnings,
+            Extensions = extensions,
         };
     }
 
@@ -106,7 +107,8 @@ public static class ProjectLoader
 
     private static (string Name, string Version, IReadOnlyList<ConnectorRequirement> Connectors,
         Dictionary<string, object?> Vars, EngineConfig Engine,
-        RetentionConfig? Retention, StateConfig State, DriftPolicy OnSourceDrift) LoadProjectFile(
+        RetentionConfig? Retention, StateConfig State, DriftPolicy OnSourceDrift,
+        IReadOnlyList<string> Extensions) LoadProjectFile(
             string projectDir, IReadOnlyDictionary<string, string> env, List<PzError> errors)
     {
         const string relativePath = "project.yml";
@@ -120,13 +122,14 @@ public static class ProjectLoader
         var retention = (RetentionConfig?)new RetentionConfig(DefaultKeepLast);
         var state = StateConfig.Default;
         var onSourceDrift = DriftPolicy.Ignore;
+        IReadOnlyList<string> extensions = [];
 
         if (!File.Exists(path))
         {
             errors.Add(new PzError(PzErrorCode.YamlShape, "project.yml is missing.", relativePath, null,
                 "run this from a pz project directory (or pass --project <dir>); to start a new " +
                 "project, run 'pz init <name>'"));
-            return (name, version, connectors, vars, engine, retention, state, onSourceDrift);
+            return (name, version, connectors, vars, engine, retention, state, onSourceDrift, extensions);
         }
 
         Dictionary<string, object?> yaml;
@@ -142,7 +145,7 @@ public static class ProjectLoader
         catch (PzConfigException ex)
         {
             errors.Add(ex.Error);
-            return (name, version, connectors, vars, engine, retention, state, onSourceDrift);
+            return (name, version, connectors, vars, engine, retention, state, onSourceDrift, extensions);
         }
 
         if (TryGetString(yaml, "name") is { } nameValue)
@@ -233,8 +236,54 @@ public static class ProjectLoader
         retention = ParseRetentionConfig(yaml, relativePath, errors);
         state = ParseStateConfig(yaml, env, relativePath, errors);
         onSourceDrift = ParseDriftPolicy(yaml, relativePath, errors);
+        extensions = ParseExtensions(yaml, relativePath, errors);
 
-        return (name, version, connectors, vars, engine, retention, state, onSourceDrift);
+        return (name, version, connectors, vars, engine, retention, state, onSourceDrift, extensions);
+    }
+
+    /// <summary><c>extensions:</c> -- a list of DuckDB extension names. A name is lowercase letters,
+    /// digits and underscores, the form DuckDB's own repositories use; anything else (a mis-cased or
+    /// padded name included) would only surface later as a confusing "extension not found".</summary>
+    private static IReadOnlyList<string> ParseExtensions(Dictionary<string, object?> yaml, string relativePath,
+        List<PzError> errors)
+    {
+        const string example = "extensions:\n  - jev";
+        if (PresentButNot<List<object?>>(yaml, "extensions"))
+        {
+            errors.Add(new PzError(PzErrorCode.YamlShape,
+                "project.yml: 'extensions' must be a list of DuckDB extension names.", relativePath, null, example));
+            return [];
+        }
+
+        var names = new List<string>();
+        foreach (var item in GetList(yaml, "extensions"))
+        {
+            if (item is not string name || !IsExtensionName(name))
+            {
+                var text = Convert.ToString(item, CultureInfo.InvariantCulture) ?? string.Empty;
+                var lower = text.Trim().ToLowerInvariant();
+                errors.Add(new PzError(PzErrorCode.YamlShape,
+                    $"project.yml: extensions entry '{text}' is not a DuckDB extension name " +
+                    "(lowercase letters, digits and underscores).",
+                    relativePath, null, IsExtensionName(lower) ? $"extensions:\n  - {lower}" : example));
+                continue;
+            }
+
+            if (names.Contains(name, StringComparer.Ordinal))
+            {
+                errors.Add(new PzError(PzErrorCode.YamlShape,
+                    $"project.yml: extension '{name}' is listed more than once.", relativePath, null,
+                    "list each extension once"));
+                continue;
+            }
+
+            names.Add(name);
+        }
+
+        return names;
+
+        static bool IsExtensionName(string name) =>
+            name.Length > 0 && name.All(c => c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_');
     }
 
     /// <summary>A mistyped project.yml key is refused rather than silently ignored, matching
@@ -243,7 +292,7 @@ public static class ProjectLoader
     /// <remarks>"pz" is the documented engine-version-constraint key (project-yml.md); accepted here
     /// because projects written to the docs must keep loading, though no constraint check reads it yet.</remarks>
     private static readonly string[] KnownProjectKeys =
-        ["name", "version", "pz", "connectors", "vars", "engine", "retention", "state", "on_source_drift", "feeds"];
+        ["name", "version", "pz", "connectors", "extensions", "vars", "engine", "retention", "state", "on_source_drift", "feeds"];
 
     private static void RefuseUnknownProjectKeys(Dictionary<string, object?> yaml, string relativePath,
         List<PzError> errors)
