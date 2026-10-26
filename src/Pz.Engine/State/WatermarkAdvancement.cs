@@ -25,5 +25,5 @@ public static class WatermarkAdvancement
         CommitGatedAdvancement.Advance(dag, nodeResults,
             static r => r.WatermarkCandidate,
             static def => WatermarkStore.Key(def.Source.Name, def.Dataset.Name),
-            store.SetMany, wait);
+            store.Set, wait);
 }

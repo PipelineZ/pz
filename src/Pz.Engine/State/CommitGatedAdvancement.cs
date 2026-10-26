@@ -1,4 +1,3 @@
-using System.Runtime.ExceptionServices;
 using Pz.Core.Dag;
 using Pz.Core.Validation;
 using Pz.Engine.Execution;
@@ -38,15 +37,12 @@ namespace Pz.Engine.State;
 /// blocks only B's dataset.
 ///
 /// Each dataset's write is its own event. By the time this runs every sink has committed, so a store
-/// failure on one dataset must cost that dataset its state and nothing else. The walk first decides
-/// every dataset that may advance, then hands them to the store in ONE batch (<c>applyMany</c>, which
-/// returns the keys it could not write); every dataset that did not advance comes back as an
-/// <see cref="AdvancementFailure"/> for the caller to report. Keys the store could not reach (PZ0518) are
-/// re-sent as a smaller batch, up to <see cref="MaxAttempts"/> sends in all — giving up on them means
-/// re-extracting next run for the sake of one dropped connection. Nothing else is retried: a lost race
-/// (PZ0520) means another run already advanced the dataset, and trying again cannot win it. A batch that
-/// throws outright fails every key it carried. Cancellation is never a dataset failure; it propagates,
-/// whether thrown or reported for a key.</summary>
+/// failure on one dataset must cost that dataset its state and nothing else: the walk goes on, and every
+/// dataset that did not advance comes back as an <see cref="AdvancementFailure"/> for the caller to
+/// report. An unreachable store (PZ0518) is tried <see cref="MaxAttempts"/> times first — giving up on
+/// it means re-extracting next run for the sake of one dropped connection. Nothing else is retried: a
+/// lost race (PZ0520) means another run already advanced the dataset, and trying again cannot win it.
+/// Cancellation is never a dataset failure; it propagates.</summary>
 internal static class CommitGatedAdvancement
 {
     private const int MaxAttempts = 3;
@@ -58,14 +54,13 @@ internal static class CommitGatedAdvancement
         IReadOnlyList<NodeResult> nodeResults,
         Func<NodeResult, T?> candidateOf,
         Func<SourceDatasetDef, string> keyOf,
-        Func<IReadOnlyList<KeyValuePair<string, T>>, IReadOnlyList<KeyValuePair<string, Exception>>> applyMany,
+        Action<string, T> apply,
         Action<TimeSpan>? wait = null) where T : class
     {
         wait ??= Thread.Sleep;
         var failures = new List<AdvancementFailure>();
         var dagById = dag.Nodes.ToDictionary(n => n.Id);
         var resultById = nodeResults.ToDictionary(r => r.Id);
-        var eligible = new List<KeyValuePair<string, T>>();
 
         foreach (var result in nodeResults)
         {
@@ -103,47 +98,25 @@ internal static class CommitGatedAdvancement
                 continue;
             }
 
-            eligible.Add(new(keyOf(def), candidate));
-        }
-
-        var pending = eligible;
-        for (var attempt = 1; pending.Count > 0; attempt++)
-        {
-            IReadOnlyList<KeyValuePair<string, Exception>> rejected;
-            try
+            var key = keyOf(def);
+            for (var attempt = 1; ; attempt++)
             {
-                rejected = applyMany(pending);
-            }
-            catch (Exception ex) when (ex is not OperationCanceledException)
-            {
-                rejected = [.. pending.Select(p => new KeyValuePair<string, Exception>(p.Key, ex))];
-            }
-
-            var retry = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var (key, ex) in rejected)
-            {
-                if (ex is OperationCanceledException)
+                try
                 {
-                    ExceptionDispatchInfo.Throw(ex);
+                    apply(key, candidate);
+                    break;
                 }
-
-                if (ex is PzConfigException { Error.Code: PzErrorCode.StateStoreUnavailable } && attempt < MaxAttempts)
+                catch (PzConfigException ex) when (
+                    ex.Error.Code == PzErrorCode.StateStoreUnavailable && attempt < MaxAttempts)
                 {
-                    retry.Add(key);
+                    wait(RetryWaits[attempt - 1]);
                 }
-                else
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
                     failures.Add(new AdvancementFailure(key, MessageRedaction.Redact(ex)));
+                    break;
                 }
             }
-
-            if (retry.Count == 0)
-            {
-                break;
-            }
-
-            wait(RetryWaits[attempt - 1]);
-            pending = [.. pending.Where(p => retry.Contains(p.Key))];
         }
 
         return failures;

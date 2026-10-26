@@ -61,16 +61,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   column directly into the pooled allocator instead of staging it on the managed heap. Managed allocation per
   1M-row egress drops from ~38.5 MB to ~1.1 MB (mixed types: ~63.7 to ~1.3 MB), and Gen2 collections from
   10,000 to 6,000 and from 17,000 to ~10,000 per 1k operations (BenchmarkDotNet, in-process).
-- **Native scans stage only the columns and rows the pipeline reads; less per-node overhead.** A wide Parquet source
+- **Native scans stage only the columns and rows the pipeline reads.** A wide Parquet source
   (2M rows, 50 columns) read by `select id, c1 from … where k = 7` now stages 3 columns and 20,000 rows instead of
   50 columns and 2,000,000 rows (SourceLoad 19.8 s to 63 ms, min of 3). A native SourceLoad's `rows`
   (`run_results.json` and NDJSON) now counts the filtered staged rows, and `pz plan` reports pushdown for native
-  scans. Per-node overhead drops too: `run_results.json` is written in the background (except right after a sink
-  commit), watermark and sync-state writes are batched for the local state store (the HTTP and SQL Server backends
-  still write per key), and the dry compile runs in memory (`scripts/scale-bench.sh`, wide-200, 600 nodes: execute
-  2014 to 1963 ms). The drift baseline re-seeds once on the first run after upgrading. Drift detection on native
-  scans now covers the columns the pipeline reads, so an added column the pipeline never reads is no longer
-  reported, as on the universal tier's pruning connectors.
+  scans. The dry compile runs in an in-memory database. The drift baseline re-seeds once on the first run after
+  upgrading. Drift detection on native scans now covers the columns the pipeline reads, so an added column the
+  pipeline never reads is no longer reported, as on the universal tier's pruning connectors.
 
 ## [0.11.3] - 2026-10-16
 

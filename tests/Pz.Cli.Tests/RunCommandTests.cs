@@ -228,8 +228,6 @@ public class RunCommandTests : IDisposable
         try
         {
             events.NodeCompleted(MakeResult("load_a", NodeStatus.Success));
-            // A SourceLoad completion is written in the background; wait for it while stderr is captured.
-            events.Flush();
         }
         finally
         {

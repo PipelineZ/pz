@@ -20,5 +20,5 @@ public static class SyncStateAdvancement
         CommitGatedAdvancement.Advance(dag, nodeResults,
             static r => r.SyncStateCandidate,
             static def => SyncStateStore.Key(def.Source.Name, def.Dataset.Name),
-            store.SetMany, wait);
+            store.Set, wait);
 }
