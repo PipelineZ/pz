@@ -16,7 +16,7 @@
        vendored OTLP protos Pz.PackageManagement.Tests carries (messages only). -->
   <ItemGroup>
     <Compile Include="..\Pz.Cli.Tests\Otel\OtlpHttpReceiver.cs" Link="Otel\OtlpHttpReceiver.cs" />
-    <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="All" />
+    <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="All" />
     <Protobuf Include="..\Pz.PackageManagement.Tests\Otlp\proto\**\*.proto" ProtoRoot="..\Pz.PackageManagement.Tests\Otlp\proto" GrpcServices="None" />
   </ItemGroup>
 
