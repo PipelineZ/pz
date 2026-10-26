@@ -1592,6 +1592,64 @@ public class ProjectLoaderTests
         }
     }
 
+    // --- project.yml `extensions:` ---
+
+    private static PzProject LoadExtensions(string block)
+    {
+        var dir = WriteDriftPolicyProject(block);
+        try
+        {
+            return ProjectLoader.Load(dir, Env);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    private static IReadOnlyList<PzError> ExtensionErrors(string block) =>
+        Assert.Throws<PzValidationException>(() => LoadExtensions(block)).Errors;
+
+    [Fact]
+    public void Extensions_absent_is_empty() => Assert.Empty(LoadExtensions("").Extensions);
+
+    [Fact]
+    public void Extensions_list_is_loaded_in_order() =>
+        Assert.Equal(["jev", "spatial"], LoadExtensions("extensions:\n  - jev\n  - spatial\n").Extensions);
+
+    [Fact]
+    public void Extensions_is_a_known_project_key() => Assert.Empty(LoadExtensions("extensions: []\n").Extensions);
+
+    [Fact]
+    public void Extensions_not_a_list_is_refused()
+    {
+        var error = Assert.Single(ExtensionErrors("extensions: jev\n"));
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Equal("project.yml", error.File);
+        Assert.Contains("'extensions' must be a list", error.Message);
+    }
+
+    [Fact]
+    public void Extensions_item_must_be_a_lowercase_name()
+    {
+        var errors = ExtensionErrors("extensions:\n  - Jev\n  - \" jev\"\n  - \"\"\n  - 42\n");
+        Assert.Equal(4, errors.Count);
+        Assert.All(errors, e => Assert.Equal(PzErrorCode.YamlShape, e.Code));
+        Assert.Contains("'Jev'", errors[0].Message);
+        Assert.Contains("jev", errors[0].Hint);
+        Assert.Contains("' jev'", errors[1].Message);
+        Assert.Contains("''", errors[2].Message);
+        Assert.Contains("'42'", errors[3].Message);
+    }
+
+    [Fact]
+    public void Extensions_duplicates_are_refused()
+    {
+        var error = Assert.Single(ExtensionErrors("extensions:\n  - jev\n  - jev\n"));
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Contains("'jev'", error.Message);
+    }
+
     // -- pipeline file stems as DuckDB identifiers (PZ0136) -------------------------------------------
 
     [Theory]

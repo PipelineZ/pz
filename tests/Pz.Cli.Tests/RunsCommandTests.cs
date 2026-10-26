@@ -195,7 +195,8 @@ public sealed class RunsCommandTests : IDisposable
 
         public void WriteSnapshot(string runId, string startedAtIso,
             IReadOnlyList<Pz.Engine.Execution.NodeResult> completed, string status, long? eventsDropped = null,
-            Pz.Diagnostics.Events.RunPhasesPayload? phases = null) =>
+            Pz.Diagnostics.Events.RunPhasesPayload? phases = null,
+            IReadOnlyList<Pz.DuckDb.LoadedExtension>? extensions = null) =>
             throw new NotSupportedException();
 
         public Pz.Engine.Artifacts.PriorRun? ReadLatest() => throw new NotSupportedException();

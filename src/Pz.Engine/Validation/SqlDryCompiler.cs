@@ -29,7 +29,11 @@ public sealed record DryCompileResult(
 /// </summary>
 public static class SqlDryCompiler
 {
-    public static async Task<DryCompileResult> RunAsync(CompiledDag dag, CancellationToken ct)
+    /// <summary><paramref name="extensions"/> is project.yml's <c>extensions:</c>, loaded before any
+    /// pipeline is dry-compiled so their functions bind; if any fails to load, those errors are the whole
+    /// result -- every pipeline calling them would only repeat the failure as an unknown function.</summary>
+    public static async Task<DryCompileResult> RunAsync(CompiledDag dag, IReadOnlyList<string> extensions,
+        CancellationToken ct)
     {
         var errors = new List<PzError>();
         var skipped = new List<string>();
@@ -42,6 +46,12 @@ public static class SqlDryCompiler
 
         await using (var duck = DuckSession.Open(":memory:"))
         {
+            var loaded = await DuckExtensions.LoadAsync(duck, extensions, ct).ConfigureAwait(false);
+            if (loaded.Errors.Count > 0)
+            {
+                return new DryCompileResult(loaded.Errors, [], []);
+            }
+
             await duck.ExecuteAsync("create schema if not exists staging", ct).ConfigureAwait(false);
 
             foreach (var node in dag.Nodes)
@@ -112,8 +122,14 @@ public static class SqlDryCompiler
             // enough to name the offending identifier.
             var sanitized = NativeStatementRedactor.SanitizeEngineMessage(ex.Message);
             var firstLine = sanitized.Split('\n', 2)[0];
+            // An unknown function is often one from a DuckDB extension the project never listed.
+            var unknownFunction = firstLine.Contains("Function with name", StringComparison.Ordinal)
+                && firstLine.Contains("does not exist", StringComparison.Ordinal);
             errors.Add(new PzError(PzErrorCode.SqlDryCompile, firstLine, def.FilePath, null,
-                "fix the SQL or the declared columns: contract"));
+                unknownFunction
+                    ? "if this function comes from a DuckDB extension, list it under extensions: in project.yml; " +
+                      "otherwise fix the SQL"
+                    : "fix the SQL or the declared columns: contract"));
             return;
         }
 

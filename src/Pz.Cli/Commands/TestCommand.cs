@@ -97,7 +97,7 @@ internal static class TestCommand
         {
             // Same implicit pre-run dry-compile `pz run` does (validation tier 4) -- a broken
             // pipeline is rejected before any real run starts, never as a node failure inside one.
-            var dry = await SqlDryCompiler.RunAsync(fullDag, ct);
+            var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct);
             if (dry.Errors.Count > 0)
             {
                 foreach (var error in dry.Errors)

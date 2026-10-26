@@ -334,7 +334,7 @@ internal static class McpCommand
         // Same tier-4 pre-flight `pz run`/`pz retry` run BEFORE any run dir,
         // staging DB, or connector opens -- a rejection here creates no `.pz/runs/` directory, exactly
         // like the CLI verb.
-        var dry = await SqlDryCompiler.RunAsync(fullDag, ct).ConfigureAwait(false);
+        var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct).ConfigureAwait(false);
         if (dry.Errors.Count > 0)
         {
             return new McpRunOutcome(ExitCodes.ConfigError, dry.Errors);
@@ -418,7 +418,7 @@ internal static class McpCommand
         }
 
         // Same tier-4 pre-flight `pz retry` runs before reading prior-run state.
-        var dry = await SqlDryCompiler.RunAsync(fullDag, ct).ConfigureAwait(false);
+        var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct).ConfigureAwait(false);
         if (dry.Errors.Count > 0)
         {
             return new McpRunOutcome(ExitCodes.ConfigError, dry.Errors);

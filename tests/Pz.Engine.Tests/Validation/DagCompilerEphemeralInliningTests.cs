@@ -26,7 +26,7 @@ public sealed class DagCompilerEphemeralInliningTests
         var ctx = new RenderContext(project, "run-1", new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
         using var sqlAst = new DuckDbSqlAstReader();
         var dag = DagCompiler.Compile(project, ctx, sqlAst: sqlAst);
-        var dryCompile = await SqlDryCompiler.RunAsync(dag, default);
+        var dryCompile = await SqlDryCompiler.RunAsync(dag, [], default);
         return (dag, dryCompile);
     }
 

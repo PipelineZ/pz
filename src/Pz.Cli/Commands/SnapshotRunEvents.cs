@@ -1,5 +1,6 @@
 using Pz.Core.Dag;
 using Pz.Diagnostics.Events;
+using Pz.DuckDb;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.Dispatch;
@@ -220,22 +221,22 @@ internal sealed class SnapshotRunEvents(IRunArtifactStore artifacts, string runI
     /// one deliberate post-dispose call — see <see cref="IRunArtifactStore.WriteSnapshot"/>. Flushes
     /// first, so a background per-node write can never land after this one.</summary>
     public void TryWriteSnapshot(IReadOnlyList<NodeResult> completed, string status, long? eventsDropped = null,
-        RunPhasesPayload? phases = null)
+        RunPhasesPayload? phases = null, IReadOnlyList<LoadedExtension>? extensions = null)
     {
         Flush();
         lock (_writeLock)
         {
-            WriteSnapshotCore(completed, status, eventsDropped, phases);
+            WriteSnapshotCore(completed, status, eventsDropped, phases, extensions);
         }
     }
 
     // Returns false when the store write failed (the failure is swallowed and warned about once).
     private bool WriteSnapshotCore(IReadOnlyList<NodeResult> completed, string status, long? eventsDropped,
-        RunPhasesPayload? phases)
+        RunPhasesPayload? phases, IReadOnlyList<LoadedExtension>? extensions = null)
     {
         try
         {
-            artifacts.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped, phases);
+            artifacts.WriteSnapshot(runId, startedAtIso, completed, status, eventsDropped, phases, extensions);
             return true;
         }
         catch (Exception ex)

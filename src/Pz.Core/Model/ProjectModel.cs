@@ -21,6 +21,10 @@ public sealed record PzProject(string Name, string Version, EngineConfig Engine,
     /// warning uses, so every caller renders both the same way without knowing which stage produced
     /// them.</summary>
     public IReadOnlyList<PzWarning> Warnings { get; init; } = [];
+
+    /// <summary>project.yml's <c>extensions:</c> -- DuckDB extension names, in file order, that every
+    /// session running or dry-compiling this project's SQL installs and loads. Empty when absent.</summary>
+    public IReadOnlyList<string> Extensions { get; init; } = [];
 }
 /// <summary><see cref="CheckSamples"/> is the project-wide default for whether a failing check's error
 /// message includes sample violating rows; defaults <c>true</c>. A per-check

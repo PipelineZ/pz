@@ -224,7 +224,7 @@ internal static class RunCommand
             IReadOnlySet<NodeId>? selection;
             using (phases.Begin(RunPhaseClock.Validate))
             {
-                var dry = await SqlDryCompiler.RunAsync(fullDag, ct);
+                var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct);
                 if (dry.Errors.Count > 0)
                 {
                     foreach (var error in dry.Errors)
@@ -422,6 +422,19 @@ internal static class RunCommand
             : null;
 
         await using var duck = DuckSession.Open(paths.StagingDbPath, duckOptions);
+        // Loaded once, before any node: the run shares this one session, so every pipeline sees the same
+        // extensions whatever order they are dispatched in.
+        var extensions = await DuckExtensions.LoadAsync(duck, project.Extensions, ct);
+        if (extensions.Errors.Count > 0)
+        {
+            foreach (var error in extensions.Errors)
+            {
+                Console.Error.WriteLine($"error {error}");
+            }
+
+            return ExitCodes.ConfigError;
+        }
+
         await duck.ExecuteAsync("create schema if not exists staging", ct);
 
         var connectorLog = new ConnectorLogRelay(Notice);
@@ -814,7 +827,8 @@ internal static class RunCommand
         finalize.Dispose();
         // TryWriteSnapshot also flushes; explicit here so the ordering is visible at the call site.
         snapshotEvents.Flush();
-        snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped, phases.Snapshot());
+        snapshotEvents.TryWriteSnapshot(result.Nodes, terminalStatus, eventsDropped, phases.Snapshot(),
+            extensions.Loaded);
         runSpan.Finish();
         onResults?.Invoke(result.Nodes);
 

@@ -10,8 +10,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 ### Added
 
 - **`IProjectingNativeScan`**, for connector authors whose native scan can read only the requested columns.
+- **`extensions:` in `project.yml`** lists DuckDB extensions, core or community (such as `jev`), that pipeline
+  SQL calls. pz installs and loads them the way DuckDB does, before any SQL runs, in every session that runs or
+  validates the project; an extension already in DuckDB's extensions folder is used without a download, which is
+  how an offline machine works. A failure is reported for every listed extension as **PZ0402**, and an unknown
+  function in a pipeline now hints at listing its extension. `run_results.json` records each loaded extension
+  and the build DuckDB reports for it.
 
 ### Fixed
+
+- **A whole-row reference is no longer pushed down as a column.** `jev(t, …)` passes the row `t`, which source
+  pushdown read as a column named `t`; the read now fetches every column.
 
 - **DECIMAL(38) values beyond `System.Decimal` are no longer silently corrupted.** Arrow's
   `Decimal128Array.GetValue` cannot hold a value with more than 28 significant digits (or a scale above 28) and

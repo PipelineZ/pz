@@ -306,7 +306,8 @@ public sealed class RunSweeperTests : IDisposable
 
         public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed,
             string status, long? eventsDropped = null,
-            Pz.Diagnostics.Events.RunPhasesPayload? phases = null) => throw new NotSupportedException();
+            Pz.Diagnostics.Events.RunPhasesPayload? phases = null,
+            IReadOnlyList<Pz.DuckDb.LoadedExtension>? extensions = null) => throw new NotSupportedException();
 
         public PriorRun? ReadLatest() => throw new NotSupportedException();
 

@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text.Json;
 using Pz.Core.Artifacts;
 using Pz.Diagnostics.Events;
+using Pz.DuckDb;
 using Pz.Engine.Execution;
 using Pz.Engine.State;
 
@@ -29,7 +30,8 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
 {
     private readonly Lock _publishLock = new();
 
-    public void WriteSnapshot(IReadOnlyList<NodeResult> completed, string status, RunPhasesPayload? phases = null)
+    public void WriteSnapshot(IReadOnlyList<NodeResult> completed, string status, RunPhasesPayload? phases = null,
+        IReadOnlyList<LoadedExtension>? extensions = null)
     {
         Directory.CreateDirectory(paths.RunDir);
 
@@ -51,6 +53,7 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
                     (time ?? TimeProvider.System).GetUtcNow().UtcDateTime
                         .ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
                 WritePhases(writer, phases);
+                WriteExtensions(writer, extensions);
             }
 
             writer.WriteStartArray("nodes");
@@ -82,6 +85,23 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
         WriteOptional(writer, "executeMs", phases.ExecuteMs);
         WriteOptional(writer, "finalizeMs", phases.FinalizeMs);
         writer.WriteEndObject();
+    }
+
+    // Terminal snapshot only; omitted when the project lists no extensions. The version is the build
+    // DuckDB reports, so a behaviour change can be traced to a new extension build.
+    private static void WriteExtensions(Utf8JsonWriter writer, IReadOnlyList<LoadedExtension>? extensions)
+    {
+        if (extensions is not { Count: > 0 }) return;
+        writer.WriteStartArray("extensions");
+        foreach (var extension in extensions)
+        {
+            writer.WriteStartObject();
+            writer.WriteString("name", extension.Name);
+            writer.WriteString("version", extension.Version);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
     }
 
     private static void WriteOptional(Utf8JsonWriter writer, string name, long? value)

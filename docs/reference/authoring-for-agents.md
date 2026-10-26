@@ -40,6 +40,18 @@ my-project/
     min_amount: 10
   ```
 
+  `extensions:` lists the DuckDB extensions pipeline SQL calls directly (core or community, e.g.
+  `jev`, `spatial`). pz runs `INSTALL`/`LOAD` for each, before any SQL, in every session that runs or
+  validates the project — never write `INSTALL`/`LOAD` in a pipeline file. Extensions that connectors
+  and file formats need (`httpfs`, `azure`, `iceberg`, …) are not listed. On a machine without
+  internet access, the extension file must already be in DuckDB's extensions folder
+  (`~/.duckdb/extensions/<duckdb version>/<platform>/`); a failure is PZ0402.
+
+  ```yaml
+  extensions:
+    - jev
+  ```
+
 - **`connections.yml`** — one top-level YAML key per **connection** (a place with credentials);
   there is no `connections:` wrapper and no nested `connection:` key. Connector options sit
   directly under the connection's name. A connection may declare `entities:` for the things

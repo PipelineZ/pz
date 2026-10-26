@@ -235,7 +235,8 @@ public class SnapshotRunEventsTests
         public void Release() => _release.Set();
 
         public void WriteSnapshot(string runId, string startedAtIso, IReadOnlyList<NodeResult> completed,
-            string status, long? eventsDropped = null, RunPhasesPayload? phases = null)
+            string status, long? eventsDropped = null, RunPhasesPayload? phases = null,
+            IReadOnlyList<Pz.DuckDb.LoadedExtension>? extensions = null)
         {
             bool block;
             bool fail;
