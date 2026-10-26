@@ -47,11 +47,6 @@ public sealed class WatermarkStore(IKeyedStateStore<Watermark> store)
 
     public void Set(string sourceDataset, Watermark wm) => _store.Set(sourceDataset, wm);
 
-    /// <summary>Writes several entries at once; returns the keys that were not written, each with its
-    /// exception. See <see cref="IKeyedStateStore{T}.SetMany"/>.</summary>
-    public IReadOnlyList<KeyValuePair<string, Exception>> SetMany(IReadOnlyList<KeyValuePair<string, Watermark>> entries) =>
-        _store.SetMany(entries);
-
     /// <summary>Every stored watermark, ordinal by key. Null when the file is corrupt, empty when
     /// absent — see <see cref="KeyedJsonStateStore{T}.ListAll"/>.</summary>
     public IReadOnlyList<KeyValuePair<string, Watermark>>? ListAll(Action<string>? notice = null) =>

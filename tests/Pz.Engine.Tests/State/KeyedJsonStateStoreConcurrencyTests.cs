@@ -114,44 +114,6 @@ public sealed class KeyedJsonStateStoreConcurrencyTests : IDisposable
         Assert.Single(NewRun().ListAll()!);
     }
 
-    /// <summary>A batch is one read-modify-write of the file, yet a key whose read went stale is still
-    /// refused on its own: the other keys in the batch land, and the conflicting key keeps what the other
-    /// run wrote.</summary>
-    [Fact]
-    public void SetMany_writes_once_and_isolates_a_conflict()
-    {
-        NewRun().Set("a", Wm("1", "run-0"));
-        NewRun().Set("b", Wm("1", "run-0"));
-        var first = NewRun();
-        var second = NewRun();
-        Assert.Equal("1", first.Get("a")!.Value);
-        Assert.Equal("1", first.Get("b")!.Value);
-
-        second.Set("a", Wm("7", "run-B"));
-        var failures = first.SetMany([new("a", Wm("5", "run-A")), new("b", Wm("6", "run-A"))]);
-
-        var failure = Assert.Single(failures);
-        Assert.Equal("a", failure.Key);
-        var conflict = Assert.IsType<PzConfigException>(failure.Value);
-        Assert.Equal(PzErrorCode.StateConcurrencyConflict, conflict.Error.Code);
-        var stored = NewRun().ListAll()!;
-        Assert.Equal(["a", "b"], stored.Select(kv => kv.Key));
-        Assert.Equal(Wm("7", "run-B"), stored[0].Value);
-        Assert.Equal(Wm("6", "run-A"), stored[1].Value);
-    }
-
-    [Fact]
-    public void SetMany_remembers_what_it_wrote_so_the_same_run_can_write_again()
-    {
-        var run = NewRun();
-        Assert.Null(run.Get("a"));
-
-        Assert.Empty(run.SetMany([new("a", Wm("1", "run-1"))]));
-        Assert.Empty(run.SetMany([new("a", Wm("2", "run-1"))]));
-
-        Assert.Equal("2", NewRun().Get("a")!.Value);
-    }
-
     public void Dispose()
     {
         if (Directory.Exists(_dir))

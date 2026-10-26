@@ -20,27 +20,16 @@ public sealed class JsonRenderer(TextWriter? writer = null) : IEventRenderer
 
     private TextWriter Writer => writer ?? Console.Out;
 
-    private readonly ArrayBufferWriter<byte> _buffer = new();
-    // Utf8JsonWriter needs an output at construction; Render re-targets it to _buffer via Reset, so this
-    // initial buffer is never written to.
-    private readonly Utf8JsonWriter _json = new(new ArrayBufferWriter<byte>(), new JsonWriterOptions { Indented = false });
-    private readonly Lock _gate = new();
-
     public void Render(RunEvent evt)
     {
-        lock (_gate)
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var json = new Utf8JsonWriter(buffer, new JsonWriterOptions { Indented = false }))
         {
-            _buffer.Clear();
-            _json.Reset(_buffer);
-            WriteEvent(_json, evt);
-            _json.Flush();
-            var span = _buffer.GetSpan(1);
-            span[0] = (byte)'\n';
-            _buffer.Advance(1);
-
-            // One Write per event so concurrent writers to the same stream never interleave a line.
-            Writer.Write(Encoding.UTF8.GetString(_buffer.WrittenSpan));
+            WriteEvent(json, evt);
         }
+
+        Writer.Write(Encoding.UTF8.GetString(buffer.WrittenSpan));
+        Writer.Write('\n');
     }
 
     // The event-name mapping and per-event field writer live in Pz.Diagnostics.Events.RunEventFields so

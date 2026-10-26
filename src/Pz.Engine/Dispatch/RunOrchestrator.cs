@@ -20,9 +20,7 @@ namespace Pz.Engine.Dispatch;
 /// top: a source/sink instance that declares <c>max_concurrency</c> gets its own
 /// <see cref="SemaphoreSlim"/> (see <see cref="Pz.Engine.Execution.InstanceKey"/>), acquired BEFORE the
 /// global permit in <c>RunNodeAsync</c> so that instance's queued nodes never occupy a global slot while
-/// waiting on their own turn. Both permits are held through a <see cref="DispatchLease"/>, which hands them
-/// back while the node waits out a retry backoff or an open breaker (it holds no connector session then)
-/// and re-acquires them, in the same order, before the next attempt.
+/// waiting on their own turn.
 /// </summary>
 public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
 {
@@ -198,128 +196,141 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
             {
                 try
                 {
-                    // Instance permit BEFORE the global one (see DispatchLease.AcquireAsync): a capped
-                    // instance's queued nodes must not hold a global slot while waiting their turn (that
-                    // would let one hot instance starve every other node in the run). Cancellation while
-                    // waiting takes the RecordSkip path; the lease never returns holding a partial set, so
-                    // there is nothing to release.
+                    // Instance permit BEFORE the global one: a capped instance's queued nodes must not
+                    // hold a global slot while waiting their turn (that would let one hot instance
+                    // starve every other node in the run). Acquired/released strictly outside the global
+                    // permit's own try/finally below, so release order is the exact reverse of acquire
+                    // order (global released first, instance released last -- LIFO). Cancellation while
+                    // waiting here takes the same RecordSkip path the global wait already uses -- no
+                    // permit was granted, so there is nothing to release.
                     var instanceKey = InstanceKey.For(node);
                     var instanceSemaphore = instanceKey is null ? null : instanceSemaphores.GetValueOrDefault(instanceKey);
-                    var lease = new DispatchLease(semaphore, instanceSemaphore);
-                    try
+                    if (instanceSemaphore is not null)
                     {
-                        await lease.AcquireAsync(linkedCts.Token).ConfigureAwait(false);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        RecordSkip(node);
-                        return;
-                    }
-
-                    try
-                    {
-                        // A failure observed on another node between this node's readiness check
-                        // and its permit acquisition is caught here so a just-cancelled run
-                        // doesn't start pointless new work; a node already past this check when
-                        // cancellation fires still runs (cooperative — it observes ct itself).
-                        if (linkedCts.IsCancellationRequested)
-                        {
-                            RecordSkip(node);
-                            return;
-                        }
-
-                        // The node span wraps ONLY the executor invocation —
-                        // a node skipped via either check above never gets one, which is deliberate
-                        // (no work was ever dispatched for it). Status is tagged from the NodeResult
-                        // (or "skipped" on cancellation) rather than by catching exceptions here: the
-                        // span itself must never alter the no-throw contract.
-                        //
-                        // Parent is the RUN span's context explicitly (never ambient Activity.Current):
-                        // a node whose completion makes a child ready dispatches that child's
-                        // RunNodeAsync synchronously, from inside OnChildMaybeReady, which runs BEFORE
-                        // this node's own span (below) is disposed — ambient Activity.Current at that
-                        // point would still be this node's span, wrongly nesting the child's node span
-                        // under it instead of making it a sibling under run.
-                        using var nodeActivity = PzActivitySource.Instance.StartActivity(
-                            SpanNames[node.Kind], ActivityKind.Internal, runActivity?.Context ?? default);
-                        nodeActivity?.SetTag("pz.node.id", node.Id.Value);
-                        nodeActivity?.SetTag("pz.node.name", node.Name);
-
-                        NodeResult result;
                         try
                         {
-                            // Published only around the call, so a child this node makes ready (dispatched
-                            // synchronously below) never sees it. A wait that holds no connector session
-                            // hands the permits back through it; see KindDispatchingExecutor.
-                            using (DispatchLease.Use(lease))
-                            {
-                                result = await executor.ExecuteAsync(node, ctx, linkedCts.Token).ConfigureAwait(false);
-                            }
+                            await instanceSemaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
                         }
                         catch (OperationCanceledException)
                         {
-                            nodeActivity?.SetTag("pz.node.status", "skipped");
-                            nodeActivity?.SetTag("pz.node.kind", node.Kind.ToString());
                             RecordSkip(node);
                             return;
                         }
-                        catch (NodeUnresponsiveException ex)
+                    }
+
+                    try
+                    {
+                        try
                         {
-                            // The node was cancelled and would not stop. What it still holds — the
-                            // run's one DuckDB connection, a connector handle — is what every other
-                            // node needs, so they would queue behind it forever. Cancel them now,
-                            // FailFast or not; the wind-down sweep gives each one its Skipped result.
-                            result = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0,
-                                TimeSpan.Zero, ex.Error);
-                            linkedCts.Cancel();
+                            await semaphore.WaitAsync(linkedCts.Token).ConfigureAwait(false);
                         }
-                        catch (Exception ex)
+                        catch (OperationCanceledException)
                         {
-                            // Defensive: INodeExecutor implementations are expected to wrap their
-                            // own exceptions into a Failed NodeResult (KindDispatchingExecutor
-                            // does); this is a safety net so a non-conforming executor can't hang
-                            // the dispatcher's completion latch.
-                            // Same raw-message risk as KindDispatchingExecutor's own terminal wrap --
-                            // redact a foreign exception before it reaches run_results.json/NDJSON via
-                            // this NodeResult's Error.Message; a Pz-family exception passes through
-                            // unredacted (see MessageRedaction.Redact(Exception)'s trust boundary doc).
-                            result = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0,
-                                TimeSpan.Zero,
-                                new PzError(PzErrorCode.NodeFailed, MessageRedaction.Redact(ex), null, null, null));
+                            RecordSkip(node);
+                            return;
                         }
 
-                        nodeActivity?.SetTag("pz.node.status", StatusTag(result.Status));
-                        NodeSpanTags.Apply(nodeActivity, result);
-                        RemoteMetrics.Record(node, result);
-
-                        if (result.Status != NodeStatus.Skipped)
+                        try
                         {
-                            PzMeters.NodeDuration.Record(result.Duration.TotalMilliseconds, NodeKindTags[result.Kind]);
-                        }
-
-                        RecordTerminal(result);
-
-                        if (result.Status == NodeStatus.Failed)
-                        {
-                            CascadeSkip(node);
-                            if (options.FailFast)
+                            // A failure observed on another node between this node's readiness check
+                            // and its permit acquisition is caught here so a just-cancelled run
+                            // doesn't start pointless new work; a node already past this check when
+                            // cancellation fires still runs (cooperative — it observes ct itself).
+                            if (linkedCts.IsCancellationRequested)
                             {
+                                RecordSkip(node);
+                                return;
+                            }
+
+                            // The node span wraps ONLY the executor invocation —
+                            // a node skipped via either check above never gets one, which is deliberate
+                            // (no work was ever dispatched for it). Status is tagged from the NodeResult
+                            // (or "skipped" on cancellation) rather than by catching exceptions here: the
+                            // span itself must never alter the no-throw contract.
+                            //
+                            // Parent is the RUN span's context explicitly (never ambient Activity.Current):
+                            // a node whose completion makes a child ready dispatches that child's
+                            // RunNodeAsync synchronously, from inside OnChildMaybeReady, which runs BEFORE
+                            // this node's own span (below) is disposed — ambient Activity.Current at that
+                            // point would still be this node's span, wrongly nesting the child's node span
+                            // under it instead of making it a sibling under run.
+                            using var nodeActivity = PzActivitySource.Instance.StartActivity(
+                                SpanNames[node.Kind], ActivityKind.Internal, runActivity?.Context ?? default);
+                            nodeActivity?.SetTag("pz.node.id", node.Id.Value);
+                            nodeActivity?.SetTag("pz.node.name", node.Name);
+
+                            NodeResult result;
+                            try
+                            {
+                                result = await executor.ExecuteAsync(node, ctx, linkedCts.Token).ConfigureAwait(false);
+                            }
+                            catch (OperationCanceledException)
+                            {
+                                nodeActivity?.SetTag("pz.node.status", "skipped");
+                                nodeActivity?.SetTag("pz.node.kind", node.Kind.ToString());
+                                RecordSkip(node);
+                                return;
+                            }
+                            catch (NodeUnresponsiveException ex)
+                            {
+                                // The node was cancelled and would not stop. What it still holds — the
+                                // run's one DuckDB connection, a connector handle — is what every other
+                                // node needs, so they would queue behind it forever. Cancel them now,
+                                // FailFast or not; the wind-down sweep gives each one its Skipped result.
+                                result = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0,
+                                    TimeSpan.Zero, ex.Error);
                                 linkedCts.Cancel();
                             }
-                        }
-                        else
-                        {
-                            foreach (var childId in children.GetValueOrDefault(node.Id, []))
+                            catch (Exception ex)
                             {
-                                OnChildMaybeReady(childId);
+                                // Defensive: INodeExecutor implementations are expected to wrap their
+                                // own exceptions into a Failed NodeResult (KindDispatchingExecutor
+                                // does); this is a safety net so a non-conforming executor can't hang
+                                // the dispatcher's completion latch.
+                                // Same raw-message risk as KindDispatchingExecutor's own terminal wrap --
+                                // redact a foreign exception before it reaches run_results.json/NDJSON via
+                                // this NodeResult's Error.Message; a Pz-family exception passes through
+                                // unredacted (see MessageRedaction.Redact(Exception)'s trust boundary doc).
+                                result = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0,
+                                    TimeSpan.Zero,
+                                    new PzError(PzErrorCode.NodeFailed, MessageRedaction.Redact(ex), null, null, null));
                             }
+
+                            nodeActivity?.SetTag("pz.node.status", StatusTag(result.Status));
+                            NodeSpanTags.Apply(nodeActivity, result);
+                            RemoteMetrics.Record(node, result);
+
+                            if (result.Status != NodeStatus.Skipped)
+                            {
+                                PzMeters.NodeDuration.Record(result.Duration.TotalMilliseconds, NodeKindTags[result.Kind]);
+                            }
+
+                            RecordTerminal(result);
+
+                            if (result.Status == NodeStatus.Failed)
+                            {
+                                CascadeSkip(node);
+                                if (options.FailFast)
+                                {
+                                    linkedCts.Cancel();
+                                }
+                            }
+                            else
+                            {
+                                foreach (var childId in children.GetValueOrDefault(node.Id, []))
+                                {
+                                    OnChildMaybeReady(childId);
+                                }
+                            }
+                        }
+                        finally
+                        {
+                            semaphore.Release();
                         }
                     }
                     finally
                     {
-                        // Whatever the lease holds now: both permits, or none if the node was cancelled
-                        // while re-acquiring them after a wait.
-                        lease.Release();
+                        instanceSemaphore?.Release();
                     }
                 }
                 finally
