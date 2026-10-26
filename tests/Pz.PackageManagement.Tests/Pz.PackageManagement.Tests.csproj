@@ -23,7 +23,7 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Google.Protobuf" Version="3.36.2" />
     <PackageReference Include="Grpc.AspNetCore" Version="2.84.0" />
-    <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="All" />
+    <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="All" />
     <Protobuf Include="Otlp\proto\**\*.proto" ProtoRoot="Otlp\proto" GrpcServices="Server" />
     <!-- The loopback OTLP/HTTP receiver, one source shared with Pz.Cli.Tests and Pz.Connectors.Sdk.Tests. -->
     <Compile Include="..\Pz.Cli.Tests\Otel\OtlpHttpReceiver.cs" Link="Otlp\OtlpHttpReceiver.cs" />

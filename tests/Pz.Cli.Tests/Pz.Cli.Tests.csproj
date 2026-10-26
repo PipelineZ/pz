@@ -17,7 +17,7 @@
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Google.Protobuf" Version="3.36.2" />
-    <PackageReference Include="Grpc.Tools" Version="2.84.0" PrivateAssets="All" />
+    <PackageReference Include="Grpc.Tools" Version="2.85.0" PrivateAssets="All" />
     <Protobuf Include="..\Pz.PackageManagement.Tests\Otlp\proto\**\*.proto" ProtoRoot="..\Pz.PackageManagement.Tests\Otlp\proto" GrpcServices="None" />
   </ItemGroup>
 
