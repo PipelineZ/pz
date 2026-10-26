@@ -135,7 +135,7 @@ public sealed class KindDispatchingExecutor(
 
                     // Same non-attempt-consuming wait as the retry backoff below: an OperationCanceledException
                     // from this delay (e.g. the run being cancelled mid-wait) must propagate uncaught.
-                    await WaitReleasedAsync(retryIn, ct).ConfigureAwait(false);
+                    await _delay(retryIn, ct).ConfigureAwait(false);
                 }
             }
 
@@ -207,7 +207,7 @@ public sealed class KindDispatchingExecutor(
                 // Not wrapped in try/catch: an OperationCanceledException from the backoff wait (e.g. the
                 // run being cancelled mid-delay) must propagate exactly like one from the node itself,
                 // never surface as a Failed NodeResult.
-                await WaitReleasedAsync(delayDuration, ct).ConfigureAwait(false);
+                await _delay(delayDuration, ct).ConfigureAwait(false);
                 attempt++;
             }
             catch (PzConnectorException ex) when (ex.IsTransient)
@@ -225,15 +225,6 @@ public sealed class KindDispatchingExecutor(
             }
         }
     }
-
-    /// <summary>A wait between attempts. No connector session is open across it (each attempt opens and
-    /// disposes its own), so under the dispatcher the node's permits are handed back for its length and
-    /// re-acquired after; called with no lease (outside the dispatcher), it is the plain delay. Cancellation
-    /// propagates either way, with nothing held.</summary>
-    private Task WaitReleasedAsync(TimeSpan duration, CancellationToken ct) =>
-        DispatchLease.Current is { } lease
-            ? lease.WhileReleasedAsync(t => _delay(duration, t), ct)
-            : _delay(duration, ct);
 
     /// <summary>One attempt, bounded by <c>engine.node_timeout</c> when one is set. The attempt runs on
     /// its own token so the timeout can cancel it without cancelling the run. Awaiting the executor
