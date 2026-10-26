@@ -12,8 +12,9 @@ namespace Pz.DuckDb;
 
 /// <summary>
 /// A disk-backed DuckDB session. DuckDB.NET's ADO.NET surface is synchronous under the
-/// hood, so the async members here are implemented as sync-over-async via <see cref="Task.Run(Action)"/>,
-/// offloading the blocking ADO.NET call to a thread-pool thread rather than blocking the caller.
+/// hood, so the async members here await the connection gate without holding a thread, then run the
+/// blocking ADO.NET call on a thread-pool thread via <see cref="Task.Run(Action)"/> rather than blocking
+/// the caller. A pool thread is therefore occupied only while a native call runs, never while queued.
 /// </summary>
 public sealed class DuckSession : IDuckSession
 {
@@ -35,8 +36,8 @@ public sealed class DuckSession : IDuckSession
     // appender is closed before the gate is released, so no appender state spans a release.
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    // Operations currently waiting for _gate. Every wait goes through WaitForGate/WaitForGateAsync, which
-    // count themselves here and then complete _gateWanted, so an ingest holding the gate while it awaits
+    // Operations currently waiting for _gate. Every wait goes through WaitForGateAsync, which
+    // counts itself here and then completes _gateWanted, so an ingest holding the gate while it awaits
     // its next batch hands the gate over as soon as anything else wants it.
     private int _gateWaiters;
 
@@ -115,20 +116,6 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
-    private void WaitForGate(CancellationToken ct)
-    {
-        Interlocked.Increment(ref _gateWaiters);
-        try
-        {
-            Volatile.Read(ref _gateWanted)?.TrySetResult();
-            _gate.Wait(ct);
-        }
-        finally
-        {
-            Interlocked.Decrement(ref _gateWaiters);
-        }
-    }
-
     private async Task WaitForGateAsync(CancellationToken ct)
     {
         Interlocked.Increment(ref _gateWaiters);
@@ -172,43 +159,40 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
-    public Task ExecuteAsync(string sql, CancellationToken ct = default)
+    public async Task ExecuteAsync(string sql, CancellationToken ct = default)
     {
-        return Task.Run(
-            () =>
-            {
-                WaitForGate(ct);
-                try
-                {
-                    ExecuteSync(sql, ct);
-                }
-                finally
-                {
-                    _gate.Release();
-                }
-            },
-            ct);
+        await WaitForGateAsync(ct).ConfigureAwait(false);
+        try
+        {
+            // CancellationToken.None: a token-cancelled Task.Run may never start its body, so the
+            // finally that releases the gate would not run. ExecuteSync interrupts on ct itself.
+            await Task.Run(() => ExecuteSync(sql, ct), CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
-    public Task<T> ScalarAsync<T>(string sql, CancellationToken ct = default)
+    public async Task<T> ScalarAsync<T>(string sql, CancellationToken ct = default)
     {
-        return Task.Run(
-            () =>
-            {
-                WaitForGate(ct);
-                try
+        await WaitForGateAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(
+                () =>
                 {
                     using var command = _connection.CreateCommand();
                     command.CommandText = sql;
                     var result = Interruptible(command, ct, static c => c.ExecuteScalar());
                     return (T)Convert.ChangeType(result!, typeof(T), CultureInfo.InvariantCulture);
-                }
-                finally
-                {
-                    _gate.Release();
-                }
-            },
-            ct);
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -549,64 +533,55 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
-    public Task CreateEmptyTableAsync(string targetTable, Schema schema, CancellationToken ct = default)
+    public async Task CreateEmptyTableAsync(string targetTable, Schema schema, CancellationToken ct = default)
     {
-        return Task.Run(
-            () =>
-            {
-                WaitForGate(ct);
-                try
-                {
-                    ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema));
-                }
-                finally
-                {
-                    _gate.Release();
-                }
-            },
-            ct);
+        await WaitForGateAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await Task.Run(
+                () => ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema)),
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
-    public Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, Schema? schema = null,
+    public async Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, Schema? schema = null,
         CancellationToken ct = default)
     {
-        // Deliberately NOT passing `ct` as Task.Run's own cancellation token: if `ct` is already
-        // cancelled when this is called, Task.Run(Action, CancellationToken) never invokes the
-        // delegate at all — which would skip the `finally { batch.Dispose(); }` below and leak the
-        // engine-owned pooled Arrow batch (this method's contract, and IDuckSession's doc comment,
-        // require the batch to always be disposed, success or failure). Cancellation responsiveness
-        // is preserved by `WaitForGate(ct)` and the explicit `ThrowIfCancellationRequested()` inside
-        // the delegate, which the (always-running) finally then unwinds through.
-        return Task.Run(
-            () =>
+        // The outer finally disposes the engine-owned pooled batch on every path, including a cancelled
+        // (or already-cancelled) gate wait. Task.Run gets CancellationToken.None so its body always
+        // runs once the gate is held and the gate-release finally cannot be skipped.
+        try
+        {
+            await WaitForGateAsync(ct).ConfigureAwait(false);
+            try
             {
-                try
-                {
-                    WaitForGate(ct);
-                    try
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        return AppendUnderGate(targetTable, batch, schema ?? batch.Schema);
-                    }
-                    finally
-                    {
-                        _gate.Release();
-                    }
-                }
-                finally
-                {
-                    batch.Dispose();
-                }
-            });
+                ct.ThrowIfCancellationRequested();
+                return await Task.Run(
+                    () => AppendUnderGate(targetTable, batch, schema ?? batch.Schema),
+                    CancellationToken.None).ConfigureAwait(false);
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+        finally
+        {
+            batch.Dispose();
+        }
     }
 
-    public Task ExecuteTransactionAsync(IReadOnlyList<string> statements, CancellationToken ct = default)
+    public async Task ExecuteTransactionAsync(IReadOnlyList<string> statements, CancellationToken ct = default)
     {
-        return Task.Run(
-            () =>
-            {
-                WaitForGate(ct);
-                try
+        await WaitForGateAsync(ct).ConfigureAwait(false);
+        try
+        {
+            await Task.Run(
+                () =>
                 {
                     ExecuteSync("BEGIN TRANSACTION");
                     try
@@ -632,13 +607,13 @@ public sealed class DuckSession : IDuckSession
 
                         throw;
                     }
-                }
-                finally
-                {
-                    _gate.Release();
-                }
-            },
-            ct);
+                },
+                CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     /// <summary>Binds/plans <paramref name="sql"/> without fetching any rows (<c>limit 0</c>) and derives
@@ -664,22 +639,17 @@ public sealed class DuckSession : IDuckSession
         return ArrowInterop.NormalizeNativeArrowSchema(stream.Schema);
     }
 
-    public Task<Schema> GetResultSchemaAsync(string sql, CancellationToken ct = default)
+    public async Task<Schema> GetResultSchemaAsync(string sql, CancellationToken ct = default)
     {
-        return Task.Run(
-            () =>
-            {
-                WaitForGate(ct);
-                try
-                {
-                    return PeekSchema(sql);
-                }
-                finally
-                {
-                    _gate.Release();
-                }
-            },
-            ct);
+        await WaitForGateAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(() => PeekSchema(sql), CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     /// <summary>Test-only hook invoked (on the egress producer thread) each time a batch is written to the

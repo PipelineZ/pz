@@ -26,6 +26,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- Nodes waiting out a retry backoff or an open circuit breaker no longer hold a dispatch slot: other nodes,
+  including the same connection's under `max_concurrency`, run in the meantime.
+- DuckDB calls wait for the session's connection asynchronously instead of blocking a thread-pool thread:
+  callers queued behind a held connection no longer each occupy a pool thread (64 queued callers previously
+  grew the pool by about 60 threads). Wall time is unchanged within noise on a 2-CPU run (32 callers x 50
+  1,000-row appends).
 - **A slow source no longer blocks other nodes' DuckDB work.** Channel-path ingest (Postgres, SqlServer, Sftp,
   Azure Blob and GCS reads, and LocalFiles under `force_universal`) held the session gate for the whole stream, so
   every other node's DuckDB work waited for the slowest source. It now holds the gate while waiting for a batch
