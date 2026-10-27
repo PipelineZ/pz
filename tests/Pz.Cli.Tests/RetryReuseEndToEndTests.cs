@@ -163,6 +163,51 @@ public sealed class RetryReuseEndToEndTests : IDisposable
         Assert.DoesNotContain(retrySql, e => reusedIds.Contains(e.GetProperty("nodeId").GetString()));
     }
 
+    /// <summary>Resolved SQL can carry a value env() inlined, so it is written only to the NDJSON stream: `--log-sql`
+    /// with text output is refused before anything runs, on both verbs.</summary>
+    [Theory]
+    [InlineData("run", null)]
+    [InlineData("run", "text")]
+    [InlineData("retry", null)]
+    [InlineData("retry", "text")]
+    public void Log_sql_without_the_json_log_format_is_a_config_error(string verb, string? format)
+    {
+        string[] args = format is null
+            ? [verb, "--project", _work, "--log-sql"]
+            : [verb, "--project", _work, "--log-format", format, "--log-sql"];
+        var original = Console.Error;
+        using var stderr = new StringWriter();
+        Console.SetError(stderr);
+        int exit;
+        try
+        {
+            exit = CliApp.Build().Parse(args).Invoke();
+        }
+        finally
+        {
+            Console.SetError(original);
+        }
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains(RunCommand.LogSqlNeedsJson, stderr.ToString(), StringComparison.Ordinal);
+        Assert.False(Directory.Exists(Path.Combine(_work, ".pz", "runs")), "nothing may run");
+    }
+
+    /// <summary>The persisted stream (state.events: true) never carries node_sql.</summary>
+    [Fact]
+    public async Task The_sql_event_renderer_skips_node_sql()
+    {
+        var connection = new Pz.State.SqlServer.SqlStateConnection("Server=unused;Database=unused;Connect Timeout=1;", "pz");
+        var renderer = new Pz.Cli.Rendering.SqlEventRenderer(
+            new Pz.State.SqlServer.SqlEventSink(connection, "run-1", TimeProvider.System));
+
+        renderer.Render(new Pz.Diagnostics.Events.NodeSqlEvent(DateTimeOffset.UnixEpoch, "run-1", "n1", "pipeline", "p", 1,
+            "select 1", false, 8));
+        await renderer.DisposeAsync();
+
+        Assert.Equal(0L, renderer.Dropped);
+    }
+
     private static List<JsonElement> Events(string ndjson, string name) =>
     [
         .. ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries)

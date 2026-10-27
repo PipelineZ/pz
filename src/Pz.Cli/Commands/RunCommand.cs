@@ -32,6 +32,12 @@ internal static class RunCommand
     /// a hung terminal/renderer must never hang `pz run` itself.</summary>
     private static readonly TimeSpan RendererDrainTimeout = TimeSpan.FromSeconds(5);
 
+    /// <summary>The one diagnostic for <c>--log-sql</c> without <c>--log-format json</c>: the statements can carry values
+    /// <c>env()</c> inlined, and only the json stream goes to a consumer that is expected to mask them.</summary>
+    internal const string LogSqlNeedsJson =
+        "error: --log-sql needs --log-format json: resolved SQL can carry values env() inlined, so it is written only " +
+        "to the NDJSON stream, for a consumer that masks it";
+
     public static Command Create()
     {
         var projectOption = new Option<string?>("--project") { Description = "Project directory (default: current directory)" };
@@ -117,6 +123,12 @@ internal static class RunCommand
         {
             Console.Error.WriteLine(
                 $"error: invalid --log-format value '{logFormatRaw}' (expected 'text' or 'json')");
+            return ExitCodes.ConfigError;
+        }
+
+        if (logSql && logFormat != "json")
+        {
+            Console.Error.WriteLine(LogSqlNeedsJson);
             return ExitCodes.ConfigError;
         }
 

@@ -42,19 +42,21 @@ public sealed class SqlEventSinkTests(SqlServerFixture fixture)
     }
 
     [SkippableFact]
-    public async Task A_node_sql_event_is_persisted_without_counting_a_drop()
+    public async Task A_node_sql_event_is_never_persisted_and_is_not_a_drop()
     {
         DockerFacts.SkipUnlessDocker();
         var connection = fixture.NewConnection();
         SqlStateSchema.EnsureCurrent(connection);
 
         var sink = new SqlEventSink(connection, "run-sql", TimeProvider.System);
+        sink.Write(new NodeStartedEvent(DateTimeOffset.UnixEpoch, "run-sql", "n1", "Pipeline", "p"));
         sink.Write(new NodeSqlEvent(DateTimeOffset.UnixEpoch, "run-sql", "n1", "pipeline", "p", 1,
-            "CREATE OR REPLACE TABLE staging.p AS (select 1)", false, 46));
+            "select 'secret-from-env'", false, 24));
         await sink.DisposeAsync();
 
         var stored = fixture.ReadEvents(connection, "run-sql");
-        Assert.Equal(["node_sql"], stored.Select(e => e.Event).ToArray());
+        Assert.Equal(["node_started"], stored.Select(e => e.Event).ToArray());
+        Assert.Equal([0L], stored.Select(e => e.Seq).ToArray());
         Assert.Equal(0L, sink.Dropped);
     }
 
@@ -175,6 +177,20 @@ public sealed class SqlEventSinkDisposeFaultTests
         var sink = new SqlEventSink(connection, "run-1", new ThrowingTimeProvider());
 
         await sink.DisposeAsync(); // must not throw
+    }
+
+    /// <summary>No docker needed: a refused <see cref="NodeSqlEvent"/> never reaches the buffer, so nothing is pending,
+    /// nothing is dropped.</summary>
+    [Fact]
+    public async Task A_node_sql_event_is_refused_before_the_buffer()
+    {
+        var connection = new SqlStateConnection("Server=unused;Database=unused;Connect Timeout=1;", "pz");
+        var sink = new SqlEventSink(connection, "run-1", TimeProvider.System);
+
+        sink.Write(new NodeSqlEvent(DateTimeOffset.UnixEpoch, "run-1", "n1", "pipeline", "p", 1, "select 1", false, 8));
+        await sink.DisposeAsync();
+
+        Assert.Equal(0L, sink.Dropped);
     }
 }
 

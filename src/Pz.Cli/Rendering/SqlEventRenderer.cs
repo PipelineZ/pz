@@ -12,7 +12,17 @@ namespace Pz.Cli.Rendering;
 /// is looking at a <see cref="SqlEventSink"/> underneath a <see cref="CompositeEventRenderer"/>.</summary>
 internal sealed class SqlEventRenderer(SqlEventSink sink) : IEventRenderer, IAsyncDisposable
 {
-    public void Render(RunEvent evt) => sink.Write(evt);
+    /// <summary><see cref="NodeSqlEvent"/> is never persisted (it can carry a value <c>env()</c> inlined); the sink
+    /// also refuses it, so this holds for any other caller of the sink.</summary>
+    public void Render(RunEvent evt)
+    {
+        if (evt is NodeSqlEvent)
+        {
+            return;
+        }
+
+        sink.Write(evt);
+    }
 
     public long Dropped => sink.Dropped;
 

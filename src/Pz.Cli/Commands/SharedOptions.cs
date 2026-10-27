@@ -24,8 +24,8 @@ public static class SharedOptions
 
     /// <summary>Opt-in <c>node_sql</c> events (`run` and `retry` only): the statement each Pipeline node and
     /// <c>custom_sql</c> check hands DuckDB. Off by default because <c>env()</c> can inline a secret into SQL and
-    /// pz has no masker; a consumer that turns it on must mask what it shows. Only the json renderer writes the
-    /// event.</summary>
+    /// pz has no masker; a consumer that turns it on must mask what it shows. Needs --log-format json: only the json
+    /// renderer writes the event, and it is never persisted (state.events) or exported.</summary>
     public static Option<bool> LogSql { get; } =
         new("--log-sql")
         {

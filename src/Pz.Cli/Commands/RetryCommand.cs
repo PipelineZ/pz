@@ -75,6 +75,12 @@ internal static class RetryCommand
             return ExitCodes.ConfigError;
         }
 
+        if (logSql && logFormat != "json")
+        {
+            Console.Error.WriteLine(RunCommand.LogSqlNeedsJson);
+            return ExitCodes.ConfigError;
+        }
+
         if (!RunCommand.TryResolveOtel(otelRaw ?? new(null, null, null, null, null), Environment.GetEnvironmentVariable, out var otel, out var otelError))
         {
             Console.Error.WriteLine($"error: {otelError}");

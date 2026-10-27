@@ -143,6 +143,13 @@ public sealed class SqlEventSink : IAsyncDisposable
     /// enqueues; all I/O happens later, on the background drain task.</summary>
     public void Write(RunEvent evt)
     {
+        // Resolved SQL can carry a value env() inlined, and nothing masks it on the way into pz.run_events. It is never
+        // persisted, and skipping it is not a drop.
+        if (evt is NodeSqlEvent)
+        {
+            return;
+        }
+
         var seq = Interlocked.Increment(ref _seq);
         var pending = Interlocked.Increment(ref _pending);
         if (pending > MaxBuffered)

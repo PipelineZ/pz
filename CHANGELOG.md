@@ -12,7 +12,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **`--log-sql` on `pz run` and `pz retry`** publishes a `node_sql` event with the exact statement each
   pipeline node and `custom_sql` check hands DuckDB, after templating and watermark substitution, once per
   attempt and before it runs. Capped at 65,536 characters (`truncated` and `chars` say when it was cut). Off by
-  default: `env()` can inline a secret into SQL, so a consumer that turns it on must mask what it shows.
+  default: `env()` can inline a secret into SQL, so a consumer that turns it on must mask what it shows. It needs
+  `--log-format json` (otherwise the run is refused with exit 2) and is written to stdout NDJSON only: never
+  persisted to `pz.run_events` under `state.events: true`, and not counted as a dropped event there.
 
 ## [0.12.0] - 2026-10-26
 

@@ -397,8 +397,10 @@ nodes, built-in check types, and reused or carried-forward nodes publish nothing
 the flag.
 
 **The text can carry secrets.** `env()` inlines an environment variable's value into SQL, and pz has no
-masker: a consumer that shows or stores this event must mask it first. With `state.events: true` the
-event is persisted to `pz.run_events` like any other, so turn the flag on only when that store may hold it.
+masker: a consumer that shows or stores this event must mask it first. So it goes to stdout NDJSON only:
+`--log-sql` without `--log-format json` is refused before anything runs (exit 2), and the event is never
+persisted (`state.events: true` leaves it out of `pz.run_events`, without counting it in `events_dropped`)
+or exported anywhere else.
 
 | Field | Type | Description |
 |---|---|---|
@@ -468,7 +470,7 @@ Written once when `pz cdc drop` succeeds.
 
 **Stdout NDJSON remains the contractual surface described by this whole document, unconditionally.**
 With `state.events: true` (see [Move state off the local disk](https://pipelinez.dev/how-to/remote-state/)), the same
-event stream is *also* persisted into `pz.run_events` — one row per event, ordered by an explicit
+event stream is *also* persisted into `pz.run_events` (every event except `node_sql`, which stays on stdout only) — one row per event, ordered by an explicit
 per-run `seq` column rather than insert order, since a batched writer cannot rely on the latter and
 `at`'s millisecond precision has real ties. This is an additional consumer of the existing stream, not
 a second contract: every row's `event`/payload fields mirror this document's NDJSON shape exactly. The
