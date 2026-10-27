@@ -43,8 +43,10 @@ public sealed class PipelineExecutor : INodeExecutor
             sql = sql.Replace($"'{sub.Sentinel}'", literal, StringComparison.Ordinal);
         }
 
-        await ctx.Duck.ExecuteAsync(
-            $"CREATE OR REPLACE {relationKind} staging.{node.Name} AS ({sql})", ct).ConfigureAwait(false);
+        // Built once and executed as published, so --log-sql shows the exact string DuckDB receives.
+        var statement = $"CREATE OR REPLACE {relationKind} staging.{node.Name} AS ({sql})";
+        ctx.PublishNodeSql(node, statement);
+        await ctx.Duck.ExecuteAsync(statement, ct).ConfigureAwait(false);
 
         var rows = isView
             ? 0L

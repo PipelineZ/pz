@@ -62,6 +62,13 @@ public interface IRunEvents
     /// <paramref name="message"/> must already be redacted by the caller — this seam does not inspect
     /// it.</summary>
     void ConnectorLog(string connection, string level, string message);
+
+    /// <summary>The statement a Pipeline node or a <c>custom_sql</c> Check is about to hand DuckDB, for
+    /// <paramref name="attempt"/> (1-based). Published only when <see cref="RunContext.LogSql"/> is set, after
+    /// <see cref="NodeStarted"/> and before <see cref="NodeCompleted"/>. <paramref name="sql"/> is the whole
+    /// statement, uncapped; a publisher caps what it emits. It may carry a value <c>env()</c> inlined. A target
+    /// with no use for it keeps this default, which does nothing.</summary>
+    void NodeSql(DagNode node, int attempt, string sql) { }
 }
 
 public sealed class NullRunEvents : IRunEvents
@@ -157,5 +164,10 @@ public static class RunEventsExtensions
     public static void SafeConnectorLog(this IRunEvents events, string connection, string level, string message)
     {
         try { events.ConnectorLog(connection, level, message); } catch { /* best-effort observation only */ }
+    }
+
+    public static void SafeNodeSql(this IRunEvents events, DagNode node, int attempt, string sql)
+    {
+        try { events.NodeSql(node, attempt, sql); } catch { /* best-effort observation only */ }
     }
 }

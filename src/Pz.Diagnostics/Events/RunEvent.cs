@@ -137,6 +137,37 @@ public sealed record AmbiguousDateInferenceDetectedEvent(DateTimeOffset At, stri
 public sealed record ConnectorLogEvent(DateTimeOffset At, string RunId, string Level, string Connection,
     string Message) : RunEvent(At, RunId);
 
+/// <summary>The statement pz is about to hand DuckDB for one node, published only under <c>--log-sql</c>.
+/// Pipeline nodes: the <c>CREATE OR REPLACE</c> statement after watermark substitution. <c>custom_sql</c>
+/// checks: the violation count query. Never published for SourceLoad/SinkWrite nodes or built-in checks, and
+/// not for a reused or carried-forward node, which executes nothing. May carry values that <c>env()</c>
+/// inlined: a consumer that shows it must mask it. <see cref="Sql"/> holds at most <see cref="MaxChars"/>
+/// characters; <see cref="Truncated"/> says the rest was cut and <see cref="Chars"/> is the full length.
+/// <see cref="Kind"/> is <c>pipeline</c> or <c>check</c>; <see cref="Attempt"/> is 1-based, one event per
+/// attempt.</summary>
+public sealed record NodeSqlEvent(DateTimeOffset At, string RunId, string NodeId, string Kind, string Name,
+    int Attempt, string Sql, bool Truncated, int Chars) : RunEvent(At, RunId)
+{
+    /// <summary>The cap on <see cref="Sql"/>, in UTF-16 characters. Keeps one NDJSON line near 130 KB after
+    /// JSON escaping; the statement itself always executes in full.</summary>
+    public const int MaxChars = 65_536;
+
+    /// <summary><paramref name="sql"/> cut to <see cref="MaxChars"/> characters, never between the two halves of
+    /// a surrogate pair (the cut then keeps one character fewer).</summary>
+    public static string Cap(string sql, out bool truncated)
+    {
+        if (sql.Length <= MaxChars)
+        {
+            truncated = false;
+            return sql;
+        }
+
+        truncated = true;
+        var cut = char.IsHighSurrogate(sql[MaxChars - 1]) ? MaxChars - 1 : MaxChars;
+        return sql[..cut];
+    }
+}
+
 public sealed record NodeTimingsPayload(long ProducerStallMs, long ConsumerStallMs);
 
 /// <summary>Per-stage wall time of a node's last attempt, and each stage's start in ms from the node's start

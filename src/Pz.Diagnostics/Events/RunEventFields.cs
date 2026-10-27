@@ -29,6 +29,7 @@ public static class RunEventFields
         LossyIntegerInferenceDetectedEvent => "lossy_integer_inference_detected",
         AmbiguousDateInferenceDetectedEvent => "ambiguous_date_inference_detected",
         ConnectorLogEvent => "connector_log",
+        NodeSqlEvent => "node_sql",
         _ => throw new ArgumentOutOfRangeException(nameof(evt), evt, "unknown RunEvent type"),
     };
 
@@ -292,6 +293,16 @@ public static class RunEventFields
                 json.WriteString("level", e.Level);
                 json.WriteString("connection", e.Connection);
                 json.WriteString("message", e.Message);
+                break;
+
+            case NodeSqlEvent e:
+                json.WriteString("nodeId", e.NodeId);
+                json.WriteString("kind", e.Kind);
+                json.WriteString("name", e.Name);
+                json.WriteNumber("attempt", e.Attempt);
+                json.WriteString("sql", e.Sql);
+                json.WriteBoolean("truncated", e.Truncated);
+                json.WriteNumber("chars", e.Chars);
                 break;
 
             default:

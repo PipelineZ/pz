@@ -152,6 +152,24 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
     public void ConnectorLog(string connection, string level, string message) =>
         bus.Publish(new ConnectorLogEvent(clock.GetUtcNow(), runId, level, connection, message));
 
+    /// <summary>Caps the statement at <see cref="NodeSqlEvent.MaxChars"/>; <c>chars</c> carries the full
+    /// length. The kind uses the DAG's snake_case names (<c>pipeline</c>, <c>check</c>).</summary>
+    public void NodeSql(DagNode node, int attempt, string sql)
+    {
+        var text = NodeSqlEvent.Cap(sql, out var truncated);
+        bus.Publish(new NodeSqlEvent(clock.GetUtcNow(), runId, node.Id.Value, SnakeKind(node.Kind), node.Name,
+            attempt, text, truncated, sql.Length));
+    }
+
+    private static string SnakeKind(NodeKind kind) => kind switch
+    {
+        NodeKind.SourceLoad => "source_load",
+        NodeKind.Pipeline => "pipeline",
+        NodeKind.Check => "check",
+        NodeKind.SinkWrite => "sink_write",
+        _ => kind.ToString(),
+    };
+
     /// <summary>Maps <see cref="NodeResult.Provenance"/> onto the exact wire values
     /// <c>RunResultsWriter</c> writes to <c>run_results.json</c>, so the NDJSON stream and the persisted
     /// artifact agree.</summary>

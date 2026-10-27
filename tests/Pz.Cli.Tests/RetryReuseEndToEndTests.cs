@@ -123,6 +123,86 @@ public sealed class RetryReuseEndToEndTests : IDisposable
         Assert.Equal("success", carriedForward[0].GetProperty("status").GetString());
     }
 
+    /// <summary>`--log-sql` through the real CLI: no <c>node_sql</c> line without the flag; with it, one for the
+    /// pipeline and none for the SourceLoad or SinkWrite nodes; on `pz retry --log-sql` the reused SourceLoad
+    /// publishes nothing and only pipelines publish.</summary>
+    [Fact]
+    public async Task Log_sql_emits_node_sql_for_pipelines_only_on_run_and_retry()
+    {
+        var flakyOutputDir = Path.Combine(_work, "out_flaky");
+        File.WriteAllText(flakyOutputDir, "blocks the flaky sink's output directory");
+
+        var (exitWithout, plain) = CaptureStdout(() =>
+            CliApp.Build().Parse(["run", "--project", _work, "--log-format", "json"]).Invoke());
+        Assert.Equal(ExitCodes.NodeFailures, exitWithout);
+        Assert.Empty(Events(plain, "node_sql"));
+
+        var (exitWith, logged) = CaptureStdout(() =>
+            CliApp.Build().Parse(["run", "--project", _work, "--log-format", "json", "--log-sql"]).Invoke());
+        Assert.Equal(ExitCodes.NodeFailures, exitWith);
+        var sql = Assert.Single(Events(logged, "node_sql"));
+        Assert.Equal("pipeline", sql.GetProperty("kind").GetString());
+        Assert.Equal("stg_orders", sql.GetProperty("name").GetString());
+        Assert.Equal(1, sql.GetProperty("attempt").GetInt32());
+        Assert.StartsWith("CREATE OR REPLACE TABLE staging.stg_orders AS (", sql.GetProperty("sql").GetString());
+        Assert.False(sql.GetProperty("truncated").GetBoolean());
+
+        File.Delete(flakyOutputDir);
+        var (retryExit, retried) = await CaptureStdoutAsync(() => RetryCommand.Execute(
+            _work, failFast: false, noLockCheck: true, logFormatRaw: "json", otelRaw: null, stateUrlRaw: null,
+            fullRefresh: false, CancellationToken.None, logSql: true));
+        Assert.Equal(ExitCodes.Ok, retryExit);
+
+        var reusedIds = Events(retried, "node_completed")
+            .Where(e => e.TryGetProperty("provenance", out var p) && p.GetString() == "reused")
+            .Select(e => e.GetProperty("nodeId").GetString())
+            .ToList();
+        Assert.NotEmpty(reusedIds);
+        var retrySql = Events(retried, "node_sql");
+        Assert.All(retrySql, e => Assert.Equal("pipeline", e.GetProperty("kind").GetString()));
+        Assert.DoesNotContain(retrySql, e => reusedIds.Contains(e.GetProperty("nodeId").GetString()));
+    }
+
+    private static List<JsonElement> Events(string ndjson, string name) =>
+    [
+        .. ndjson.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Where(line => line.StartsWith('{'))
+            .Select(line => JsonDocument.Parse(line).RootElement)
+            .Where(e => e.GetProperty("event").GetString() == name),
+    ];
+
+    private static (int Exit, string Stdout) CaptureStdout(Func<int> action)
+    {
+        var original = Console.Out;
+        using var stdout = new StringWriter();
+        Console.SetOut(stdout);
+        try
+        {
+            var exit = action();
+            return (exit, stdout.ToString());
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+    }
+
+    private static async Task<(int Exit, string Stdout)> CaptureStdoutAsync(Func<Task<int>> action)
+    {
+        var original = Console.Out;
+        using var stdout = new StringWriter();
+        Console.SetOut(stdout);
+        try
+        {
+            var exit = await action();
+            return (exit, stdout.ToString());
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+    }
+
     private static bool WatermarkHasEntry(string wmPath, string key)
     {
         if (!File.Exists(wmPath))

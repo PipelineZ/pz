@@ -111,4 +111,12 @@ public sealed class CompositeRunEvents(params IRunEvents[] targets) : IRunEvents
             target.SafeConnectorLog(connection, level, message);
         }
     }
+
+    public void NodeSql(DagNode node, int attempt, string sql)
+    {
+        foreach (var target in targets)
+        {
+            target.SafeNodeSql(node, attempt, sql);
+        }
+    }
 }

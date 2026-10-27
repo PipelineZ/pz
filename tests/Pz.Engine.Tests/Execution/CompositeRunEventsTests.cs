@@ -34,6 +34,7 @@ public class CompositeRunEventsTests
             TimeSpan duration) => throw new InvalidOperationException();
         public void ConnectorLog(string connection, string level, string message) =>
             throw new InvalidOperationException();
+        public void NodeSql(DagNode node, int attempt, string sql) => throw new InvalidOperationException();
     }
 
     private sealed class RecordingEvents : IRunEvents
@@ -63,6 +64,8 @@ public class CompositeRunEventsTests
         public readonly List<(string Connection, string Level, string Message)> ConnectorLogs = [];
         public void ConnectorLog(string connection, string level, string message) =>
             ConnectorLogs.Add((connection, level, message));
+        public readonly List<(string Name, int Attempt, string Sql)> NodeSqls = [];
+        public void NodeSql(DagNode node, int attempt, string sql) => NodeSqls.Add((node.Name, attempt, sql));
     }
 
     private static DagNode Node(string name) =>
@@ -97,11 +100,13 @@ public class CompositeRunEventsTests
         composite.NodeCompleted(NodeResult.Skipped(Node("a")));
         composite.RunCompleted("run-1", RunStatus.Success, 1, 0, 0, TimeSpan.Zero);
         composite.ConnectorLog("crm", "warn", "unpinned host key");
+        composite.NodeSql(Node("a"), 2, "select 1");
 
         Assert.Equal(1, recording.NodeCompletedCount);
         Assert.Equal(1, recording.MergeKeyDuplicatesCount);
         Assert.Equal(1, recording.LossyIntegerInferenceCount);
         Assert.Equal(1, recording.AmbiguousDateInferenceCount);
         Assert.Equal([("crm", "warn", "unpinned host key")], recording.ConnectorLogs);
+        Assert.Equal([("a", 2, "select 1")], recording.NodeSqls);
     }
 }

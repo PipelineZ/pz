@@ -22,6 +22,17 @@ public static class SharedOptions
     public static Option<bool> NoLockCheck { get; } =
         new("--no-lock-check") { Description = "Skip pz.lock.json drift verification against project.yml (loud bypass; does not skip a missing lock)" };
 
+    /// <summary>Opt-in <c>node_sql</c> events (`run` and `retry` only): the statement each Pipeline node and
+    /// <c>custom_sql</c> check hands DuckDB. Off by default because <c>env()</c> can inline a secret into SQL and
+    /// pz has no masker; a consumer that turns it on must mask what it shows. Only the json renderer writes the
+    /// event.</summary>
+    public static Option<bool> LogSql { get; } =
+        new("--log-sql")
+        {
+            Description = "Emit a node_sql event with the statement each pipeline and custom_sql check runs " +
+                "(json log format; may contain values env() inlined)",
+        };
+
     /// <summary>`text` (default) renders a live Spectre tree on an interactive TTY, or plain sequential
     /// lines otherwise (CI/non-TTY); `json` renders one
     /// NDJSON object per run event on stdout instead. Validated in <c>RunCommand.Execute</c>/

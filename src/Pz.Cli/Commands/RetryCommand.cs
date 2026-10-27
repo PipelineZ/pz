@@ -34,6 +34,7 @@ internal static class RetryCommand
     {
         var projectOption = new Option<string?>("--project") { Description = "Project directory (default: current directory)" };
         var failFastOption = new Option<bool>("--fail-fast") { Description = "Cancel remaining nodes as soon as one fails" };
+        var logSqlOption = SharedOptions.LogSql;
         var fullRefreshOption = new Option<bool>("--full-refresh")
         {
             Description = "Ignore stored watermarks when reading incremental datasets this run -- " +
@@ -44,6 +45,7 @@ internal static class RetryCommand
             "current project. No --select/--vars: retry re-runs the prior intent verbatim.");
         command.Options.Add(projectOption);
         command.Options.Add(failFastOption);
+        command.Options.Add(logSqlOption);
         command.Options.Add(fullRefreshOption);
         command.Options.Add(SharedOptions.NoLockCheck);
         command.Options.Add(SharedOptions.LogFormat);
@@ -57,13 +59,14 @@ internal static class RetryCommand
             SharedOptions.ReadOtel(parseResult),
             parseResult.GetValue(SharedOptions.StateUrl),
             parseResult.GetValue(fullRefreshOption),
-            ct));
+            ct,
+            parseResult.GetValue(logSqlOption)));
         return command;
     }
 
     internal static async Task<int> Execute(
         string projectDir, bool failFast, bool noLockCheck, string? logFormatRaw, RunCommand.OtelRaw? otelRaw,
-        string? stateUrlRaw, bool fullRefresh, CancellationToken ct)
+        string? stateUrlRaw, bool fullRefresh, CancellationToken ct, bool logSql = false)
     {
         if (!RunCommand.TryParseLogFormat(logFormatRaw, out var logFormat))
         {
@@ -157,7 +160,8 @@ internal static class RetryCommand
 
             return await RunCommand.ExecuteRun(
                 project, fullDag, projectDir, plan.Selection, failFast, noLockCheck, logFormat, ct,
-                otel: otel, fullRefresh: fullRefresh, reuse: plan.Reuse, carriedForward: plan.CarriedForward);
+                otel: otel, fullRefresh: fullRefresh, reuse: plan.Reuse, carriedForward: plan.CarriedForward,
+                logSql: logSql);
         }
         catch (PzConfigException ex)
         {

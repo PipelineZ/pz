@@ -37,6 +37,7 @@ internal static class RunCommand
         var projectOption = new Option<string?>("--project") { Description = "Project directory (default: current directory)" };
         var varsOption = new Option<string?>("--vars") { Description = "JSON object of var overrides" };
         var failFastOption = new Option<bool>("--fail-fast") { Description = "Cancel remaining nodes as soon as one fails" };
+        var logSqlOption = SharedOptions.LogSql;
         var fullRefreshOption = new Option<bool>("--full-refresh")
         {
             Description = "Ignore stored watermarks and sync state when reading incremental/sync datasets " +
@@ -66,6 +67,7 @@ internal static class RunCommand
         command.Options.Add(projectOption);
         command.Options.Add(varsOption);
         command.Options.Add(failFastOption);
+        command.Options.Add(logSqlOption);
         command.Options.Add(fullRefreshOption);
         command.Options.Add(untilCaughtUpOption);
         command.Options.Add(maxRunsOption);
@@ -89,14 +91,15 @@ internal static class RunCommand
             parseResult.GetValue(fullRefreshOption),
             parseResult.GetValue(untilCaughtUpOption),
             parseResult.GetValue(maxRunsOption),
-            ct));
+            ct,
+            parseResult.GetValue(logSqlOption)));
         return command;
     }
 
     internal static async Task<int> Execute(
         string projectDir, string? varsJson, string[] names, string? select, bool all, bool failFast,
         bool noLockCheck, string? logFormatRaw, OtelRaw? otelRaw, string? stateUrlRaw,
-        bool fullRefresh, bool untilCaughtUp, int? maxRuns, CancellationToken ct)
+        bool fullRefresh, bool untilCaughtUp, int? maxRuns, CancellationToken ct, bool logSql = false)
     {
         if (maxRuns is not null && !untilCaughtUp)
         {
@@ -126,7 +129,7 @@ internal static class RunCommand
         if (!untilCaughtUp)
         {
             return await ExecutePass(projectDir, varsJson, names, select, all, failFast, noLockCheck, logFormat, otel,
-                stateUrlRaw, fullRefresh, onResults: null, ct);
+                stateUrlRaw, fullRefresh, onResults: null, ct, logSql);
         }
 
         // Each pass is a whole run -- load and compile included -- so `until: now` and the stored watermarks
@@ -144,7 +147,7 @@ internal static class RunCommand
             IReadOnlyList<NodeResult> results = [];
             var exitCode = await ExecutePass(projectDir, varsJson, names, select, all, failFast, noLockCheck,
                 logFormat, otel, stateUrlRaw, fullRefresh && pass == 1, onResults: nodes => results = nodes,
-                loopStop.Token);
+                loopStop.Token, logSql);
             var stop = CaughtUpLoop.Decide(exitCode, results, pass, limit);
             if (stop is not CaughtUpStop.RunFailed && loopStop.IsCancellationRequested)
             {
@@ -166,7 +169,7 @@ internal static class RunCommand
     private static async Task<int> ExecutePass(
         string projectDir, string? varsJson, string[] names, string? select, bool all, bool failFast,
         bool noLockCheck, string logFormat, OtelOptions otel, string? stateUrlRaw, bool fullRefresh,
-        Action<IReadOnlyList<NodeResult>>? onResults, CancellationToken ct)
+        Action<IReadOnlyList<NodeResult>>? onResults, CancellationToken ct, bool logSql)
     {
         var phases = new RunPhaseClock(TimeProvider.System);
         PzProject project;
@@ -252,7 +255,7 @@ internal static class RunCommand
 
             return await ExecuteRun(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, ct,
-                otel: otel, fullRefresh: fullRefresh, onResults: onResults, phases: phases);
+                otel: otel, fullRefresh: fullRefresh, onResults: onResults, phases: phases, logSql: logSql);
         }
         catch (Exception ex)
         {
@@ -288,7 +291,7 @@ internal static class RunCommand
         TimeSpan? drainTimeout = null, Func<IEventRenderer>? rendererFactory = null, OtelOptions? otel = null,
         bool fullRefresh = false, ReuseManifest? reuse = null, IReadOnlyList<NodeResult>? carriedForward = null,
         ICollection<string>? runtimeNotices = null, Action<string>? onRunId = null,
-        Action<IReadOnlyList<NodeResult>>? onResults = null, RunPhaseClock? phases = null)
+        Action<IReadOnlyList<NodeResult>>? onResults = null, RunPhaseClock? phases = null, bool logSql = false)
     {
         // Stop signals are owned here, for the whole of the run and not only while nodes execute. Setup
         // already spawns connector processes, and an unhandled SIGTERM there would kill pz and orphan
@@ -302,7 +305,7 @@ internal static class RunCommand
             return await ExecuteRunCore(
                 project, fullDag, projectDir, selection, failFast, noLockCheck, logFormat, stop.Token, drainTimeout,
                 rendererFactory, otel ?? OtelOptions.Off, fullRefresh, reuse, carriedForward, runtimeNotices, onRunId,
-                onResults, phases);
+                onResults, phases, logSql);
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested)
         {
@@ -318,7 +321,7 @@ internal static class RunCommand
         TimeSpan? drainTimeout, Func<IEventRenderer>? rendererFactory, OtelOptions otelOptions,
         bool fullRefresh, ReuseManifest? reuse, IReadOnlyList<NodeResult>? carriedForward,
         ICollection<string>? runtimeNotices, Action<string>? onRunId = null,
-        Action<IReadOnlyList<NodeResult>>? onResults = null, RunPhaseClock? phases = null)
+        Action<IReadOnlyList<NodeResult>>? onResults = null, RunPhaseClock? phases = null, bool logSql = false)
     {
         // Sortable, unique-enough-for-a-local-tool run identity. Runtime identity, not
         // compile output — golden/determinism rules do not apply here.
@@ -551,6 +554,7 @@ internal static class RunCommand
             RateLimiters: rateLimiters, SchemaBaselines: backends.Schemas, OnSourceDrift: project.OnSourceDrift)
         {
             NodeTimeout = project.Engine.NodeTimeout,
+            LogSql = logSql,
         };
 
         var options = new RunOptions(project.Engine.Threads, failFast, selection, project.Name, carriedForward,

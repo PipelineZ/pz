@@ -41,6 +41,23 @@ public sealed class SqlEventSinkTests(SqlServerFixture fixture)
         Assert.Equal([0L, 1L, 2L, 3L], stored.Select(e => e.Seq).ToArray());
     }
 
+    [SkippableFact]
+    public async Task A_node_sql_event_is_persisted_without_counting_a_drop()
+    {
+        DockerFacts.SkipUnlessDocker();
+        var connection = fixture.NewConnection();
+        SqlStateSchema.EnsureCurrent(connection);
+
+        var sink = new SqlEventSink(connection, "run-sql", TimeProvider.System);
+        sink.Write(new NodeSqlEvent(DateTimeOffset.UnixEpoch, "run-sql", "n1", "pipeline", "p", 1,
+            "CREATE OR REPLACE TABLE staging.p AS (select 1)", false, 46));
+        await sink.DisposeAsync();
+
+        var stored = fixture.ReadEvents(connection, "run-sql");
+        Assert.Equal(["node_sql"], stored.Select(e => e.Event).ToArray());
+        Assert.Equal(0L, sink.Dropped);
+    }
+
     /// <summary>A renderer whose writer is gated off cannot drain; publishing past
     /// <see cref="SqlEventSink.MaxBuffered"/> must drop rather than block, because
     /// <see cref="RunEventBus.Publish"/> must never stall the engine. The gate makes this deterministic
