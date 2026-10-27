@@ -16,7 +16,9 @@ be added to any event without notice; consumers must ignore fields they don't re
 Ordering guarantee: for any single node, events are observed as `node_started` → `node_progress`* →
 [`retry_scheduled`*] → [`lossy_integer_inference_detected`] → [`ambiguous_date_inference_detected`] → [`source_drift_detected`] → [`merge_key_duplicates_detected`] →
 `node_completed`, because the engine publishes them
-from one logical flow per node onto a single-reader channel. Interleaving across concurrently-running
+from one logical flow per node onto a single-reader channel. Under `--log-sql`, each attempt's `node_sql`
+comes after `node_started` and after any `retry_scheduled` for the previous attempt, and before
+`node_completed`. Interleaving across concurrently-running
 nodes reflects real concurrency and carries no ordering guarantee relative to each other. Exactly one
 `run_started` opens the stream and exactly one `run_completed` closes the node stream; a
 `retention_swept` line may follow it as the stream's final event (see below).
@@ -383,6 +385,33 @@ text. A run whose connectors log nothing never publishes this event.
 | `connection` | string | The connection this log line belongs to. |
 | `message` | string | The connector's own text. A process-hosted connector's message, with the message of any exception logged beside it, has passed through the engine's redaction helper. An in-process connector's notice is written without any configured value in it. |
 
+## `node_sql`
+
+Published only when `pz run` or `pz retry` is given `--log-sql`; without the flag the stream never carries
+it. The statement pz is about to hand DuckDB for one node, once per attempt, before it executes, so a
+statement that hangs or fails is still captured. Pipeline nodes publish the `CREATE OR REPLACE TABLE|VIEW`
+statement after templating and watermark substitution (the typed literal of the stored watermark, or `NULL`
+on a first or `--full-refresh` run). `custom_sql` checks publish their violation count query
+(`select count(*) from (<sql>) q`); the sample query on failure is not published. SourceLoad and SinkWrite
+nodes, built-in check types, and reused or carried-forward nodes publish nothing. `pz test` does not take
+the flag.
+
+**The text can carry secrets.** `env()` inlines an environment variable's value into SQL, and pz has no
+masker: a consumer that shows or stores this event must mask it first. So it goes to stdout NDJSON only:
+`--log-sql` without `--log-format json` is refused before anything runs (exit 2), and the event is never
+persisted (`state.events: true` leaves it out of `pz.run_events`, without counting it in `events_dropped`)
+or exported anywhere else.
+
+| Field | Type | Description |
+|---|---|---|
+| `nodeId` | string | Node id. |
+| `kind` | string | `pipeline` \| `check` (the DAG's snake_case kind names, unlike `node_started`'s). |
+| `name` | string | Node name. |
+| `attempt` | number | The attempt this statement belongs to (1-based). |
+| `sql` | string | The statement, cut to at most 65,536 UTF-16 characters, never between the halves of a surrogate pair. The statement itself always executes in full. |
+| `truncated` | boolean | True when `sql` was cut. |
+| `chars` | number | The full statement's length in characters. |
+
 ## `retention_swept`
 
 Emitted once at the end of a run when automatic retention (`retention:` in `project.yml`) deleted at
@@ -441,7 +470,7 @@ Written once when `pz cdc drop` succeeds.
 
 **Stdout NDJSON remains the contractual surface described by this whole document, unconditionally.**
 With `state.events: true` (see [Move state off the local disk](https://pipelinez.dev/how-to/remote-state/)), the same
-event stream is *also* persisted into `pz.run_events` — one row per event, ordered by an explicit
+event stream is *also* persisted into `pz.run_events` (every event except `node_sql`, which stays on stdout only), one row per event, ordered by an explicit
 per-run `seq` column rather than insert order, since a batched writer cannot rely on the latter and
 `at`'s millisecond precision has real ties. This is an additional consumer of the existing stream, not
 a second contract: every row's `event`/payload fields mirror this document's NDJSON shape exactly. The

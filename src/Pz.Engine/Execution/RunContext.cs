@@ -143,6 +143,24 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// <see cref="KindDispatchingExecutor"/> cancels it. Null is unbounded.</summary>
     public TimeSpan? NodeTimeout { get; init; }
 
+    /// <summary>Set by <c>--log-sql</c>: Pipeline nodes and <c>custom_sql</c> checks publish the statement they
+    /// hand DuckDB (<see cref="IRunEvents.NodeSql"/>). Off by default, because <c>env()</c> can inline a secret
+    /// into SQL and pz has no masker.</summary>
+    public bool LogSql { get; init; }
+
+    /// <summary>Publishes <paramref name="sql"/> for <paramref name="node"/>'s current attempt when
+    /// <see cref="LogSql"/> is set; never throws.</summary>
+    public void PublishNodeSql(Pz.Core.Dag.DagNode node, string sql)
+    {
+        if (!LogSql)
+        {
+            return;
+        }
+
+        var attempt = Attempts.TryGetValue(node.Id, out var current) ? current : 1;
+        Events.SafeNodeSql(node, attempt, sql);
+    }
+
     /// <summary>Per-run memo of native setup statements (extension installs, secrets, session
     /// settings, attaches) already issued on <see cref="Duck"/> — see <see cref="NativeSetupLedger"/>.
     /// Same shape and lifetime as <see cref="DeliveryFailures"/>/<see cref="Attempts"/>: a get-only

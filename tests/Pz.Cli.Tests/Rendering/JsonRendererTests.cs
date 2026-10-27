@@ -448,6 +448,21 @@ public class JsonRendererTests
     }
 
     [Fact]
+    public void NodeSql_serializes_every_field_in_order()
+    {
+        var evt = new NodeSqlEvent(new DateTimeOffset(2026, 7, 4, 10, 0, 0, TimeSpan.Zero), "run-1", "node-a",
+            "pipeline", "orders", 2, "CREATE OR REPLACE TABLE staging.orders AS (select 1)", false, 51);
+
+        var actual = Encoding.UTF8.GetString(Render([evt]));
+
+        Assert.Equal(
+            "{\"event\":\"node_sql\",\"at\":\"2026-07-04T10:00:00.000Z\",\"runId\":\"run-1\",\"nodeId\":\"node-a\"," +
+            "\"kind\":\"pipeline\",\"name\":\"orders\",\"attempt\":2," +
+            "\"sql\":\"CREATE OR REPLACE TABLE staging.orders AS (select 1)\",\"truncated\":false,\"chars\":51}\n",
+            actual);
+    }
+
+    [Fact]
     public void Output_is_LF_terminated_not_CRLF()
     {
         var actual = Encoding.UTF8.GetString(Render(ScriptedSequence()));

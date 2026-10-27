@@ -34,7 +34,7 @@ public sealed class CheckExecutor : INodeExecutor
             "row_count" => await RunRowCountAsync(node, ctx.Duck, def, relation, ct).ConfigureAwait(false),
             "freshness" => await RunFreshnessAsync(node, ctx, def, relation, ct).ConfigureAwait(false),
             "accepted_values" => await RunAcceptedValuesAsync(node, ctx.Duck, def, relation, ct).ConfigureAwait(false),
-            "custom_sql" => await RunCustomSqlAsync(node, ctx.Duck, def, ct).ConfigureAwait(false),
+            "custom_sql" => await RunCustomSqlAsync(node, ctx, def, ct).ConfigureAwait(false),
             _ => UnknownType(node, check.Type),
         };
     }
@@ -173,11 +173,14 @@ public sealed class CheckExecutor : INodeExecutor
     /// tables is undefined ordering (documented). A malformed query surfaces DuckDB's own error on
     /// the check node.</summary>
     private static async Task<NodeResult> RunCustomSqlAsync(
-        DagNode node, IDuckSession duck, CheckNodeDef def, CancellationToken ct)
+        DagNode node, RunContext ctx, CheckNodeDef def, CancellationToken ct)
     {
+        var duck = ctx.Duck;
         var sql = def.Check.Options["sql"]!.ToString()!.TrimEnd().TrimEnd(';').TrimEnd();
-        var violations = await duck.ScalarAsync<long>($"select count(*) from ({sql}) q", ct)
-            .ConfigureAwait(false);
+        // Only the count query is published under --log-sql: the sample query is the same statement with limit 5.
+        var countQuery = $"select count(*) from ({sql}) q";
+        ctx.PublishNodeSql(node, countQuery);
+        var violations = await duck.ScalarAsync<long>(countQuery, ct).ConfigureAwait(false);
         if (violations == 0)
         {
             return Pass(node);
