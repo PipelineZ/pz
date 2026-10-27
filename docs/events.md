@@ -470,7 +470,7 @@ Written once when `pz cdc drop` succeeds.
 
 **Stdout NDJSON remains the contractual surface described by this whole document, unconditionally.**
 With `state.events: true` (see [Move state off the local disk](https://pipelinez.dev/how-to/remote-state/)), the same
-event stream is *also* persisted into `pz.run_events` (every event except `node_sql`, which stays on stdout only) — one row per event, ordered by an explicit
+event stream is *also* persisted into `pz.run_events` (every event except `node_sql`, which stays on stdout only), one row per event, ordered by an explicit
 per-run `seq` column rather than insert order, since a batched writer cannot rely on the latter and
 `at`'s millisecond precision has real ties. This is an additional consumer of the existing stream, not
 a second contract: every row's `event`/payload fields mirror this document's NDJSON shape exactly. The
