@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-27
+
 ### Added
 
 - **`--log-sql` on `pz run` and `pz retry`** publishes a `node_sql` event with the exact statement each
