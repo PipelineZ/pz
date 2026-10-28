@@ -48,6 +48,42 @@ public sealed class ManifestTests : IDisposable
     }
 
     [Fact]
+    public void Absent_ambient_identity_reads_as_empty()
+    {
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1}""");
+
+        Assert.Empty(ManifestReader.TryRead(_packageDir)!.AmbientIdentity);
+    }
+
+    [Fact]
+    public void Empty_ambient_identity_reads_as_empty()
+    {
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":[]}""");
+
+        Assert.Empty(ManifestReader.TryRead(_packageDir)!.AmbientIdentity);
+    }
+
+    // Unknown names are kept as read: the reader reports the manifest, the host decides (it warns at
+    // load and forwards nothing for them). Null and blank entries name no group and are dropped.
+    [Fact]
+    public void Ambient_identity_keeps_known_and_unknown_names_in_declared_order()
+    {
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["gcp","oracle",null," ","aws"]}""");
+
+        Assert.Equal(["gcp", "oracle", "aws"], ManifestReader.TryRead(_packageDir)!.AmbientIdentity);
+    }
+
+    // Restore and the load warning echo these names to a terminal; CR or ESC would let a package erase
+    // its own notice.
+    [Fact]
+    public void Ambient_identity_drops_names_with_control_characters()
+    {
+        WriteManifest("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["azure","\r\u001b[2K","a\tb"]}""");
+
+        Assert.Equal(["azure"], ManifestReader.TryRead(_packageDir)!.AmbientIdentity);
+    }
+
+    [Fact]
     public void Runtime_process_with_entrypoints_parses()
     {
         WriteManifest("""

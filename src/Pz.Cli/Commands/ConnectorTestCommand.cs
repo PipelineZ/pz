@@ -4,6 +4,7 @@ using Pz.Connectors.Abstractions;
 using Pz.Core.Loading;
 using Pz.Core.Validation;
 using Pz.PackageManagement.Hosting;
+using Pz.PackageManagement.ProcessHosting;
 using Pz.PackageManagement.ProcessHosting.Conformance;
 
 namespace Pz.Cli.Commands;
@@ -66,6 +67,13 @@ internal static class ConnectorTestCommand
             try
             {
                 (entrypoint, manifest, packageName) = ResolveTarget(target);
+                if (manifest is not null &&
+                    AmbientIdentity.UnknownGroups(manifest.AmbientIdentity) is { Count: > 0 } unknownGroups)
+                {
+                    Console.Error.WriteLine(
+                        $"warning: '{packageName}' declares ambient identity {string.Join(", ", unknownGroups)}, " +
+                        "which this pz does not know; no variables are forwarded for it");
+                }
                 (connection, readProbe, writeProbe) = LoadProbeConfig(configPath);
             }
             catch (ConnectorHostException ex)

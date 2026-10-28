@@ -13,6 +13,13 @@ namespace Pz.PackageManagement.Hosting;
 /// <c>ConnectionConfigSchema</c> that does not declare it. A connector that opts in must declare
 /// <c>base_dir</c> in that schema.</para>
 ///
+/// <para><paramref name="AmbientIdentity"/> names the cloud groups (<c>aws</c>, <c>azure</c>,
+/// <c>gcp</c>) whose ambient-identity variables the host forwards into this package's process on top of
+/// the secret-free allowlist (see <c>ProcessHosting.AmbientIdentity</c>). Absent means none. Names this
+/// pz does not know are kept as read, so the load can warn about them; they forward nothing. Null or
+/// blank entries, and any containing a control character, are dropped: they name no group, and the
+/// names are echoed to a terminal by <c>pz restore</c> and the load warning.</para>
+///
 /// <para><paramref name="Runtime"/> is what the package declares about its hosting: only
 /// <c>"process"</c> is hostable (spawned from the RID-selected entry in
 /// <paramref name="Entrypoints"/> — package-relative paths, resolved via
@@ -22,11 +29,15 @@ namespace Pz.PackageManagement.Hosting;
 public sealed record ConnectorManifest(
     string? Name, int ProtocolMajorMin, int ProtocolMajorMax, IReadOnlyList<string> Capabilities,
     bool ProjectDirectoryAnchor = false, string? Runtime = null,
-    IReadOnlyDictionary<string, string>? Entrypoints = null, ConnectorManifestSdk? Sdk = null)
+    IReadOnlyDictionary<string, string>? Entrypoints = null, ConnectorManifestSdk? Sdk = null,
+    IReadOnlyList<string>? AmbientIdentity = null)
 {
     /// <summary>RID → package-relative entrypoint path. Never null, even when <see cref="Runtime"/> is
     /// null/<c>"dotnet"</c> (empty in that case) — callers never null-check it.</summary>
     public IReadOnlyDictionary<string, string> Entrypoints { get; init; } = Entrypoints ?? EmptyEntrypoints;
+
+    /// <summary>Declared ambient-identity groups. Never null: empty when the manifest says nothing.</summary>
+    public IReadOnlyList<string> AmbientIdentity { get; init; } = AmbientIdentity ?? [];
 
     private static readonly IReadOnlyDictionary<string, string> EmptyEntrypoints =
         new Dictionary<string, string>();
@@ -103,7 +114,11 @@ public static class ManifestReader
         return new ConnectorManifest(
             dto.Name, dto.ProtocolMajorMin, dto.ProtocolMajorMax, dto.Capabilities ?? [],
             dto.ProjectDirectoryAnchor, dto.Runtime, dto.Entrypoints,
-            dto.Sdk is { } sdk ? new ConnectorManifestSdk(sdk.Name, sdk.Version) : null);
+            dto.Sdk is { } sdk ? new ConnectorManifestSdk(sdk.Name, sdk.Version) : null,
+            // Dropped here so nothing downstream has to check (see ConnectorManifest's doc).
+            dto.AmbientIdentity?
+                .Where(group => !string.IsNullOrWhiteSpace(group) && !group.Any(char.IsControl))
+                .ToList());
     }
 
     /// <summary>Resolves <paramref name="rid"/> against <paramref name="manifest"/>'s <c>entrypoints</c>
@@ -191,6 +206,7 @@ public static class ManifestReader
         public int ProtocolMajorMax { get; set; }
         public List<string>? Capabilities { get; set; }
         public bool ProjectDirectoryAnchor { get; set; }
+        public List<string>? AmbientIdentity { get; set; }
         public string? Runtime { get; set; }
         public Dictionary<string, string>? Entrypoints { get; set; }
         public SdkDto? Sdk { get; set; }

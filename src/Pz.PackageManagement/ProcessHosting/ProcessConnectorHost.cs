@@ -150,6 +150,15 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
                     "it will not be offered to the planner");
             }
 
+            // A newer SDK's group, or a hand-written manifest's typo: ignored, never a failure.
+            var unknownGroups = AmbientIdentity.UnknownGroups(manifest.AmbientIdentity);
+            if (unknownGroups.Count > 0)
+            {
+                warn?.Invoke(
+                    $"note: '{name}' declares ambient identity {string.Join(", ", unknownGroups)}, which this pz " +
+                    "does not know; no variables are forwarded for it");
+            }
+
             if (!connectorsByName.TryAdd(name, connector))
             {
                 throw new ConnectorHostException(
@@ -343,7 +352,8 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
     {
         var ordinal = Interlocked.Increment(ref _opens);
         var socketDir = Path.Combine(_socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]);
-        var process = ConnectorProcess.Spawn(_entrypoint, socketDir, _packageRef.PackageId);
+        var process = ConnectorProcess.Spawn(
+            _entrypoint, socketDir, _packageRef.PackageId, ambientIdentity: _manifest.AmbientIdentity);
         PcpClient? client = null;
         ProcessInstance instance;
         try

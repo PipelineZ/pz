@@ -14,6 +14,14 @@
          a manifest that says nothing about it must be identical to one written before this existed. -->
     <PzProjectDirectoryAnchor Condition="'$(PzProjectDirectoryAnchor)' == ''">false</PzProjectDirectoryAnchor>
 
+    <!-- The clouds whose ambient identity the connector uses through a cloud SDK, as a ;-list of
+         aws, azure, gcp. pz starts every connector with a cleared environment; for each group listed
+         here it also forwards the variables that cloud's platforms set to tell an SDK where its
+         identity is (Container Apps' IDENTITY_ENDPOINT, AKS workload identity, IRSA, ECS, GCP
+         federation), and for azure a service principal set through AZURE_CLIENT_SECRET or a
+         certificate. An unknown name fails the pack (PZSDK006). Unset by default, so no element here:
+         the manifest then says nothing and the connector gets only the base allowlist. -->
+
     <!-- The host only ever spawns the binary: a framework-dependent dll in lib/ and a dependency on
          this SDK would only make `pz restore` download things the connector never loads. -->
     <IncludeBuildOutput>false</IncludeBuildOutput>

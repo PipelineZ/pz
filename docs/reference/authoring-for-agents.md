@@ -295,6 +295,29 @@ with the generated manifest at the nupkg root — the layout `pz restore` alread
 `<PzProjectDirectoryAnchor>true</PzProjectDirectoryAnchor>` when the connector resolves relative paths
 in its own config; `pz` then passes the project directory as the `base_dir` connection option.
 
+**Ambient cloud identity.** `pz` starts every connector process with a cleared environment: only
+`PATH`, `HOME`, `TMPDIR`, `LANG`, `LC_ALL` and the proxy variables reach it (plus a few Windows
+essentials). A connector that authenticates through a cloud SDK's ambient identity (managed identity,
+workload identity, IRSA, ECS task roles, GCP federation) declares the clouds it needs with
+`<PzAmbientIdentity>azure;aws</PzAmbientIdentity>` (groups: `aws`, `azure`, `gcp`; an unknown name
+fails the pack with `PZSDK006`). The manifest then carries `"ambientIdentity": ["aws", "azure"]`, and
+`pz` forwards each listed group's identity variables that are set on the host, for example
+`IDENTITY_ENDPOINT`/`IDENTITY_HEADER` (Container Apps, App Service), `AZURE_FEDERATED_TOKEN_FILE`/
+`AZURE_CLIENT_ID`/`AZURE_TENANT_ID` (AKS workload identity), `AWS_WEB_IDENTITY_TOKEN_FILE`/
+`AWS_ROLE_ARN` (IRSA), `AWS_CONTAINER_CREDENTIALS_*` (ECS, EKS Pod Identity) and
+`GOOGLE_APPLICATION_CREDENTIALS`, plus the region and project settings (`AWS_REGION`,
+`GOOGLE_CLOUD_PROJECT`). `azure` also carries a service principal configured through the environment
+(`AZURE_CLIENT_ID`, `AZURE_TENANT_ID` with `AZURE_CLIENT_SECRET` or `AZURE_CLIENT_CERTIFICATE_PATH`),
+so a host that authenticates that way works for the connector too, and the connector receives that
+secret. Other variables holding a static secret (`AWS_SECRET_ACCESS_KEY`, `AZURE_STORAGE_KEY`, ...)
+are never forwarded: put them in `connections.yml` as `${VAR}`. Likewise, if the host points
+`GOOGLE_APPLICATION_CREDENTIALS` at a service-account key file, a package declaring `gcp` can use
+that key. `pz restore` prints `receives host identity:
+<groups>` under every package that declares any. `pz connector test <package-dir>` spawns with the
+same environment a run does; a bare entrypoint has no manifest, so it gets no identity variables. A
+group this `pz` does not know is ignored with one warning at load. A Rust connector's `--pz-manifest`
+does not write the field yet: add `"ambientIdentity"` to its `pz.connector.json` by hand.
+
 **PCP error codes:**
 
 | Code | Meaning |

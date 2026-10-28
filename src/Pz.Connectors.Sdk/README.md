@@ -32,8 +32,9 @@ refuses to write a batch shaped differently.
 ## Two argv modes
 
 - `--pz-socket <path>` — serve over PCP (what `pz` passes when it spawns you).
-- `--pz-manifest --out <file> [--entrypoint <rid>=<path>]... [--project-directory-anchor]` — write
-  `pz.connector.json` from the connector object itself (the packaging targets run this for you).
+- `--pz-manifest --out <file> [--entrypoint <rid>=<path>]... [--project-directory-anchor]
+  [--ambient-identity <group>]...`: write `pz.connector.json` from the connector object itself (the
+  packaging targets run this for you, passing one `--ambient-identity` per `PzAmbientIdentity` entry).
 
 Anything else is refused. Connector configuration only ever arrives through the `Configure` RPC.
 
@@ -65,6 +66,7 @@ dotnet pack    -c Release -p:PzNativeStaging=<dir holding every RID's publish>
 | `PzRuntimeIdentifiers` | `linux-x64;linux-arm64;osx-arm64;win-x64` | RIDs a package is expected to ship; a missing one warns (`PZSDK002`) |
 | `PzNativeStaging` | `bin/pz-native/` | where `publish -r` stages each RID and where `pack` collects from |
 | `PzProjectDirectoryAnchor` | `false` | set to `true` when the connector resolves relative paths in its own config; `pz` then passes the project directory as the `base_dir` connection option |
+| `PzAmbientIdentity` | (empty) | clouds whose ambient identity the connector uses through a cloud SDK, as a `;`-list of `aws`, `azure`, `gcp`; `pz` then forwards that cloud's identity variables (`IDENTITY_ENDPOINT`, `AZURE_FEDERATED_TOKEN_FILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `GOOGLE_APPLICATION_CREDENTIALS`, ...) into the connector's otherwise cleared environment. `azure` includes a service principal configured through the environment (`AZURE_CLIENT_SECRET` or a certificate); otherwise no variable holding a static secret is forwarded, though a `GOOGLE_APPLICATION_CREDENTIALS` may name a service-account key file. An unknown name fails the pack (`PZSDK006`) |
 
 `<PublishAot>true</PublishAot>` belongs in the project file itself (or on the command line as
 `-p:PublishAot=true`): NuGet restore evaluates a project with every package's build files excluded,

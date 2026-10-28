@@ -84,16 +84,23 @@ public static class ConformanceSuite
     private const string NativeOnlyReadSkipReason =
         "connector declares NativeOnlyRead: it has no universal read path for this vector to probe";
 
+    /// <summary>Spawns the target the way a run would, with the manifest's ambient identity. Mirrors
+    /// LazyProcessConnector.SpawnAsync's own per-instance naming: one socket directory per spawn, never
+    /// the bare root (ConnectorProcess.Spawn does not mint this itself -- every caller that spawns more
+    /// than one process under one root has to).</summary>
+    private static ConnectorProcess SpawnTarget(ConformanceRequest request, string socketRootDir) =>
+        ConnectorProcess.Spawn(
+            request.EntrypointPath,
+            Path.Combine(socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]),
+            request.PackageName,
+            ambientIdentity: request.Manifest?.AmbientIdentity);
+
     public static async Task<ConformanceReport> RunAsync(
         ConformanceRequest request, string socketRootDir, CancellationToken ct)
     {
         var vectors = new List<ConformanceVectorResult>();
 
-        // Mirrors LazyProcessConnector.SpawnAsync's own per-instance naming: one socket directory per
-        // spawn, never the bare root (ConnectorProcess.Spawn does not mint this itself -- every caller
-        // that spawns more than one process under one root has to).
-        var socketDir = Path.Combine(socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]);
-        var process = ConnectorProcess.Spawn(request.EntrypointPath, socketDir, request.PackageName);
+        var process = SpawnTarget(request, socketRootDir);
 
         PcpClient? client = null;
         HostChannelPump? pump = null;
@@ -909,8 +916,7 @@ public static class ConformanceSuite
     private static async Task<VectorVerdict> ExitsOnConnectionLossAsync(
         ConformanceRequest request, string socketRootDir, CancellationToken ct)
     {
-        var socketDir = Path.Combine(socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]);
-        var process = ConnectorProcess.Spawn(request.EntrypointPath, socketDir, request.PackageName);
+        var process = SpawnTarget(request, socketRootDir);
         try
         {
             PcpClient client;

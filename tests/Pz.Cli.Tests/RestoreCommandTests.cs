@@ -1,3 +1,4 @@
+using System.Runtime.Versioning;
 using Pz.Cli;
 using Pz.PackageManagement.Restore;
 using Pz.TestSupport;
@@ -31,6 +32,61 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         Assert.True(File.Exists(Path.Combine(_work, "pz.lock.json")));
         Assert.True(Directory.Exists(Path.Combine(_work, ".pz", "packages", "FakeSourceConnector", "1.2.3", "lib")));
         Assert.Contains("restored FakeSourceConnector 1.2.3", stdout);
+    }
+
+    [Theory]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["aws","azure"]}""", "  receives host identity: aws, azure")]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["azure","aws","azure"]}""", "  receives host identity: aws, azure")]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["Azure","oracle","gcp"]}""", "  receives host identity: gcp")]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["Azure","oracle"]}""", null)]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1}""", null)]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":[]}""", null)]
+    [InlineData("{ not json", null)]
+    [InlineData(null, null)]
+    public void Restore_names_the_host_identity_a_package_receives(string? manifest, string? expected)
+    {
+        Directory.CreateDirectory(_work);
+        if (manifest is not null)
+        {
+            File.WriteAllText(Path.Combine(_work, "pz.connector.json"), manifest);
+        }
+
+        Assert.Equal(expected, Pz.Cli.Commands.RestoreCommand.AmbientIdentityLine(_work));
+    }
+
+    // Restore has already written the lock when this runs; an unreadable manifest must not turn that
+    // success into a failure. The run that loads the package is what reports it.
+    [SkippableFact]
+    [UnsupportedOSPlatform("windows")]
+    public void Restore_identity_line_is_quiet_about_an_unreadable_manifest()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "Unix permission bits");
+        Directory.CreateDirectory(_work);
+        var manifest = Path.Combine(_work, "pz.connector.json");
+        File.WriteAllText(manifest, """{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["aws"]}""");
+        File.SetUnixFileMode(manifest, UnixFileMode.None);
+        try
+        {
+            Skip.If(CanRead(manifest), "running with privileges that ignore permission bits");
+            Assert.Null(Pz.Cli.Commands.RestoreCommand.AmbientIdentityLine(_work));
+        }
+        finally
+        {
+            File.SetUnixFileMode(manifest, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+    }
+
+    private static bool CanRead(string path)
+    {
+        try
+        {
+            File.ReadAllBytes(path);
+            return true;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     [Fact]

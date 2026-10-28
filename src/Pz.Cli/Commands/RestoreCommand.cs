@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Runtime.InteropServices;
+using Pz.Connectors.Abstractions;
 using Pz.Core.Loading;
 using Pz.Core.Model;
 using Pz.Core.Validation;
@@ -148,7 +149,7 @@ internal static class RestoreCommand
                 if (PackageMaterializer.TryMaterializeFromCache(pins, CacheRoot(), packagesDir, out var offlineHits))
                 {
                     LockFileWriter.Write(pins, lockPath);
-                    ReportRestored(pins.Packages, offlineHits);
+                    ReportRestored(pins.Packages, offlineHits, packagesDir);
                     Console.WriteLine(
                         $"pz.lock.json pinned {pins.Packages.Count} package(s); run 'pz restore --update' to re-resolve them");
                     Console.WriteLine($"wrote pz.lock.json ({pins.Packages.Count} packages)");
@@ -207,7 +208,7 @@ internal static class RestoreCommand
 
             LockFileWriter.Write(resolved.Lock, lockPath);
 
-            ReportRestored(resolved.Lock.Packages, hits);
+            ReportRestored(resolved.Lock.Packages, hits, packagesDir);
 
             if (pins is not null)
             {
@@ -226,13 +227,33 @@ internal static class RestoreCommand
         }
     }
 
-    private static void ReportRestored(IReadOnlyList<LockedPackage> packages, IReadOnlyDictionary<string, bool> hits)
+    private static void ReportRestored(
+        IReadOnlyList<LockedPackage> packages, IReadOnlyDictionary<string, bool> hits, string packagesDir)
     {
         foreach (var package in packages.OrderBy(p => p.Id, StringComparer.Ordinal))
         {
             var mode = hits.TryGetValue(package.Id, out var wasHit) && wasHit ? "cache hit" : "downloaded";
             Console.WriteLine($"restored {package.Id} {package.Version} ({mode})");
+            if (AmbientIdentityLine(Path.Combine(packagesDir, package.Id, package.Version)) is { } identity)
+            {
+                Console.WriteLine(identity);
+            }
         }
+    }
+
+    /// <summary>The line that makes a package's declared ambient identity visible at install time, or
+    /// null when it declares none this pz forwards. Only known groups are named: the line says what the
+    /// package will receive, not what its manifest asks for (an unknown name is warned about at load).
+    /// A manifest that is broken or unreadable prints nothing here: the run that loads the package
+    /// reports it, and restore has already done its job.</summary>
+    internal static string? AmbientIdentityLine(string packageDir)
+    {
+        var groups = PackageManifests.TryReadQuietly(packageDir)?.AmbientIdentity
+            .Where(AmbientIdentityGroups.IsKnown)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        return groups is { Count: > 0 } ? $"  receives host identity: {string.Join(", ", groups)}" : null;
     }
 
     /// <summary>PZ_CACHE_DIR is respected here, at the CLI boundary — PackageMaterializer itself always

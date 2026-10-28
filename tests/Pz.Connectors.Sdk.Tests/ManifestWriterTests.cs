@@ -108,6 +108,49 @@ public sealed class ManifestWriterTests
     }
 
     [Fact]
+    public void AmbientIdentity_is_omitted_when_null_or_empty()
+    {
+        var connector = new FakeSourceConnector(ConnectorCapabilities.None, feed: false);
+        var entrypoints = new SortedDictionary<string, string>(StringComparer.Ordinal);
+
+        var without = ManifestWriter.Render(connector, entrypoints);
+        var empty = ManifestWriter.Render(connector, entrypoints, ambientIdentity: []);
+
+        Assert.DoesNotContain("ambientIdentity", without, StringComparison.Ordinal);
+        Assert.Equal(without, empty);
+    }
+
+    [Fact]
+    public void AmbientIdentity_renders_sorted_and_deduplicated_after_the_anchor()
+    {
+        // Same reasoning as the anchor test above: the exact text the host's ManifestDto reads.
+        var connector = new FakeSourceConnector(ConnectorCapabilities.None, feed: false);
+        var json = ManifestWriter.Render(
+            connector, new SortedDictionary<string, string>(StringComparer.Ordinal), projectDirectoryAnchor: true,
+            ambientIdentity: [AmbientIdentityGroups.Gcp, AmbientIdentityGroups.Azure, AmbientIdentityGroups.Gcp]);
+
+        Assert.Equal(
+            "{\n" +
+            "  \"name\": \"fake\",\n" +
+            $"  \"protocolMajorMin\": {ProtocolVersion.Major},\n" +
+            $"  \"protocolMajorMax\": {ProtocolVersion.Major},\n" +
+            "  \"capabilities\": [],\n" +
+            "  \"projectDirectoryAnchor\": true,\n" +
+            "  \"ambientIdentity\": [\n" +
+            "    \"azure\",\n" +
+            "    \"gcp\"\n" +
+            "  ],\n" +
+            "  \"runtime\": \"process\",\n" +
+            "  \"entrypoints\": {},\n" +
+            "  \"sdk\": {\n" +
+            $"    \"name\": \"{SdkInfo.Name}\",\n" +
+            $"    \"version\": {JsonString(SdkInfo.Version)}\n" +
+            "  }\n" +
+            "}\n",
+            json);
+    }
+
+    [Fact]
     public void Capability_names_are_the_enum_member_names_in_ascending_flag_order()
     {
         Assert.Equal(

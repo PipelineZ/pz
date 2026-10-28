@@ -353,6 +353,58 @@ public sealed class ProcessConnectorHostTests : IDisposable
         Assert.Equal(CsvColumns.Keys, schema.Schema.FieldsList.Select(field => field.Name));
     }
 
+    // ---- ambient identity ----------------------------------------------------------------------
+
+    [SkippableFact]
+    public async Task A_declared_identity_group_reaches_the_spawned_process_and_no_other_group_does()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "the environment dump rides on the Unix wrapper script");
+
+        // Names no other test in this assembly sets: the environment is process-wide.
+        const string azureVariable = "IDENTITY_ENDPOINT";
+        const string awsVariable = "AWS_ROLE_ARN";
+        var envDump = Path.Combine(NewTempDir(), "env.txt");
+        var packagesRoot = NewPackageLayout(ambientIdentity: ["azure"], envDumpPath: envDump);
+
+        var priorAzure = Environment.GetEnvironmentVariable(azureVariable);
+        var priorAws = Environment.GetEnvironmentVariable(awsVariable);
+        Environment.SetEnvironmentVariable(azureVariable, "http://localhost:42356/msi/token");
+        Environment.SetEnvironmentVariable(awsVariable, "arn:aws:iam::123456789012:role/pz-test");
+        try
+        {
+            await using var host = ProcessConnectorHost.LoadFromDirectory(
+                packagesRoot, [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir());
+            var connector = (ISourceConnector)host.Get(ConnectorName);
+            var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = NewTempDir() });
+            await connector.OpenAsync(config, CancellationToken.None);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(azureVariable, priorAzure);
+            Environment.SetEnvironmentVariable(awsVariable, priorAws);
+        }
+
+        var names = File.ReadAllLines(envDump);
+        Assert.Contains(azureVariable, names);
+        Assert.Contains("PATH", names);
+        Assert.DoesNotContain(awsVariable, names);
+    }
+
+    [Fact]
+    public async Task An_unknown_identity_group_warns_at_load_and_does_not_fail_it()
+    {
+        var packagesRoot = NewPackageLayout(ambientIdentity: ["azure", "oracle"]);
+
+        var warnings = new List<string>();
+        await using var host = ProcessConnectorHost.LoadFromDirectory(
+            packagesRoot, [new ConnectorPackageRef(PackageId, PackageVersion)], NewTempDir(), warnings.Add);
+
+        Assert.Equal(ConnectorName, host.Get(ConnectorName).Info.Name);
+        var warning = Assert.Single(warnings);
+        Assert.Contains("ambient identity oracle,", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("azure", warning, StringComparison.Ordinal);
+    }
+
     // ---- capability masking --------------------------------------------------------------------
 
     [Fact]
@@ -460,7 +512,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
     private string NewPackageLayout(
         string? rid = null, string runtime = "process",
         ConnectorCapabilities? capabilities = null, IReadOnlyList<string>? extraArgs = null,
-        bool executable = true)
+        bool executable = true, IReadOnlyList<string>? ambientIdentity = null, string? envDumpPath = null)
     {
         var root = NewTempDir();
         var packageDir = Path.Combine(root, PackageId, PackageVersion);
@@ -485,7 +537,11 @@ public sealed class ProcessConnectorHostTests : IDisposable
         {
             var entrypoint = Path.Combine(binDir, "connector");
             var args = extraArgs is null ? string.Empty : " " + string.Join(' ', extraArgs);
-            File.WriteAllText(entrypoint, $"#!/bin/sh\nexec \"{FixtureExecutablePath()}\"{args} \"$@\"\n");
+            // `envDumpPath` records the NAMES of the environment the host spawned the package with,
+            // before the fixture takes over: `env` in the wrapper sees exactly what
+            // ConnectorProcess.Spawn passed. Names only, so no forwarded value lands in a temp file.
+            var dump = envDumpPath is null ? string.Empty : $"env | cut -d= -f1 > \"{envDumpPath}\"\n";
+            File.WriteAllText(entrypoint, $"#!/bin/sh\n{dump}exec \"{FixtureExecutablePath()}\"{args} \"$@\"\n");
             // `executable: false` is what a real restore's extraction leaves behind (see
             // ManifestReader.ResolveEntrypoint's own doc comment): a .nupkg is a zip archive, and nothing
             // in the restore path sets the Unix executable bit on the files it extracts. Every other test
@@ -508,6 +564,7 @@ public sealed class ProcessConnectorHostTests : IDisposable
             ["capabilities"] = (capabilities ?? new LocalFilesConnector().Capabilities)
                 .ToString().Split(", ", StringSplitOptions.RemoveEmptyEntries),
             ["runtime"] = runtime,
+            ["ambientIdentity"] = ambientIdentity,
             ["entrypoints"] = new Dictionary<string, string>
             {
                 [rid ?? RuntimeInformation.RuntimeIdentifier] = entrypointRelative,
