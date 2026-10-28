@@ -300,15 +300,20 @@ in its own config; `pz` then passes the project directory as the `base_dir` conn
 essentials). A connector that authenticates through a cloud SDK's ambient identity (managed identity,
 workload identity, IRSA, ECS task roles, GCP federation) declares the clouds it needs with
 `<PzAmbientIdentity>azure;aws</PzAmbientIdentity>` (groups: `aws`, `azure`, `gcp`; an unknown name
-fails the pack). The manifest then carries `"ambientIdentity": ["aws", "azure"]`, and `pz` forwards
-each listed group's identity variables that are set on the host, for example `IDENTITY_ENDPOINT`/
-`IDENTITY_HEADER` (Container Apps, App Service), `AZURE_FEDERATED_TOKEN_FILE`/`AZURE_CLIENT_ID`/
-`AZURE_TENANT_ID` (AKS workload identity), `AWS_WEB_IDENTITY_TOKEN_FILE`/`AWS_ROLE_ARN` (IRSA),
-`AWS_CONTAINER_CREDENTIALS_*` (ECS, EKS Pod Identity) and `GOOGLE_APPLICATION_CREDENTIALS`. Static
-secrets (`AWS_SECRET_ACCESS_KEY`, `AZURE_CLIENT_SECRET`, ...) are never forwarded: put them in
-`connections.yml` as `${VAR}`. `pz restore` prints `receives host identity: <groups>` under every
-package that declares any, and `pz connector test` spawns with the same environment a run does. A
-group this `pz` does not know is ignored with one warning at load.
+fails the pack with `PZSDK006`). The manifest then carries `"ambientIdentity": ["aws", "azure"]`, and
+`pz` forwards each listed group's identity variables that are set on the host, for example
+`IDENTITY_ENDPOINT`/`IDENTITY_HEADER` (Container Apps, App Service), `AZURE_FEDERATED_TOKEN_FILE`/
+`AZURE_CLIENT_ID`/`AZURE_TENANT_ID` (AKS workload identity), `AWS_WEB_IDENTITY_TOKEN_FILE`/
+`AWS_ROLE_ARN` (IRSA), `AWS_CONTAINER_CREDENTIALS_*` (ECS, EKS Pod Identity) and
+`GOOGLE_APPLICATION_CREDENTIALS`, plus the region and project settings (`AWS_REGION`,
+`GOOGLE_CLOUD_PROJECT`). Variables holding a static secret (`AWS_SECRET_ACCESS_KEY`,
+`AZURE_CLIENT_SECRET`, ...) are never forwarded: put them in `connections.yml` as `${VAR}`. One
+exception by nature: if the host points `GOOGLE_APPLICATION_CREDENTIALS` at a service-account key
+file, a package declaring `gcp` can use that key. `pz restore` prints `receives host identity:
+<groups>` under every package that declares any. `pz connector test <package-dir>` spawns with the
+same environment a run does; a bare entrypoint has no manifest, so it gets no identity variables. A
+group this `pz` does not know is ignored with one warning at load. A Rust connector's `--pz-manifest`
+does not write the field yet: add `"ambientIdentity"` to its `pz.connector.json` by hand.
 
 **PCP error codes:**
 

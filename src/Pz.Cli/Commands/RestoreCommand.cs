@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Runtime.InteropServices;
+using Pz.Connectors.Abstractions;
 using Pz.Core.Loading;
 using Pz.Core.Model;
 using Pz.Core.Validation;
@@ -241,24 +242,18 @@ internal static class RestoreCommand
     }
 
     /// <summary>The line that makes a package's declared ambient identity visible at install time, or
-    /// null when it declares none. A package that receives the host's cloud identity should never do so
-    /// unnoticed. A manifest that does not parse prints nothing here: the run that loads the package
-    /// reports it as PZ0306, and restore has already done its job.</summary>
+    /// null when it declares none this pz forwards. Only known groups are named: the line says what the
+    /// package will receive, not what its manifest asks for (an unknown name is warned about at load).
+    /// A manifest that is broken or unreadable prints nothing here: the run that loads the package
+    /// reports it, and restore has already done its job.</summary>
     internal static string? AmbientIdentityLine(string packageDir)
     {
-        ConnectorManifest? manifest;
-        try
-        {
-            manifest = ManifestReader.TryRead(packageDir);
-        }
-        catch (ConnectorHostException)
-        {
-            return null;
-        }
-
-        return manifest is { AmbientIdentity.Count: > 0 }
-            ? $"  receives host identity: {string.Join(", ", manifest.AmbientIdentity)}"
-            : null;
+        var groups = PackageManifests.TryReadQuietly(packageDir)?.AmbientIdentity
+            .Where(AmbientIdentityGroups.IsKnown)
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        return groups is { Count: > 0 } ? $"  receives host identity: {string.Join(", ", groups)}" : null;
     }
 
     /// <summary>PZ_CACHE_DIR is respected here, at the CLI boundary — PackageMaterializer itself always

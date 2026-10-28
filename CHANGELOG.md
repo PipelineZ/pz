@@ -14,11 +14,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   role or GCP federation could not find it (only the VM metadata service and credential files under `HOME`
   worked). A connector now declares the clouds it needs with `<PzAmbientIdentity>azure;aws</PzAmbientIdentity>`
   (groups `aws`, `azure`, `gcp`); the SDK writes `"ambientIdentity"` into `pz.connector.json`, and pz forwards
-  that cloud's identity variables (such as `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` on Azure Container Apps)
-  to that package only. Static secrets such as `AWS_SECRET_ACCESS_KEY` or `AZURE_CLIENT_SECRET` are never
-  forwarded. `pz restore` prints `receives host identity: <groups>` under every package that declares any. A
-  manifest without the field is written byte-for-byte as before and keeps the same environment; an unknown
-  group is ignored with one warning at load, and an older pz ignores the field.
+  that cloud's identity variables (such as `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` on Azure Container Apps),
+  plus its region and project settings, to that package only. Variables holding a static secret, such as
+  `AWS_SECRET_ACCESS_KEY` or `AZURE_CLIENT_SECRET`, are never forwarded; a `GOOGLE_APPLICATION_CREDENTIALS`
+  that names a service-account key file is, so a `gcp` package can use that key. `pz restore` prints
+  `receives host identity: <groups>` under every package that declares any. A manifest without the field is
+  written byte-for-byte as before and keeps the same environment; an unknown group fails the pack
+  (`PZSDK006`), is ignored with one warning when pz loads a hand-written manifest, and an older pz ignores the
+  field. The Rust SDK does not write the field yet: add `"ambientIdentity"` to its manifest by hand.
 
 ## [0.13.0] - 2026-10-27
 

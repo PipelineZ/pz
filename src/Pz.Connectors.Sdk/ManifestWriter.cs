@@ -90,8 +90,8 @@ internal sealed record ManifestDocument(
     IReadOnlyList<string>? AmbientIdentity,
     [property: JsonPropertyName("runtime")] string Runtime,
     [property: JsonPropertyName("entrypoints")] SortedDictionary<string, string> Entrypoints,
-    // Last, always present: the newest field, and unlike projectDirectoryAnchor there is no
-    // "unset" shape worth omitting -- every manifest this writer produces names its own SDK.
+    // Last, always present: unlike projectDirectoryAnchor and ambientIdentity there is no "unset"
+    // shape worth omitting -- every manifest this writer produces names its own SDK.
     [property: JsonPropertyName("sdk")] SdkDocument Sdk);
 
 /// <summary>Which SDK produced the manifest and at what version -- distinct from

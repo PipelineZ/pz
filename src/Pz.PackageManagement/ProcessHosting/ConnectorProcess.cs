@@ -12,10 +12,11 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// -- disposal here is the only place the child is killed.</summary>
 public sealed class ConnectorProcess : IAsyncDisposable
 {
-    /// <summary>Env vars copied from the host into every connector child. Deliberately minimal:
-    /// nothing in <see cref="CommonEnv"/> can carry a secret, and the child gets its actual
-    /// configuration only through the Configure RPC -- never through the environment. Identity groups
-    /// (<see cref="AmbientIdentity"/>) are forwarded only to packages that declare them. Both-case proxy variants are included because
+    /// <summary>Env vars copied from the host into every connector child. Deliberately minimal: none of
+    /// these is meant to carry a secret (a proxy URL can still embed credentials), and connection
+    /// configuration reaches the child only through the Configure RPC. Identity groups
+    /// (<see cref="AmbientIdentity"/>) are added only for packages that declare them. This governs what
+    /// pz hands the child, not what a process running as the same user could read elsewhere. Both-case proxy variants are included because
     /// tooling disagrees on casing and a connector may shell out to something that only honors one.</summary>
     private static readonly string[] CommonEnv =
     [
@@ -209,10 +210,7 @@ public sealed class ConnectorProcess : IAsyncDisposable
         }
 
         startInfo.EnvironmentVariables.Clear();
-        IEnumerable<string> forwarded = ambientIdentity is { Count: > 0 }
-            ? [.. EnvAllowlist, .. AmbientIdentity.VariablesFor(ambientIdentity)]
-            : EnvAllowlist;
-        foreach (var name in forwarded)
+        foreach (var name in EnvironmentNames(ambientIdentity))
         {
             var value = Environment.GetEnvironmentVariable(name);
             if (value is not null)
@@ -258,6 +256,12 @@ public sealed class ConnectorProcess : IAsyncDisposable
         connectorProcess.WireStreams();
         return connectorProcess;
     }
+
+    /// <summary>Every variable name <see cref="Spawn"/> copies when the host has it set: the allowlist
+    /// (with the Windows essentials on Windows), then the declared groups' variables. Internal so a test
+    /// can pin that a declaration only ever adds to the allowlist, on every platform, without spawning.</summary>
+    internal static IReadOnlyList<string> EnvironmentNames(IReadOnlyList<string>? ambientIdentity) =>
+        [.. EnvAllowlist, .. AmbientIdentity.VariablesFor(ambientIdentity ?? [])];
 
     /// <summary>Returns whether this call is the one that created <paramref name="socketDir"/> (as
     /// opposed to it already existing) -- <see cref="Spawn"/>'s failure path uses this to clean up

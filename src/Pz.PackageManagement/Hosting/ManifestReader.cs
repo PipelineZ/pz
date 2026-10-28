@@ -16,7 +16,9 @@ namespace Pz.PackageManagement.Hosting;
 /// <para><paramref name="AmbientIdentity"/> names the cloud groups (<c>aws</c>, <c>azure</c>,
 /// <c>gcp</c>) whose ambient-identity variables the host forwards into this package's process on top of
 /// the secret-free allowlist (see <c>ProcessHosting.AmbientIdentity</c>). Absent means none. Names this
-/// pz does not know are kept as read, so the load can warn about them; they forward nothing.</para>
+/// pz does not know are kept as read, so the load can warn about them; they forward nothing. Null or
+/// blank entries, and any containing a control character, are dropped: they name no group, and the
+/// names are echoed to a terminal by <c>pz restore</c> and the load warning.</para>
 ///
 /// <para><paramref name="Runtime"/> is what the package declares about its hosting: only
 /// <c>"process"</c> is hostable (spawned from the RID-selected entry in
@@ -113,8 +115,10 @@ public static class ManifestReader
             dto.Name, dto.ProtocolMajorMin, dto.ProtocolMajorMax, dto.Capabilities ?? [],
             dto.ProjectDirectoryAnchor, dto.Runtime, dto.Entrypoints,
             dto.Sdk is { } sdk ? new ConnectorManifestSdk(sdk.Name, sdk.Version) : null,
-            // A null or blank entry names no group; dropped here so nothing downstream has to check.
-            dto.AmbientIdentity?.Where(group => !string.IsNullOrWhiteSpace(group)).ToList());
+            // Dropped here so nothing downstream has to check (see ConnectorManifest's doc).
+            dto.AmbientIdentity?
+                .Where(group => !string.IsNullOrWhiteSpace(group) && !group.Any(char.IsControl))
+                .ToList());
     }
 
     /// <summary>Resolves <paramref name="rid"/> against <paramref name="manifest"/>'s <c>entrypoints</c>

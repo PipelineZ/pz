@@ -102,9 +102,9 @@ internal static class HostArguments
             }
         }
 
-        if (socket is not null &&
-            (manifest || outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor ||
-             ambientIdentity.Count > 0))
+        var manifestOnlyOption =
+            outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor || ambientIdentity.Count > 0;
+        if (socket is not null && (manifest || manifestOnlyOption))
         {
             return new InvalidCommand("--pz-socket and --pz-manifest are separate modes");
         }
@@ -121,8 +121,7 @@ internal static class HostArguments
                 : new ManifestCommand(outPath, entrypoints, projectDirectoryAnchor, ambientIdentity);
         }
 
-        return new InvalidCommand(
-            outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor || ambientIdentity.Count > 0
+        return new InvalidCommand(manifestOnlyOption
             ? "--out/--entrypoint/--project-directory-anchor/--ambient-identity belong to --pz-manifest"
             : "one of --pz-socket <path> or --pz-manifest is required");
     }

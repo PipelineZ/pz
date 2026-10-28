@@ -187,6 +187,7 @@ public sealed class ConnectorProcessTests : IDisposable
             "IDENTITY_HEADER", "AZURE_TENANT_ID", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_SECRET_ACCESS_KEY",
             "AZURE_CLIENT_SECRET", "GCE_METADATA_HOST",
         ];
+        var prior = set.ToDictionary(name => name, Environment.GetEnvironmentVariable);
         foreach (var name in set)
         {
             Environment.SetEnvironmentVariable(name, "x");
@@ -202,12 +203,16 @@ public sealed class ConnectorProcessTests : IDisposable
             Assert.Empty(none.Intersect(set));
             Assert.Equal(["AZURE_TENANT_ID", "IDENTITY_HEADER"], azure.Intersect(set).Order());
             Assert.Equal(["AWS_WEB_IDENTITY_TOKEN_FILE"], aws.Intersect(set));
+
+            // A declaration only ever adds: everything the undeclared child got, a declared one gets too.
+            Assert.Empty(none.Except(azure));
+            Assert.Empty(none.Except(aws));
         }
         finally
         {
-            foreach (var name in set)
+            foreach (var (name, value) in prior)
             {
-                Environment.SetEnvironmentVariable(name, null);
+                Environment.SetEnvironmentVariable(name, value);
             }
         }
     }

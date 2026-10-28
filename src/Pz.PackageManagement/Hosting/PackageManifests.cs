@@ -28,17 +28,7 @@ public static class PackageManifests
         {
             foreach (var versionDir in SafeEnumerate(idDir))
             {
-                ConnectorManifest? manifest;
-                try
-                {
-                    manifest = ManifestReader.TryRead(versionDir);
-                }
-                catch (ConnectorHostException)
-                {
-                    continue;
-                }
-
-                if (manifest is { ProjectDirectoryAnchor: true, Name: { Length: > 0 } name })
+                if (TryReadQuietly(versionDir) is { ProjectDirectoryAnchor: true, Name: { Length: > 0 } name })
                 {
                     names.Add(name);
                 }
@@ -46,6 +36,21 @@ public static class PackageManifests
         }
 
         return names;
+    }
+
+    /// <summary>The package's manifest, or null when it is absent, broken or unreadable. For callers
+    /// that only peek at a manifest: the connector host owns reporting a broken one, with its own code
+    /// and hint, when it loads the package (see <see cref="AnchoredConnectorNames"/>).</summary>
+    public static ConnectorManifest? TryReadQuietly(string packageDir)
+    {
+        try
+        {
+            return ManifestReader.TryRead(packageDir);
+        }
+        catch (Exception ex) when (ex is ConnectorHostException or IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static IEnumerable<string> SafeEnumerate(string dir)

@@ -366,6 +366,8 @@ public sealed class ProcessConnectorHostTests : IDisposable
         var envDump = Path.Combine(NewTempDir(), "env.txt");
         var packagesRoot = NewPackageLayout(ambientIdentity: ["azure"], envDumpPath: envDump);
 
+        var priorAzure = Environment.GetEnvironmentVariable(azureVariable);
+        var priorAws = Environment.GetEnvironmentVariable(awsVariable);
         Environment.SetEnvironmentVariable(azureVariable, "http://localhost:42356/msi/token");
         Environment.SetEnvironmentVariable(awsVariable, "arn:aws:iam::123456789012:role/pz-test");
         try
@@ -378,13 +380,14 @@ public sealed class ProcessConnectorHostTests : IDisposable
         }
         finally
         {
-            Environment.SetEnvironmentVariable(azureVariable, null);
-            Environment.SetEnvironmentVariable(awsVariable, null);
+            Environment.SetEnvironmentVariable(azureVariable, priorAzure);
+            Environment.SetEnvironmentVariable(awsVariable, priorAws);
         }
 
-        var environment = File.ReadAllLines(envDump);
-        Assert.Contains($"{azureVariable}=http://localhost:42356/msi/token", environment);
-        Assert.DoesNotContain(environment, line => line.StartsWith(awsVariable + "=", StringComparison.Ordinal));
+        var names = File.ReadAllLines(envDump);
+        Assert.Contains(azureVariable, names);
+        Assert.Contains("PATH", names);
+        Assert.DoesNotContain(awsVariable, names);
     }
 
     [Fact]
@@ -534,9 +537,10 @@ public sealed class ProcessConnectorHostTests : IDisposable
         {
             var entrypoint = Path.Combine(binDir, "connector");
             var args = extraArgs is null ? string.Empty : " " + string.Join(' ', extraArgs);
-            // `envDumpPath` records the environment the host spawned the package with, before the
-            // fixture takes over: `env` in the wrapper sees exactly what ConnectorProcess.Spawn passed.
-            var dump = envDumpPath is null ? string.Empty : $"env > \"{envDumpPath}\"\n";
+            // `envDumpPath` records the NAMES of the environment the host spawned the package with,
+            // before the fixture takes over: `env` in the wrapper sees exactly what
+            // ConnectorProcess.Spawn passed. Names only, so no forwarded value lands in a temp file.
+            var dump = envDumpPath is null ? string.Empty : $"env | cut -d= -f1 > \"{envDumpPath}\"\n";
             File.WriteAllText(entrypoint, $"#!/bin/sh\n{dump}exec \"{FixtureExecutablePath()}\"{args} \"$@\"\n");
             // `executable: false` is what a real restore's extraction leaves behind (see
             // ManifestReader.ResolveEntrypoint's own doc comment): a .nupkg is a zip archive, and nothing

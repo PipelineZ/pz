@@ -147,12 +147,18 @@
     <PropertyGroup>
       <_PzAnchorArg Condition="'$(PzProjectDirectoryAnchor)' == 'true'">--project-directory-anchor</_PzAnchorArg>
     </PropertyGroup>
-    <!-- One ambient-identity argument per listed group; HostArguments refuses a name it does not know, so a
-         typo fails the pack instead of shipping a manifest the host would only warn about. -->
+    <!-- One ambient-identity argument per listed group. A typo fails the pack here, naming the property,
+         instead of shipping a manifest the host would only warn about. Unescaped first, so a
+         command-line -p:PzAmbientIdentity=azure%3Baws splits like the project-file form. The check is
+         case-insensitive (MSBuild's Exclude); HostArguments refuses a wrong-case name ordinally. -->
     <ItemGroup>
-      <_PzAmbientIdentityGroup Include="$(PzAmbientIdentity)" />
+      <_PzAmbientIdentityGroup Include="$([MSBuild]::Unescape('$(PzAmbientIdentity)'))" />
+      <_PzUnknownAmbientIdentity Include="@(_PzAmbientIdentityGroup)" Exclude="aws;azure;gcp" />
       <_PzAmbientIdentityArg Include="@(_PzAmbientIdentityGroup->'--ambient-identity &quot;%(Identity)&quot;')" />
     </ItemGroup>
+    <Error Condition="'@(_PzUnknownAmbientIdentity)' != ''"
+           Code="PZSDK006"
+           Text="pz: PzAmbientIdentity names @(_PzUnknownAmbientIdentity, ', '), which is not a known group. Set it in the project file to a ;-list of aws, azure, gcp, or remove it." />
     <Warning Condition="'@(_PzMissingRid)' != ''"
              Code="PZSDK002"
              Text="pz: no staged binary for @(_PzMissingRid, ', '); the package will not run there. Publish for those RIDs, or set PzRuntimeIdentifiers to the set you ship." />

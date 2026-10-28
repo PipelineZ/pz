@@ -39,6 +39,44 @@ public sealed class AmbientIdentityTests
     }
 
     [Fact]
+    public void The_host_knows_exactly_the_groups_the_sdk_can_declare()
+    {
+        Assert.Equal(AmbientIdentityGroups.All, AmbientIdentity.Groups.Order(StringComparer.Ordinal));
+    }
+
+    /// <summary>Runs on every platform, unlike the spawning tests: on Windows a declared spawn that lost
+    /// SystemRoot would fail its very first socket.</summary>
+    [Fact]
+    public void A_declared_spawn_keeps_the_whole_base_allowlist()
+    {
+        var undeclared = ConnectorProcess.EnvironmentNames(null);
+
+        Assert.Equal(undeclared, ConnectorProcess.EnvironmentNames([]));
+        foreach (var group in AmbientIdentityGroups.All)
+        {
+            var declared = ConnectorProcess.EnvironmentNames([group]);
+            Assert.Equal(undeclared, declared.Take(undeclared.Count));
+            Assert.Equal(AmbientIdentity.VariablesFor([group]), declared.Skip(undeclared.Count));
+        }
+
+        Assert.Contains("PATH", undeclared);
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Contains("SystemRoot", undeclared);
+        }
+    }
+
+    /// <summary>Azure Arc on Windows validates its token-file path against %ProgramData%; Azure ML
+    /// needs DEFAULT_IDENTITY_CLIENT_ID for a system-assigned identity.</summary>
+    [Theory]
+    [InlineData("ProgramData")]
+    [InlineData("DEFAULT_IDENTITY_CLIENT_ID")]
+    public void The_azure_group_carries_what_arc_and_azure_ml_need(string variable)
+    {
+        Assert.Contains(variable, AmbientIdentity.VariablesFor([AmbientIdentityGroups.Azure]));
+    }
+
+    [Fact]
     public void A_repeated_group_forwards_its_variables_once()
     {
         Assert.Equal(AmbientIdentity.VariablesFor(["gcp"]), AmbientIdentity.VariablesFor(["gcp", "gcp"]));
