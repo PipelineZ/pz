@@ -93,7 +93,8 @@ public static class ConformanceSuite
         // spawn, never the bare root (ConnectorProcess.Spawn does not mint this itself -- every caller
         // that spawns more than one process under one root has to).
         var socketDir = Path.Combine(socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]);
-        var process = ConnectorProcess.Spawn(request.EntrypointPath, socketDir, request.PackageName);
+        var process = ConnectorProcess.Spawn(
+            request.EntrypointPath, socketDir, request.PackageName, ambientIdentity: request.Manifest?.AmbientIdentity);
 
         PcpClient? client = null;
         HostChannelPump? pump = null;
@@ -910,7 +911,8 @@ public static class ConformanceSuite
         ConformanceRequest request, string socketRootDir, CancellationToken ct)
     {
         var socketDir = Path.Combine(socketRootDir, "pcp-" + Guid.NewGuid().ToString("N")[..8]);
-        var process = ConnectorProcess.Spawn(request.EntrypointPath, socketDir, request.PackageName);
+        var process = ConnectorProcess.Spawn(
+            request.EntrypointPath, socketDir, request.PackageName, ambientIdentity: request.Manifest?.AmbientIdentity);
         try
         {
             PcpClient client;

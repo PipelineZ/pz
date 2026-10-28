@@ -147,11 +147,17 @@
     <PropertyGroup>
       <_PzAnchorArg Condition="'$(PzProjectDirectoryAnchor)' == 'true'">--project-directory-anchor</_PzAnchorArg>
     </PropertyGroup>
+    <!-- One ambient-identity argument per listed group; HostArguments refuses a name it does not know, so a
+         typo fails the pack instead of shipping a manifest the host would only warn about. -->
+    <ItemGroup>
+      <_PzAmbientIdentityGroup Include="$(PzAmbientIdentity)" />
+      <_PzAmbientIdentityArg Include="@(_PzAmbientIdentityGroup->'--ambient-identity &quot;%(Identity)&quot;')" />
+    </ItemGroup>
     <Warning Condition="'@(_PzMissingRid)' != ''"
              Code="PZSDK002"
              Text="pz: no staged binary for @(_PzMissingRid, ', '); the package will not run there. Publish for those RIDs, or set PzRuntimeIdentifiers to the set you ship." />
     <MakeDir Directories="$(IntermediateOutputPath)" />
-    <Exec Command="&quot;$(_PzHostExe)&quot; --pz-manifest --out &quot;$(_PzManifestPath)&quot; @(_PzEntrypointArg, ' ') $(_PzAnchorArg)" />
+    <Exec Command="&quot;$(_PzHostExe)&quot; --pz-manifest --out &quot;$(_PzManifestPath)&quot; @(_PzEntrypointArg, ' ') $(_PzAnchorArg) @(_PzAmbientIdentityArg, ' ')" />
     <ItemGroup>
       <None Include="$(_PzManifestPath)" Pack="true" PackagePath="" />
     </ItemGroup>

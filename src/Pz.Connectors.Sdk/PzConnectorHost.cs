@@ -76,7 +76,8 @@ public static class PzConnectorHost
 
                 await File.WriteAllTextAsync(
                         manifest.OutPath,
-                        ManifestWriter.Render(connector, manifest.Entrypoints, manifest.ProjectDirectoryAnchor))
+                        ManifestWriter.Render(
+                            connector, manifest.Entrypoints, manifest.ProjectDirectoryAnchor, manifest.AmbientIdentity))
                     .ConfigureAwait(false);
                 return 0;
             case ServeCommand serve:

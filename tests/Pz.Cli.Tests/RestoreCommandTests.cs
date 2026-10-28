@@ -33,6 +33,23 @@ public sealed class RestoreCommandTests(CliLocalFeedFixture feed) : IDisposable
         Assert.Contains("restored FakeSourceConnector 1.2.3", stdout);
     }
 
+    [Theory]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":["aws","azure"]}""", "  receives host identity: aws, azure")]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1}""", null)]
+    [InlineData("""{"protocolMajorMin":1,"protocolMajorMax":1,"ambientIdentity":[]}""", null)]
+    [InlineData("{ not json", null)]
+    [InlineData(null, null)]
+    public void Restore_names_the_host_identity_a_package_receives(string? manifest, string? expected)
+    {
+        Directory.CreateDirectory(_work);
+        if (manifest is not null)
+        {
+            File.WriteAllText(Path.Combine(_work, "pz.connector.json"), manifest);
+        }
+
+        Assert.Equal(expected, Pz.Cli.Commands.RestoreCommand.AmbientIdentityLine(_work));
+    }
+
     [Fact]
     public void Restore_all_builtin_project_writes_no_lock()
     {

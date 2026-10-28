@@ -148,7 +148,7 @@ internal static class RestoreCommand
                 if (PackageMaterializer.TryMaterializeFromCache(pins, CacheRoot(), packagesDir, out var offlineHits))
                 {
                     LockFileWriter.Write(pins, lockPath);
-                    ReportRestored(pins.Packages, offlineHits);
+                    ReportRestored(pins.Packages, offlineHits, packagesDir);
                     Console.WriteLine(
                         $"pz.lock.json pinned {pins.Packages.Count} package(s); run 'pz restore --update' to re-resolve them");
                     Console.WriteLine($"wrote pz.lock.json ({pins.Packages.Count} packages)");
@@ -207,7 +207,7 @@ internal static class RestoreCommand
 
             LockFileWriter.Write(resolved.Lock, lockPath);
 
-            ReportRestored(resolved.Lock.Packages, hits);
+            ReportRestored(resolved.Lock.Packages, hits, packagesDir);
 
             if (pins is not null)
             {
@@ -226,13 +226,39 @@ internal static class RestoreCommand
         }
     }
 
-    private static void ReportRestored(IReadOnlyList<LockedPackage> packages, IReadOnlyDictionary<string, bool> hits)
+    private static void ReportRestored(
+        IReadOnlyList<LockedPackage> packages, IReadOnlyDictionary<string, bool> hits, string packagesDir)
     {
         foreach (var package in packages.OrderBy(p => p.Id, StringComparer.Ordinal))
         {
             var mode = hits.TryGetValue(package.Id, out var wasHit) && wasHit ? "cache hit" : "downloaded";
             Console.WriteLine($"restored {package.Id} {package.Version} ({mode})");
+            if (AmbientIdentityLine(Path.Combine(packagesDir, package.Id, package.Version)) is { } identity)
+            {
+                Console.WriteLine(identity);
+            }
         }
+    }
+
+    /// <summary>The line that makes a package's declared ambient identity visible at install time, or
+    /// null when it declares none. A package that receives the host's cloud identity should never do so
+    /// unnoticed. A manifest that does not parse prints nothing here: the run that loads the package
+    /// reports it as PZ0306, and restore has already done its job.</summary>
+    internal static string? AmbientIdentityLine(string packageDir)
+    {
+        ConnectorManifest? manifest;
+        try
+        {
+            manifest = ManifestReader.TryRead(packageDir);
+        }
+        catch (ConnectorHostException)
+        {
+            return null;
+        }
+
+        return manifest is { AmbientIdentity.Count: > 0 }
+            ? $"  receives host identity: {string.Join(", ", manifest.AmbientIdentity)}"
+            : null;
     }
 
     /// <summary>PZ_CACHE_DIR is respected here, at the CLI boundary — PackageMaterializer itself always

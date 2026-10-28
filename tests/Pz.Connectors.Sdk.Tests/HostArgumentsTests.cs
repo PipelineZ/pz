@@ -37,6 +37,33 @@ public sealed class HostArgumentsTests
         Assert.False(command.ProjectDirectoryAnchor);
     }
 
+    [Fact]
+    public void Manifest_mode_collects_ambient_identity_groups_sorted_and_deduplicated()
+    {
+        var command = Assert.IsType<ManifestCommand>(HostArguments.Parse(
+            ["--pz-manifest", "--out", "m.json",
+             "--ambient-identity", "azure", "--ambient-identity", "aws", "--ambient-identity", "azure"]));
+        Assert.Equal(["aws", "azure"], command.AmbientIdentity!);
+    }
+
+    [Fact]
+    public void Manifest_mode_defaults_ambient_identity_to_none()
+    {
+        var command = Assert.IsType<ManifestCommand>(HostArguments.Parse(["--pz-manifest", "--out", "m.json"]));
+        Assert.Empty(command.AmbientIdentity!);
+    }
+
+    [Theory]
+    [InlineData("azur")]
+    [InlineData("Azure")]
+    [InlineData("")]
+    public void An_unknown_ambient_identity_group_fails_the_pack(string group)
+    {
+        var invalid = Assert.IsType<InvalidCommand>(HostArguments.Parse(
+            ["--pz-manifest", "--out", "m.json", "--ambient-identity", group]));
+        Assert.Contains("aws, azure, gcp", invalid.Message, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
@@ -58,6 +85,9 @@ public sealed class HostArgumentsTests
     [InlineData(new object[] { new[] { "--root", "/data" } })]
     [InlineData(new object[] { new[] { "--pz-socket", "/tmp/x", "--project-directory-anchor" } })]
     [InlineData(new object[] { new[] { "--project-directory-anchor" } })]
+    [InlineData(new object[] { new[] { "--pz-socket", "/tmp/x", "--ambient-identity", "azure" } })]
+    [InlineData(new object[] { new[] { "--ambient-identity", "azure" } })]
+    [InlineData(new object[] { new[] { "--pz-manifest", "--out", "m.json", "--ambient-identity" } })]
     public void Anything_the_sdk_does_not_own_is_invalid(string[] args)
     {
         Assert.IsType<InvalidCommand>(HostArguments.Parse(args));

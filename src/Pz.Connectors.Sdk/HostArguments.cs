@@ -1,3 +1,5 @@
+using Pz.Connectors.Abstractions;
+
 namespace Pz.Connectors.Sdk;
 
 internal abstract record HostCommand;
@@ -5,7 +7,8 @@ internal abstract record HostCommand;
 internal sealed record ServeCommand(string SocketPath) : HostCommand;
 
 internal sealed record ManifestCommand(
-    string OutPath, SortedDictionary<string, string> Entrypoints, bool ProjectDirectoryAnchor = false) : HostCommand;
+    string OutPath, SortedDictionary<string, string> Entrypoints, bool ProjectDirectoryAnchor = false,
+    SortedSet<string>? AmbientIdentity = null) : HostCommand;
 
 internal sealed record InvalidCommand(string Message) : HostCommand;
 
@@ -18,7 +21,7 @@ internal static class HostArguments
     public const string Usage =
         "usage: <connector> --pz-socket <path>\n" +
         "       <connector> --pz-manifest --out <file> [--entrypoint <rid>=<package-relative path>]...\n" +
-        "                   [--project-directory-anchor]";
+        "                   [--project-directory-anchor] [--ambient-identity <group>]...";
 
     public static HostCommand Parse(string[] args)
     {
@@ -26,6 +29,7 @@ internal static class HostArguments
         string? outPath = null;
         var manifest = false;
         var projectDirectoryAnchor = false;
+        var ambientIdentity = new SortedSet<string>(StringComparer.Ordinal);
         var entrypoints = new SortedDictionary<string, string>(StringComparer.Ordinal);
 
         for (var i = 0; i < args.Length; i++)
@@ -76,13 +80,31 @@ internal static class HostArguments
                 case "--project-directory-anchor":
                     projectDirectoryAnchor = true;
                     break;
+                case "--ambient-identity":
+                    if (++i >= args.Length)
+                    {
+                        return new InvalidCommand("--ambient-identity needs a group name");
+                    }
+
+                    // Refused here, at pack time, rather than written: the host only warns about a
+                    // group it does not know (a newer SDK's, on an older pz), so a typo that reached
+                    // the manifest would ship a connector that silently never gets its identity.
+                    if (!AmbientIdentityGroups.IsKnown(args[i]))
+                    {
+                        return new InvalidCommand(
+                            $"--ambient-identity '{args[i]}' is not a known group ({string.Join(", ", AmbientIdentityGroups.All)})");
+                    }
+
+                    ambientIdentity.Add(args[i]);
+                    break;
                 default:
                     return new InvalidCommand($"unrecognized argument '{args[i]}'");
             }
         }
 
         if (socket is not null &&
-            (manifest || outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor))
+            (manifest || outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor ||
+             ambientIdentity.Count > 0))
         {
             return new InvalidCommand("--pz-socket and --pz-manifest are separate modes");
         }
@@ -96,11 +118,12 @@ internal static class HostArguments
         {
             return outPath is null
                 ? new InvalidCommand("--pz-manifest needs --out <file>")
-                : new ManifestCommand(outPath, entrypoints, projectDirectoryAnchor);
+                : new ManifestCommand(outPath, entrypoints, projectDirectoryAnchor, ambientIdentity);
         }
 
-        return new InvalidCommand(outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor
-            ? "--out/--entrypoint/--project-directory-anchor belong to --pz-manifest"
+        return new InvalidCommand(
+            outPath is not null || entrypoints.Count > 0 || projectDirectoryAnchor || ambientIdentity.Count > 0
+            ? "--out/--entrypoint/--project-directory-anchor/--ambient-identity belong to --pz-manifest"
             : "one of --pz-socket <path> or --pz-manifest is required");
     }
 }

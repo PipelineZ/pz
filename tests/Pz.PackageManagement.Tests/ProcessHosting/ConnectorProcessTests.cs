@@ -172,6 +172,58 @@ public sealed class ConnectorProcessTests : IDisposable
         await AssertProcessGoneAsync(childPid!.Value);
     }
 
+    /// <summary>The child's environment is the allowlist plus the declared groups' variables that are
+    /// set on the host, and never anything else: not a group that was not declared, and not a static
+    /// secret even when its cloud's group was.</summary>
+    [SkippableFact]
+    public async Task Spawn_forwards_only_the_declared_identity_groups_variables()
+    {
+        Skip.If(OperatingSystem.IsWindows(), "bash fixtures are unix-only");
+        ChmodExecutable(FixturePath("env-names.sh"));
+
+        // Names no other test in this assembly sets: the environment is process-wide.
+        string[] set =
+        [
+            "IDENTITY_HEADER", "AZURE_TENANT_ID", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_SECRET_ACCESS_KEY",
+            "AZURE_CLIENT_SECRET", "GCE_METADATA_HOST",
+        ];
+        foreach (var name in set)
+        {
+            Environment.SetEnvironmentVariable(name, "x");
+        }
+
+        try
+        {
+            var none = await SpawnedEnvironmentNames(null);
+            var azure = await SpawnedEnvironmentNames(["azure"]);
+            var aws = await SpawnedEnvironmentNames(["aws", "not-a-group"]);
+
+            Assert.Contains("PATH", none);
+            Assert.Empty(none.Intersect(set));
+            Assert.Equal(["AZURE_TENANT_ID", "IDENTITY_HEADER"], azure.Intersect(set).Order());
+            Assert.Equal(["AWS_WEB_IDENTITY_TOKEN_FILE"], aws.Intersect(set));
+        }
+        finally
+        {
+            foreach (var name in set)
+            {
+                Environment.SetEnvironmentVariable(name, null);
+            }
+        }
+    }
+
+    private async Task<IReadOnlyList<string>> SpawnedEnvironmentNames(IReadOnlyList<string>? ambientIdentity)
+    {
+        await using var process = ConnectorProcess.Spawn(
+            FixturePath("env-names.sh"), NewSocketDir(), "test-package", ambientIdentity: ambientIdentity);
+        await process.ExitedForTests.WaitAsync(TimeSpan.FromSeconds(30));
+
+        const string prefix = "env-name: ";
+        return [.. process.StderrTail.Split('\n')
+            .Where(line => line.StartsWith(prefix, StringComparison.Ordinal))
+            .Select(line => line[prefix.Length..])];
+    }
+
     private static void ChmodExecutable(string path)
     {
         if (!OperatingSystem.IsWindows())

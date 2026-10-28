@@ -20,15 +20,20 @@ internal static class ManifestWriter
         NewLine = "\n",
     });
 
+    /// <summary><paramref name="ambientIdentity"/> is written ordinal-sorted and de-duplicated, and
+    /// omitted entirely when null or empty.</summary>
     public static string Render(
-        IConnector connector, IReadOnlyDictionary<string, string> entrypoints, bool projectDirectoryAnchor = false)
+        IConnector connector, IReadOnlyDictionary<string, string> entrypoints, bool projectDirectoryAnchor = false,
+        IEnumerable<string>? ambientIdentity = null)
     {
+        var groups = ambientIdentity?.Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
         var document = new ManifestDocument(
             connector.Info.Name,
             ProtocolVersion.Major,
             ProtocolVersion.Major,
             CapabilityNames(DeclaredCapabilities(connector)),
             projectDirectoryAnchor,
+            groups is { Count: > 0 } ? groups : null,
             "process",
             new SortedDictionary<string, string>(
                 entrypoints.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal),
@@ -78,6 +83,11 @@ internal sealed record ManifestDocument(
     // host's own ManifestDto declares it in.
     [property: JsonPropertyName("projectDirectoryAnchor"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     bool ProjectDirectoryAnchor,
+    // Omit-when-null, for the same byte-identity reason as projectDirectoryAnchor: Render passes null
+    // for an empty list. The cloud groups (AmbientIdentityGroups) whose identity variables the host
+    // forwards to this connector's process; the host's ManifestDto declares it in this slot too.
+    [property: JsonPropertyName("ambientIdentity"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<string>? AmbientIdentity,
     [property: JsonPropertyName("runtime")] string Runtime,
     [property: JsonPropertyName("entrypoints")] SortedDictionary<string, string> Entrypoints,
     // Last, always present: the newest field, and unlike projectDirectoryAnchor there is no

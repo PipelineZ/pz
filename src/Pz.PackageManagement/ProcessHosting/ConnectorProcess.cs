@@ -12,9 +12,10 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// -- disposal here is the only place the child is killed.</summary>
 public sealed class ConnectorProcess : IAsyncDisposable
 {
-    /// <summary>Env vars ever copied from the host into a connector child. Deliberately minimal:
-    /// nothing here can carry a secret, and the child gets its actual configuration only through the
-    /// Configure RPC -- never through the environment. Both-case proxy variants are included because
+    /// <summary>Env vars copied from the host into every connector child. Deliberately minimal:
+    /// nothing in <see cref="CommonEnv"/> can carry a secret, and the child gets its actual
+    /// configuration only through the Configure RPC -- never through the environment. Identity groups
+    /// (<see cref="AmbientIdentity"/>) are forwarded only to packages that declare them. Both-case proxy variants are included because
     /// tooling disagrees on casing and a connector may shell out to something that only honors one.</summary>
     private static readonly string[] CommonEnv =
     [
@@ -172,7 +173,9 @@ public sealed class ConnectorProcess : IAsyncDisposable
 
     /// <summary>Creates the run-scoped socket directory (owner-only permissions), then spawns
     /// <paramref name="entrypointPath"/> with <c>--pz-socket &lt;SocketPath&gt;</c> and a minimal env
-    /// allowlist. Throws <see cref="ConnectorHostException"/> PZ0355 if the entrypoint is missing, is
+    /// allowlist, plus the variables of each group in <paramref name="ambientIdentity"/> (the package
+    /// manifest's declaration; see <see cref="AmbientIdentity"/>). Unknown group names forward nothing,
+    /// and a variable unset on the host is not copied. Throws <see cref="ConnectorHostException"/> PZ0355 if the entrypoint is missing, is
     /// not executable, or otherwise fails to start.
     ///
     /// <para><paramref name="extraArgs"/> is a test-only escape hatch, never used on the production
@@ -180,7 +183,8 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// <c>Pz.PackageManagement.ProcessHosting.PcpClient</c> -- never argv): it exists so a test can
     /// select which failure a fixture connector stages via its own argv switches.</para></summary>
     public static ConnectorProcess Spawn(
-        string entrypointPath, string socketDir, string packageName, IReadOnlyList<string>? extraArgs = null)
+        string entrypointPath, string socketDir, string packageName, IReadOnlyList<string>? extraArgs = null,
+        IReadOnlyList<string>? ambientIdentity = null)
     {
         var createdSocketDir = CreateSocketDir(socketDir);
         var socketPath = Path.Combine(socketDir, "control.sock");
@@ -205,7 +209,10 @@ public sealed class ConnectorProcess : IAsyncDisposable
         }
 
         startInfo.EnvironmentVariables.Clear();
-        foreach (var name in EnvAllowlist)
+        IEnumerable<string> forwarded = ambientIdentity is { Count: > 0 }
+            ? [.. EnvAllowlist, .. AmbientIdentity.VariablesFor(ambientIdentity)]
+            : EnvAllowlist;
+        foreach (var name in forwarded)
         {
             var value = Environment.GetEnvironmentVariable(name);
             if (value is not null)

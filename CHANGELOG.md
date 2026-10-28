@@ -7,6 +7,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **Opt-in ambient cloud identity for external connectors.** pz starts every connector process with a
+  cleared environment, so a connector using a cloud SDK's managed identity, workload identity, IRSA, ECS task
+  role or GCP federation could not find it (only the VM metadata service and credential files under `HOME`
+  worked). A connector now declares the clouds it needs with `<PzAmbientIdentity>azure;aws</PzAmbientIdentity>`
+  (groups `aws`, `azure`, `gcp`); the SDK writes `"ambientIdentity"` into `pz.connector.json`, and pz forwards
+  that cloud's identity variables (such as `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` on Azure Container Apps)
+  to that package only. Static secrets such as `AWS_SECRET_ACCESS_KEY` or `AZURE_CLIENT_SECRET` are never
+  forwarded. `pz restore` prints `receives host identity: <groups>` under every package that declares any. A
+  manifest without the field is written byte-for-byte as before and keeps the same environment; an unknown
+  group is ignored with one warning at load, and an older pz ignores the field.
+
 ## [0.13.0] - 2026-10-27
 
 ### Added
