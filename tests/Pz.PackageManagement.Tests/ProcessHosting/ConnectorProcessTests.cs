@@ -173,8 +173,8 @@ public sealed class ConnectorProcessTests : IDisposable
     }
 
     /// <summary>The child's environment is the allowlist plus the declared groups' variables that are
-    /// set on the host, and never anything else: not a group that was not declared, and not a static
-    /// secret even when its cloud's group was.</summary>
+    /// set on the host, and never anything else: not a group that was not declared, and not AWS's static
+    /// keys even when aws was. The azure group does carry a service principal's secret.</summary>
     [SkippableFact]
     public async Task Spawn_forwards_only_the_declared_identity_groups_variables()
     {
@@ -201,7 +201,7 @@ public sealed class ConnectorProcessTests : IDisposable
 
             Assert.Contains("PATH", none);
             Assert.Empty(none.Intersect(set));
-            Assert.Equal(["AZURE_TENANT_ID", "IDENTITY_HEADER"], azure.Intersect(set).Order());
+            Assert.Equal(["AZURE_CLIENT_SECRET", "AZURE_TENANT_ID", "IDENTITY_HEADER"], azure.Intersect(set).Order());
             Assert.Equal(["AWS_WEB_IDENTITY_TOKEN_FILE"], aws.Intersect(set));
 
             // A declaration only ever adds: everything the undeclared child got, a declared one gets too.

@@ -15,9 +15,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   worked). A connector now declares the clouds it needs with `<PzAmbientIdentity>azure;aws</PzAmbientIdentity>`
   (groups `aws`, `azure`, `gcp`); the SDK writes `"ambientIdentity"` into `pz.connector.json`, and pz forwards
   that cloud's identity variables (such as `IDENTITY_ENDPOINT` and `IDENTITY_HEADER` on Azure Container Apps),
-  plus its region and project settings, to that package only. Variables holding a static secret, such as
-  `AWS_SECRET_ACCESS_KEY` or `AZURE_CLIENT_SECRET`, are never forwarded; a `GOOGLE_APPLICATION_CREDENTIALS`
-  that names a service-account key file is, so a `gcp` package can use that key. `pz restore` prints
+  plus its region and project settings, to that package only. `azure` also forwards a service principal
+  configured through the environment (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID` with `AZURE_CLIENT_SECRET` or
+  `AZURE_CLIENT_CERTIFICATE_PATH`), so that setup works for the connector as it does for builtin ones. Other
+  variables holding a static secret, such as `AWS_SECRET_ACCESS_KEY`, are never forwarded; a
+  `GOOGLE_APPLICATION_CREDENTIALS` that names a service-account key file is, so a `gcp` package can use that key. `pz restore` prints
   `receives host identity: <groups>` under every package that declares any. A manifest without the field is
   written byte-for-byte as before and keeps the same environment; an unknown group fails the pack
   (`PZSDK006`), is ignored with one warning when pz loads a hand-written manifest, and an older pz ignores the

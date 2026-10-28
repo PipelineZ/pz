@@ -306,10 +306,13 @@ fails the pack with `PZSDK006`). The manifest then carries `"ambientIdentity": [
 `AZURE_CLIENT_ID`/`AZURE_TENANT_ID` (AKS workload identity), `AWS_WEB_IDENTITY_TOKEN_FILE`/
 `AWS_ROLE_ARN` (IRSA), `AWS_CONTAINER_CREDENTIALS_*` (ECS, EKS Pod Identity) and
 `GOOGLE_APPLICATION_CREDENTIALS`, plus the region and project settings (`AWS_REGION`,
-`GOOGLE_CLOUD_PROJECT`). Variables holding a static secret (`AWS_SECRET_ACCESS_KEY`,
-`AZURE_CLIENT_SECRET`, ...) are never forwarded: put them in `connections.yml` as `${VAR}`. One
-exception by nature: if the host points `GOOGLE_APPLICATION_CREDENTIALS` at a service-account key
-file, a package declaring `gcp` can use that key. `pz restore` prints `receives host identity:
+`GOOGLE_CLOUD_PROJECT`). `azure` also carries a service principal configured through the environment
+(`AZURE_CLIENT_ID`, `AZURE_TENANT_ID` with `AZURE_CLIENT_SECRET` or `AZURE_CLIENT_CERTIFICATE_PATH`),
+so a host that authenticates that way works for the connector too, and the connector receives that
+secret. Other variables holding a static secret (`AWS_SECRET_ACCESS_KEY`, `AZURE_STORAGE_KEY`, ...)
+are never forwarded: put them in `connections.yml` as `${VAR}`. Likewise, if the host points
+`GOOGLE_APPLICATION_CREDENTIALS` at a service-account key file, a package declaring `gcp` can use
+that key. `pz restore` prints `receives host identity:
 <groups>` under every package that declares any. `pz connector test <package-dir>` spawns with the
 same environment a run does; a bare entrypoint has no manifest, so it gets no identity variables. A
 group this `pz` does not know is ignored with one warning at load. A Rust connector's `--pz-manifest`
