@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-28
+
 ### Added
 
 - **Opt-in ambient cloud identity for external connectors.** pz starts every connector process with a
