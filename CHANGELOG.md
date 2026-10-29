@@ -7,6 +7,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The linux-x64 pz starts on Ubuntu 24.04, Debian 12 and older again.** 0.13.0 and 0.14.0 were packed on
+  `ubuntu-latest` after GitHub moved it to Ubuntu 26.04, so their Native AOT binary needed glibc 2.43 and
+  failed with ``version `GLIBC_2.43' not found`` everywhere older (most container base images, Azure
+  Container Apps, CI runners). Linux packages now build on a pinned `ubuntu-24.04`, and the release fails
+  before anything is pushed if any Linux binary needs a glibc newer than 2.39
+  (`scripts/check-glibc-baseline.sh`). linux-arm64 was already pinned and was not affected.
+
 ## [0.14.0] - 2026-10-28
 
 ### Added
