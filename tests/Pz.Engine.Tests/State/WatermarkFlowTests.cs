@@ -11,6 +11,7 @@ using Pz.Engine.Execution;
 using Pz.Engine.Planning;
 using Pz.Engine.Dispatch;
 using Pz.Engine.State;
+using Pz.Engine.Tests.Execution;
 
 namespace Pz.Engine.Tests.State;
 
@@ -932,6 +933,80 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
 
         WatermarkAdvancement.Advance(dag, result.Nodes, _store);
         Assert.Equal("20", _store.Get(key)!.Value);
+    }
+
+    [Fact]
+    public async Task Plain_incremental_universal_path_trims_staging_to_after_the_watermark_when_connector_ignores_it()
+    {
+        // No max_window: the stored watermark is the only bound, and honoring it is MAY. A connector that
+        // ships everything (every file connector does, by design) must still leave only cursor > watermark in
+        // staging, or each run re-sends the whole source to an append sink.
+        var key = WatermarkStore.Key("mem", "p1");
+        _store.Set(key, new Watermark("id", "bigint", "10", "prior-run"));
+        var node = SourceLoadNode(new NodeId("c4c4c4c4c4c4c4c4"), "mem", "p1", 30, "id",
+            extraOptions: new Dictionary<string, object?> { ["ignore_watermark_bounds"] = true });
+
+        var dag = new CompiledDag([node]);
+        var result = await new RunOrchestrator(new KindDispatchingExecutor(), Ctx())
+            .ExecuteAsync(dag, new RunOptions(), default);
+
+        Assert.Equal(RunStatus.Success, result.Status);
+        var sourceResult = Assert.Single(result.Nodes);
+        Assert.Equal(19, sourceResult.RowsMoved); // ids 11..29, not the 30 the connector shipped
+        Assert.Equal("29", sourceResult.WatermarkCandidate!.Value);
+        var stagingTable = StagingNames.ForSourceLoad("mem", "p1");
+        Assert.Equal(19, await _duck.ScalarAsync<long>($"select count(*) from {stagingTable}", default));
+        Assert.Equal(11, await _duck.ScalarAsync<long>($"select min(id) from {stagingTable}", default));
+    }
+
+    [Theory]
+    [InlineData(false, 2, 5)]
+    [InlineData(true, 4, 1)] // --full-refresh reads from nothing: no trim
+    public async Task Plain_incremental_native_path_trims_staging_to_after_the_watermark(
+        bool fullRefresh, long expectedRows, long expectedMin)
+    {
+        _store.Set(WatermarkStore.Key("files", "orders"), new Watermark("id", "bigint", "2", "prior-run"));
+        var node = SourceLoadNode(new NodeId("c5c5c5c5c5c5c5c5"), "files", "orders", 0, "id");
+        var registry = new ConnectorRegistry();
+        registry.AddSource("inmemory", new ConfigurableNativeSource(
+            "(values (cast(1 as bigint),'a'), (cast(2 as bigint),'b'), (cast(5 as bigint),'c'), (cast(7 as bigint),'d')) t(id, name)"));
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1, "test")],
+            MemoryBudget.Compute(new Pz.Core.Model.EngineConfig()));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "native-run"), NullRunEvents.Instance, plan,
+            Watermarks: _store, FullRefresh: fullRefresh);
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(expectedRows, result.RowsMoved);
+        Assert.Equal("7", result.WatermarkCandidate!.Value);
+        var stagingTable = StagingNames.ForSourceLoad("files", "orders");
+        Assert.Equal(expectedMin, await _duck.ScalarAsync<long>($"select min(id) from {stagingTable}", default));
+    }
+
+    [Fact]
+    public async Task Plain_incremental_partition_mode_trims_staging_to_after_the_watermark()
+    {
+        _store.Set(WatermarkStore.Key("parts", "numbers"), new Watermark("id", "bigint", "2", "prior-run"));
+        var dataset = new DatasetDef("numbers", new Dictionary<string, object?>(), null,
+            new SyncModeDef(SyncMode.Incremental, new IncrementalDef("id")));
+        var source = new ConnectionDef("parts", "liststub", new Dictionary<string, object?>(), [dataset], "sources/parts.yml");
+        var node = new DagNode(new NodeId("c6c6c6c6c6c6c6c6"), NodeKind.SourceLoad, "src_parts__numbers", [], null,
+            new SourceDatasetDef(source, dataset));
+        var registry = new ConnectorRegistry();
+        registry.AddSource("liststub", new ListStubConnector(
+            new ListStubSource([new CheckpointingStubPartition("p", [1, 2, 5, 7])]),
+            ConnectorCapabilities.PartitionedRead | ConnectorCapabilities.StablePartitionIds));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "partition-run"), NullRunEvents.Instance,
+            Watermarks: _store);
+
+        var result = await new SourceLoadExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(2, result.RowsMoved);
+        Assert.Equal("7", result.WatermarkCandidate!.Value);
+        Assert.Equal(5, await _duck.ScalarAsync<long>("select min(id) from staging.src_parts__numbers", default));
     }
 
     [Fact]

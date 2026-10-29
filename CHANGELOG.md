@@ -7,6 +7,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An incremental read from a file source passes only rows after the watermark.** A plain incremental dataset
+  (`sync: {mode: incremental, cursor: …}` with no `max_window`) relied on the connector to apply `cursor >
+  watermark`, which is optional, and the file and object-store connectors (`localfiles`, `s3`, `azureblob`, `gcs`,
+  `sftp`) do not. Every run therefore sent the whole source downstream: an `append` output received every row again
+  on each run, and pipelines over it recomputed over all rows. pz now removes the rows at or below the stored
+  watermark from staging after landing, on every path, as it already did outside a `max_window` window. Database
+  connectors already filtered, so their results do not change.
+
+  **Behaviour change.** For a file-sourced incremental dataset, a run now moves only the new rows, so reported row
+  counts drop and an aggregate over the source covers the new rows only. To process the whole source once, run
+  with `--full-refresh`.
+
 ## [0.15.0] - 2026-10-29
 
 ### Added

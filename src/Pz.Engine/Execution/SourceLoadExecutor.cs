@@ -205,6 +205,13 @@ public sealed class SourceLoadExecutor : INodeExecutor
             spec = SpecBuilder.ForSourceLoad(def, stored);
         }
 
+        // A plain incremental read (no window, not SQL-declared) has one bound, the stored watermark, and a connector
+        // MAY ignore it (every file connector does). Staging is trimmed to cursor > watermark after landing, as a
+        // window is trimmed to (lower, upper], so an append sink is not sent the whole source on every run.
+        var plainFloor = windowUpper is null && def.Dataset.SyncMode?.Incremental is { DeclaredInSql: false }
+            ? stored?.Value
+            : null;
+
         // Every success below leaves through SchemaDriftGate or partition mode; stamp the flag on the way out.
         NodeResult Stamp(NodeResult result) =>
             reportedCaughtUp is { } flag && result.Status == NodeStatus.Success
@@ -289,7 +296,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // left as the connector returned it, as before.
             var nativeRows = windowUpper is not null && !upperInclusive
                 ? await TrimToWindowAsync(ctx, def, nativeTable, windowLower, windowUpper, upperInclusive, ct).ConfigureAwait(false)
-                : await ctx.Duck.ScalarAsync<long>($"select count(*) from {nativeTable}", ct).ConfigureAwait(false);
+                : plainFloor is not null
+                    ? await TrimToFloorAsync(ctx, def, nativeTable, plainFloor, ct).ConfigureAwait(false)
+                    : await ctx.Duck.ScalarAsync<long>($"select count(*) from {nativeTable}", ct).ConfigureAwait(false);
 
             // The stage is the landing statement plus the row count; watermark capture, lint and the drift gate
             // below are not part of it.
@@ -382,7 +391,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         {
             return Stamp(await ExecutePartitionModeAsync(node, def, ctx, source, partitions, streamingSource,
                 spec, hints, schema, gate, windowLower, windowUpper, upperInclusive, declaredType, caughtUp, shape,
-                ct).ConfigureAwait(false));
+                plainFloor, ct).ConfigureAwait(false));
         }
 
         var channel = Channel.CreateBounded<RecordBatch>(4);
@@ -488,13 +497,17 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // native-tier MAY), and a force_universal tier flip can land the whole backlog regardless.
             // This DELETE is what actually guarantees staging is `(windowLower, windowUpper]` on THIS path,
             // for the sinks/pipelines that read it downstream -- the native branch above is untouched
-            // (bounded by capable connectors; the PZ0313 gate guarantees NativeScan capability) and a
-            // non-windowed dataset (windowUpper null) runs none of this. The candidate-cap and scoped MAX
+            // (bounded by capable connectors; the PZ0313 gate guarantees NativeScan capability). A plain
+            // incremental dataset gets the one-sided version, TrimToFloorAsync. The candidate-cap and scoped MAX
             // remain as belt-and-braces for the watermark specifically.
             if (windowUpper is not null)
             {
                 rows = await TrimToWindowAsync(ctx, def, tableName, windowLower, windowUpper, upperInclusive, ct)
                     .ConfigureAwait(false);
+            }
+            else if (plainFloor is not null)
+            {
+                rows = await TrimToFloorAsync(ctx, def, tableName, plainFloor, ct).ConfigureAwait(false);
             }
 
             var (watermarkError, watermarkCandidate) =
@@ -691,6 +704,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         IStreamingSource? streamingSource, DatasetSpec spec, ReadHints hints, Schema schema, OperationGate? gate,
         string? windowLower, string? windowUpper, bool upperInclusive, string? declaredType, bool caughtUp,
         ResolvedReadShape shape,
+        string? plainFloor,
         CancellationToken ct)
     {
         var tableName = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
@@ -792,6 +806,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
             rows = await TrimToWindowAsync(ctx, def, tableName, windowLower, windowUpper, upperInclusive, ct)
                 .ConfigureAwait(false);
         }
+        else if (plainFloor is not null)
+        {
+            rows = await TrimToFloorAsync(ctx, def, tableName, plainFloor, ct).ConfigureAwait(false);
+        }
 
         var (watermarkError, watermarkCandidate) = await CaptureWatermarkAsync(
             ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
@@ -845,6 +863,18 @@ public sealed class SourceLoadExecutor : INodeExecutor
             $"delete from {tableName} where {lowerHalf}{quoted} {upperOp} '{windowUpper.Replace("'", "''")}'",
             ct).ConfigureAwait(false);
 
+        return await ctx.Duck.ScalarAsync<long>($"select count(*) from {tableName}", ct).ConfigureAwait(false);
+    }
+
+    /// <summary><see cref="TrimToWindowAsync"/> for a plain incremental read: removes every staged row at or below
+    /// the stored watermark, which a connector that ignores the lower bound lands anyway. Returns the post-trim row
+    /// count. The floor is a stored canonical value; DuckDB casts the quoted literal to the column's type.</summary>
+    private static async Task<long> TrimToFloorAsync(RunContext ctx, SourceDatasetDef def, string tableName,
+        string floor, CancellationToken ct)
+    {
+        var quoted = ArrowInterop.QuoteQualified(def.Dataset.SyncMode!.Incremental!.Cursor);
+        await ctx.Duck.ExecuteAsync(
+            $"delete from {tableName} where {quoted} <= '{floor.Replace("'", "''")}'", ct).ConfigureAwait(false);
         return await ctx.Duck.ScalarAsync<long>($"select count(*) from {tableName}", ct).ConfigureAwait(false);
     }
 
