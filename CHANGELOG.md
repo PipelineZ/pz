@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-10-30
+
 ### Fixed
 
 - **A watermark whose cursor type does not fit the column fails with the fix, not a bare conversion error.** A
