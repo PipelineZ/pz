@@ -278,14 +278,13 @@ public sealed class ParquetSourceTests : IDisposable
         Assert.Contains("amount", error.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>An honest limitation, not a bug: a parquet source's watermark does CAPTURE
-    /// and ADVANCES correctly (tier-agnostic capture against the landed staging table), but the native
-    /// scan never consults it -- so a second run with an already-advanced watermark still extracts every
-    /// row. Mirrors <c>WatermarkFlowTests.Capture_works_on_native_tier_too</c>'s harness shape, but
-    /// against the REAL <see cref="LocalFilesConnector"/> instead of a stub, and asserts the row count
-    /// specifically to prove there is no pushdown between run 1 and run 2.</summary>
+    /// <summary>A parquet source's watermark CAPTURES and ADVANCES (tier-agnostic capture against the landed
+    /// staging table). The native read_parquet(...) scan still never consults it, so the file is read in full,
+    /// but the engine trims staging to after the stored watermark: a second run passes only the new rows.
+    /// Mirrors <c>WatermarkFlowTests.Capture_works_on_native_tier_too</c>'s harness shape, against the REAL
+    /// <see cref="LocalFilesConnector"/> instead of a stub.</summary>
     [Fact]
-    public async Task Parquet_incremental_captures_but_does_not_pushdown()
+    public async Task Parquet_incremental_passes_only_rows_after_the_watermark()
     {
         var path = Path.Combine(_dir, "orders.parquet");
         await WriteIdsParquetAsync(path, [1, 2, 3, 4, 5]);
@@ -330,8 +329,8 @@ public sealed class ParquetSourceTests : IDisposable
             store.Set(WatermarkStore.Key("files", "orders"), result1.WatermarkCandidate);
         }
 
-        // Run 2: a real prior watermark (id > 5) is now available, but the native read_parquet(...)
-        // scan never looks at it -- every row is re-extracted anyway (the limitation above).
+        // Run 2: two new rows arrive. The scan reads all seven; the engine trims to id > 5.
+        await WriteIdsParquetAsync(path, [1, 2, 3, 4, 5, 6, 7]);
         await using (var duck2 = DuckSession.Open(Path.Combine(_dir, "run2.duckdb")))
         {
             await duck2.ExecuteAsync("create schema if not exists staging");
@@ -340,9 +339,9 @@ public sealed class ParquetSourceTests : IDisposable
             var result2 = await new KindDispatchingExecutor().ExecuteAsync(node, ctx2, CancellationToken.None);
 
             Assert.Equal(NodeStatus.Success, result2.Status);
-            Assert.Equal(5, result2.RowsMoved); // full scan again, NOT zero/reduced -- no pushdown
+            Assert.Equal(2, result2.RowsMoved); // ids 6 and 7, not the 7 the scan read
             Assert.NotNull(result2.WatermarkCandidate);
-            Assert.Equal("5", result2.WatermarkCandidate!.Value); // idempotent: same max, re-derived
+            Assert.Equal("7", result2.WatermarkCandidate!.Value);
         }
     }
 
