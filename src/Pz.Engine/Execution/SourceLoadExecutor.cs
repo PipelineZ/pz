@@ -95,6 +95,17 @@ public sealed class SourceLoadExecutor : INodeExecutor
             if (ctx.FullRefresh) { priorSync = null; }
         }
 
+        // A columns: contract types the cursor before anything is read, so a stored watermark of another type is
+        // caught here rather than inside the connector's `cursor > value`. The windowed branch below checks the
+        // same pair, exactly; without a contract, TrimToFloorAsync checks against what landed.
+        if (stored is not null && def.Dataset.SyncMode?.Incremental is { MaxWindow: null }
+            && CursorContract.ResolveDeclaredType(def.Dataset) is { } contractType
+            && !CursorTypeGuard.Fits(stored.TypeName, contractType))
+        {
+            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
+                CursorTypeGuard.Mismatch(def, stored, "is declared as", contractType));
+        }
+
         // A windowed dataset (incremental.MaxWindow present -- DagCompiler
         // guarantees Initial is present and canonical, and Until canonical when present, for every
         // compiled windowed dataset) extracts an explicit [lower, upper] slice every run instead of an
@@ -209,7 +220,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // MAY ignore it (every file connector does). Staging is trimmed to cursor > watermark after landing, as a
         // window is trimmed to (lower, upper], so an append sink is not sent the whole source on every run.
         var plainFloor = windowUpper is null && def.Dataset.SyncMode?.Incremental is { DeclaredInSql: false }
-            ? stored?.Value
+            ? stored
             : null;
 
         // Every success below leaves through SchemaDriftGate or partition mode; stamp the flag on the way out.
@@ -704,7 +715,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         IStreamingSource? streamingSource, DatasetSpec spec, ReadHints hints, Schema schema, OperationGate? gate,
         string? windowLower, string? windowUpper, bool upperInclusive, string? declaredType, bool caughtUp,
         ResolvedReadShape shape,
-        string? plainFloor,
+        Watermark? plainFloor,
         CancellationToken ct)
     {
         var tableName = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
@@ -870,11 +881,22 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// the stored watermark, which a connector that ignores the lower bound lands anyway. Returns the post-trim row
     /// count. The floor is a stored canonical value; DuckDB casts the quoted literal to the column's type.</summary>
     private static async Task<long> TrimToFloorAsync(RunContext ctx, SourceDatasetDef def, string tableName,
-        string floor, CancellationToken ct)
+        Watermark floor, CancellationToken ct)
     {
-        var quoted = ArrowInterop.QuoteQualified(def.Dataset.SyncMode!.Incremental!.Cursor);
+        var cursor = def.Dataset.SyncMode!.Incremental!.Cursor;
+        // A floor of the wrong type would fail the delete below on a bare conversion error. A type outside the
+        // cursor set is left to CaptureWatermarkAsync, which reports it for every incremental read.
+        var duckType = await ctx.Duck.ScalarAsync<string>(
+            $"select column_type from (describe {tableName}) where lower(column_name) = lower('{cursor.Replace("'", "''")}')", ct)
+            .ConfigureAwait(false);
+        if (TryMapDuckToCursorType(duckType, out var landedType) && !CursorTypeGuard.Fits(floor.TypeName, landedType))
+        {
+            throw new CursorTypeMismatchException(CursorTypeGuard.Mismatch(def, floor, "landed as", landedType));
+        }
+
+        var quoted = ArrowInterop.QuoteQualified(cursor);
         await ctx.Duck.ExecuteAsync(
-            $"delete from {tableName} where {quoted} <= '{floor.Replace("'", "''")}'", ct).ConfigureAwait(false);
+            $"delete from {tableName} where {quoted} <= '{floor.Value.Replace("'", "''")}'", ct).ConfigureAwait(false);
         return await ctx.Duck.ScalarAsync<long>($"select count(*) from {tableName}", ct).ConfigureAwait(false);
     }
 

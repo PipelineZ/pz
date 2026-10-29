@@ -7,6 +7,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A watermark whose cursor type does not fit the column fails with the fix, not a bare conversion error.** A
+  watermark set with the wrong `pz state set --type` (say `date` on an integer `id`) failed the next plain
+  incremental run with `PZ0501` and DuckDB's `Could not convert string '***' to INT64`, naming neither the watermark
+  nor the remedy. pz now checks the stored type against a `columns:` contract before reading, and against the
+  column's landed type before trimming staging, and fails with `PZ0505` naming the key, both types and the commands
+  that fix it (`pz state clear`, then `pz state set` with the column's type). `int` and `bigint` read each other's
+  values and pass. When a database connector applies the watermark inside the read and the read fails, and the
+  watermark was set by hand, the `PZ0501` message now ends with a note naming it.
+
 ## [0.16.0] - 2026-10-29
 
 ### Breaking
