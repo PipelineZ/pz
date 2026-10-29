@@ -94,6 +94,73 @@ public sealed class StateEditTests
         Assert.Equal("9000", plan.NewValue!.Value);
     }
 
+    // ---- set creating an entry ----
+
+    [Fact]
+    public void Set_on_a_missing_entry_with_cursor_and_type_creates_it()
+    {
+        var plan = StateEdit.ForSet(existing: null, "2026-07-01", cursor: "updated_at", type: "timestamp");
+
+        Assert.Null(plan.RefusalCode);
+        Assert.Equal(new Watermark("updated_at", "timestamp", "2026-07-01T00:00:00.000000", "manual"), plan.NewValue);
+        Assert.False(plan.RemoveEntry);
+    }
+
+    [Theory]
+    [InlineData("updated_at", null)]
+    [InlineData(null, "timestamp")]
+    [InlineData(" ", "timestamp")]
+    public void Set_on_a_missing_entry_without_both_cursor_and_type_is_refused_naming_both(string? cursor, string? type)
+    {
+        var plan = StateEdit.ForSet(existing: null, "2026-07-01", cursor, type);
+
+        Assert.Equal("PZ0513", plan.RefusalCode);
+        Assert.Contains("--cursor", plan.RefusalMessage);
+        Assert.Contains("--type", plan.RefusalMessage);
+        Assert.Null(plan.NewValue);
+    }
+
+    [Theory]
+    [InlineData("TIMESTAMP")]
+    [InlineData("varchar")]
+    public void Set_creating_an_entry_refuses_a_type_pz_has_no_arithmetic_for(string type)
+    {
+        var plan = StateEdit.ForSet(existing: null, "5", "id", type);
+
+        Assert.Equal("PZ0516", plan.RefusalCode);
+        Assert.Contains("int, bigint, decimal, date, timestamp", plan.RefusalMessage);
+    }
+
+    [Fact]
+    public void Set_creating_an_entry_refuses_a_value_that_will_not_parse_for_the_given_type()
+    {
+        var plan = StateEdit.ForSet(existing: null, "yesterday", "id", "bigint");
+
+        Assert.Equal("PZ0515", plan.RefusalCode);
+        Assert.Contains("bigint", plan.RefusalMessage);
+    }
+
+    [Fact]
+    public void Set_on_an_existing_entry_accepts_a_matching_cursor_and_type()
+    {
+        var plan = StateEdit.ForSet(Stored(), "2026-07-01", "updated_at", "timestamp");
+
+        Assert.Null(plan.RefusalCode);
+        Assert.Equal("2026-07-01T00:00:00.000000", plan.NewValue!.Value);
+    }
+
+    [Theory]
+    [InlineData("created_at", null, "created_at")]
+    [InlineData(null, "date", "date")]
+    public void Set_never_changes_an_existing_entrys_cursor_or_type(string? cursor, string? type, string named)
+    {
+        var plan = StateEdit.ForSet(Stored(), "2026-07-01", cursor, type);
+
+        Assert.Equal("PZ0516", plan.RefusalCode);
+        Assert.Contains(named, plan.RefusalMessage);
+        Assert.Contains("pz state clear", plan.RefusalMessage);
+    }
+
     // ---- rollback ----
 
     [Fact]

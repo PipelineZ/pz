@@ -288,6 +288,15 @@ internal static class StateCommand
         {
             Description = "The new cursor value. Canonicalized against the stored cursor type.",
         };
+        var cursorOption = new Option<string?>("--cursor")
+        {
+            Description = "The cursor column. Required to create a missing entry; must match an existing one.",
+        };
+        var typeOption = new Option<string?>("--type")
+        {
+            Description = "The cursor type (int, bigint, decimal, date, timestamp). Required to create a missing " +
+                          "entry; must match an existing one.",
+        };
         var (reason, dryRun, yes) = WriteOptions();
         var keyArgument = new Argument<string?>("key")
         {
@@ -295,10 +304,12 @@ internal static class StateCommand
             Arity = ArgumentArity.ZeroOrOne,
         };
         var command = new Command("set",
-            "Set a stored watermark's value directly, in either direction. Existing entries only — " +
-            "the cursor column and type are inherited, so this cannot invent an entry.");
+            "Set a watermark's value directly, in either direction. An existing entry keeps its cursor column " +
+            "and type; a missing one is created from --cursor and --type.");
         command.Options.Add(projectOption);
         command.Options.Add(valueOption);
+        command.Options.Add(cursorOption);
+        command.Options.Add(typeOption);
         command.Options.Add(reason);
         command.Options.Add(dryRun);
         command.Options.Add(yes);
@@ -312,7 +323,9 @@ internal static class StateCommand
             parseResult.GetValue(reason),
             parseResult.GetValue(dryRun),
             parseResult.GetValue(yes),
-            TimeProvider.System));
+            TimeProvider.System,
+            cursor: parseResult.GetValue(cursorOption),
+            type: parseResult.GetValue(typeOption)));
         return command;
     }
 
@@ -358,7 +371,8 @@ internal static class StateCommand
     /// plus a real prompt.</summary>
     internal static int Write(
         string projectDir, StateEditAction action, string? key, string? toRun, string? value, string? reason,
-        bool dryRun, bool yes, TimeProvider time, Func<bool>? isInteractive = null, Func<bool>? confirm = null)
+        bool dryRun, bool yes, TimeProvider time, Func<bool>? isInteractive = null, Func<bool>? confirm = null,
+        string? cursor = null, string? type = null)
     {
         if (!ProjectExists(projectDir))
         {
@@ -406,7 +420,7 @@ internal static class StateCommand
             return ExitCodes.NodeFailures;
         }
 
-        var plan = BuildPlan(backends.Artifacts, action, key, toRun, value, existing);
+        var plan = BuildPlan(backends.Artifacts, action, key, toRun, value, cursor, type, existing);
         if (plan.RefusalCode is { } code)
         {
             return Refuse(code, $"{key}: {plan.RefusalMessage}");
@@ -459,7 +473,8 @@ internal static class StateCommand
         // The state write is atomic and comes first, so the ledger never claims a mutation that
         // did not happen. A failed append is loud, never silent — the operator gets the exact line.
         var entry = new StateAuditEntry(
-            Verb(action), key, existing?.Cursor, existing?.TypeName, existing?.Value, existing?.RunId,
+            Verb(action), key, existing?.Cursor ?? plan.NewValue?.Cursor, existing?.TypeName ?? plan.NewValue?.TypeName,
+            existing?.Value, existing?.RunId,
             plan.NewValue?.Value, plan.RemoveEntry ? null : action == StateEditAction.Rollback ? $"run:{toRun}" : "value",
             reason);
         var audit = new StateAudit(stateDir, time);
@@ -481,12 +496,13 @@ internal static class StateCommand
     }
 
     private static StateEditPlan BuildPlan(
-        IRunArtifactStore artifacts, StateEditAction action, string key, string? toRun, string? value, Watermark? existing)
+        IRunArtifactStore artifacts, StateEditAction action, string key, string? toRun, string? value, string? cursor,
+        string? type, Watermark? existing)
     {
         switch (action)
         {
             case StateEditAction.Set:
-                return StateEdit.ForSet(existing, value!);
+                return StateEdit.ForSet(existing, value!, cursor, type);
 
             case StateEditAction.Clear:
                 return StateEdit.ForClear(existing);
@@ -506,8 +522,12 @@ internal static class StateCommand
     private static void Report(
         string prefix, StateEditAction action, string key, Watermark? existing, StateEditPlan plan, string? toRun)
     {
-        Console.WriteLine($"{prefix}{key}  {existing!.Cursor} ({existing.TypeName})");
-        Console.WriteLine($"{prefix}  from  {existing.Value}  (run {existing.RunId})");
+        // Only a set creates: every other plan that gets this far had an entry to act on.
+        var entry = existing ?? plan.NewValue!;
+        Console.WriteLine($"{prefix}{key}  {entry.Cursor} ({entry.TypeName})");
+        Console.WriteLine(existing is null
+            ? $"{prefix}  from  (none)"
+            : $"{prefix}  from  {existing.Value}  (run {existing.RunId})");
         Console.WriteLine(plan.RemoveEntry
             ? $"{prefix}  to    (removed)"
             : $"{prefix}  to    {plan.NewValue!.Value}{(toRun is null ? "" : $"  (run {toRun})")}");
@@ -520,7 +540,7 @@ internal static class StateCommand
         Console.WriteLine(prefix + Consequence(action, existing, plan));
     }
 
-    private static string Consequence(StateEditAction action, Watermark existing, StateEditPlan plan)
+    private static string Consequence(StateEditAction action, Watermark? existing, StateEditPlan plan)
     {
         if (plan.RemoveEntry)
         {
@@ -528,6 +548,11 @@ internal static class StateCommand
         }
 
         var moved = plan.NewValue!.Value;
+        if (existing is null)
+        {
+            return $"next run extracts where {plan.NewValue.Cursor} > {moved} instead of the whole dataset";
+        }
+
         if (StateEdit.Classify(existing) != StateEntryHealth.Ok)
         {
             // Compare throws on a non-canonical argument, so the direction is genuinely unknown here —
