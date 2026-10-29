@@ -4,17 +4,23 @@ namespace Pz.TestSupport;
 
 public static class DockerFacts
 {
+    /// <summary>How long the probe may take. The answer is cached for the whole test process, so a probe that
+    /// times out on a slow but working daemon skips every docker suite in it.</summary>
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(30);
+
     /// <summary>Every suite here runs Linux images, so a daemon that answers but runs Windows containers
-    /// (a Windows CI runner's default) counts as no docker: gating on `docker info` alone would send those
-    /// suites into image pulls that can only fail.</summary>
+    /// (a Windows CI runner's default) counts as no docker: gating on reachability alone would send those
+    /// suites into image pulls that can only fail. `docker version` asks the daemon its OS without running the
+    /// CLI plugins `docker info` collects metadata from: on a fresh CI runner that plugin scan alone took
+    /// longer than the old 5 s limit, and every AzuriteTls test skipped.</summary>
     private static readonly Lazy<bool> DockerAvailable = new(() =>
     {
         try
         {
             var psi = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true };
-            psi.ArgumentList.Add("info");
+            psi.ArgumentList.Add("version");
             psi.ArgumentList.Add("--format");
-            psi.ArgumentList.Add("{{.OSType}}");
+            psi.ArgumentList.Add("{{.Server.Os}}");
             using var process = Process.Start(psi);
             if (process is null)
             {
@@ -22,8 +28,14 @@ public static class DockerFacts
             }
 
             var osType = process.StandardOutput.ReadToEndAsync();
-            return process.WaitForExit(5000) && process.ExitCode == 0
-                && osType.Wait(1000) && osType.Result.Trim() == "linux";
+            if (!process.WaitForExit(ProbeTimeout))
+            {
+                // Never leave the probe running past the answer.
+                process.Kill(entireProcessTree: true);
+                return false;
+            }
+
+            return process.ExitCode == 0 && osType.Wait(1000) && osType.Result.Trim() == "linux";
         }
         catch
         {
