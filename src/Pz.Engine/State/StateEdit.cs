@@ -67,6 +67,7 @@ public static class StateEdit
     private const string NoEntry = PzErrorCode.StateKeyNotFound;
     private const string BadTarget = PzErrorCode.StateRollbackTargetInvalid;
     private const string BadValue = PzErrorCode.StateValueInvalid;
+    private const string BadArgument = PzErrorCode.StateArgumentInvalid;
 
     public static StateEntryHealth Classify(Watermark entry)
     {
@@ -81,14 +82,28 @@ public static class StateEdit
             : StateEntryHealth.NonCanonicalValue;
     }
 
-    public static StateEditPlan ForSet(Watermark? existing, string rawValue)
+    /// <summary>A missing entry is created only from a <paramref name="cursor"/> and <paramref name="type"/> the caller
+    /// names: pz cannot know either without the project compiled (a SQL-declared cursor) or a source probed (an
+    /// undeclared type), and `pz state` does neither. On an existing entry both are optional and must match, so a set
+    /// never retypes an entry; clear then set does.</summary>
+    public static StateEditPlan ForSet(Watermark? existing, string rawValue, string? cursor = null, string? type = null)
     {
+        if (existing is null)
+        {
+            return ForCreate(rawValue, cursor, type);
+        }
+
         if (Precheck(existing, out var health, out var refusal))
         {
             return refusal!;
         }
 
-        if (!WindowMath.TryCanonicalize(existing!.TypeName, rawValue, out var canonical))
+        if ((Mismatch("cursor", cursor, existing.Cursor) ?? Mismatch("type", type, existing.TypeName)) is { } mismatch)
+        {
+            return mismatch;
+        }
+
+        if (!WindowMath.TryCanonicalize(existing.TypeName, rawValue, out var canonical))
         {
             return Refuse(BadValue,
                 $"'{rawValue}' is not a valid {existing.TypeName} cursor value for '{existing.Cursor}' — " +
@@ -203,6 +218,39 @@ public static class StateEdit
         refusal = null;
         return false;
     }
+
+    private static StateEditPlan ForCreate(string rawValue, string? cursor, string? type)
+    {
+        if (string.IsNullOrWhiteSpace(cursor) || string.IsNullOrWhiteSpace(type))
+        {
+            return Refuse(NoEntry,
+                "there is no stored watermark for this dataset — to create one, pass --cursor <column> and " +
+                "--type <int|bigint|decimal|date|timestamp> (the cursor column and its type, as the dataset's " +
+                "runs store them); run pz state show to list the keys that exist");
+        }
+
+        if (!WindowMath.IsKnownType(type))
+        {
+            return Refuse(BadArgument,
+                $"'{type}' is not a cursor type pz knows — use one of int, bigint, decimal, date, timestamp");
+        }
+
+        if (!WindowMath.TryCanonicalize(type, rawValue, out var canonical))
+        {
+            return Refuse(BadValue,
+                $"'{rawValue}' is not a valid {type} cursor value for '{cursor}' — give a value pz can " +
+                "canonicalize for that type");
+        }
+
+        return new StateEditPlan(null, null, new Watermark(cursor, type, canonical, ManualRunId), false, []);
+    }
+
+    private static StateEditPlan? Mismatch(string flag, string? given, string stored) =>
+        given is null || string.Equals(given, stored, StringComparison.Ordinal)
+            ? null
+            : Refuse(BadArgument,
+                $"--{flag} '{given}' differs from the stored {flag} '{stored}', and a set never changes it — " +
+                $"run pz state clear first to replace the entry, or leave --{flag} out");
 
     private const string NoEntryMessage =
         "there is no stored watermark for this dataset — nothing to change, and the next run already " +

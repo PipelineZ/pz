@@ -7,6 +7,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **`pz state set` creates a missing watermark.** It used to edit existing entries only, so a fresh clone could not
+  be given a starting point: the first run always extracted in full. Pass the cursor column and its type with the
+  value: `pz state set erp.orders --value 2026-07-01 --cursor updated_at --type timestamp`. Without both, a missing
+  key is still refused (PZ0513), now naming the two flags. On an existing entry `--cursor` and `--type` are optional
+  and must match what is stored (PZ0516 otherwise); a set never changes them. This is how a platform run's window can
+  be replayed on a laptop.
+
 ### Fixed
 
 - **The linux-x64 pz starts on Ubuntu 24.04, Debian 12 and older again.** 0.13.0 and 0.14.0 were packed on

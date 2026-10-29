@@ -399,6 +399,92 @@ public sealed class StateCommandTests : IDisposable
     }
 
     [Fact]
+    public void Set_with_cursor_and_type_creates_a_missing_entry_from_the_command_line()
+    {
+        var stdout = CaptureOut(
+            () => CliApp.Build().Parse(["state", "set", "erp.orders", "--value", "2026-07-01", "--cursor", "updated_at",
+                "--type", "timestamp", "--reason", "reproduce run 3f2a9c1e", "--project", _work, "--yes"]).Invoke(),
+            out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        var stored = Pz.Engine.State.WatermarkStore.Local(StateDir).Get("erp.orders")!;
+        Assert.Equal(new Pz.Engine.State.Watermark("updated_at", "timestamp", "2026-07-01T00:00:00.000000", "manual"), stored);
+        Assert.Contains("(none)", stdout);
+        Assert.Contains("updated_at > 2026-07-01T00:00:00.000000", stdout);
+    }
+
+    [Fact]
+    public void Set_creating_an_entry_keeps_the_other_entries()
+    {
+        WriteOneWatermark(key: "erp.customers", cursor: "id", type: "bigint", value: "500");
+
+        Commands.StateCommand.Write(_work, Pz.Engine.State.StateEditAction.Set, "erp.orders", null, "2026-07-01",
+            null, dryRun: false, yes: true, Clock, cursor: "updated_at", type: "timestamp");
+
+        var store = Pz.Engine.State.WatermarkStore.Local(StateDir);
+        Assert.Equal("500", store.Get("erp.customers")!.Value);
+        Assert.Equal("2026-07-01T00:00:00.000000", store.Get("erp.orders")!.Value);
+    }
+
+    [Fact]
+    public void Set_creating_an_entry_appends_an_audit_line_with_no_previous_value()
+    {
+        Commands.StateCommand.Write(_work, Pz.Engine.State.StateEditAction.Set, "erp.orders", null, "2026-07-01",
+            "reproduce run 3f2a9c1e", dryRun: false, yes: true, Clock, cursor: "updated_at", type: "timestamp");
+
+        var line = Assert.Single(File.ReadAllLines(AuditPath));
+        Assert.Contains("\"action\":\"set\"", line);
+        Assert.Contains("\"cursor\":\"updated_at\"", line);
+        Assert.Contains("\"type\":\"timestamp\"", line);
+        Assert.DoesNotContain("\"from\"", line);
+        Assert.Contains("\"to\":\"2026-07-01T00:00:00.000000\"", line);
+        Assert.Contains("\"reason\":\"reproduce run 3f2a9c1e\"", line);
+    }
+
+    [Fact]
+    public void Set_dry_run_creating_an_entry_writes_nothing_at_all()
+    {
+        var stdout = CaptureOut(() => Commands.StateCommand.Write(
+            _work, Pz.Engine.State.StateEditAction.Set, "erp.orders", null, "2026-07-01", null,
+            dryRun: true, yes: true, Clock, cursor: "updated_at", type: "timestamp"), out var exit);
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.False(File.Exists(Path.Combine(StateDir, "watermarks.json")));
+        Assert.False(File.Exists(AuditPath));
+        Assert.Contains("dry-run: ", stdout);
+        Assert.Contains("(none)", stdout);
+    }
+
+    [Fact]
+    public void Set_of_a_missing_entry_without_type_names_the_flags_and_writes_nothing()
+    {
+        var stderr = CaptureErr(
+            () => CliApp.Build().Parse(["state", "set", "erp.orders", "--value", "5", "--cursor", "id",
+                "--project", _work, "--yes"]).Invoke(),
+            out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0513", stderr);
+        Assert.Contains("--type", stderr);
+        Assert.False(File.Exists(Path.Combine(StateDir, "watermarks.json")));
+    }
+
+    [Fact]
+    public void Set_with_a_different_type_than_stored_is_refused_and_changes_nothing()
+    {
+        WriteOneWatermark();
+        var before = File.ReadAllBytes(Path.Combine(StateDir, "watermarks.json"));
+
+        var stderr = CaptureErr(() => Commands.StateCommand.Write(
+            _work, Pz.Engine.State.StateEditAction.Set, "erp.orders", null, "2026-07-01", null,
+            dryRun: false, yes: true, Clock, type: "date"), out var exit);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Contains("PZ0516", stderr);
+        Assert.Equal(before, File.ReadAllBytes(Path.Combine(StateDir, "watermarks.json")));
+    }
+
+    [Fact]
     public void Set_without_a_value_is_refused_with_PZ0516()
     {
         WriteOneWatermark();
