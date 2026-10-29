@@ -518,7 +518,8 @@ public static class PzErrorCode
     public const string PriorRunFatal = "PZ0504"; // `pz retry`'s prior run ended in an orchestrator-level "fatal"
     // A source dataset's incremental cursor column landed with a DuckDB type outside
     // int/bigint/decimal/date/timestamp -- discovered only at extraction time (no declared columns:
-    // contract to catch it at compile time via PZ0212).
+    // contract to catch it at compile time via PZ0212) -- or the stored watermark's cursor type does not
+    // fit the column's declared or landed type (a hand-set `pz state set --type`, or a type change).
     public const string UnsupportedCursorType = "PZ0505";
     // A node's owning source/sink instance CircuitBreaker is Open (or stayed Open through the executor
     // gate's bounded MaxOpenWaits give-up) -- the connector was never invoked for this attempt.

@@ -1009,6 +1009,80 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
         Assert.Equal(5, await _duck.ScalarAsync<long>("select min(id) from staging.src_parts__numbers", default));
     }
 
+    private Task<NodeResult> RunNativeOrdersAsync(Watermark stored)
+    {
+        _store.Set(WatermarkStore.Key("files", "orders"), stored);
+        var node = SourceLoadNode(new NodeId("c7c7c7c7c7c7c7c7"), "files", "orders", 0, "id");
+        var registry = new ConnectorRegistry();
+        registry.AddSource("inmemory", new ConfigurableNativeSource(
+            "(values (cast(1 as bigint),'a'), (cast(2 as bigint),'b'), (cast(5 as bigint),'c')) t(id, name)"));
+        var plan = new ExecutionPlan(
+            [new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeScan, 1, "test")],
+            MemoryBudget.Compute(new Pz.Core.Model.EngineConfig()));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "native-run"), NullRunEvents.Instance, plan,
+            Watermarks: _store);
+        return new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+    }
+
+    [Fact]
+    public async Task Plain_incremental_fails_with_the_fix_when_the_stored_type_does_not_fit_what_landed()
+    {
+        // A connector that ignores the bound (every file connector) lands the rows; the floor of the wrong type
+        // would then fail the staging trim on a bare conversion error.
+        var result = await RunNativeOrdersAsync(new Watermark("id", "date", "2024-01-01", StateEdit.ManualRunId));
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.UnsupportedCursorType, result.Error!.Code);
+        Assert.Contains("cursor type 'date', but cursor column 'id' landed as 'bigint': run", result.Error.Message);
+        Assert.Contains("pz state clear files.orders --yes", result.Error.Message);
+        Assert.Contains("--cursor id --type bigint --yes", result.Error.Message);
+    }
+
+    [Fact]
+    public async Task Plain_incremental_reads_an_int_watermark_against_a_bigint_column()
+    {
+        // int and bigint share a canonical form; the run proceeds and the next watermark takes the landed type.
+        var result = await RunNativeOrdersAsync(new Watermark("id", "int", "2", StateEdit.ManualRunId));
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1, result.RowsMoved);
+        Assert.Equal("bigint", result.WatermarkCandidate!.TypeName);
+    }
+
+    [Fact]
+    public async Task Plain_incremental_checks_the_stored_type_against_a_columns_contract_before_reading()
+    {
+        // The in-memory connector parses the stored value as a long, so a read would throw; the contract check
+        // must fail the node first.
+        _store.Set(WatermarkStore.Key("mem", "typed"), new Watermark("id", "date", "2024-01-01", "prior-run"));
+        var node = SourceLoadNode(new NodeId("c8c8c8c8c8c8c8c8"), "mem", "typed", 10, "id",
+            columns: new Dictionary<string, string> { ["id"] = "bigint" });
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, Ctx(), default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.UnsupportedCursorType, result.Error!.Code);
+        Assert.Contains("cursor column 'id' is declared as 'bigint'", result.Error.Message);
+    }
+
+    [Theory]
+    [InlineData(StateEdit.ManualRunId, true)]
+    [InlineData("prior-run", false)]
+    public async Task A_read_that_fails_under_a_hand_set_watermark_names_it(string runId, bool named)
+    {
+        // Without a contract the column type is unknown before the read, and a connector that applies the bound
+        // (here: parses it as a long) fails inside the read. Only a hand-set watermark is suspect enough to name.
+        _store.Set(WatermarkStore.Key("mem", "untyped"), new Watermark("id", "date", "2024-01-01", runId));
+        var node = SourceLoadNode(new NodeId("c9c9c9c9c9c9c9c9"), "mem", "untyped", 10, "id");
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, Ctx(), default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.NodeFailed, result.Error!.Code);
+        Assert.Equal(named, result.Error.Message.Contains(
+            "pz: the watermark for 'mem.untyped' was set by hand with cursor type 'date'", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Caught_up_over_delivering_universal_source_lands_empty_staging()
     {

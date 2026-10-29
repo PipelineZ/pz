@@ -312,11 +312,22 @@ public sealed class KindDispatchingExecutor(
         // terminal Failed result carries it; removal also keeps a later unrelated failure of a
         // different node from ever seeing stale state.
         ctx.DeliveryFailures.TryRemove(node.Id, out var delivery);
+        if (ex is CursorTypeMismatchException mismatch)
+        {
+            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed, mismatch.Error,
+                Delivery: delivery);
+        }
+
         // Guidance is derived from the REDACTED message, never the raw
         // exception -- this wrap is exactly the trust boundary described above, and the appended strings
         // are developer-authored constants, so nothing unsanitized can re-enter through them.
-        var error = new PzError(PzErrorCode.NodeFailed,
-            NodeFailureGuidance.Annotate(MessageRedaction.Redact(ex)), null, null, null);
+        var message = NodeFailureGuidance.Annotate(MessageRedaction.Redact(ex));
+        if (node.Kind == NodeKind.SourceLoad && CursorTypeGuard.HandSetNote(node, ctx) is { } note)
+        {
+            message += $"\n\npz: {note}";
+        }
+
+        var error = new PzError(PzErrorCode.NodeFailed, message, null, null, null);
         return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed, error,
             Delivery: delivery);
     }
