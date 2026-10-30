@@ -7,6 +7,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed node's next step is shown.** Several node failures carried their remedy in a field no output reads:
+  the console, `run_results.json`, the NDJSON stream and MCP show only a node error's code and message. So
+  "run 'pz schema accept'" on schema drift, "run 'pz restore'", the circuit breaker's "retry with 'pz retry' after
+  the cool-down", the node timeout's `engine.node_timeout`, the windowed watermark type mismatch's
+  `--full-refresh`, and the sink merge and upsert guidance never reached anyone. pz now appends that next step to
+  the message as a `pz:` line, like its other failure guidance.
+
 ## [0.16.1] - 2026-10-30
 
 ### Fixed

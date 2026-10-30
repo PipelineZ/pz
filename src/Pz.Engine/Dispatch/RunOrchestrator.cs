@@ -296,6 +296,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
                                     new PzError(PzErrorCode.NodeFailed, MessageRedaction.Redact(ex), null, null, null));
                             }
 
+                            result = NodeFailureGuidance.FoldHint(result);
                             nodeActivity?.SetTag("pz.node.status", StatusTag(result.Status));
                             NodeSpanTags.Apply(nodeActivity, result);
                             RemoteMetrics.Record(node, result);

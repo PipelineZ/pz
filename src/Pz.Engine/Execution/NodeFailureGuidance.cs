@@ -29,6 +29,14 @@ internal static class NodeFailureGuidance
     internal static string Annotate(string message) =>
         NextStepFor(message) is { } guidance ? $"{message}\n\npz: {guidance}" : message;
 
+    /// <summary>Moves a node error's <see cref="Pz.Core.Validation.PzError.Hint"/> into its message, in the same
+    /// `pz:` form <see cref="Annotate"/> uses. Executors fill Hint like any other error; for a node it would reach
+    /// no reader (see <see cref="Annotate"/>), so the dispatcher applies this to every result it records.</summary>
+    internal static NodeResult FoldHint(NodeResult result) =>
+        result.Error is { Hint: { } hint } error
+            ? result with { Error = error with { Message = $"{error.Message}\n\npz: {hint}", Hint = null } }
+            : result;
+
     internal static string? NextStepFor(string message)
     {
         if (message.Contains("Out of Memory Error", StringComparison.Ordinal))

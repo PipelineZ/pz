@@ -12,6 +12,7 @@ internal sealed class FakeExecutor : INodeExecutor
     private int _inFlight; private int _maxInFlight;
     public readonly Dictionary<string, TimeSpan> Delays = [];
     public readonly HashSet<string> FailNodes = [];
+    public string? FailHint;
     public readonly List<string> Executed = [];
     public int MaxObservedParallelism => _maxInFlight;
 
@@ -25,7 +26,7 @@ internal sealed class FakeExecutor : INodeExecutor
             await Task.Delay(Delays.GetValueOrDefault(node.Name, TimeSpan.FromMilliseconds(20)), ct);
             return FailNodes.Contains(node.Name)
                 ? new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
-                    new Core.Validation.PzError("PZ0501", "boom", null, null, null))
+                    new Core.Validation.PzError("PZ0501", "boom", null, null, FailHint))
                 : new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, 1, TimeSpan.Zero, null);
         }
         finally { Interlocked.Decrement(ref _inFlight); }
@@ -219,6 +220,23 @@ public sealed class RunOrchestratorTests
     /// into the run's result list -- outside the effective set, never dispatched -- but still fires
     /// NodeCompleted exactly once, and only after RunStarted (which must remain the sole event opening
     /// the stream).</summary>
+    [Fact]
+    public async Task A_failed_node_error_hint_reaches_the_message_readers_see()
+    {
+        // run_results.json and node_completed carry only code and message, so a hint left in place is lost.
+        var events = new RecordingRunEvents();
+        var fake = new FakeExecutor { FailHint = "run 'pz restore'" };
+        fake.FailNodes.Add("a");
+
+        var result = await new RunOrchestrator(fake, Ctx(events))
+            .ExecuteAsync(Dag(), new RunOptions(4, false, null, "t"), CancellationToken.None);
+
+        var failed = result.Nodes.Single(n => n.Name == "a");
+        Assert.Equal("boom\n\npz: run 'pz restore'", failed.Error!.Message);
+        Assert.Null(failed.Error.Hint);
+        Assert.Equal(failed.Error, events.Completed.Single(n => n.Name == "a").Error);
+    }
+
     [Fact]
     public async Task Seeded_results_are_recorded_before_dispatch_and_reported_once()
     {
