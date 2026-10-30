@@ -843,9 +843,9 @@ public sealed class WatermarkFlowTests : IAsyncLifetime
         Assert.Contains("bigint", sourceResult.Error.Message, StringComparison.Ordinal);
         Assert.Contains("mem", sourceResult.Error.Message, StringComparison.Ordinal);
         Assert.Contains("w10", sourceResult.Error.Message, StringComparison.Ordinal);
-        Assert.NotNull(sourceResult.Error.Hint);
-        Assert.Contains("--full-refresh", sourceResult.Error.Hint, StringComparison.Ordinal);
-        Assert.Contains("align", sourceResult.Error.Hint, StringComparison.Ordinal);
+        // The dispatcher moves the next step into the message: a node error's hint reaches no reader.
+        Assert.Contains("\n\npz: run with --full-refresh", sourceResult.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("align", sourceResult.Error.Message, StringComparison.Ordinal);
         Assert.Null(sourceResult.WatermarkCandidate);
 
         // No exception escaped the node -- the run itself completed (with a failed node), never crashed.
