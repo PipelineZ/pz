@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.16.2] - 2026-10-30
+
 ### Fixed
 
 - **A failed node's next step is shown.** Several node failures carried their remedy in a field no output reads:
