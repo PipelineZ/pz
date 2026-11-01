@@ -103,7 +103,8 @@ my-project/
   intermediate — it stays valid as long as another pipeline `ref()`s it.
 
 - **`pipelines/configs/<name>.yml`** — optional sidecar matched by pipeline name, for
-  `materialization` (`table`/`view`/`ephemeral`), `tags`, and data-quality `checks`:
+  `materialization` (`table`/`view`/`ephemeral`), `tags`, data-quality `checks`, and `columns`
+  (redaction marks for `pz preview`):
 
   ```yaml
   # pipelines/configs/orders_enriched.yml
@@ -113,7 +114,13 @@ my-project/
   checks:
     - not_null: [id, email]
     - unique: [id]
+  columns:
+    - name: email
+      redact: true
   ```
+
+  The sidecar `columns:` list only marks output columns `redact: true`; it declares no types and
+  enforces nothing.
 
   Other check types: `row_count: { min, max }`, `freshness: { column, max_age }`,
   `accepted_values: { column, values }`, `custom_sql: { name, sql }`. Checks are observational —

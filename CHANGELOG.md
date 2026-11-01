@@ -7,6 +7,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **Mark sensitive columns with `redact: true`.** On a source `columns:` entry, with the long form
+  `email: { type: varchar, redact: true }` (in `connections.yml` or at the `source()` call site), and in a pipeline
+  sidecar's new `columns:` list (`- name: contact` / `redact: true`), which only marks and enforces nothing. Marks do
+  not follow a column through a pipeline; mark it again on the step. `pz preview` shows a marked column's values as
+  `•••`. Adding or removing a mark changes no node id.
+
 ## [0.16.2] - 2026-10-30
 
 ### Fixed
