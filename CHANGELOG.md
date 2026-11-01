@@ -15,6 +15,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   not follow a column through a pipeline; mark it again on the step. `pz preview` shows a marked column's values as
   `•••`. Adding or removing a mark changes no node id. `pz validate` warns (PZ0403) when a sidecar marks a column
   the pipeline does not output.
+- **`pz preview <node>` shows a sample of a source or pipeline.** `--run <id>` / `--run-dir <path>` read a finished
+  run's `staging.duckdb` read-only; the run directory alone suffices, because `pz run`/`pz retry` now record each
+  node's relation and redaction marks in it (runs from an older pz report PZ0537). `--limit` 1-500 (default 50);
+  `--json` prints one JSON object. Columns marked `redact: true` show `•••`; long values are cut at 200 characters.
+  A view is previewable from a run; a sink, a check or an ephemeral pipeline is not (PZ0538). New codes: PZ0537
+  (nothing to preview from this run), PZ0538 (not previewable), PZ0539 (invalid options).
 
 ## [0.16.2] - 2026-10-30
 
