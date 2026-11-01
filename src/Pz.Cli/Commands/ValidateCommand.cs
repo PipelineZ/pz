@@ -132,6 +132,8 @@ internal static class ValidateCommand
             return ExitCodes.ConfigError;
         }
 
+        SharedInputHelpers.WriteWarnings(dry.Warnings);
+
         foreach (var dataset in dry.UndeclaredDatasets)
         {
             var affected = CountSkippedDependents(dag, dataset, dry.SkippedPipelines);

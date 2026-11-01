@@ -260,4 +260,49 @@ public sealed class SqlDryCompilerTests
 
         return dir?.FullName ?? throw new InvalidOperationException("Pz.slnx not found above test base dir");
     }
+
+    // -- redact marks (PZ0403) ------------------------------------------------------------------------
+
+    private static CompiledDag MarkedDag(IReadOnlyList<string> marks, bool undeclaredSource = false)
+    {
+        var srcId = Id("1");
+        var src = SourceLoadNode(srcId, "s", "d", undeclaredSource
+            ? null
+            : new Dictionary<string, string> { ["id"] = "bigint", ["email"] = "varchar" });
+        var sql = "select id, email from staging.src_s__d";
+        var def = new PipelineDef("stg", sql, "table", [], [], "pipelines/stg.sql") { RedactedColumns = marks };
+        return new CompiledDag([src, new DagNode(Id("2"), NodeKind.Pipeline, "stg", [srcId], sql, def)]);
+    }
+
+    [Fact]
+    public async Task A_mark_on_a_column_the_pipeline_outputs_is_silent()
+    {
+        var result = await SqlDryCompiler.RunAsync(MarkedDag(["EMAIL"]), [], default);
+
+        Assert.Empty(result.Warnings);
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
+    public async Task A_mark_on_a_missing_column_is_PZ0403_naming_pipeline_and_column()
+    {
+        var result = await SqlDryCompiler.RunAsync(MarkedDag(["contcat"]), [], default);
+
+        var warning = Assert.Single(result.Warnings);
+        Assert.Equal(PzErrorCode.RedactedColumnNotInOutput, warning.Code);
+        Assert.Equal("PZ0403", warning.Code);
+        Assert.Contains("'stg'", warning.Message, StringComparison.Ordinal);
+        Assert.Contains("'contcat'", warning.Message, StringComparison.Ordinal);
+        Assert.Equal("pipelines/stg.sql", warning.File);
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
+    public async Task A_skipped_pipeline_is_not_checked()
+    {
+        var result = await SqlDryCompiler.RunAsync(MarkedDag(["contcat"], undeclaredSource: true), [], default);
+
+        Assert.Equal(["stg"], result.SkippedPipelines);
+        Assert.Empty(result.Warnings);
+    }
 }

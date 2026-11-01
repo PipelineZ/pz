@@ -9,7 +9,8 @@ namespace Pz.Engine.Validation;
 public sealed record DryCompileResult(
     IReadOnlyList<PzError> Errors,            // PZ0401 per failing pipeline
     IReadOnlyList<string> SkippedPipelines,   // unavailable transitive inputs
-    IReadOnlyList<string> UndeclaredDatasets); // "source.dataset" without columns:
+    IReadOnlyList<string> UndeclaredDatasets, // "source.dataset" without columns:
+    IReadOnlyList<PzWarning> Warnings);       // PZ0403 per redact mark missing from a pipeline's output
 
 /// <summary>
 /// Tier 4: EXPLAIN-by-materialization against contract-derived empty tables in a
@@ -38,6 +39,7 @@ public static class SqlDryCompiler
         var errors = new List<PzError>();
         var skipped = new List<string>();
         var undeclared = new List<string>();
+        var warnings = new List<PzWarning>();
 
         // Nodes available to downstream pipelines: a SourceLoad with a declared contract, or a
         // Pipeline that dry-materialized without error. Keyed by NodeId so it lines up directly with
@@ -49,7 +51,7 @@ public static class SqlDryCompiler
             var loaded = await DuckExtensions.LoadAsync(duck, extensions, ct).ConfigureAwait(false);
             if (loaded.Errors.Count > 0)
             {
-                return new DryCompileResult(loaded.Errors, [], []);
+                return new DryCompileResult(loaded.Errors, [], [], []);
             }
 
             await duck.ExecuteAsync("create schema if not exists staging", ct).ConfigureAwait(false);
@@ -64,7 +66,7 @@ public static class SqlDryCompiler
                         await HandleSourceLoadAsync(node, duck, available, undeclared, ct).ConfigureAwait(false);
                         break;
                     case NodeKind.Pipeline:
-                        await HandlePipelineAsync(node, duck, available, errors, skipped, ct).ConfigureAwait(false);
+                        await HandlePipelineAsync(node, duck, available, errors, skipped, warnings, ct).ConfigureAwait(false);
                         break;
                     case NodeKind.Check:
                     case NodeKind.SinkWrite:
@@ -75,7 +77,7 @@ public static class SqlDryCompiler
             }
         }
 
-        return new DryCompileResult(errors, skipped, undeclared);
+        return new DryCompileResult(errors, skipped, undeclared, warnings);
     }
 
     private static async Task HandleSourceLoadAsync(
@@ -96,7 +98,7 @@ public static class SqlDryCompiler
 
     private static async Task HandlePipelineAsync(
         DagNode node, IDuckSession duck, HashSet<NodeId> available, List<PzError> errors, List<string> skipped,
-        CancellationToken ct)
+        List<PzWarning> warnings, CancellationToken ct)
     {
         if (!node.DependsOn.All(available.Contains))
         {
@@ -134,6 +136,29 @@ public static class SqlDryCompiler
         }
 
         available.Add(node.Id);
+
+        if (def.RedactedColumns.Count > 0)
+        {
+            await WarnOnMissingMarksAsync(node, def, duck, warnings, ct).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>PZ0403 for each sidecar redact mark that names no column of the dry-materialized output
+    /// (DuckDB identifiers fold case, so the match ignores it).</summary>
+    private static async Task WarnOnMissingMarksAsync(DagNode node, PipelineDef def, IDuckSession duck,
+        List<PzWarning> warnings, CancellationToken ct)
+    {
+        var schema = await duck.GetResultSchemaAsync($"select * from {StagingRelation(node.Name)}", ct)
+            .ConfigureAwait(false);
+        var output = schema.FieldsList.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var mark in def.RedactedColumns.Where(m => !output.Contains(m)))
+        {
+            warnings.Add(new PzWarning(PzErrorCode.RedactedColumnNotInOutput,
+                $"pipeline '{node.Name}': columns: marks '{mark}' redact: true, but the pipeline does not " +
+                "output that column, so the mark protects nothing.",
+                def.FilePath, null,
+                "fix the name in this pipeline's sidecar columns: list under pipelines/configs/, or remove the entry"));
+        }
     }
 
     /// <summary>Quotes a single (dot-free) identifier by reusing <c>ArrowInterop.QuoteQualified</c> --

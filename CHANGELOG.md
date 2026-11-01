@@ -13,7 +13,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `email: { type: varchar, redact: true }` (in `connections.yml` or at the `source()` call site), and in a pipeline
   sidecar's new `columns:` list (`- name: contact` / `redact: true`), which only marks and enforces nothing. Marks do
   not follow a column through a pipeline; mark it again on the step. `pz preview` shows a marked column's values as
-  `•••`. Adding or removing a mark changes no node id.
+  `•••`. Adding or removing a mark changes no node id. `pz validate` warns (PZ0403) when a sidecar marks a column
+  the pipeline does not output.
 
 ## [0.16.2] - 2026-10-30
 

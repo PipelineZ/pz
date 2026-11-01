@@ -511,6 +511,13 @@ public static class PzErrorCode
     /// before any node runs. Next step: check the name, or -- without internet access -- copy the
     /// extension file into DuckDB's extensions folder for this DuckDB version and platform.</summary>
     public const string ExtensionLoadFailed = "PZ0402";
+
+    /// <summary>Warning. A pipeline sidecar's <c>columns:</c> list marks <c>redact: true</c> a column the
+    /// pipeline's dry-compiled output does not have, so the mark protects nothing in <c>pz preview</c> --
+    /// usually a typo or a column renamed in the SQL. Checked only for pipelines tier 4 could
+    /// dry-compile. Next step: fix the name in the sidecar's <c>columns:</c> list under
+    /// <c>pipelines/configs/</c>, or remove the entry.</summary>
+    public const string RedactedColumnNotInOutput = "PZ0403";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";
     public const string NoPriorRun = "PZ0502"; // `pz retry` found no readable prior run to resume from
