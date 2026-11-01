@@ -90,4 +90,32 @@ public sealed class RunDirLockTests : IDisposable
 
         Assert.True(RunDirLock.IsFree(dir));
     }
+
+    [Fact]
+    public void TryAcquire_returns_null_while_another_holder_has_the_lock()
+    {
+        var dir = NewDir();
+        using var held = RunDirLock.Acquire(dir);
+
+        Assert.Null(RunDirLock.TryAcquire(dir));
+    }
+
+    [Fact]
+    public void TryAcquire_takes_a_free_lock()
+    {
+        var dir = NewDir();
+        using var taken = RunDirLock.TryAcquire(dir);
+
+        Assert.NotNull(taken);
+        Assert.False(RunDirLock.IsFree(dir));
+    }
+
+    [Fact]
+    public void TryAcquire_does_not_create_a_missing_directory()
+    {
+        var dir = Path.Combine(_root, "absent");
+
+        Assert.Throws<DirectoryNotFoundException>(() => RunDirLock.TryAcquire(dir));
+        Assert.False(Directory.Exists(dir));
+    }
 }

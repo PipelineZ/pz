@@ -22,4 +22,9 @@ public sealed class NativeScanSqlTests
     public void Predicate_only_keeps_every_column() =>
         Assert.Equal("select * from read_parquet('f') where (k = 7)",
             NativeScanSql.Staging("read_parquet('f')", new ReadHintPlan(null, "k = 7")));
+
+    [Fact]
+    public void Limit_is_appended_after_the_predicate() =>
+        Assert.Equal("select * from read_parquet('f') where (k = 7) limit 1000",
+            NativeScanSql.Staging("read_parquet('f')", new ReadHintPlan(null, "k = 7"), 1000));
 }

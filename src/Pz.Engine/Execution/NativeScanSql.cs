@@ -6,13 +6,15 @@ namespace Pz.Engine.Execution;
 /// reads from the fragment, so columns and rows the pipeline never uses are not materialised.</summary>
 internal static class NativeScanSql
 {
-    internal static string Staging(string fragment, ReadHintPlan? hints)
+    /// <summary><paramref name="limit"/> (a fresh preview's slice) caps the rows staged.</summary>
+    internal static string Staging(string fragment, ReadHintPlan? hints, long? limit = null)
     {
         var projection = hints?.Columns is { Count: > 0 } columns
             ? string.Join(", ", columns.Select(Quote))
             : "*";
         var sql = $"select {projection} from {fragment}";
-        return string.IsNullOrWhiteSpace(hints?.PredicateSql) ? sql : $"{sql} where ({hints.PredicateSql})";
+        sql = string.IsNullOrWhiteSpace(hints?.PredicateSql) ? sql : $"{sql} where ({hints.PredicateSql})";
+        return limit is { } rows ? $"{sql} limit {rows.ToString(System.Globalization.CultureInfo.InvariantCulture)}" : sql;
     }
 
     private static string Quote(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";

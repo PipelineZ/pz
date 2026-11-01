@@ -72,6 +72,22 @@ public sealed class NativePathTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Native_scan_is_capped_by_the_slice()
+    {
+        var node = SourceLoadNode("stub", "t");
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", new ConfigurableNativeSource("(select range as id from range(5000)) t", []));
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "run"), NullRunEvents.Instance,
+            SingleNodePlan(node, EdgeStrategy.NativeScan)) { SourceSliceRows = 1000 };
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1000, result.RowsMoved);
+        Assert.Equal(1000, await _duck.ScalarAsync<long>("select count(*) from staging.src_stub__t"));
+    }
+
+    [Fact]
     public async Task Native_scan_stages_only_hinted_columns_and_rows()
     {
         var result = await RunHintedAsync(new ReadHintPlan(["id", "k"], "k = 7"));

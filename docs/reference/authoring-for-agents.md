@@ -89,6 +89,10 @@ my-project/
   `columns:` contract must use those names. xlsx write is localfiles-only (an s3/gcs/azureblob xlsx
   sink is PZ0361); xlsx read works on all four.
 
+  A `columns:` entry may use the long form `email: { type: varchar, redact: true }` (in YAML or in
+  the `source()` kwarg) to mark a sensitive column: `pz preview` shows its values as `•••`. Marks
+  do not follow a column into a pipeline's output; mark it again in that pipeline's sidecar.
+
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a
   top-level `outputs:` block are retired (`PZ0346`/`PZ0347`); everything is one `connections.yml`.
@@ -99,7 +103,8 @@ my-project/
   intermediate — it stays valid as long as another pipeline `ref()`s it.
 
 - **`pipelines/configs/<name>.yml`** — optional sidecar matched by pipeline name, for
-  `materialization` (`table`/`view`/`ephemeral`), `tags`, and data-quality `checks`:
+  `materialization` (`table`/`view`/`ephemeral`), `tags`, data-quality `checks`, and `columns`
+  (redaction marks for `pz preview`):
 
   ```yaml
   # pipelines/configs/orders_enriched.yml
@@ -109,7 +114,13 @@ my-project/
   checks:
     - not_null: [id, email]
     - unique: [id]
+  columns:
+    - name: email
+      redact: true
   ```
+
+  The sidecar `columns:` list only marks output columns `redact: true`; it declares no types and
+  enforces nothing.
 
   Other check types: `row_count: { min, max }`, `freshness: { column, max_age }`,
   `accepted_values: { column, values }`, `custom_sql: { name, sql }`. Checks are observational —

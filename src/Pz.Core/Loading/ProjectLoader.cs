@@ -1314,7 +1314,7 @@ public static class ProjectLoader
         return pipelines;
     }
 
-    private static readonly string[] KnownSidecarKeys = ["pipeline", "materialization", "tags", "checks"];
+    private static readonly string[] KnownSidecarKeys = ["pipeline", "materialization", "tags", "checks", "columns"];
     private static readonly string[] Materializations = ["table", "view", "ephemeral"];
 
     /// <summary>Absent -> <c>table</c>. A value outside <see cref="Materializations"/> -- dbt's
@@ -1419,6 +1419,7 @@ public static class ProjectLoader
 
             var materialization = ParseMaterialization(yaml, pipelineName, relativePath, errors);
             var tags = GetTags(yaml, pipelineName, relativePath, errors);
+            var redacted = GetRedactedColumns(yaml, pipelineName, relativePath, errors);
 
             var checks = new List<CheckDef>();
             // Indices (into `checks`) whose `column:` value was already reported as malformed below --
@@ -1500,8 +1501,70 @@ public static class ProjectLoader
                 Materialization = materialization,
                 Tags = tags,
                 Checks = checks,
+                RedactedColumns = redacted,
             };
         }
+    }
+
+    private const string SidecarColumnsHint = "columns:\n  - name: email\n    redact: true";
+
+    /// <summary>A sidecar's <c>columns:</c> list. It only marks columns of the pipeline's output for
+    /// redaction in <c>pz preview</c>; it declares no types and enforces nothing, so a <c>type:</c> key is
+    /// refused rather than silently ignored.</summary>
+    private static List<string> GetRedactedColumns(Dictionary<string, object?> yaml, string pipelineName,
+        string relativePath, List<PzError> errors)
+    {
+        var redacted = new List<string>();
+        if (!yaml.TryGetValue("columns", out var raw) || raw is null or "")
+        {
+            return redacted;
+        }
+
+        PzError Shape(string message) => new(PzErrorCode.YamlShape,
+            $"{relativePath}: pipeline '{pipelineName}': {message}.", relativePath, null, SidecarColumnsHint);
+
+        if (raw is not List<object?> entries)
+        {
+            errors.Add(Shape("'columns' must be a list of { name, redact } entries"));
+            return redacted;
+        }
+
+        var seen = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in entries)
+        {
+            if (item is not Dictionary<string, object?> entry
+                || TryGetString(entry, "name") is not { Length: > 0 } name)
+            {
+                errors.Add(Shape("each 'columns' entry needs a 'name'"));
+                continue;
+            }
+
+            if (entry.Keys.FirstOrDefault(k => k is not ("name" or "redact")) is { } unknown)
+            {
+                errors.Add(Shape($"column '{name}': '{unknown}' is not allowed; columns: here only marks " +
+                                 "columns with redact: true"));
+                continue;
+            }
+
+            if (!seen.TryAdd(name, name))
+            {
+                errors.Add(Shape($"column '{name}' repeats '{seen[name]}' (column names ignore case)"));
+                continue;
+            }
+
+            if (entry.TryGetValue("redact", out var mark) && mark is not bool)
+            {
+                errors.Add(Shape($"column '{name}': 'redact' must be true or false"));
+                continue;
+            }
+
+            if (mark is true)
+            {
+                redacted.Add(name);
+            }
+        }
+
+        return redacted;
     }
 
     /// <summary>Aggregate compile-time validation of every

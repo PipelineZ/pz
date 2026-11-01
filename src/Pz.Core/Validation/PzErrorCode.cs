@@ -511,6 +511,13 @@ public static class PzErrorCode
     /// before any node runs. Next step: check the name, or -- without internet access -- copy the
     /// extension file into DuckDB's extensions folder for this DuckDB version and platform.</summary>
     public const string ExtensionLoadFailed = "PZ0402";
+
+    /// <summary>Warning. A pipeline sidecar's <c>columns:</c> list marks <c>redact: true</c> a column the
+    /// pipeline's dry-compiled output does not have, so the mark protects nothing in <c>pz preview</c> --
+    /// usually a typo or a column renamed in the SQL. Checked only for pipelines tier 4 could
+    /// dry-compile. Next step: fix the name in the sidecar's <c>columns:</c> list under
+    /// <c>pipelines/configs/</c>, or remove the entry.</summary>
+    public const string RedactedColumnNotInOutput = "PZ0403";
     public const string UnexpectedEngineFailure = "PZ0500";
     public const string NodeFailed = "PZ0501";
     public const string NoPriorRun = "PZ0502"; // `pz retry` found no readable prior run to resume from
@@ -682,6 +689,25 @@ public static class PzErrorCode
     /// the value ever reaches a command. Never a silent truncation: the message names the field kind
     /// and the limit, never the value itself (it may be a credential or otherwise sensitive).</summary>
     public const string SqlStateValueTooLong = "PZ0536";
+
+    /// <summary><c>pz preview --run</c>/<c>--run-dir</c> found nothing to read: the run directory, its
+    /// <c>staging.duckdb</c>, the preview index (a run written by an older pz) or the node's relation (the
+    /// node did not run, failed, or was outside the run's selection) is missing, the run is still in
+    /// progress, or the kept relation no longer evaluates. Next step: preview it fresh with
+    /// <c>pz preview &lt;node&gt; --fresh</c>, or pick a run that produced it.</summary>
+    public const string PreviewUnavailable = "PZ0537";
+
+    /// <summary><c>pz preview</c> was asked for a node that has no rows of its own to show: a sink or a
+    /// check, or (from a run) an ephemeral pipeline, which is inlined into its readers and never stored.
+    /// Next step: preview the pipeline that feeds the sink or check, or preview an ephemeral pipeline with
+    /// <c>--fresh</c>.</summary>
+    public const string PreviewNodeNotPreviewable = "PZ0538";
+
+    /// <summary><c>pz preview</c>'s options break a rule: not exactly one of <c>--run</c>,
+    /// <c>--run-dir</c>, <c>--fresh</c>; <c>--limit</c> outside 1-500; <c>--slice</c> outside 1-100000 or
+    /// without <c>--fresh</c>; <c>--vars</c> without <c>--fresh</c>; or a <c>--run</c> id that is not a
+    /// plain run directory name. Next step: fix the option the message names.</summary>
+    public const string PreviewOptionsInvalid = "PZ0539";
 
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --

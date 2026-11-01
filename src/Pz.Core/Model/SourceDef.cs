@@ -1,7 +1,12 @@
 namespace Pz.Core.Model;
 
 public sealed record DatasetDef(string Name, IReadOnlyDictionary<string, object?> Options,
-    IReadOnlyDictionary<string, string>? Columns, SyncModeDef? SyncMode = null, RetryDef? Retry = null);
+    IReadOnlyDictionary<string, string>? Columns, SyncModeDef? SyncMode = null, RetryDef? Retry = null)
+{
+    /// <summary>Contract columns marked <c>redact: true</c>, as written, in file order. Read only by
+    /// <c>pz preview</c>; never part of the NodeId, so adding a mark forces no re-extraction.</summary>
+    public IReadOnlyList<string> RedactedColumns { get; init; } = [];
+}
 
 /// <summary>The unified read-mode declaration (<c>sync: { mode: incremental | cdc | auto }</c> in
 /// sources/*.yml). Null on DatasetDef ⇔ the block is omitted ⇔ <c>mode: auto</c> (the connector's

@@ -16,6 +16,7 @@ using Pz.DuckDb;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Events;
 using Pz.Engine.Execution;
+using Pz.Engine.Preview;
 using Pz.Engine.Planning;
 using Pz.Engine.Resilience;
 using Pz.Engine.Dispatch;
@@ -451,6 +452,9 @@ internal static class RunCommand
         }
 
         await duck.ExecuteAsync("create schema if not exists staging", ct);
+        // Before any node runs, so a node that later fails is listed and a preview of it answers
+        // "relation missing" rather than "unknown node".
+        await PreviewIndex.WriteAsync(duck, fullDag, project.Pipelines, ct);
 
         var connectorLog = new ConnectorLogRelay(Notice);
 

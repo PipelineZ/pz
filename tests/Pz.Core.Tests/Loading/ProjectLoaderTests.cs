@@ -571,6 +571,76 @@ public class ProjectLoaderTests
         }
     }
 
+    // -- sidecar columns: (redaction marks only) ----------------------------------------------------
+
+    private static T WithSidecar<T>(string sidecarBody, Func<string, T> act)
+    {
+        var dir = TempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(dir, "pipelines", "configs"));
+            File.WriteAllText(Path.Combine(dir, "project.yml"), "name: t\nversion: 0.1.0\n");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "a.sql"), "select 1 as id, 'x' as contact");
+            File.WriteAllText(Path.Combine(dir, "pipelines", "configs", "a.yml"), "pipeline: a\n" + sidecarBody);
+            return act(dir);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    private static PipelineDef SidecarPipeline(string sidecarBody) =>
+        WithSidecar(sidecarBody, dir => Assert.Single(ProjectLoader.Load(dir, Env).Pipelines));
+
+    private static PzError SidecarError(string sidecarBody) =>
+        WithSidecar(sidecarBody, dir => Assert.Single(
+            Assert.Throws<PzValidationException>(() => ProjectLoader.Load(dir, Env)).Errors,
+            e => e.Code == PzErrorCode.YamlShape));
+
+    [Fact]
+    public void Sidecar_columns_marks_redacted_columns() =>
+        Assert.Equal(["contact"],
+            SidecarPipeline("columns:\n  - { name: contact, redact: true }\n  - { name: id }\n").RedactedColumns);
+
+    [Fact]
+    public void Sidecar_columns_absent_is_empty() =>
+        Assert.Empty(SidecarPipeline("materialization: table\n").RedactedColumns);
+
+    [Fact]
+    public void Sidecar_columns_must_be_a_list()
+    {
+        var error = SidecarError("columns: { contact: true }\n");
+        Assert.Contains("pipelines/configs/a.yml", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sidecar_columns_entry_needs_a_name() =>
+        Assert.Contains("'name'", SidecarError("columns:\n  - { redact: true }\n").Message, StringComparison.Ordinal);
+
+    [Fact]
+    public void Sidecar_columns_entry_refuses_type_and_unknown_keys()
+    {
+        var error = SidecarError("columns:\n  - { name: contact, type: varchar }\n");
+        Assert.Contains("'type'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("only marks", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Sidecar_columns_redact_must_be_a_boolean() =>
+        Assert.Contains("'redact' must be true or false",
+            SidecarError("columns:\n  - { name: contact, redact: 'yes' }\n").Message, StringComparison.Ordinal);
+
+    [Fact]
+    public void Sidecar_columns_duplicate_name_is_refused() =>
+        Assert.Contains("'contact'",
+            SidecarError("columns:\n  - { name: contact, redact: true }\n  - { name: CONTACT }\n").Message,
+            StringComparison.Ordinal);
+
+    [Fact]
+    public void Sidecar_columns_is_a_known_key() =>
+        Assert.NotNull(SidecarPipeline("columns:\n  - { name: contact, redact: true }\n"));
+
     [Theory]
     [InlineData("ephemral")] // near miss of 'ephemeral'
     [InlineData("incremental")] // dbt's materialization vocabulary, not pz's

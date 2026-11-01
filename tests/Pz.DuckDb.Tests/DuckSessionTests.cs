@@ -57,4 +57,38 @@ public sealed class DuckSessionTests : IDisposable
             result.Contains("1.0 GiB", StringComparison.Ordinal) || result.Contains("1GB", StringComparison.Ordinal),
             $"Expected memory_limit to normalize to '1.0 GiB' or '1GB', got '{result}'.");
     }
+
+    [Fact]
+    public async Task OpenReadOnly_reads_but_refuses_writes()
+    {
+        var path = Path.Combine(_tempDir, "ro.duckdb");
+        await using (var writer = DuckSession.Open(path))
+        {
+            await writer.ExecuteAsync("create table t as select 42 as x");
+        }
+
+        await using var reader = DuckSession.OpenReadOnly(path);
+
+        Assert.Equal(42, await reader.ScalarAsync<int>("select x from t"));
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ExecuteAsync("create table u (y int)"));
+    }
+
+    // A run directory may come from elsewhere: a view planted in it must not reach the filesystem or the
+    // network, and the query cannot turn the restriction back off.
+    [Fact]
+    public async Task OpenReadOnly_refuses_external_access_and_locks_its_configuration()
+    {
+        var path = Path.Combine(_tempDir, "ro2.duckdb");
+        var outside = Path.Combine(_tempDir, "outside.csv");
+        File.WriteAllText(outside, "secret\n42\n");
+        await using (var writer = DuckSession.Open(path))
+        {
+            await writer.ExecuteAsync($"create view leak as select * from read_csv('{outside}')");
+        }
+
+        await using var reader = DuckSession.OpenReadOnly(path);
+
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ScalarAsync<long>("select count(*) from leak"));
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ExecuteAsync("set enable_external_access = true"));
+    }
 }

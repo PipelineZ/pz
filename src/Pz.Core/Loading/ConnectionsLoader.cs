@@ -214,6 +214,7 @@ internal static class ConnectionsLoader
         }
 
         Dictionary<string, string>? columns = null;
+        List<string> redacted = [];
         // A bodyless `columns:` parses as an empty scalar, not a null node; both mean "no contract".
         if (read.TryGetValue("columns", out var columnsValue) && columnsValue is not (null or ""))
         {
@@ -225,17 +226,10 @@ internal static class ConnectionsLoader
                     $"{FileName}: {where}: 'columns' must be a mapping of column name to type.",
                     FileName, null, "columns:\n          id: bigint"));
             }
-            else if (columnsYaml.FirstOrDefault(kv =>
-                kv.Value is Dictionary<string, object?> or List<object?>) is { Key: not null } nonScalar)
+            else if (ColumnContractParser.Parse(columnsYaml, where, FileName, errors) is { } contract)
             {
-                errors.Add(new PzError(PzErrorCode.YamlShape,
-                    $"{FileName}: {where}: column '{nonScalar.Key}' must map to a type name, " +
-                    "not a nested structure.",
-                    FileName, null, $"{nonScalar.Key}: bigint"));
-            }
-            else
-            {
-                columns = columnsYaml.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString() ?? string.Empty);
+                columns = contract.Types;
+                redacted = contract.Redacted;
             }
         }
 
@@ -280,7 +274,10 @@ internal static class ConnectionsLoader
 
         return new DatasetDef(entity, options, columns,
             ProjectLoader.ParseSyncMode(read, entity, FileName, errors),
-            ProjectLoader.ParseRetry(read, FileName, errors, $"{where} read "));
+            ProjectLoader.ParseRetry(read, FileName, errors, $"{where} read "))
+        {
+            RedactedColumns = redacted,
+        };
     }
 
     /// <summary>The <see cref="YamlScalarInterpolator"/> for connections.yml: <paramref name="path"/> is

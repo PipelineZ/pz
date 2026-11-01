@@ -29,6 +29,23 @@ public sealed class RunDirLock : IDisposable
             Path.Combine(dir, FileName), FileMode.OpenOrCreate, FileAccess.Write, FileShare.None));
     }
 
+    /// <summary>Takes the lock if no live process holds it, else null. Unlike <see cref="Acquire"/> it never
+    /// creates <paramref name="dir"/> (a missing directory throws <see cref="DirectoryNotFoundException"/>);
+    /// it creates the <c>.lock</c> file when missing. Used by <c>pz preview --run</c> so retention cannot
+    /// sweep the staging file mid-read, and so a run still executing is refused at once.</summary>
+    public static RunDirLock? TryAcquire(string dir)
+    {
+        try
+        {
+            return new RunDirLock(new FileStream(
+                Path.Combine(dir, FileName), FileMode.OpenOrCreate, FileAccess.Write, FileShare.None));
+        }
+        catch (IOException ex) when (ex is not (DirectoryNotFoundException or FileNotFoundException))
+        {
+            return null; // held by a live process
+        }
+    }
+
     /// <summary>True when no live process holds <paramref name="dir"/> — i.e. it is safe to delete from.
     ///
     /// Opens with <see cref="FileMode.Open"/>, never <c>OpenOrCreate</c>: probing must not litter a

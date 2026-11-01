@@ -1,7 +1,12 @@
 namespace Pz.Core.Model;
 
 public sealed record PipelineDef(string Name, string RawSql, string Materialization,
-    IReadOnlyList<string> Tags, IReadOnlyList<CheckDef> Checks, string FilePath);
+    IReadOnlyList<string> Tags, IReadOnlyList<CheckDef> Checks, string FilePath)
+{
+    /// <summary>Output columns the sidecar's <c>columns:</c> list marks <c>redact: true</c>, in file order.
+    /// Read only by <c>pz preview</c>; not part of the pipeline NodeId.</summary>
+    public IReadOnlyList<string> RedactedColumns { get; init; } = [];
+}
 
 /// <summary><see cref="SampleValues"/> is the per-check PII opt-out override for sample-row reporting
 /// on a failing check -- <c>null</c> when the check's YAML declared no <c>sample_values:</c> key,

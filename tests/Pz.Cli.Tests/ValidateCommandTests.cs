@@ -130,6 +130,48 @@ public sealed class ValidateCommandTests : IDisposable
         Assert.Contains("typo_check.sql", output);
     }
 
+    /// <summary>A sidecar `columns:` mark on a column the pipeline does not output protects nothing, so
+    /// `pz validate` warns (PZ0403) but still passes. Reuses the dry-compilable probe shape from
+    /// <see cref="Validate_catches_sql_typo_before_any_run"/>.</summary>
+    [Fact]
+    public void Validate_warns_on_a_redact_mark_missing_from_the_output()
+    {
+        File.AppendAllText(Path.Combine(_work, "connections.yml"), """
+
+            crm_probe:
+              connector: localfiles
+              entities:
+                customers_probe:
+                  read:
+                    path: data/customers.csv
+                    format: csv
+                    columns:
+                      id: bigint
+                      email: varchar
+            """);
+        File.WriteAllText(Path.Combine(_work, "pipelines", "mark_check.sql"),
+            "select id, email from {{ source('crm_probe', 'customers_probe') }}\n");
+        Directory.CreateDirectory(Path.Combine(_work, "pipelines", "configs"));
+        File.WriteAllText(Path.Combine(_work, "pipelines", "configs", "mark_check.yml"),
+            "pipeline: mark_check\ncolumns:\n  - name: emial\n    redact: true\n");
+
+        var stderr = new StringWriter();
+        var originalErr = Console.Error;
+        Console.SetError(stderr);
+        int exit;
+        try
+        {
+            exit = CliApp.Build().Parse(["validate", "--project", _work]).Invoke();
+        }
+        finally
+        {
+            Console.SetError(originalErr);
+        }
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.Contains("warning: PZ0403", stderr.ToString(), StringComparison.Ordinal);
+    }
+
     /// <summary>Tier 5 (`--connect`) against a mutated COPY of the shipped `templates/sample` tree
     /// (content-linked into this test project as "TemplatesSample" -- see the .csproj). Every dataset
     /// the sample ships declares a `columns:` contract, so this test strips the one it declares for

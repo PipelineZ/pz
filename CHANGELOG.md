@@ -7,6 +7,26 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **Mark sensitive columns with `redact: true`.** On a source `columns:` entry, with the long form
+  `email: { type: varchar, redact: true }` (in `connections.yml` or at the `source()` call site), and in a pipeline
+  sidecar's new `columns:` list (`- name: contact` / `redact: true`), which only marks and enforces nothing. Marks do
+  not follow a column through a pipeline; mark it again on the step. `pz preview` shows a marked column's values as
+  `•••`. Adding or removing a mark changes no node id. `pz validate` warns (PZ0403) when a sidecar marks a column
+  the pipeline does not output.
+- **`pz preview <node>` shows a sample of a source or pipeline.** `--run <id>` / `--run-dir <path>` read a finished
+  run's `staging.duckdb` read-only; the run directory alone suffices, because `pz run`/`pz retry` now record each
+  node's relation and redaction marks in it (runs from an older pz report PZ0537). `--limit` 1-500 (default 50);
+  `--json` prints one JSON object. Columns marked `redact: true` show `•••`; long values are cut at 200 characters.
+  A view is previewable from a run; a sink, a check or an ephemeral pipeline is not (PZ0538). New codes: PZ0537
+  (nothing to preview from this run), PZ0538 (not previewable), PZ0539 (invalid options). `--fresh` compiles the
+  current project and runs the node and its ancestors in a throwaway in-memory DuckDB, reading at most `--slice` rows
+  per source (default 1000, 1-100000), so joins and totals may look thin; it never runs a sink or a check and never
+  reads or writes state (`--state-url`/`PZ_STATE_URL` are ignored), and a cdc dataset is read as a snapshot. An
+  ephemeral pipeline can be previewed fresh. Connectors now receive the slice as `ReadHints.Limit`; pz stops reading
+  after it either way.
+
 ## [0.16.2] - 2026-10-30
 
 ### Fixed

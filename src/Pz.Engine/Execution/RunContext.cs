@@ -143,6 +143,11 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// <see cref="KindDispatchingExecutor"/> cancels it. Null is unbounded.</summary>
     public TimeSpan? NodeTimeout { get; init; }
 
+    /// <summary>Set only by <c>pz preview --fresh</c>: the most rows any source read may land. Connectors get it
+    /// as <see cref="ReadHints.Limit"/> and the engine stops reading at it either way. Null is uncapped. A
+    /// runtime setting: never part of a NodeId or the SourceLoad hash.</summary>
+    public long? SourceSliceRows { get; init; }
+
     /// <summary>Set by <c>--log-sql</c>: Pipeline nodes and <c>custom_sql</c> checks publish the statement they
     /// hand DuckDB (<see cref="IRunEvents.NodeSql"/>). Off by default, because <c>env()</c> can inline a secret
     /// into SQL and pz has no masker.</summary>
