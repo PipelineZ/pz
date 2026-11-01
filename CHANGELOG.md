@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-01
+
 ### Added
 
 - **Mark sensitive columns with `redact: true`.** On a source `columns:` entry, with the long form
