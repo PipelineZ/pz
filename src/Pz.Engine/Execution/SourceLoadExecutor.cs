@@ -261,7 +261,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 try
                 {
                     await ctx.Duck.ExecuteAsync(
-                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(scan.SqlFragment, nativeHints)}", ct)
+                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(scan.SqlFragment, nativeHints, ctx.SourceSliceRows)}", ct)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex) when (hinted && ex is not OperationCanceledException &&
@@ -282,7 +282,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     }
 
                     await ctx.Duck.ExecuteAsync(
-                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(plain.SqlFragment, null)}", ct)
+                        $"create or replace table {nativeTable} as {NativeScanSql.Staging(plain.SqlFragment, null, ctx.SourceSliceRows)}", ct)
                         .ConfigureAwait(false);
                     stagedUnhinted = true;
                     // Never the engine message or the statement: either can carry the scan fragment.
@@ -361,7 +361,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // the full column list and each pruned batch lands one column to the left of where it belongs:
         // an int64 id silently reading a float64 amount's bytes. Projecting here keeps the two in step.
         ReadHints hints;
-        (hints, schema) = ProjectToHints(HintsFor(def, connector.Capabilities), schema);
+        (hints, schema) = ProjectToHints(HintsFor(def, connector.Capabilities, ctx.SourceSliceRows), schema);
 
         // A source that BOTH implements IStreamingSource AND advertises
         // ConnectorCapabilities.StreamingPartitions is drained lazily below (PumpStreamingPartitionsAsync)
@@ -398,7 +398,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // one partition (guarded above), and the collapse below runs only on the plain channel path. A
         // connector that declared BOTH ChangeCapture and StablePartitionIds must NOT route a cdc read
         // into partition mode (which knows nothing about __changes/collapse) -- keep it on the channel path.
-        if (connector.Capabilities.HasFlag(ConnectorCapabilities.StablePartitionIds) && shape != ResolvedReadShape.Cdc)
+        // A fresh preview's slice reads one capped stream; partition mode's ledger and per-partition staging
+        // would only record a partial read as if it were whole.
+        if (connector.Capabilities.HasFlag(ConnectorCapabilities.StablePartitionIds) && shape != ResolvedReadShape.Cdc
+            && ctx.SourceSliceRows is null)
         {
             return Stamp(await ExecutePartitionModeAsync(node, def, ctx, source, partitions, streamingSource,
                 spec, hints, schema, gate, windowLower, windowUpper, upperInclusive, declaredType, caughtUp, shape,
@@ -453,13 +456,24 @@ public sealed class SourceLoadExecutor : INodeExecutor
             long rows;
             using (var ingestStage = facts.Stage("ingest"))
             {
-                rows = await ctx.Duck.IngestArrowAsync(
-                    landingTable, schema, ReportProgress(channel.Reader, node, ctx, stall, ct), ct).ConfigureAwait(false);
+                var batches = ReportProgress(channel.Reader, node, ctx, stall, ct);
+                if (ctx.SourceSliceRows is { } slice)
+                {
+                    batches = CapRows(batches, slice, pumpCts.Cancel, ct);
+                }
+
+                rows = await ctx.Duck.IngestArrowAsync(landingTable, schema, batches, ct).ConfigureAwait(false);
                 ingestStage.SetRows(rows);
             }
 
-            // Success: no teardown needed, just join the producer.
+            // Success: no teardown needed, just join the producer. Under a slice the producer may have been
+            // cancelled by CapRows; it then completes the channel itself and does not throw. Any batches it
+            // had already queued are released here.
             await pump.ConfigureAwait(false);
+            while (channel.Reader.TryRead(out var leftover))
+            {
+                leftover.Dispose();
+            }
             // Extract ends with the pump; the collapse, trim, watermark and drift gate below are not extraction.
             extractStage.Dispose();
 
@@ -592,16 +606,64 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// push nothing for that half, silently — this is an optimisation, and the pipeline's own SQL still
     /// runs in DuckDB over whatever landed, so a connector that receives nothing produces exactly the
     /// same rows, just after moving more of them.</summary>
-    internal static ReadHints HintsFor(SourceDatasetDef def, ConnectorCapabilities caps)
+    /// <paramref name="limit"/> (a fresh preview's slice) reaches every connector whatever it advertises: the
+    /// engine re-applies it, so honouring it is only an optimisation.
+    internal static ReadHints HintsFor(SourceDatasetDef def, ConnectorCapabilities caps, long? limit = null)
     {
         if (def.Hints is not { } plan)
         {
-            return ReadHints.None;
+            return limit is null ? ReadHints.None : new ReadHints(Limit: limit);
         }
 
         return new ReadHints(
             caps.HasFlag(ConnectorCapabilities.ColumnPruning) ? plan.Columns : null,
-            caps.HasFlag(ConnectorCapabilities.PredicatePushdown) ? plan.PredicateSql : null);
+            caps.HasFlag(ConnectorCapabilities.PredicatePushdown) ? plan.PredicateSql : null,
+            limit);
+    }
+
+    /// <summary>Passes whole batches through until <paramref name="limit"/> rows have gone by, slices the batch
+    /// that crosses it, then calls <paramref name="onReached"/> (cancelling the producers) and ends -- so a source
+    /// that ignores <see cref="ReadHints.Limit"/>, or never ends, still lands exactly the slice.</summary>
+    internal static async IAsyncEnumerable<RecordBatch> CapRows(IAsyncEnumerable<RecordBatch> batches, long limit,
+        Action onReached, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var remaining = limit;
+        await foreach (var batch in batches.WithCancellation(ct).ConfigureAwait(false))
+        {
+            if (remaining <= 0)
+            {
+                batch.Dispose();
+                break;
+            }
+
+            if (batch.Length <= remaining)
+            {
+                remaining -= batch.Length;
+                yield return batch;
+            }
+            else
+            {
+                // The slice shares the original's buffers: it is yielded (and so consumed) before the
+                // original is released.
+                var cut = batch.Slice(0, (int)remaining);
+                remaining = 0;
+                try
+                {
+                    yield return cut;
+                }
+                finally
+                {
+                    batch.Dispose();
+                }
+            }
+
+            if (remaining <= 0)
+            {
+                break;
+            }
+        }
+
+        onReached();
     }
 
     /// <summary>Reconciles a column-pruning hint with the schema the connector reported, narrowing

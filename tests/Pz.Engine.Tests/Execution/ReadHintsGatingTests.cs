@@ -109,4 +109,19 @@ public class ReadHintsGatingTests
         Assert.Null(hints.Columns);
         Assert.Equal(3, schema.FieldsList.Count);
     }
+
+    [Fact]
+    public void A_limit_reaches_any_connector() =>
+        Assert.Equal(1000, SourceLoadExecutor.HintsFor(DefWith(null), ConnectorCapabilities.None, 1000).Limit);
+
+    [Fact]
+    public void A_limit_rides_along_with_gated_hints()
+    {
+        var hints = SourceLoadExecutor.HintsFor(
+            DefWith(new ReadHintPlan(["id"], "status = 'open'")), ConnectorCapabilities.ColumnPruning, 1000);
+
+        Assert.Equal(new[] { "id" }, hints.Columns!);
+        Assert.Null(hints.PredicateSql);
+        Assert.Equal(1000, hints.Limit);
+    }
 }
