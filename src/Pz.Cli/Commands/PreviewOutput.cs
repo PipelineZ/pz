@@ -94,8 +94,9 @@ internal static class PreviewOutput
 
     internal static string ToTable(PreviewResult result)
     {
-        var header = result.Columns.Select(c => c.Redacted ? $"{c.Name} (redacted)" : c.Name).ToList();
-        var cells = result.Rows.Select(r => r.Select(c => c.Kind == PreviewCellKind.Null ? "NULL" : c.Text!).ToList())
+        var header = result.Columns.Select(c => Printable(c.Redacted ? $"{c.Name} (redacted)" : c.Name)).ToList();
+        var cells = result.Rows
+            .Select(r => r.Select(c => c.Kind == PreviewCellKind.Null ? "NULL" : Printable(c.Text!)).ToList())
             .ToList();
         var widths = header.Select((h, i) => cells.Select(r => r[i].Length).Prepend(h.Length).Max()).ToList();
 
@@ -112,6 +113,41 @@ internal static class PreviewOutput
             : $"{result.Rows.Count} rows, fresh: computed from a slice of each source\n");
         return table.ToString();
     }
+
+    /// <summary>Values are source data on their way to a terminal: control characters (C0, DEL, C1) are shown
+    /// as <c>\xNN</c> and bidi controls as <c>\uNNNN</c>, so a cell cannot move the cursor, retitle the
+    /// window or reorder what is displayed.</summary>
+    internal static string Printable(string value)
+    {
+        if (!value.Any(NeedsEscape))
+        {
+            return value;
+        }
+
+        var sb = new StringBuilder(value.Length + 8);
+        foreach (var ch in value)
+        {
+            if (!NeedsEscape(ch))
+            {
+                sb.Append(ch);
+            }
+            else if (ch <= '\u00ff')
+            {
+                sb.Append("\\x").Append(((int)ch).ToString("x2", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            else
+            {
+                sb.Append("\\u").Append(((int)ch).ToString("x4", System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static bool NeedsEscape(char ch) =>
+        ch < ' ' || ch is >= '\u007f' and <= '\u009f'
+        || ch is '\u061c' or '\u200e' or '\u200f' || ch is >= '\u202a' and <= '\u202e'
+        || ch is >= '\u2066' and <= '\u2069';
 
     private static void AppendRow(StringBuilder table, IReadOnlyList<string> values, IReadOnlyList<int> widths) =>
         table.AppendJoin("  ", values.Select((v, i) => v.PadRight(widths[i]))).Append('\n');
