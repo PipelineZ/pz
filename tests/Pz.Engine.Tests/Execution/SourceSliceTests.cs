@@ -100,6 +100,21 @@ public sealed class SourceSliceTests : IAsyncLifetime
             "select count(*) from duckdb_tables() where schema_name = 'pz_meta' and table_name = 'partitions_done'"));
     }
 
+    // Review of batch 2: a sliced read cancelled the partition, and nothing keeps a sync token in a fresh
+    // preview, so the post-read poll (an RPC for a process connector) is not made -- it could only fail.
+    [Fact]
+    public async Task A_sliced_feed_read_does_not_poll_the_sync_state()
+    {
+        var partition = new ThrowingSyncPartition();
+        var source = new FeedSliceStubSource([partition]);
+
+        var result = await Run(source, ConnectorCapabilities.None, 1000);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1000, await Staged());
+        Assert.False(partition.Polled);
+    }
+
     [Fact]
     public async Task No_slice_reads_everything()
     {
@@ -178,6 +193,42 @@ internal sealed class SliceStubSource(IReadOnlyList<IDatasetPartition> partition
             yield return partition;
         }
     }
+
+    public ValueTask DisposeAsync() => default;
+}
+
+/// <summary>A feed partition whose sync-state poll fails, as a process connector's RPC can after a cancel.</summary>
+internal sealed class ThrowingSyncPartition() : IDatasetPartition, ISyncStatePartition
+{
+    private readonly CountingPartition _rows = new(400, batches: null);
+
+    public bool Polled { get; private set; }
+
+    public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) => _rows.ReadAsync(options, ct);
+
+    public bool TryGetSyncStateCandidate(out string? candidate)
+    {
+        Polled = true;
+        throw new PzConnectorException("read state unavailable after cancel", isTransient: false);
+    }
+}
+
+/// <summary>A source whose natural read shape is a feed.</summary>
+internal sealed class FeedSliceStubSource(IReadOnlyList<IDatasetPartition> partitions) : ISource, INaturalReadShapeSource
+{
+    public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) => NaturalReadShape.Feed;
+
+    public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+        new(new DatasetSchema(StubSchema.IdSchema));
+
+    public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = null;
+        return false;
+    }
+
+    public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+        new(partitions);
 
     public ValueTask DisposeAsync() => default;
 }

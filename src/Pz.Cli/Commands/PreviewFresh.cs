@@ -80,8 +80,10 @@ internal static class PreviewFresh
             await duck.ExecuteAsync("create schema if not exists staging", ct);
 
             var runId = $"preview-{Guid.NewGuid():N}";
+            // No run id: a process connector's socket root then goes under the temp directory, owned and
+            // deleted, rather than under <project>/.pz/runs/<id>, which would leave a trace.
             var (registry, host) = await ConnectorRegistryFactory.CreateAsync(
-                project, projectDir, noLockCheck: false, ct, runId, connectorLog: (_, _, message) => notice(message));
+                project, projectDir, noLockCheck: false, ct, runId: null, connectorLog: (_, _, message) => notice(message));
             await using var connectorHost = host;
 
             var selection = new HashSet<NodeId> { target.Id };

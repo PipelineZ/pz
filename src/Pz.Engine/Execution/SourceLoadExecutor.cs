@@ -480,8 +480,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // After a clean read, collect the connector's opaque sync-state candidate (if the
             // partition emits one). Feed-shaped datasets are single-partition (guarded above), so there is
             // exactly one partition to poll.
+            // Not under a slice: the read was cut off on purpose, and a fresh preview keeps no token.
             SyncState? syncCandidate = null;
-            if (shape is ResolvedReadShape.Feed or ResolvedReadShape.Cdc && partitions is { Count: 1 } &&
+            if (ctx.SourceSliceRows is null &&
+                shape is ResolvedReadShape.Feed or ResolvedReadShape.Cdc && partitions is { Count: 1 } &&
                 partitions[0] is ISyncStatePartition syncPartition &&
                 syncPartition.TryGetSyncStateCandidate(out var syncToken) && syncToken is not null)
             {
