@@ -98,7 +98,13 @@ public sealed class DuckSession : IDuckSession
             connection.Open();
 
             var session = new DuckSession(connection);
+            // The file may come from elsewhere: nothing in it (a view over read_csv, a remote URL, an
+            // extension) may reach the filesystem or network, and no query can undo that.
+            session.ExecuteSync("SET autoinstall_known_extensions = false");
+            session.ExecuteSync("SET autoload_known_extensions = false");
             session.AttachDatabase(databasePath, readOnly: true);
+            session.ExecuteSync("SET enable_external_access = false");
+            session.ExecuteSync("SET lock_configuration = true");
             return session;
         }
         catch

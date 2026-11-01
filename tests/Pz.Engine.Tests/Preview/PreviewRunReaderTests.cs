@@ -130,4 +130,23 @@ public sealed class PreviewRunReaderTests : IDisposable
     [Fact]
     public async Task A_view_that_fails_to_evaluate_is_PZ0537() =>
         Assert.Equal(PzErrorCode.PreviewUnavailable, (await Refused(await RunDir(dropUnderView: true), "v")).Code);
+
+    // The index is data from the run file: a relation that is not a plain staging identifier is refused,
+    // never spliced into SQL.
+    [Fact]
+    public async Task A_tampered_relation_in_the_index_is_PZ0537()
+    {
+        var dir = await RunDir();
+        await using (var duck = DuckSession.Open(Path.Combine(dir, "staging.duckdb")))
+        {
+            // The odd name exists, so only a shape check -- not the existence check -- can refuse it.
+            await duck.ExecuteAsync("create table staging.\"stg limit 0; select 1\" as select 1 as id");
+            await duck.ExecuteAsync(
+                "update pz_meta.preview_nodes set relation = 'staging.stg limit 0; select 1' where node = 'stg'");
+        }
+
+        var error = await Refused(dir, "stg");
+        Assert.Equal(PzErrorCode.PreviewUnavailable, error.Code);
+        Assert.Contains("not a staging relation", error.Message, StringComparison.Ordinal);
+    }
 }

@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Pz.Core.Validation;
 using Pz.DuckDb;
 using Pz.Engine.Execution;
@@ -7,8 +8,11 @@ namespace Pz.Engine.Preview;
 /// <summary><c>pz preview --run</c>/<c>--run-dir</c>: a sample of one node as a finished run left it, read
 /// from the run directory alone (its <c>staging.duckdb</c> and the preview index inside it). Every way the
 /// data can be missing is one PZ0537 that points at <c>--fresh</c>.</summary>
-public static class PreviewRunReader
+public static partial class PreviewRunReader
 {
+    [GeneratedRegex("^staging\\.[A-Za-z0-9_]+$")]
+    private static partial Regex PlainRelation();
+
     private const string FreshHint = "preview it fresh with `pz preview <node> --fresh`";
 
     public static async Task<PreviewResult> ReadAsync(string runDir, string? runId, string node, int limit,
@@ -64,6 +68,14 @@ public static class PreviewRunReader
                     "pick a node name from `pz ls`")]);
             }
 
+            // The index is data read from the run file, which may come from elsewhere: only a plain
+            // staging identifier is used, and it is quoted, never spliced in as written.
+            if (!PlainRelation().IsMatch(target.Relation))
+            {
+                throw Unavailable($"the index entry for '{node}' is not a staging relation");
+            }
+
+            var relation = $"staging.\"{target.Relation["staging.".Length..]}\"";
             if (!await RelationExistsAsync(duck, target.Relation, ct).ConfigureAwait(false))
             {
                 throw Unavailable($"'{node}' did not run, or failed, in the run in '{runDir}'");
@@ -72,8 +84,8 @@ public static class PreviewRunReader
             try
             {
                 var (columns, rows) = await PreviewSampler
-                    .SampleAsync(duck, target.Relation, target.RedactedColumns, limit, ct).ConfigureAwait(false);
-                var total = await duck.ScalarAsync<long>($"select count(*) from {target.Relation}", ct)
+                    .SampleAsync(duck, relation, target.RedactedColumns, limit, ct).ConfigureAwait(false);
+                var total = await duck.ScalarAsync<long>($"select count(*) from {relation}", ct)
                     .ConfigureAwait(false);
                 return new PreviewResult(node, "run", runId, columns, rows, total, limit, Sliced: false);
             }
