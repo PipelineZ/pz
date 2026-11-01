@@ -262,7 +262,10 @@ public static class DagCompiler
 
                 var r = dep.Read;
                 synthesized.TryAdd(dep.Dataset,
-                    new DatasetDef(dep.Dataset, r.Options, r.Columns, r.Sync, r.Retry));
+                    new DatasetDef(dep.Dataset, r.Options, r.Columns, r.Sync, r.Retry)
+                    {
+                        RedactedColumns = r.RedactedColumns,
+                    });
             }
         }
 

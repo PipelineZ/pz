@@ -123,7 +123,7 @@ internal sealed class SourceFunction : IScriptCustomFunction
             _errors.Add(error with { Line = line });
         }
 
-        var columns = ParseColumns(kwargs, connection, entity);
+        var columns = ParseColumns(kwargs, connection, entity, line);
 
         var options = kwargs
             .Where(kv => kv.Key is not ("columns" or "sync" or "retry"))
@@ -131,7 +131,7 @@ internal sealed class SourceFunction : IScriptCustomFunction
             .ToDictionary(kv => kv.Key, kv => kv.Value.Value, StringComparer.Ordinal);
 
         return declaredAtCallSite
-            ? new SourceReadOptions(columns, sync, retry, options)
+            ? new SourceReadOptions(columns?.Types, sync, retry, options) { RedactedColumns = columns?.Redacted ?? [] }
             : SourceReadOptions.Default;
     }
 
@@ -162,8 +162,8 @@ internal sealed class SourceFunction : IScriptCustomFunction
         }
     }
 
-    private IReadOnlyDictionary<string, string>? ParseColumns(
-        Dictionary<string, (object? Value, int Line)> kwargs, string connection, string entity)
+    private ColumnContract? ParseColumns(
+        Dictionary<string, (object? Value, int Line)> kwargs, string connection, string entity, int line)
     {
         if (!kwargs.TryGetValue("columns", out var arg))
         {
@@ -172,7 +172,17 @@ internal sealed class SourceFunction : IScriptCustomFunction
 
         if (arg.Value is Dictionary<string, object?> map)
         {
-            return map.ToDictionary(kv => kv.Key, kv => kv.Value?.ToString() ?? string.Empty);
+            // The loader's parser, so both surfaces share the long form and its rules; its errors carry
+            // no line, so they are re-stamped with this call's.
+            var subErrors = new List<PzError>();
+            var contract = ColumnContractParser.Parse(map, $"source('{connection}', '{entity}')",
+                _pipeline.FilePath, subErrors);
+            foreach (var error in subErrors)
+            {
+                _errors.Add(error with { Line = line });
+            }
+
+            return contract;
         }
 
         Error(PzErrorCode.YamlShape, arg.Line,

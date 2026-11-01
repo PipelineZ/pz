@@ -136,4 +136,22 @@ public class ReadSurfaceTests
             Assert.Single(DagCompiler.Compile(inYaml, Ctx(inYaml)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id,
             Assert.Single(DagCompiler.Compile(atCallSite, Ctx(atCallSite)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
     }
+
+    // A redaction mark changes what a preview may show, never what is read: adding one must not force a
+    // re-extraction.
+    [Fact]
+    public void Redact_marks_do_not_change_the_source_node_id()
+    {
+        PzProject With(string email) => Project(
+            [Pipe("a", Into("out", strategy: "replace") +
+                       $"select id from {{{{ source('crm', 'orders', columns: {{ id: 'bigint', email: {email} }}) }}}}")],
+            sources: [Crm()], sinks: [Sink()]);
+        var plain = With("'varchar'");
+        var marked = With("{ type: 'varchar', redact: true }");
+
+        Assert.Equal(["email"], CompileRead(marked).Dataset.RedactedColumns);
+        Assert.Equal(
+            Assert.Single(DagCompiler.Compile(plain, Ctx(plain)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id,
+            Assert.Single(DagCompiler.Compile(marked, Ctx(marked)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
+    }
 }

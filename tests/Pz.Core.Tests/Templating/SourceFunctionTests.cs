@@ -98,6 +98,26 @@ public class SourceFunctionTests
         Assert.Equal(PzErrorCode.YamlShape, error.Code);
     }
 
+    [Fact]
+    public void Columns_kwarg_long_form_carries_redact()
+    {
+        var dep = Source("select 1 from {{ source('files', 'customers', " +
+                         "columns: { id: 'bigint', email: { type: 'varchar', redact: true } }) }}");
+
+        Assert.Equal("varchar", dep.Read.Columns!["email"]);
+        Assert.Equal(["email"], dep.Read.RedactedColumns);
+    }
+
+    [Fact]
+    public void Columns_kwarg_long_form_error_carries_the_call_line()
+    {
+        var error = Assert.Single(Errors(
+            "-- lead\nselect 1 from {{ source('files', 'customers', columns: { email: { redact: true } }) }}"));
+
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Equal(2, error.Line);
+    }
+
     // The sub-blocks reuse the loader's own parsers, so their rules and codes are identical across the
     // two surfaces -- only the reported location differs, and it must be the call's line.
     [Fact]

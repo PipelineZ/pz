@@ -482,6 +482,70 @@ public class ConnectionsLoaderTests
         Assert.Contains("id", error.Message, StringComparison.Ordinal);
     }
 
+    private const string RedactYaml = """
+        warehouse:
+          connector: postgres
+          host: h
+          entities:
+            orders:
+              read:
+                columns:
+                  id: bigint
+        """;
+
+    private static string WithEmail(string email) => RedactYaml + "\n          email: " + email;
+
+    [Fact]
+    public void Columns_long_form_carries_type_and_redact()
+    {
+        var dataset = Assert.Single(Assert.Single(Load(WithEmail("{ type: varchar, redact: true }")).Connections).Datasets);
+
+        Assert.Equal(new Dictionary<string, string> { ["id"] = "bigint", ["email"] = "varchar" }, dataset.Columns);
+        Assert.Equal(["email"], dataset.RedactedColumns);
+    }
+
+    [Fact]
+    public void Columns_short_form_has_no_redactions() =>
+        Assert.Empty(Assert.Single(Assert.Single(Load(WithEmail("varchar")).Connections).Datasets).RedactedColumns);
+
+    [Fact]
+    public void Columns_redact_false_is_not_a_mark()
+    {
+        var dataset = Assert.Single(Assert.Single(Load(WithEmail("{ type: varchar, redact: false }")).Connections).Datasets);
+
+        Assert.Empty(dataset.RedactedColumns);
+        Assert.Equal("varchar", dataset.Columns!["email"]);
+    }
+
+    [Fact]
+    public void Columns_long_form_without_type_is_refused()
+    {
+        var error = Assert.Single(Errors(WithEmail("{ redact: true }")), e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("column 'email'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'type'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Columns_redact_must_be_a_boolean()
+    {
+        var error = Assert.Single(Errors(WithEmail("{ type: varchar, redact: 'yes' }")), e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("'redact' must be true or false", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Columns_long_form_unknown_key_is_refused()
+    {
+        var error = Assert.Single(Errors(WithEmail("{ type: varchar, mask: true }")), e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("'mask'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Columns_list_value_is_still_refused() =>
+        Assert.Single(Errors(WithEmail("[varchar]")), e => e.Code == PzErrorCode.YamlShape);
+
     [Fact]
     public void A_bodyless_columns_key_still_means_no_contract()
     {
