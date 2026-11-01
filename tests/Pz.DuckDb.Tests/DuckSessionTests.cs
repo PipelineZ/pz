@@ -57,4 +57,19 @@ public sealed class DuckSessionTests : IDisposable
             result.Contains("1.0 GiB", StringComparison.Ordinal) || result.Contains("1GB", StringComparison.Ordinal),
             $"Expected memory_limit to normalize to '1.0 GiB' or '1GB', got '{result}'.");
     }
+
+    [Fact]
+    public async Task OpenReadOnly_reads_but_refuses_writes()
+    {
+        var path = Path.Combine(_tempDir, "ro.duckdb");
+        await using (var writer = DuckSession.Open(path))
+        {
+            await writer.ExecuteAsync("create table t as select 42 as x");
+        }
+
+        await using var reader = DuckSession.OpenReadOnly(path);
+
+        Assert.Equal(42, await reader.ScalarAsync<int>("select x from t"));
+        await Assert.ThrowsAnyAsync<Exception>(() => reader.ExecuteAsync("create table u (y int)"));
+    }
 }

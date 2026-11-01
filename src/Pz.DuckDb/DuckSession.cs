@@ -87,9 +87,30 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
-    private void AttachDatabase(string databasePath)
+    /// <summary>Opens <paramref name="databasePath"/> like <see cref="Open"/>, attached <c>READ_ONLY</c>: every
+    /// write fails, and the file is not locked against another reader. For reading a finished run's staging
+    /// (<c>pz preview --run-dir</c>).</summary>
+    public static DuckSession OpenReadOnly(string databasePath)
     {
-        ExecuteSync($"ATTACH {QuoteLiteral(databasePath)} AS {CatalogAlias}");
+        var connection = new DuckDBConnection("Data Source=:memory:");
+        try
+        {
+            connection.Open();
+
+            var session = new DuckSession(connection);
+            session.AttachDatabase(databasePath, readOnly: true);
+            return session;
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    private void AttachDatabase(string databasePath, bool readOnly = false)
+    {
+        ExecuteSync($"ATTACH {QuoteLiteral(databasePath)} AS {CatalogAlias}{(readOnly ? " (READ_ONLY)" : "")}");
         ExecuteSync($"USE {CatalogAlias}");
     }
 
