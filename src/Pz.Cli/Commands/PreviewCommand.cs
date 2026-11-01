@@ -84,7 +84,8 @@ internal static partial class PreviewCommand
         try
         {
             var result = args.Fresh
-                ? throw new PzValidationException([Options("--fresh is not supported yet")])
+                ? await PreviewFresh.RunAsync(args.ProjectDir, args.VarsJson, args.Node, args.Limit,
+                    args.Slice ?? DefaultSlice, message => Console.Error.WriteLine($"note: {message}"), ct)
                 : await PreviewRunReader.ReadAsync(
                     args.RunDir ?? Path.Combine(args.ProjectDir, ".pz", "runs", args.RunId!),
                     args.RunId, args.Node, args.Limit, ct);
@@ -94,6 +95,10 @@ internal static partial class PreviewCommand
         catch (PzValidationException ex)
         {
             return Fail(args, ex.Errors[0], ExitCodes.ConfigError);
+        }
+        catch (PreviewNodeFailedException ex)
+        {
+            return Fail(args, ex.Error, ExitCodes.NodeFailures);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {

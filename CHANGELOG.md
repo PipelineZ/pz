@@ -20,7 +20,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   node's relation and redaction marks in it (runs from an older pz report PZ0537). `--limit` 1-500 (default 50);
   `--json` prints one JSON object. Columns marked `redact: true` show `•••`; long values are cut at 200 characters.
   A view is previewable from a run; a sink, a check or an ephemeral pipeline is not (PZ0538). New codes: PZ0537
-  (nothing to preview from this run), PZ0538 (not previewable), PZ0539 (invalid options).
+  (nothing to preview from this run), PZ0538 (not previewable), PZ0539 (invalid options). `--fresh` compiles the
+  current project and runs the node and its ancestors in a throwaway in-memory DuckDB, reading at most `--slice` rows
+  per source (default 1000, 1-100000), so joins and totals may look thin; it never runs a sink or a check and never
+  reads or writes state (`--state-url`/`PZ_STATE_URL` are ignored), and a cdc dataset is read as a snapshot. An
+  ephemeral pipeline can be previewed fresh. Connectors now receive the slice as `ReadHints.Limit`; pz stops reading
+  after it either way.
 
 ## [0.16.2] - 2026-10-30
 

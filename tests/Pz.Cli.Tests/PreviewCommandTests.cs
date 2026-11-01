@@ -201,4 +201,115 @@ public sealed class PreviewCommandTests : IDisposable
         Assert.Contains("\"•••\"", stdout, StringComparison.Ordinal);
         Assert.DoesNotContain("\\u2022", stdout, StringComparison.OrdinalIgnoreCase);
     }
+
+    // -- --fresh (no prior pz run in these tests) ------------------------------------------------------
+
+    private static string ErrorCode(string stdout) =>
+        JsonDocument.Parse(stdout).RootElement.GetProperty("error").GetProperty("code").GetString()!;
+
+    [Fact]
+    public void Fresh_json_matches_the_contract()
+    {
+        var (exit, stdout, stderr) = Preview("stg_customers", "--fresh", "--json");
+
+        Assert.True(exit == ExitCodes.Ok, stderr + stdout);
+        var root = JsonDocument.Parse(stdout).RootElement;
+        Assert.Equal("fresh", root.GetProperty("mode").GetString());
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("runId").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("totalRows").ValueKind);
+        Assert.True(root.GetProperty("sliced").GetBoolean());
+        Assert.Equal(50, root.GetProperty("limit").GetInt32());
+        var rows = root.GetProperty("rows").EnumerateArray().ToList();
+        Assert.Equal(50, rows.Count);
+        Assert.All(rows, r => Assert.Equal("•••", r[2].GetString()));
+    }
+
+    [Fact]
+    public void Fresh_slice_caps_every_source_read()
+    {
+        var (exit, stdout, _) = Preview("stg_customers", "--fresh", "--slice", "100", "--limit", "500", "--json");
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.Equal(100, JsonDocument.Parse(stdout).RootElement.GetProperty("rows").GetArrayLength());
+    }
+
+    [Fact]
+    public void Fresh_previews_an_ephemeral_pipeline()
+    {
+        var (exit, stdout, stderr) = Preview("eph_customers", "--fresh", "--json");
+
+        Assert.True(exit == ExitCodes.Ok, stderr + stdout);
+        var rows = JsonDocument.Parse(stdout).RootElement.GetProperty("rows").EnumerateArray().ToList();
+        Assert.NotEmpty(rows);
+        Assert.All(rows, r => Assert.Equal(0, r[0].GetInt64() % 2));
+    }
+
+    [Theory]
+    [InlineData(Check)]
+    [InlineData(Sink)]
+    public void Fresh_sink_or_check_is_PZ0538(string node)
+    {
+        var (exit, stdout, _) = Preview(node, "--fresh", "--json");
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Equal("PZ0538", ErrorCode(stdout));
+    }
+
+    [Fact]
+    public void Fresh_unknown_node_is_SelectorNoMatch_exit_2()
+    {
+        var (exit, stdout, _) = Preview("nope", "--fresh", "--json");
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.Equal("PZ0210", ErrorCode(stdout));
+    }
+
+    [Fact]
+    public void Fresh_leaves_no_trace_in_the_project()
+    {
+        Assert.Equal(ExitCodes.Ok, Preview("stg_customers", "--fresh", "--json").Exit);
+
+        Assert.False(Directory.Exists(Path.Combine(_work, ".pz", "runs")));
+        Assert.False(Directory.Exists(Path.Combine(_work, ".pz", "state")));
+        Assert.False(Directory.Exists(Path.Combine(_work, "out")));
+    }
+
+    [Fact]
+    public void Fresh_ignores_the_state_url()
+    {
+        var before = Environment.GetEnvironmentVariable("PZ_STATE_URL");
+        Environment.SetEnvironmentVariable("PZ_STATE_URL", "http://127.0.0.1:1/");
+        try
+        {
+            Assert.Equal(ExitCodes.Ok, Preview("stg_customers", "--fresh", "--json").Exit);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PZ_STATE_URL", before);
+        }
+    }
+
+    [Fact]
+    public void Fresh_node_failure_is_exit_1_with_the_nodes_code()
+    {
+        File.Delete(Path.Combine(_work, "data", "customers.csv"));
+
+        var (exit, stdout, _) = Preview("stg_customers", "--fresh", "--json");
+
+        Assert.Equal(ExitCodes.NodeFailures, exit);
+        var code = ErrorCode(stdout);
+        Assert.StartsWith("PZ", code, StringComparison.Ordinal);
+        Assert.DoesNotContain(code, new[] { "PZ0537", "PZ0538", "PZ0539" });
+    }
+
+    [Fact]
+    public void Fresh_json_stdout_is_one_object_even_with_notes()
+    {
+        var (exit, stdout, _) = Preview("stg_customers", "--fresh", "--json");
+
+        Assert.Equal(ExitCodes.Ok, exit);
+        Assert.DoesNotContain('\n', stdout.Trim());
+        using var doc = JsonDocument.Parse(stdout);
+        Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+    }
 }
