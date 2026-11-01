@@ -154,4 +154,23 @@ public class ReadSurfaceTests
             Assert.Single(DagCompiler.Compile(plain, Ctx(plain)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id,
             Assert.Single(DagCompiler.Compile(marked, Ctx(marked)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
     }
+
+    // Review of batch 1: a call site's redact mark must not be silently lost to another pipeline's bare
+    // call for the same dataset (which would preview the column in clear). PZ0349 refuses the second
+    // reader outright, so the marks can never be dropped this way.
+    [Fact]
+    public void A_second_reader_cannot_drop_a_call_site_redact_mark()
+    {
+        var p = Project(
+            [
+                Pipe("a_counts", Into("out_a", strategy: "replace") +
+                                 "select count(*) as n from {{ source('crm', 'orders') }}"),
+                Pipe("stg", Into("out_b", strategy: "replace") +
+                            "select id from {{ source('crm', 'orders', columns: { id: 'bigint', email: { type: 'varchar', redact: true } }) }}"),
+            ],
+            sources: [Crm()], sinks: [Sink()]);
+
+        var ex = Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p)));
+        Assert.Contains(ex.Errors, e => e.Code == PzErrorCode.SourceReadByMultiplePipelines);
+    }
 }
