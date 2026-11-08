@@ -68,7 +68,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     private long _rowsYielded;
     private string? _checkpointCandidate;
     private string? _lastReturnedCheckpoint;
-    private string? _resumeLink;
+    private HttpPageRequest? _resume;
 
     // Every request (HttpPageRequest.Key: method, URL and body) already sent during THIS attempt. The
     // "next == current" check only sees a page that points straight back at itself; a feed that alternates A -> B -> A -> B (or
@@ -154,24 +154,16 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
 
     public bool TryResumeFrom(string checkpoint)
     {
-        // A POST read's checkpoint must carry the body as well as the URL; until that token format
-        // exists, refusing makes the engine restart the partition from the first page, which is
-        // always correct.
-        if (config.IsPost)
+        // A checkpoint is a continuation the ENDPOINT produced on an earlier attempt and pz merely
+        // stored, so it is no more trustworthy on the way back in than it was on the way out: it must
+        // still name a host this connection is allowed to talk to, and have this dataset's shape.
+        if (!HttpCheckpointToken.TryDecode(checkpoint, config.IsPost, config.Method ?? HttpMethod.Get, out var resume)
+            || !connection.IsAllowedTarget(resume!.Url))
         {
             return false;
         }
 
-        // A checkpoint is a continuation link the ENDPOINT produced on an earlier attempt and pz
-        // merely stored, so it is no more trustworthy on the way back in than it was on the way out:
-        // it must still name a host this connection is allowed to talk to.
-        if (!Uri.TryCreate(checkpoint, UriKind.Absolute, out var target)
-            || !connection.IsAllowedTarget(target))
-        {
-            return false;
-        }
-
-        _resumeLink = checkpoint;
+        _resume = resume;
         return true;
     }
 
@@ -203,9 +195,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         }
     }
 
-    // A GET token is the next page's URL, byte for byte. A POST token is the request key (method, URL
-    // and body); TryResumeFrom refuses it, so it only ever marks progress, never resumes.
-    private string CheckpointToken(HttpPageRequest next) => config.IsPost ? next.Key : next.Url.ToString();
+    private string CheckpointToken(HttpPageRequest next) => HttpCheckpointToken.Encode(next, config.IsPost);
 
     public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options,
         [EnumeratorCancellation] CancellationToken ct)
@@ -218,9 +208,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         // crawl, whereas PriorSyncState (inside BuildFirstRequest) replays a
         // whole-feed delta token from a PRIOR run. _syncCandidate capture from the terminal page
         // is unaffected either way.
-        HttpPageRequest? request = _resumeLink is { } resume
-            ? new HttpPageRequest(HttpMethod.Get, new Uri(resume), null, null)
-            : BuildFirstRequest(strategy);
+        HttpPageRequest? request = _resume ?? BuildFirstRequest(strategy);
         EnsureAllowedTarget(request.Url, "the first request");
         var page = 0;
         // An empty page ends the crawl only for a strategy with no other end (page numbers). For
@@ -354,13 +342,13 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         // and NOT advancing would re-fetch the same head forever: fail loudly instead.
         if (_truncatedWithMore && _cursorOrdinal >= 0)
         {
-            // A resumed attempt (TryResumeFrom set _resumeLink) never saw the prior attempt's
+            // A resumed attempt (TryResumeFrom set _resume) never saw the prior attempt's
             // prefix -- _sawIncrease/_sawDecrease only reflect THIS
             // attempt's own pages, so an ascending-looking tail proves nothing about the full crawl's
             // ordering across attempts. Truncating a resumed attempt is unprovable regardless of what
             // this attempt's own cursor values did; fail the same way natural monotonicity failures
             // do, every time.
-            if (_resumeLink is not null)
+            if (_resume is not null)
             {
                 throw new PzConnectorException(
                     $"{Label}: max_pages truncated a resumed crawl — a resumed attempt cannot prove the " +
