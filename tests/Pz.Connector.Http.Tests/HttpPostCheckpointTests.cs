@@ -11,6 +11,10 @@ namespace Pz.Connector.Http.Tests;
 /// refusals (foreign host, method mismatch, garbled payload).</summary>
 public class HttpPostCheckpointTests
 {
+    private const HttpCheckpointToken.BodyKind Json = HttpCheckpointToken.BodyKind.Json;
+    private const HttpCheckpointToken.BodyKind Text = HttpCheckpointToken.BodyKind.Text;
+    private const HttpCheckpointToken.BodyKind None = HttpCheckpointToken.BodyKind.None;
+
     private static Dictionary<string, object?> Map(params (string Key, object? Value)[] entries)
         => entries.ToDictionary(e => e.Key, e => e.Value);
 
@@ -40,7 +44,7 @@ public class HttpPostCheckpointTests
         var token = HttpCheckpointToken.Encode(request, isPost: false);
 
         Assert.Equal("https://h.example/a?page=2", token);
-        Assert.True(HttpCheckpointToken.TryDecode(token, false, HttpMethod.Get, out var back));
+        Assert.True(HttpCheckpointToken.TryDecode(token, false, HttpMethod.Get, None, out var back));
         Assert.Equal(request.Url, back!.Url);
     }
 
@@ -55,10 +59,10 @@ public class HttpPostCheckpointTests
         var textToken = HttpCheckpointToken.Encode(text, isPost: true);
 
         Assert.StartsWith("v2:", jsonToken);
-        Assert.True(HttpCheckpointToken.TryDecode(jsonToken, true, HttpMethod.Post, out var j));
+        Assert.True(HttpCheckpointToken.TryDecode(jsonToken, true, HttpMethod.Post, Json, out var j));
         Assert.True(j!.SameAs(json));
         Assert.Null(j.TextBody);
-        Assert.True(HttpCheckpointToken.TryDecode(textToken, true, HttpMethod.Post, out var t));
+        Assert.True(HttpCheckpointToken.TryDecode(textToken, true, HttpMethod.Post, Text, out var t));
         Assert.True(t!.SameAs(text));
         Assert.Null(t.JsonBody);
     }
@@ -146,5 +150,67 @@ public class HttpPostCheckpointTests
     [InlineData("v2:eyJ1cmwiOjUsImJvZHkiOm51bGx9")]
     [InlineData("v3:e30")]
     public void Garbled_v2_token_is_refused_not_thrown(string token)
-        => Assert.False(HttpCheckpointToken.TryDecode(token, true, HttpMethod.Post, out _));
+        => Assert.False(HttpCheckpointToken.TryDecode(token, true, HttpMethod.Post, Json, out _));
+
+    [Fact]
+    public async Task A_token_of_another_body_kind_is_refused()
+    {
+        await using var server = new StubHttpServer();
+        var url = new Uri(server.BaseUrl, "/_search");
+        string Token(JsonNode? json, string? text)
+            => HttpCheckpointToken.Encode(new HttpPageRequest(HttpMethod.Post, url, json, text), isPost: true);
+        var jsonToken = Token(JsonNode.Parse("""{"from":2}"""), null);
+        var textToken = Token(null, "{ items { id } }");
+        var emptyToken = Token(null, null);
+
+        var (s1, jsonDataset) = await OpenAsync(server, OffsetPost());
+        await using var _1 = s1;
+        var textOptions = Map(("path", "/_search"), ("method", "post"), ("body", "{ items { id } }"));
+        var (s2, textDataset) = await OpenAsync(server, textOptions);
+        await using var _2 = s2;
+        var formOptions = Map(("path", "/_search"), ("method", "post"), ("body_format", "form"),
+            ("body", Map(("a", "1"))));
+        var (s3, formDataset) = await OpenAsync(server, formOptions);
+        await using var _3 = s3;
+
+        Assert.False(textDataset.TryResumeFrom(jsonToken));
+        Assert.False(formDataset.TryResumeFrom(jsonToken));
+        Assert.False(jsonDataset.TryResumeFrom(textToken));
+        Assert.False(jsonDataset.TryResumeFrom(emptyToken));
+        Assert.False(textDataset.TryResumeFrom(emptyToken));
+        Assert.True(jsonDataset.TryResumeFrom(jsonToken));
+        Assert.True(textDataset.TryResumeFrom(textToken));
+        Assert.True(formDataset.TryResumeFrom(textToken));
+    }
+
+    [Fact]
+    public async Task A_resumed_post_attempt_truncated_by_max_pages_fails()
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/_search", req =>
+            new StubResponse(200, $$"""{"hits":[{"id":{{FromOf(req) + 1}}},{"id":{{FromOf(req) + 2}}}]}"""));
+        var options = OffsetPost();
+        options["max_pages"] = 1L;
+        options["cursor"] = "id";
+        var connection = new Dictionary<string, object?> { ["base_url"] = server.BaseUrl.ToString() };
+        await using var source = await new HttpConnector().OpenAsync(new ConnectorConfig(connection),
+            CancellationToken.None);
+        var partitions = await source.PlanReadAsync(
+            new DatasetSpec("s", "d", options) { WatermarkCursor = "id" }, ReadHints.None, CancellationToken.None);
+        var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(partitions[0]);
+        var token = HttpCheckpointToken.Encode(new HttpPageRequest(HttpMethod.Post, new Uri(server.BaseUrl, "/_search"),
+            JsonNode.Parse("""{"q":"x","from":2,"size":2}"""), null), isPost: true);
+        Assert.True(partition.TryResumeFrom(token));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+        {
+            await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+            {
+                batch.Dispose();
+            }
+        });
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("resumed", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

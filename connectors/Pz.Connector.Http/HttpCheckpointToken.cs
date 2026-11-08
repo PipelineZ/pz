@@ -14,6 +14,13 @@ internal static class HttpCheckpointToken
 {
     private const string PostPrefix = "v2:";
 
+    /// <summary>The body shape a dataset sends: none, a JSON map, or text (a string or a form).</summary>
+    public enum BodyKind { None, Json, Text }
+
+    /// <summary>The kind of body <paramref name="body"/> declares.</summary>
+    public static BodyKind KindOf(HttpBody? body)
+        => body is null ? BodyKind.None : body.IsJson ? BodyKind.Json : BodyKind.Text;
+
     public static string Encode(HttpPageRequest request, bool isPost)
     {
         if (!isPost)
@@ -26,7 +33,8 @@ internal static class HttpCheckpointToken
         return PostPrefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(payload.ToJsonString()));
     }
 
-    public static bool TryDecode(string token, bool isPost, HttpMethod method, out HttpPageRequest? request)
+    public static bool TryDecode(string token, bool isPost, HttpMethod method, BodyKind expected,
+        out HttpPageRequest? request)
     {
         request = null;
         if (!isPost)
@@ -57,15 +65,17 @@ internal static class HttpCheckpointToken
                 return false;
             }
 
+            // The token's body replaces the configured one on resume, so its kind must be the one the
+            // dataset declares; otherwise it would bypass the declared content type.
             switch (obj["body"])
             {
-                case null:
+                case null when expected == BodyKind.None:
                     request = new HttpPageRequest(method, target, null, null);
                     return true;
-                case JsonObject map:
+                case JsonObject map when expected == BodyKind.Json:
                     request = new HttpPageRequest(method, target, map.DeepClone(), null);
                     return true;
-                case JsonValue value when value.TryGetValue<string>(out var text):
+                case JsonValue value when expected == BodyKind.Text && value.TryGetValue<string>(out var text):
                     request = new HttpPageRequest(method, target, null, text);
                     return true;
                 default:

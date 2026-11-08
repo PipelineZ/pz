@@ -157,7 +157,8 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         // A checkpoint is a continuation the ENDPOINT produced on an earlier attempt and pz merely
         // stored, so it is no more trustworthy on the way back in than it was on the way out: it must
         // still name a host this connection is allowed to talk to, and have this dataset's shape.
-        if (!HttpCheckpointToken.TryDecode(checkpoint, config.IsPost, config.Method ?? HttpMethod.Get, out var resume)
+        if (!HttpCheckpointToken.TryDecode(checkpoint, config.IsPost, config.Method ?? HttpMethod.Get,
+                HttpCheckpointToken.KindOf(config.Body), out var resume)
             || !connection.IsAllowedTarget(resume!.Url))
         {
             return false;

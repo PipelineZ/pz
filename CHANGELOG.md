@@ -17,8 +17,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `/size`), and a crawl resumes from a checkpoint at the right page. A GraphQL error returned with HTTP 200 fails the
   read when `error_pointer` points at the response's `errors`. A `307` or `308` redirect keeps POST and the body;
   `301`, `302` and `303` switch to GET without a body. A POST read cannot be combined with `delta_pointer`.
-  Elasticsearch `search_after` is not supported, so `from`/`size` paging stops at Elasticsearch's default 10,000-hit
-  limit. Point a `read:` only at endpoints with no side effects: a retry or a resume sends the request again.
+  Elasticsearch `search_after` is not supported, so `from`/`size` paging cannot page past Elasticsearch's default
+  10,000-hit window (the request fails). Point a `read:` only at endpoints with no side effects: a retry or a resume sends the request again.
 - **http: two more pagination strategies.** `next_url` follows a next-page link in the response body
   (`pointer: /@odata.nextLink` for Microsoft Graph/OData, `/links/next`, `/next`); a relative link resolves against the
   current request, and every link is still checked against the connection's allowed hosts. `offset` pages with
