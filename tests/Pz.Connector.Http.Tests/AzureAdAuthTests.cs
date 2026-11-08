@@ -230,9 +230,11 @@ public class AzureAdAuthTests
     }
 
     [Fact]
-    public void Tenant_validation_agrees_with_the_credential_library_on_every_ascii_character()
+    public void Tenant_validation_agrees_with_the_credential_library_on_ascii_and_sampled_non_ascii_characters()
     {
-        for (var c = (char)0x20; c < 0x7f; c++)
+        var characters = Enumerable.Range(0x20, 0x7f - 0x20).Select(i => (char)i)
+            .Concat(['\u00e9', '\u0436', '\u0663', '\uff11']);
+        foreach (var c in characters)
         {
             var tenant = "a" + c + "b";
             var errors = new List<string>();

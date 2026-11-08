@@ -103,11 +103,11 @@ internal sealed record AzureAdOptions(
             : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(ExpandHome(certificate), baseDir), password, scope!, authority);
     }
 
-    // The credential library accepts exactly letters, digits, '-' and '.' (so GUIDs, domains and the well-known
-    // 'common'/'organizations'/'consumers' all pass) and throws on anything else. Only service_principal reads
-    // tenant_id; the other methods never hand it to the library.
+    // The credential library accepts exactly ASCII letters, ASCII digits, '-' and '.' (so GUIDs, domains and the
+    // well-known 'common'/'organizations'/'consumers' all pass) and throws on anything else. Only service_principal
+    // reads tenant_id; the other methods never hand it to the library.
     private static bool IsValidTenantId(string tenantId)
-        => tenantId.All(c => char.IsLetterOrDigit(c) || c is '-' or '.');
+        => tenantId.All(c => c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '.');
 
     // Neither the shared project-relative resolver nor the credential library expands '~', so a home-relative
     // certificate path would never be found.
