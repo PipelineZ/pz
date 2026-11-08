@@ -22,6 +22,15 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
     public bool IsContractMode => Columns is { Count: > 0 };
 
+    /// <summary>The `file:` option; non-null switches the dataset to file mode.</summary>
+    public HttpFileConfig? File { get; init; }
+
+    /// <summary>The `export:` option (an asynchronous export job whose result is the file); only
+    /// valid together with <see cref="File"/>.</summary>
+    public HttpExportConfig? Export { get; init; }
+
+    public bool IsFileMode => File is not null;
+
     /// <summary>What `{{ run_date }}` renders to; <see cref="RunDateConfig.Default"/> when the
     /// dataset declares no `run_date` option.</summary>
     public RunDateConfig RunDate { get; init; } = RunDateConfig.Default;
@@ -174,6 +183,12 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
 
+        options.TryGetValue("file", out var rawFile);
+        options.TryGetValue("export", out var rawExport);
+        var file = HttpFileConfig.Parse(rawFile, errors);
+        var export = HttpExportConfig.Parse(rawExport, errors);
+        ValidateFileMode(options, rawFile is not null, rawExport is not null, file, columns, errors);
+
         if (errors.Count > 0)
         {
             throw new PzConnectorException(
@@ -188,7 +203,56 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging)
         {
             RunDate = runDate,
+            File = file,
+            Export = export,
         };
+    }
+
+    private static void ValidateFileMode(IReadOnlyDictionary<string, object?> options, bool hasFile,
+        bool hasExport, HttpFileConfig? file, IReadOnlyDictionary<string, string>? columns, List<string> errors)
+    {
+        if (hasExport && !hasFile)
+        {
+            errors.Add("'export' requires 'file' (the export's result is read as a file)");
+        }
+
+        if (!hasFile)
+        {
+            return;
+        }
+
+        foreach (var option in new[] { "pagination", "delta_pointer", "max_pages" })
+        {
+            if (options.TryGetValue(option, out var value) && value is not null)
+            {
+                errors.Add($"'{option}' cannot be combined with 'file' (a file is read in one request)");
+            }
+        }
+
+        if (file is null)
+        {
+            return;
+        }
+
+        // `items` only locates records in a JSON document; the dataset default must not trip this,
+        // so it is checked only when the key is written.
+        if (file is { Format: HttpFileFormat.Json, JsonLayout: HttpJsonLayout.Lines }
+            && options.TryGetValue("items", out var items) && items is not null)
+        {
+            errors.Add("'items' cannot be combined with file.layout lines (it applies to layout document)");
+        }
+
+        if (file.FileColumn is not null)
+        {
+            if (columns is not { Count: > 0 })
+            {
+                errors.Add("file.file_column is only for contract mode (raw mode always has 'pz_file')");
+            }
+            else if (columns.ContainsKey(file.FileColumn))
+            {
+                errors.Add($"file.file_column '{file.FileColumn}' collides with a column in 'columns'");
+            }
+        }
     }
 
     private static HttpMethod ParseMethod(IReadOnlyDictionary<string, object?> options, List<string> errors)
@@ -280,7 +344,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
     }
 
-    private static string ValidatePointer(string pointer, string option, List<string> errors)
+    internal static string ValidatePointer(string pointer, string option, List<string> errors)
     {
         try
         {

@@ -21,6 +21,14 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// response the endpoint chooses the size of. 256 MiB is far above any real page of JSON.</summary>
     public const long DefaultMaxResponseBytes = 256L * 1024 * 1024;
 
+    /// <summary>Cap on a downloaded file body on disk ('max_download_mb'); file-mode datasets only.</summary>
+    public const long DefaultMaxDownloadBytes = 4096L * 1024 * 1024;
+
+    /// <summary>Highest legal 'max_download_mb' (1048576 MiB = 1 TiB).</summary>
+    public const long MaxDownloadMbCap = 1048576;
+
+    public long MaxDownloadBytes { get; init; } = DefaultMaxDownloadBytes;
+
     /// <summary>Highest legal 'max_response_mb'. HttpClient.MaxResponseContentBufferSize refuses any
     /// value above int.MaxValue bytes (2147483647); 2048 MiB (2147483648 bytes) already overflows
     /// that ceiling, so 2047 is the largest whole-MiB value that stays under it.</summary>
@@ -190,6 +198,21 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             }
         }
 
+        var maxDownloadBytes = DefaultMaxDownloadBytes;
+        if (config.Values.TryGetValue("max_download_mb", out var dl) && dl is not null)
+        {
+            if (long.TryParse(Pz.Connector.Http.YamlScalarText.Of(dl), NumberStyles.Integer,
+                    CultureInfo.InvariantCulture, out var dmb) && dmb > 0 && dmb <= MaxDownloadMbCap)
+            {
+                maxDownloadBytes = dmb * 1024 * 1024;
+            }
+            else
+            {
+                errors.Add($"'max_download_mb' must be a positive whole number of MiB up to " +
+                    $"{MaxDownloadMbCap}, got '{dl}'");
+            }
+        }
+
         var allowedHosts = new List<string>();
         if (config.Values.TryGetValue("allow_hosts", out var ah) && ah is not null)
         {
@@ -221,7 +244,10 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         return baseUri is null
             ? null
             : new HttpConnectionConfig(baseUri, auth.Static, headers, config.GetString("check_path"),
-                timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings);
+                timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings)
+            {
+                MaxDownloadBytes = maxDownloadBytes,
+            };
     }
 
     // A relative certificate_path resolves under base_dir; a path still inside it is easy to commit by accident.
