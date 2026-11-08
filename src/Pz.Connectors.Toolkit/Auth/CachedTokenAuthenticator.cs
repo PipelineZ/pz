@@ -25,6 +25,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
     private DateTimeOffset? _refreshAt;
     private int _generation;
     private bool _accepted;
+    private string? _discardedAccepted;
 
     public IReadOnlyCollection<string> SecretQueryParams => [];
 
@@ -107,6 +108,13 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
             // The cache may already be cleared by an earlier 401 for this same generation;
             // whether the token was ever accepted still decides the outcome.
+            // An identity cache often hands the same token straight back; it was accepted before, so a
+            // repeat 401 on it is still the retryable kind (the engine bounds the retries), not a bad scope.
+            if (_token is not null)
+            {
+                _discardedAccepted = _accepted ? _token : null;
+            }
+
             _token = null;
             return _accepted ? AuthResponseOutcome.TokenDiscarded : AuthResponseOutcome.FreshTokenRejected;
         }
@@ -127,7 +135,9 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                 _refreshAt = fetched.ExpiresOn is { } expires
                     ? expires - TimeSpan.FromTicks(Math.Clamp((expires - now).Ticks / 2, 0, RefreshMargin.Ticks))
                     : null;
-                _accepted = false;
+                _accepted = _discardedAccepted is not null
+                    && string.Equals(fetched.AccessToken, _discardedAccepted, StringComparison.Ordinal);
+                _discardedAccepted = null;
                 result = (fetched.AccessToken, ++_generation);
                 _inFlight = null;
             }

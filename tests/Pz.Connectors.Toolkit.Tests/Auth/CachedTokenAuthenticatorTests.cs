@@ -11,6 +11,7 @@ public class CachedTokenAuthenticatorTests
         public int Fetches;
         public TaskCompletionSource? Gate;
         public bool FailNext;
+        public bool SameToken;
 
         protected override async ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
         {
@@ -26,7 +27,7 @@ public class CachedTokenAuthenticatorTests
                 throw new PzConnectorException("token endpoint unavailable", isTransient: true);
             }
 
-            return new FetchedToken($"token-{n}", lifetime is { } l ? clock.GetUtcNow() + l : null);
+            return new FetchedToken(SameToken ? "token-same" : $"token-{n}", lifetime is { } l ? clock.GetUtcNow() + l : null);
         }
     }
 
@@ -91,6 +92,43 @@ public class CachedTokenAuthenticatorTests
         var r3 = Req();
         await auth.ApplyAsync(r3, default);
         Assert.Equal("Bearer token-2", Bearer(r3));
+    }
+
+    [Fact]
+    public async Task The_identical_token_handed_back_after_a_401_stays_accepted()
+    {
+        var auth = new CountingAuthenticator(new ManualClock()) { SameToken = true };
+        var r1 = Req();
+        await auth.ApplyAsync(r1, default);
+        Assert.Equal(AuthResponseOutcome.Unchanged, auth.OnResponse(r1, 200));
+        var r2 = Req();
+        await auth.ApplyAsync(r2, default);
+        Assert.Equal(AuthResponseOutcome.TokenDiscarded, auth.OnResponse(r2, 401));
+
+        for (var i = 0; i < 2; i++)
+        {
+            var again = Req();
+            await auth.ApplyAsync(again, default);
+            Assert.Equal("Bearer token-same", Bearer(again));
+            Assert.Equal(AuthResponseOutcome.TokenDiscarded, auth.OnResponse(again, 401));
+        }
+
+        Assert.Equal(3, auth.Fetches);
+    }
+
+    [Fact]
+    public async Task A_different_token_after_a_401_is_fresh_again()
+    {
+        var auth = new CountingAuthenticator(new ManualClock());
+        var r1 = Req();
+        await auth.ApplyAsync(r1, default);
+        auth.OnResponse(r1, 200);
+        var r2 = Req();
+        await auth.ApplyAsync(r2, default);
+        Assert.Equal(AuthResponseOutcome.TokenDiscarded, auth.OnResponse(r2, 401));
+        var r3 = Req();
+        await auth.ApplyAsync(r3, default);
+        Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(r3, 401));
     }
 
     [Fact]
