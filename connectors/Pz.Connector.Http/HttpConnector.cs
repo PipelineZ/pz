@@ -79,7 +79,11 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "body_format": { "enum": ["json", "form"] },
             "content_type": { "type": "string" },
             "error_pointer": { "type": "string" },
-            "max_pages": { "type": "integer", "minimum": 1 } },
+            "max_pages": { "type": "integer", "minimum": 1 },
+            "run_date": { "type": "object", "properties": {
+                "offset_days": { "type": "integer" }, "timezone": { "type": "string" },
+                "format": { "type": "string" } },
+                "additionalProperties": false } },
           "additionalProperties": false }
         """;
 
@@ -133,7 +137,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         try
         {
             using var client = HttpSource.CreateClient(connection);
-            // Resolve check_path the same way dataset paths resolve (HttpPartition.BuildFirstUri):
+            // Resolve check_path the same way dataset paths resolve (HttpFirstRequest.Build):
             // a relative segment against the slash-terminated base, not root-relative to the host —
             // otherwise a base_url path prefix (e.g. '/api/v2') is silently dropped.
             var target = connection.CheckPath is { } checkPath

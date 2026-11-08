@@ -22,6 +22,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
     public bool IsContractMode => Columns is { Count: > 0 };
 
+    /// <summary>What `{{ run_date }}` renders to; <see cref="RunDateConfig.Default"/> when the
+    /// dataset declares no `run_date` option.</summary>
+    public RunDateConfig RunDate { get; init; } = RunDateConfig.Default;
+
     /// <summary>True when `delta_pointer` is configured: the dataset is a change-feed source
     /// (Graph-style `@odata.deltaLink`) — <see cref="HttpPartition"/> replays a stored sync token
     /// verbatim as the first request and captures the terminal page's delta link.</summary>
@@ -32,16 +36,24 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         var errors = new List<string>();
         var options = spec.Options;
 
+        // The engine's bindings, then the connector's own.
+        string[] knownBindings = [.. BindingExpander.FromSpec(spec).Keys, "run_date"];
+
         var path = Get(options, "path");
         if (string.IsNullOrEmpty(path) || path[0] != '/')
         {
             errors.Add("option 'path' is required and must start with '/'");
         }
+        else
+        {
+            ValidateBindingTemplate(path, "option 'path'", knownBindings, errors);
+        }
+
+        var runDate = RunDateConfig.Parse(options.TryGetValue("run_date", out var rd) ? rd : null, errors);
 
         var query = new Dictionary<string, string>();
         if (options.TryGetValue("query", out var q) && q is IReadOnlyDictionary<string, object?> qmap)
         {
-            var knownBindings = BindingExpander.FromSpec(spec).Keys.ToArray();
             foreach (var (name, value) in qmap)
             {
                 var template = YamlScalarText.Of(value) ?? "";
@@ -51,7 +63,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var method = ParseMethod(options, errors);
-        var body = ParseBody(options, method, spec, errors);
+        var body = ParseBody(options, method, knownBindings, errors);
         var errorPointer = Get(options, "error_pointer");
         if (errorPointer is not null)
         {
@@ -173,7 +185,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         // stop_on_short_page/size semantics); leaving it set would stamp the query string too.
         return new HttpDatasetConfig(path!, query, bodyPaging is null ? factory : null, items, columns, cursor, cursorType,
             cursorPointer ?? (cursor is null ? "" : "/" + cursor), cursorOrder, maxPages, deltaPointer,
-            stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging);
+            stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging)
+        {
+            RunDate = runDate,
+        };
     }
 
     private static HttpMethod ParseMethod(IReadOnlyDictionary<string, object?> options, List<string> errors)
@@ -194,7 +209,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     }
 
     private static HttpBody? ParseBody(IReadOnlyDictionary<string, object?> options, HttpMethod method,
-        DatasetSpec spec, List<string> errors)
+        IReadOnlyCollection<string> knownBindings, List<string> errors)
     {
         options.TryGetValue("body", out var raw);
         var bodyFormat = Get(options, "body_format");
@@ -230,15 +245,16 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             return null;
         }
 
-        return HttpBody.Parse(raw, bodyFormat, contentType, BindingExpander.FromSpec(spec).Keys.ToArray(), errors);
+        return HttpBody.Parse(raw, bodyFormat, contentType, knownBindings, errors);
     }
 
     private static string? Get(IReadOnlyDictionary<string, object?> options, string key)
         => options.TryGetValue(key, out var value) ? YamlScalarText.Of(value) : null;
 
-    /// <summary>Offline validation (no live request needed) of a `query:` value template
-    /// against the engine-binding vocabulary — first line of defense; <see cref="HttpPartition"/>'s
-    /// TryExpand call is the runtime-side defense in depth for the same two failure modes.</summary>
+    /// <summary>Offline validation (no live request needed) of a `path`, `query:` or `body` template
+    /// against the binding vocabulary (listed in the order given) — first line of defense;
+    /// <see cref="HttpFirstRequest"/>'s TryExpand calls are the runtime-side defense in depth for the
+    /// same two failure modes.</summary>
     internal static void ValidateBindingTemplate(string template, string label,
         IReadOnlyCollection<string> knownBindings, List<string> errors, bool echoTemplate = true)
     {
@@ -259,7 +275,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             if (!knownBindings.Contains(name))
             {
                 errors.Add($"{label}: unknown binding '{name}' — accepted: " +
-                    string.Join(", ", knownBindings.Order()));
+                    string.Join(", ", knownBindings));
             }
         }
     }

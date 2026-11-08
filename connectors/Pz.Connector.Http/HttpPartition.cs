@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -205,11 +204,14 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         var builder = new ArrowBatchBuilder(ContractProjector.BuildSchema(columns),
             options.TargetBatchBytes, maxRowsPerBatch: options.MaxRowsPerBatch);
         var strategy = config.PageStrategyFactory?.Invoke();
+        // Read once: every request this partition builds renders the same {{ run_date }}, even
+        // across midnight.
+        var runDate = config.RunDate.Render(time.GetUtcNow());
         // A resume link wins over sync-token replay -- it is a LATER position inside the same
         // crawl, whereas PriorSyncState (inside BuildFirstRequest) replays a
         // whole-feed delta token from a PRIOR run. _syncCandidate capture from the terminal page
         // is unaffected either way.
-        HttpPageRequest? request = _resume ?? BuildFirstRequest(strategy);
+        HttpPageRequest? request = _resume ?? BuildFirstRequest(strategy, runDate);
         EnsureAllowedTarget(request.Url, "the first request");
         var page = 0;
         // An empty page ends the crawl only for a strategy with no other end (page numbers). For
@@ -382,7 +384,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     private static string SameBody(HttpPageRequest request)
         => request.JsonBody is not null || request.TextBody is not null ? " with the same body" : "";
 
-    private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy)
+    private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy, string runDate)
     {
         // Delta-link replay is a GET by construction ('delta_pointer' is refused with POST).
         if (TryGetSyncReplay() is { } replay)
@@ -390,47 +392,8 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
             return new HttpPageRequest(HttpMethod.Get, replay, null, null);
         }
 
-        var bindings = BuildBindings();
-        var url = BuildFirstUri(strategy, bindings);
-        if (!config.IsPost)
-        {
-            return new HttpPageRequest(HttpMethod.Get, url, null, null);
-        }
-
-        // The query string and the body expand the same bindings with the same formatting, so a
-        // watermark appears identically in both.
-        JsonNode? json = null;
-        string? text = null;
-        if (config.Body is { } body)
-        {
-            if (body.IsJson)
-            {
-                json = body.Render(bindings, FormatBinding, out var error);
-                if (error is not null)
-                {
-                    throw new PzConnectorException($"{Label}: body: {error}", isTransient: false);
-                }
-
-                if (config.BodyPaging is { } paging && json is not null)
-                {
-                    json = paging.First(json);
-                }
-            }
-            else
-            {
-                try
-                {
-                    text = body.RenderText(bindings, FormatBinding);
-                }
-                catch (PzConnectorException ex)
-                {
-                    throw new PzConnectorException($"{Label}: {ex.Message}", isTransient: false,
-                        innerException: ex, code: ex.Code, hint: ex.Hint);
-                }
-            }
-        }
-
-        return new HttpPageRequest(HttpMethod.Post, url, json, text);
+        var bindings = HttpFirstRequest.Bindings(spec, config, runDate, Label);
+        return HttpFirstRequest.Build(connection, config, strategy, bindings, Label);
     }
 
     private Uri? TryGetSyncReplay()
@@ -456,124 +419,8 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         return null;
     }
 
-    private Dictionary<string, BindingValue> BuildBindings()
-    {
-        if (spec.WatermarkCursor is { } wmCursor)
-        {
-            if (config.Cursor is null && !config.IsContractMode)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: incremental dataset needs the raw-mode 'cursor' + 'cursor_type' options " +
-                    "(or a 'columns' contract declaring the cursor)", isTransient: false);
-            }
-
-            if (config.Cursor is { } optCursor && optCursor != wmCursor)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: incremental.cursor is '{wmCursor}' but options.cursor is '{optCursor}'; " +
-                    "align the two", isTransient: false);
-            }
-        }
-
-        string? cursorType;
-        if (config.IsContractMode && spec.WatermarkCursor is not null)
-        {
-            if (!config.Columns!.TryGetValue(spec.WatermarkCursor, out cursorType))
-            {
-                throw new PzConnectorException(
-                    $"{Label}: incremental cursor '{spec.WatermarkCursor}' is not declared in 'columns:' — " +
-                    "add it to the contract so its values land and its type is known", isTransient: false);
-            }
-        }
-        else
-        {
-            cursorType = config.CursorType;
-        }
-        var bindings = new Dictionary<string, BindingValue>
-        {
-            ["watermark"] = new(spec.WatermarkValue, cursorType),
-            // Upper bound of the engine-resolved (lower, upper] window; null when the dataset is
-            // not windowed, in which case TryExpand omits the param.
-            ["window_upper"] = new(spec.WatermarkUpperBound, cursorType),
-        };
-        return bindings;
-    }
-
-    private Uri BuildFirstUri(IPageStrategy? strategy, Dictionary<string, BindingValue> bindings)
-    {
-        var pairs = new List<string>();
-        foreach (var (name, template) in config.Query)
-        {
-            bool expanded;
-            string? value, error;
-            try
-            {
-                // Defense in depth: HttpDatasetConfig.Parse already validates every query template
-                // offline, but a malformed/unknown binding must never surface as an uncoded
-                // FormatException from a live read.
-                expanded = BindingExpander.TryExpand(template, bindings, FormatBinding, out value, out error);
-            }
-            catch (FormatException ex)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: query parameter '{name}': malformed binding template '{template}': " +
-                    $"{ex.Message}", isTransient: false);
-            }
-
-            if (!expanded)
-            {
-                throw new PzConnectorException($"{Label}: query parameter '{name}': {error}",
-                    isTransient: false);
-            }
-
-            if (value is null)
-            {
-                continue; // referenced binding is null (first run / --full-refresh): omit the param
-            }
-
-            pairs.Add($"{Uri.EscapeDataString(name)}={Uri.EscapeDataString(value)}");
-        }
-
-        // config.Path always starts with '/' (HttpDatasetConfig.Parse validated); stripping it makes
-        // the segment relative so it resolves against the FULL slash-terminated base_url (including
-        // any path prefix) instead of root-relative to the host.
-        var first = new UriBuilder(new Uri(connection.BaseUrl, config.Path[1..]))
-        {
-            Query = string.Join('&', pairs),
-        }.Uri;
-
-        // The strategy's own params (page number, size) go on the first request too — an API's
-        // default page size is otherwise in effect for page one, skipping or re-delivering rows
-        // the moment page two jumps ahead. Sync-token replays returned above stay verbatim.
-        return strategy is null ? first : strategy.FirstRequestUri(first);
-    }
-
-    // Formats a bound value for a query param. Serves BOTH the lower bound (watermark) and the
-    // upper bound (window_upper). A timestamp cursor renders as ISO-8601 UTC to whole seconds
-    // (many APIs reject sub-second precision). Rounding direction differs by bound so the
-    // (lower, upper] window is never under-covered:
-    //   - lower (watermark, exclusive '>'): truncate DOWN — re-reads at most the boundary second.
-    //   - upper (window_upper, inclusive '<='): round UP — a sub-second upper like ...00.5 must
-    //     still include rows at ...00.5, so we query '<= ...01'. Rows in (upper, ceil] are
-    //     over-extracted this window, but the engine's window-scoped MAX probe caps the watermark
-    //     candidate at 'upper', so they re-deliver in the next window: re-delivery, never loss,
-    //     even for an empty (lower, floor_sec(upper)] slice (windowed->append requires
-    //     accept_duplicates, PZ0214). Truncating the upper DOWN would instead drop the fractional
-    //     tail: an empty truncated slice advances the watermark to the full untruncated upper
-    //     (empty-slice advancement), silently skipping those rows.
     internal static string FormatBinding(string name, BindingValue value)
-    {
-        if (value.TypeName != "timestamp"
-            || !DateTimeOffset.TryParse(value.Value, CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var ts))
-        {
-            return value.Value!;
-        }
-
-        var floored = new DateTimeOffset(ts.Year, ts.Month, ts.Day, ts.Hour, ts.Minute, ts.Second, TimeSpan.Zero);
-        var rendered = name == "window_upper" && ts > floored ? floored.AddSeconds(1) : floored;
-        return rendered.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
-    }
+        => HttpFirstRequest.FormatBinding(name, value);
 
     private object?[] ProjectRow(JsonNode? record, int page, DateTimeOffset fetchedAt)
     {
