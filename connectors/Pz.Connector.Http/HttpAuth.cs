@@ -33,7 +33,8 @@ internal static class HttpAuth
     internal sealed record Parsed(
         IRequestAuthenticator? Static,
         Func<TimeProvider, IRequestAuthenticator>? Factory,
-        string? CertificatePath);
+        string? CertificatePath,
+        IReadOnlyList<string>? Warnings = null);
 
     internal static Parsed Parse(IReadOnlyDictionary<string, object?>? auth, string? baseDir, TimeSpan timeout, List<string> errors)
     {
@@ -48,7 +49,7 @@ internal static class HttpAuth
         {
             case AzureAd:
                 return AzureAdOptions.TryParse(auth, baseDir, errors) is { } azure
-                    ? new Parsed(null, time => azure.CreateAuthenticator(timeout, time), azure.CertificatePath)
+                    ? new Parsed(null, time => azure.CreateAuthenticator(timeout, time), azure.CertificatePath, azure.Warnings())
                     : none;
             case OAuth2ClientCredentials:
                 return OAuth2ClientCredentialsOptions.TryParse(auth, errors) is { } oauth

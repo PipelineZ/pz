@@ -129,9 +129,9 @@ public class AzureAdAuthTests
     public void An_sdk_network_timeout_is_transient()
     {
         var timeout = new TaskCanceledException("The operation was cancelled because it exceeded the configured timeout of 0:00:05");
-        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("failed", timeout), "service_principal").IsTransient);
-        Assert.True(AzureAdAuth.Classify(new RequestFailedException("timeout", timeout), "service_principal").IsTransient);
-        Assert.True(AzureAdAuth.Classify(new OperationCanceledException("timeout", timeout), "service_principal").IsTransient);
+        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("failed", timeout), "service_principal", Scope).IsTransient);
+        Assert.True(AzureAdAuth.Classify(new RequestFailedException("timeout", timeout), "service_principal", Scope).IsTransient);
+        Assert.True(AzureAdAuth.Classify(new OperationCanceledException("timeout", timeout), "service_principal", Scope).IsTransient);
     }
 
     [Fact]
@@ -309,7 +309,7 @@ public class AzureAdAuthTests
     [Fact]
     public void Credential_unavailable_for_managed_identity_hints_at_credential_chain()
     {
-        var ex = AzureAdAuth.Classify(new CredentialUnavailableException("ManagedIdentityCredential authentication unavailable"), "managed_identity");
+        var ex = AzureAdAuth.Classify(new CredentialUnavailableException("ManagedIdentityCredential authentication unavailable"), "managed_identity", Scope);
         Assert.False(ex.IsTransient);
         Assert.Contains("no managed identity is available here (are you running outside Azure? use `credential_chain` to fall back to `az login`)", ex.Message);
     }
@@ -319,7 +319,7 @@ public class AzureAdAuthTests
     {
         var inner = new AuthenticationFailedException(
             "ClientSecretCredential authentication failed: AADSTS7000215: Invalid client secret provided. Trace ID: 0000-1111 Correlation ID: 2222-3333 https://login.microsoftonline.com/x");
-        var ex = AzureAdAuth.Classify(inner, "service_principal");
+        var ex = AzureAdAuth.Classify(inner, "service_principal", Scope);
         Assert.False(ex.IsTransient);
         Assert.Contains("AADSTS7000215", ex.Message);
         Assert.DoesNotContain("Trace ID", ex.Message);
@@ -328,10 +328,54 @@ public class AzureAdAuthTests
         Assert.DoesNotContain("Invalid client secret", ex.Message);
     }
 
+    [Theory]
+    [InlineData("AADSTS70011")]
+    [InlineData("AADSTS1002012")]
+    [InlineData("AADSTS500011")]
+    public void An_invalid_scope_aadsts_code_names_the_scope_and_an_example(string code)
+    {
+        var inner = new AuthenticationFailedException($"ClientSecretCredential authentication failed: {code}: The provided value for scope is not valid. Trace ID: 0000");
+        var ex = AzureAdAuth.Classify(inner, "service_principal", "api://my-api/user_impersonation");
+        Assert.False(ex.IsTransient);
+        Assert.Contains("'api://my-api/user_impersonation'", ex.Message);
+        Assert.Contains(code, ex.Message);
+        Assert.Contains("/.default", ex.Message);
+        Assert.Contains("https://graph.microsoft.com/.default", ex.Message);
+        Assert.DoesNotContain("Trace ID", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("invalid_scope")]
+    [InlineData("invalid_resource")]
+    public void An_msal_invalid_scope_error_code_anywhere_in_the_chain_is_a_scope_error(string errorCode)
+    {
+        var inner = new AuthenticationFailedException("failed", new InvalidOperationException("wrapper", new MsalServiceException(errorCode, "x", 400)));
+        var ex = AzureAdAuth.Classify(inner, "service_principal", "api://my-api/user_impersonation");
+        Assert.False(ex.IsTransient);
+        Assert.Contains("refused scope 'api://my-api/user_impersonation'", ex.Message);
+        Assert.Contains("https://graph.microsoft.com/.default", ex.Message);
+    }
+
+    [Fact]
+    public void An_inner_message_carrying_an_invalid_scope_code_is_a_scope_error()
+    {
+        var inner = new AuthenticationFailedException("failed", new MsalServiceException("x", "AADSTS70011: invalid scope", 400));
+        var ex = AzureAdAuth.Classify(inner, "service_principal", "bad");
+        Assert.Contains("refused scope 'bad' (AADSTS70011)", ex.Message);
+    }
+
+    [Fact]
+    public void An_unrelated_aadsts_code_keeps_the_credential_hint()
+    {
+        var ex = AzureAdAuth.Classify(new AuthenticationFailedException("AADSTS700110: x"), "service_principal", Scope);
+        Assert.Contains("tenant_id", ex.Message);
+        Assert.DoesNotContain("refused scope", ex.Message);
+    }
+
     [Fact]
     public void Authentication_failure_without_a_code_still_gives_the_fixed_hint()
     {
-        var ex = AzureAdAuth.Classify(new AuthenticationFailedException("boom with secret-ish text"), "service_principal");
+        var ex = AzureAdAuth.Classify(new AuthenticationFailedException("boom with secret-ish text"), "service_principal", Scope);
         Assert.False(ex.IsTransient);
         Assert.Contains("tenant_id", ex.Message);
         Assert.DoesNotContain("boom", ex.Message);
@@ -343,21 +387,21 @@ public class AzureAdAuthTests
     public void Throttled_or_unavailable_identity_endpoint_is_transient(int status)
     {
         var inner = new AuthenticationFailedException("failed", new RequestFailedException(status, "throttled"));
-        Assert.True(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+        Assert.True(AzureAdAuth.Classify(inner, "service_principal", Scope).IsTransient);
     }
 
     [Fact]
     public void A_network_failure_is_transient()
     {
         var inner = new AuthenticationFailedException("failed", new HttpRequestException("down"));
-        Assert.True(AzureAdAuth.Classify(inner, "credential_chain").IsTransient);
+        Assert.True(AzureAdAuth.Classify(inner, "credential_chain", Scope).IsTransient);
     }
 
     [Fact]
     public void A_client_error_from_the_identity_endpoint_is_permanent()
     {
         var inner = new AuthenticationFailedException("failed", new RequestFailedException(400, "bad"));
-        Assert.False(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+        Assert.False(AzureAdAuth.Classify(inner, "service_principal", Scope).IsTransient);
     }
 
     [Theory]
@@ -367,21 +411,21 @@ public class AzureAdAuthTests
     public void Msal_throttling_or_timeout_is_transient(int status, string code)
     {
         var inner = new AuthenticationFailedException("failed", new MsalServiceException(code, "x", status));
-        Assert.True(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+        Assert.True(AzureAdAuth.Classify(inner, "service_principal", Scope).IsTransient);
     }
 
     [Fact]
     public void Msal_invalid_client_stays_permanent()
     {
         var inner = new AuthenticationFailedException("failed", new MsalServiceException("invalid_client", "x", 400));
-        Assert.False(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+        Assert.False(AzureAdAuth.Classify(inner, "service_principal", Scope).IsTransient);
     }
 
     [Fact]
     public void Timeouts_are_transient()
     {
-        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("f", new TimeoutException()), "credential_chain").IsTransient);
-        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("f", new TaskCanceledException()), "credential_chain").IsTransient);
+        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("f", new TimeoutException()), "credential_chain", Scope).IsTransient);
+        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("f", new TaskCanceledException()), "credential_chain", Scope).IsTransient);
     }
 
     private sealed class BlockingCredential : TokenCredential

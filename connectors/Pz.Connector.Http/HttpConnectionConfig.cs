@@ -7,7 +7,8 @@ namespace Pz.Connector.Http;
 internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? Authenticator,
     IReadOnlyDictionary<string, string> Headers, string? CheckPath, TimeSpan Timeout,
     long MaxResponseBytes, IReadOnlyList<string> AllowedHosts,
-    Func<TimeProvider, IRequestAuthenticator>? AuthFactory = null, string? CertificatePathInProject = null)
+    Func<TimeProvider, IRequestAuthenticator>? AuthFactory = null, string? CertificatePathInProject = null,
+    IReadOnlyList<string>? AuthWarnings = null)
 {
     /// <summary>HttpClient's own default is 100 seconds — far too long for one page of JSON, and it
     /// is per attempt, so a black-holed endpoint holds a run for minutes before the engine even sees
@@ -109,6 +110,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
                 "private key outside the project (or out of version control) so it is not committed with it");
         }
 
+        warnings.AddRange(AuthWarnings ?? []);
         return warnings;
     }
 
@@ -219,7 +221,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         return baseUri is null
             ? null
             : new HttpConnectionConfig(baseUri, auth.Static, headers, config.GetString("check_path"),
-                timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir));
+                timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings);
     }
 
     // A relative certificate_path resolves under base_dir; a path still inside it is easy to commit by accident.

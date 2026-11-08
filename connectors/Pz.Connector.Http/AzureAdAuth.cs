@@ -86,6 +86,13 @@ internal sealed record AzureAdOptions(
             : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(certificate, baseDir), password, scope!, authority);
     }
 
+    /// <summary>Non-blocking <c>pz validate</c> diagnostics for these options.</summary>
+    public IReadOnlyList<string> Warnings()
+        => Scope.EndsWith("/.default", StringComparison.OrdinalIgnoreCase)
+            ? []
+            : [$"auth.scope '{Scope}' does not end in '/.default'; the client-credentials grant accepts only the "
+                + "'<resource>/.default' form, e.g. 'https://graph.microsoft.com/.default'"];
+
     /// <summary>The options every credential is built from. Connectors never retry internally (the engine retries
     /// the transient exception), and a black-holed authority must fail within the connection timeout.</summary>
     internal TokenCredentialOptions CreateCredentialOptions(TimeSpan timeout)
@@ -191,7 +198,7 @@ internal sealed class AzureAdAuthenticator(TokenCredential credential, string sc
         catch (Exception ex) when (!ct.IsCancellationRequested
             && ex is AuthenticationFailedException or CredentialUnavailableException or RequestFailedException or TimeoutException or TaskCanceledException)
         {
-            throw AzureAdAuth.Classify(ex, method);
+            throw AzureAdAuth.Classify(ex, method, scope);
         }
     }
 }
@@ -201,9 +208,13 @@ internal static partial class AzureAdAuth
     [GeneratedRegex(@"AADSTS\d+")]
     private static partial Regex AadstsCode();
 
+    // Entra's "this scope/resource is not valid for the client-credentials grant" answers.
+    [GeneratedRegex(@"AADSTS(?:70011|1002012|500011)(?!\d)")]
+    private static partial Regex InvalidScopeCode();
+
     /// <summary>Maps an Azure.Identity failure to a connector exception. The SDK message can carry trace
-    /// and correlation IDs, URLs and server text, so only the first AADSTS code and fixed hints are used.</summary>
-    internal static PzConnectorException Classify(Exception ex, string method)
+    /// and correlation IDs, URLs and server text, so only the first AADSTS code, the configured scope and fixed hints are used.</summary>
+    internal static PzConnectorException Classify(Exception ex, string method, string scope)
     {
         if (ex is CredentialUnavailableException)
         {
@@ -222,6 +233,19 @@ internal static partial class AzureAdAuth
                 or HttpRequestException or TimeoutException or TaskCanceledException)
             {
                 return new PzConnectorException($"azure_ad token request failed temporarily ({method}); it will be retried", isTransient: true);
+            }
+        }
+
+        for (var inner = ex; inner is not null; inner = inner.InnerException)
+        {
+            var scopeCode = InvalidScopeCode().Match(inner.Message);
+            if (inner is MsalServiceException { ErrorCode: "invalid_scope" or "invalid_resource" } || scopeCode.Success)
+            {
+                // The scope is configuration, not a secret, so it is safe to echo.
+                return new PzConnectorException(
+                    $"azure_ad sign-in refused scope '{scope}'{(scopeCode.Success ? $" ({scopeCode.Value})" : "")}: "
+                    + "use the API's '<resource>/.default' scope, e.g. 'https://graph.microsoft.com/.default'",
+                    isTransient: false);
             }
         }
 

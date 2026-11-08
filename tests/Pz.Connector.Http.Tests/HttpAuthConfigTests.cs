@@ -147,6 +147,30 @@ public class HttpAuthConfigTests
         Assert.Single(parsed.Warnings());
     }
 
+    [Theory]
+    [InlineData("https://graph.microsoft.com/.default", false)]
+    [InlineData("api://my-api/.DEFAULT", false)]
+    [InlineData("api://my-api/user_impersonation", true)]
+    [InlineData("https://graph.microsoft.com", true)]
+    public void Azure_scope_not_ending_in_dot_default_warns(string scope, bool warns)
+    {
+        var auth = AzureAd("service_principal");
+        auth["scope"] = scope;
+        var errors = new List<string>();
+        var parsed = HttpConnectionConfig.Parse(Config("https://api.example.com", auth), errors)!;
+        Assert.Empty(errors);
+        if (warns)
+        {
+            var warning = Assert.Single(parsed.Warnings());
+            Assert.Contains($"'{scope}'", warning, StringComparison.Ordinal);
+            Assert.Contains("/.default", warning, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Empty(parsed.Warnings());
+        }
+    }
+
     [Fact]
     public void Certificate_inside_the_project_warns()
     {
