@@ -69,11 +69,11 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     private string? _checkpointCandidate;
     private string? _lastReturnedCheckpoint;
     private HttpPageRequest? _resume;
-    // SHA-256 digest (HttpPageRequest.KeyDigest) of every request (method, URL and body) already sent during THIS attempt. The
-    // Every request (HttpPageRequest.Key: method, URL and body) already sent during THIS attempt. The
-    // "next == current" check only sees a page that points straight back at itself; a feed that alternates A -> B -> A -> B (or
-    // any longer ring) advances on every single step and would be crawled forever. Membership here
-    // is the general form of "pagination is not advancing".
+
+    // SHA-256 digest (HttpPageRequest.KeyDigest) of every request (method, URL and body) already sent during THIS
+    // attempt. The "next == current" check only sees a page that points straight back at itself; a feed that
+    // alternates A -> B -> A -> B (or any longer ring) advances on every single step and would be crawled forever.
+    // Membership here is the general form of "pagination is not advancing".
     private readonly HashSet<string> _requested = new(StringComparer.Ordinal);
 
     /// <summary>Bound on an attempt's page count when the dataset declares no <c>max_pages</c>. A feed
