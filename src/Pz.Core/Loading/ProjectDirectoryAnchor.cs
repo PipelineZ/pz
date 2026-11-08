@@ -37,9 +37,10 @@ public static class ProjectDirectoryAnchor
         {
             "localfiles", "sqlite", "duckdb", "ducklake", "iceberg",
             // Credential-file options, not a connection's whole data location: sftp's
-            // private_key_path and gcs's key_file. Resolved via Pz.Connectors.Toolkit's
-            // ProjectRelativePath, which leaves an absolute/~/URL-shaped value untouched.
-            "sftp", "gcs",
+            // private_key_path, gcs's key_file and http's azure_ad certificate_path. Resolved
+            // via Pz.Connectors.Toolkit's ProjectRelativePath, which leaves an absolute/~/URL-shaped
+            // value untouched.
+            "sftp", "gcs", "http",
         };
 
     /// <summary><paramref name="declaredAnchoredConnectors"/> are the names read out of materialized

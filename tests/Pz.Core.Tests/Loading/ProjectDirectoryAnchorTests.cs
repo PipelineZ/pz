@@ -29,7 +29,7 @@ public sealed class ProjectDirectoryAnchorTests
     public void Builtin_anchored_connectors_receive_the_project_dir()
     {
         var anchored = ProjectDirectoryAnchor.Inject(
-            ProjectWith("localfiles", "sqlite", "duckdb", "ducklake", "iceberg", "sftp", "gcs"), ProjectDir);
+            ProjectWith("localfiles", "sqlite", "duckdb", "ducklake", "iceberg", "sftp", "gcs", "http"), ProjectDir);
 
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "localfiles"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "sqlite"));
@@ -40,6 +40,8 @@ public sealed class ProjectDirectoryAnchorTests
         // connection's whole data location, but they miss the anchor the same way localfiles' root does.
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "sftp"));
         Assert.Equal(ProjectDir, BaseDirOf(anchored, "gcs"));
+        // http's azure_ad certificate_path is a credential-file option too.
+        Assert.Equal(ProjectDir, BaseDirOf(anchored, "http"));
     }
 
     /// <summary>Opt-in in both directions: a connector that never asked receives nothing. This is what
@@ -49,10 +51,10 @@ public sealed class ProjectDirectoryAnchorTests
     [Fact]
     public void A_connector_that_did_not_ask_is_untouched()
     {
-        var anchored = ProjectDirectoryAnchor.Inject(ProjectWith("postgres", "http"), ProjectDir);
+        var anchored = ProjectDirectoryAnchor.Inject(ProjectWith("postgres", "mysql"), ProjectDir);
 
         Assert.Null(BaseDirOf(anchored, "postgres"));
-        Assert.Null(BaseDirOf(anchored, "http"));
+        Assert.Null(BaseDirOf(anchored, "mysql"));
     }
 
     /// <summary>The gap this closes: a third-party connector, matched by nothing, declaring the anchor
