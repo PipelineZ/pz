@@ -3,6 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using Azure;
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.Identity.Client;
 using Pz.Connector.Http;
 using Pz.Connectors.Abstractions;
 
@@ -99,28 +100,116 @@ public class AzureAdAuthTests
         Assert.Equal(Path.GetFullPath("/proj/certs/app.pem"), o.CertificatePath);
     }
 
+    private static TokenCredential Create(AzureAdOptions o)
+    {
+        var credential = o.CreateCredential(out var owned);
+        owned?.Dispose();
+        return credential;
+    }
+
     [Fact]
     public void Credential_kind_follows_the_method()
     {
         var secret = Parse(Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"), ("client_secret", "s")));
-        Assert.IsType<ClientSecretCredential>(secret.CreateCredential());
+        Assert.IsType<ClientSecretCredential>(Create(secret));
 
-        Assert.IsType<ManagedIdentityCredential>(Parse(Auth(("method", "managed_identity"), ("scope", Scope))).CreateCredential());
+        Assert.IsType<ManagedIdentityCredential>(Create(Parse(Auth(("method", "managed_identity"), ("scope", Scope)))));
         Assert.IsType<ManagedIdentityCredential>(
-            Parse(Auth(("method", "managed_identity"), ("scope", Scope), ("client_id", "uami"))).CreateCredential());
+            Create(Parse(Auth(("method", "managed_identity"), ("scope", Scope), ("client_id", "uami")))));
         Assert.IsType<DefaultAzureCredential>(
-            Parse(Auth(("method", "credential_chain"), ("scope", Scope), ("authority_host", "https://login.microsoftonline.us"))).CreateCredential());
+            Create(Parse(Auth(("method", "credential_chain"), ("scope", Scope), ("authority_host", "https://login.microsoftonline.us")))));
 
         var pem = WriteThrowawayCertificate();
         try
         {
             var cert = Parse(Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"), ("certificate_path", pem)));
-            Assert.IsType<ClientCertificateCredential>(cert.CreateCredential());
+            Assert.IsType<ClientCertificateCredential>(Create(cert));
         }
         finally
         {
             File.Delete(pem);
         }
+    }
+
+    private const string CertPassword = "Cert-P4ss-xyz";
+
+    private static AzureAdOptions CertOptions(string path, string? password) => Parse(Auth(
+        ("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"),
+        ("certificate_path", path), ("certificate_password", password)));
+
+    private static string WriteTemp(string content)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"pz-azuread-{Guid.NewGuid():N}.bin");
+        File.WriteAllText(path, content);
+        return path;
+    }
+
+    private static string WritePfx(string password)
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=pz-test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var path = Path.Combine(Path.GetTempPath(), $"pz-azuread-{Guid.NewGuid():N}.pfx");
+        File.WriteAllBytes(path, cert.Export(X509ContentType.Pfx, password));
+        return path;
+    }
+
+    private static string WriteEncryptedPem(string password)
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=pz-test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var pbe = new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 1000);
+        return WriteTemp(cert.ExportCertificatePem() + "\n" + key.ExportEncryptedPkcs8PrivateKeyPem(password, pbe));
+    }
+
+    [Fact]
+    public void Password_protected_pkcs12_and_encrypted_pem_both_load()
+    {
+        foreach (var path in new[] { WritePfx(CertPassword), WriteEncryptedPem(CertPassword) })
+        {
+            try
+            {
+                var credential = CertOptions(path, CertPassword).CreateCredential(out var owned);
+                Assert.IsType<ClientCertificateCredential>(credential);
+                Assert.NotNull(owned);
+                owned.Dispose();
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("pfx")]
+    [InlineData("pem")]
+    public void Wrong_certificate_password_is_a_coded_error_without_the_password(string kind)
+    {
+        var path = kind == "pfx" ? WritePfx(CertPassword) : WriteEncryptedPem(CertPassword);
+        try
+        {
+            var ex = Assert.Throws<PzConnectorException>(() => CertOptions(path, "wrong-pw-123").CreateCredential(out _));
+            Assert.False(ex.IsTransient);
+            Assert.Contains("certificate_path", ex.Message);
+            Assert.DoesNotContain("wrong-pw-123", ex.Message);
+            Assert.DoesNotContain(CertPassword, ex.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Missing_certificate_file_is_a_coded_error()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"pz-azuread-missing-{Guid.NewGuid():N}.pfx");
+        var ex = Assert.Throws<PzConnectorException>(() => CertOptions(path, CertPassword).CreateCredential(out _));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("certificate_path", ex.Message);
+        Assert.DoesNotContain(CertPassword, ex.Message);
     }
 
     private static string WriteThrowawayCertificate()
@@ -160,7 +249,7 @@ public class AzureAdAuthTests
     {
         var clock = new Clock();
         var cred = new FakeCredential(() => new AccessToken("t", clock.Now.AddHours(1)));
-        using var auth = new AzureAdAuthenticator(cred, Scope, clock);
+        using var auth = new AzureAdAuthenticator(cred, Scope, "service_principal", clock);
 
         using var first = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
         await auth.ApplyAsync(first, CancellationToken.None).AsTask().WaitAsync(Timeout);
@@ -182,11 +271,11 @@ public class AzureAdAuthTests
     public async Task A_failing_credential_surfaces_as_a_classified_connector_exception()
     {
         var cred = new FakeCredential(() => throw new CredentialUnavailableException("no managed identity here; Trace ID: abc"));
-        using var auth = new AzureAdAuthenticator(cred, Scope, new Clock(), "managed_identity");
+        using var auth = new AzureAdAuthenticator(cred, Scope, "managed_identity", new Clock());
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
         var ex = await Assert.ThrowsAsync<PzConnectorException>(
             async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
-        Assert.Contains("credential_chain", ex.Message);
+        Assert.Contains("no managed identity is available here (are you running outside Azure? use `credential_chain` to fall back to `az login`)", ex.Message);
         Assert.DoesNotContain("Trace ID", ex.Message);
     }
 
@@ -195,7 +284,7 @@ public class AzureAdAuthTests
     {
         var ex = AzureAdAuth.Classify(new CredentialUnavailableException("ManagedIdentityCredential authentication unavailable"), "managed_identity");
         Assert.False(ex.IsTransient);
-        Assert.Contains("credential_chain", ex.Message);
+        Assert.Contains("no managed identity is available here (are you running outside Azure? use `credential_chain` to fall back to `az login`)", ex.Message);
     }
 
     [Fact]
@@ -242,5 +331,56 @@ public class AzureAdAuthTests
     {
         var inner = new AuthenticationFailedException("failed", new RequestFailedException(400, "bad"));
         Assert.False(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+    }
+
+    [Theory]
+    [InlineData(429, "service_not_available")]
+    [InlineData(503, "service_not_available")]
+    [InlineData(0, "request_timeout")]
+    public void Msal_throttling_or_timeout_is_transient(int status, string code)
+    {
+        var inner = new AuthenticationFailedException("failed", new MsalServiceException(code, "x", status));
+        Assert.True(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+    }
+
+    [Fact]
+    public void Msal_invalid_client_stays_permanent()
+    {
+        var inner = new AuthenticationFailedException("failed", new MsalServiceException("invalid_client", "x", 400));
+        Assert.False(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+    }
+
+    [Fact]
+    public void Timeouts_are_transient()
+    {
+        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("f", new TimeoutException()), "credential_chain").IsTransient);
+        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("f", new TaskCanceledException()), "credential_chain").IsTransient);
+    }
+
+    private sealed class BlockingCredential : TokenCredential
+    {
+        public readonly TaskCompletionSource Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public override async ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken)
+        {
+            Started.SetResult();
+            await Task.Delay(System.Threading.Timeout.Infinite, cancellationToken);
+            return default;
+        }
+    }
+
+    [Fact]
+    public async Task Disposal_cancellation_is_not_reported_as_a_transient_failure()
+    {
+        var cred = new BlockingCredential();
+        var auth = new AzureAdAuthenticator(cred, Scope, "service_principal", new Clock());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+        var pending = auth.ApplyAsync(request, CancellationToken.None).AsTask();
+        await cred.Started.Task.WaitAsync(Timeout);
+        auth.Dispose();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () => await pending.WaitAsync(Timeout));
     }
 }

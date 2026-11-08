@@ -1,8 +1,10 @@
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
 using Azure;
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.Identity.Client;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Auth;
@@ -84,8 +86,11 @@ internal sealed record AzureAdOptions(
             : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(certificate, baseDir), password, scope!, authority);
     }
 
-    public TokenCredential CreateCredential()
+    /// <summary>Builds the Azure.Identity credential. <paramref name="owned"/> is the loaded certificate
+    /// (null unless a password-protected certificate was loaded); the caller disposes it with the credential.</summary>
+    public TokenCredential CreateCredential(out IDisposable? owned)
     {
+        owned = null;
         switch (Method)
         {
             case "service_principal" when CertificatePath is { } path:
@@ -95,10 +100,14 @@ internal sealed record AzureAdOptions(
                     certOptions.AuthorityHost = AuthorityHost;
                 }
 
-                // The path overload cannot take a password, so a protected file is loaded here.
-                return CertificatePassword is { } pfxPassword
-                    ? new ClientCertificateCredential(TenantId, ClientId, X509CertificateLoader.LoadPkcs12FromFile(path, pfxPassword), certOptions)
-                    : new ClientCertificateCredential(TenantId, ClientId, path, certOptions);
+                if (CertificatePassword is not { } pfxPassword)
+                {
+                    return new ClientCertificateCredential(TenantId, ClientId, path, certOptions);
+                }
+
+                var certificate = LoadProtectedCertificate(path, pfxPassword);
+                owned = certificate;
+                return new ClientCertificateCredential(TenantId, ClientId, certificate, certOptions);
             case "service_principal":
                 var secretOptions = new ClientSecretCredentialOptions();
                 if (AuthorityHost is not null)
@@ -123,15 +132,51 @@ internal sealed record AzureAdOptions(
         }
     }
 
+    /// <summary>The authenticator for these options; it owns and disposes any certificate it loaded.</summary>
+    public AzureAdAuthenticator CreateAuthenticator(TimeProvider time)
+    {
+        var credential = CreateCredential(out var owned);
+        return new AzureAdAuthenticator(credential, Scope, Method, time, owned);
+    }
+
+    // The path overload of the credential cannot take a password, so the file is loaded here. PEM text means
+    // an encrypted PEM; anything else is PKCS#12. Ephemeral keys keep the private key off disk.
+    private static X509Certificate2 LoadProtectedCertificate(string path, string password)
+    {
+        try
+        {
+            using var reader = new StreamReader(path);
+            var buffer = new char[16];
+            var read = reader.ReadBlock(buffer, 0, buffer.Length);
+            return new string(buffer, 0, read).StartsWith("-----BEGIN", StringComparison.Ordinal)
+                ? X509Certificate2.CreateFromEncryptedPemFile(path, password)
+                : X509CertificateLoader.LoadPkcs12FromFile(path, password, X509KeyStorageFlags.EphemeralKeySet);
+        }
+        catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            // The framework text can echo paths and key details; only the config field is named.
+            throw new PzConnectorException(
+                "auth.certificate_path could not be loaded (a missing file, an unreadable file or a wrong certificate_password; "
+                + "a password-protected certificate must be PKCS#12 or an encrypted PEM)",
+                isTransient: false);
+        }
+    }
+
     private static string? Text(IReadOnlyDictionary<string, object?> auth, string key)
         => auth.TryGetValue(key, out var raw) && YamlScalarText.Of(raw) is { } text && !string.IsNullOrWhiteSpace(text) ? text : null;
 }
 
 /// <summary>Fetches bearer tokens from any Azure.Identity credential. Failures are reported through
-/// <see cref="AzureAdAuth.Classify"/>.</summary>
-internal sealed class AzureAdAuthenticator(TokenCredential credential, string scope, TimeProvider time, string method = "")
+/// <see cref="AzureAdAuth.Classify"/>. <paramref name="owned"/> (a loaded certificate) is disposed with it.</summary>
+internal sealed class AzureAdAuthenticator(TokenCredential credential, string scope, string method, TimeProvider time, IDisposable? owned = null)
     : CachedTokenAuthenticator(time)
 {
+    public override void Dispose()
+    {
+        base.Dispose();
+        owned?.Dispose();
+    }
+
     protected override async ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
     {
         try
@@ -139,7 +184,8 @@ internal sealed class AzureAdAuthenticator(TokenCredential credential, string sc
             var token = await credential.GetTokenAsync(new TokenRequestContext([scope]), ct).ConfigureAwait(false);
             return new FetchedToken(token.Token, token.ExpiresOn);
         }
-        catch (Exception ex) when (ex is AuthenticationFailedException or CredentialUnavailableException or RequestFailedException)
+        catch (Exception ex) when (!ct.IsCancellationRequested
+            && ex is AuthenticationFailedException or CredentialUnavailableException or RequestFailedException or TimeoutException or TaskCanceledException)
         {
             throw AzureAdAuth.Classify(ex, method);
         }
@@ -157,15 +203,19 @@ internal static partial class AzureAdAuth
     {
         if (ex is CredentialUnavailableException)
         {
-            var hint = method == "managed_identity"
-                ? "no managed identity is available in this environment; use method credential_chain to also try developer and CLI credentials"
-                : "no credential in the chain could be used; check the environment, or set method to service_principal";
-            return new PzConnectorException($"azure_ad sign-in unavailable ({method}): {hint}", isTransient: false);
+            return new PzConnectorException(
+                method == "managed_identity"
+                    ? "no managed identity is available here (are you running outside Azure? use `credential_chain` to fall back to `az login`)"
+                    : $"azure_ad sign-in unavailable ({method}): no credential could be used; check the environment, or use method service_principal",
+                isTransient: false);
         }
 
         for (var inner = ex; inner is not null; inner = inner.InnerException)
         {
-            if (inner is RequestFailedException { Status: 408 or 429 or >= 500 and <= 599 } || inner is HttpRequestException)
+            if (inner is RequestFailedException { Status: 408 or 429 or >= 500 and <= 599 }
+                or MsalServiceException { StatusCode: 408 or 429 or >= 500 and <= 599 }
+                or MsalServiceException { ErrorCode: "request_timeout" or "service_not_available" }
+                or HttpRequestException or TimeoutException or TaskCanceledException)
             {
                 return new PzConnectorException($"azure_ad token request failed temporarily ({method}); it will be retried", isTransient: true);
             }
