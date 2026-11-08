@@ -86,20 +86,39 @@ internal sealed record AzureAdOptions(
             : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(certificate, baseDir), password, scope!, authority);
     }
 
+    /// <summary>The options every credential is built from. Connectors never retry internally (the engine retries
+    /// the transient exception), and a black-holed authority must fail within the connection timeout.</summary>
+    internal TokenCredentialOptions CreateCredentialOptions(TimeSpan timeout)
+    {
+        TokenCredentialOptions options = Method switch
+        {
+            "service_principal" when CertificatePath is not null => new ClientCertificateCredentialOptions(),
+            "service_principal" => new ClientSecretCredentialOptions(),
+            "managed_identity" => new ManagedIdentityCredentialOptions(
+                ClientId is { } id ? ManagedIdentityId.FromUserAssignedClientId(id) : ManagedIdentityId.SystemAssigned),
+            _ => new DefaultAzureCredentialOptions(),
+        };
+        // Managed identity talks to the local identity endpoint; an authority host does not apply.
+        if (AuthorityHost is not null && Method != "managed_identity")
+        {
+            options.AuthorityHost = AuthorityHost;
+        }
+
+        options.Retry.MaxRetries = 0;
+        options.Retry.NetworkTimeout = timeout;
+        return options;
+    }
+
     /// <summary>Builds the Azure.Identity credential. <paramref name="owned"/> is the loaded certificate
     /// (null unless a password-protected certificate was loaded); the caller disposes it with the credential.</summary>
-    public TokenCredential CreateCredential(out IDisposable? owned)
+    public TokenCredential CreateCredential(TimeSpan timeout, out IDisposable? owned)
     {
         owned = null;
-        switch (Method)
+        var options = CreateCredentialOptions(timeout);
+        switch (options)
         {
-            case "service_principal" when CertificatePath is { } path:
-                var certOptions = new ClientCertificateCredentialOptions();
-                if (AuthorityHost is not null)
-                {
-                    certOptions.AuthorityHost = AuthorityHost;
-                }
-
+            case ClientCertificateCredentialOptions certOptions:
+                var path = CertificatePath!;
                 if (CertificatePassword is not { } pfxPassword)
                 {
                     return new ClientCertificateCredential(TenantId, ClientId, path, certOptions);
@@ -108,34 +127,19 @@ internal sealed record AzureAdOptions(
                 var certificate = LoadProtectedCertificate(path, pfxPassword);
                 owned = certificate;
                 return new ClientCertificateCredential(TenantId, ClientId, certificate, certOptions);
-            case "service_principal":
-                var secretOptions = new ClientSecretCredentialOptions();
-                if (AuthorityHost is not null)
-                {
-                    secretOptions.AuthorityHost = AuthorityHost;
-                }
-
+            case ClientSecretCredentialOptions secretOptions:
                 return new ClientSecretCredential(TenantId, ClientId, ClientSecret, secretOptions);
-            case "managed_identity":
-                // Managed identity talks to the local identity endpoint; an authority host does not apply.
-                return ClientId is { } id
-                    ? new ManagedIdentityCredential(ManagedIdentityId.FromUserAssignedClientId(id))
-                    : new ManagedIdentityCredential();
+            case ManagedIdentityCredentialOptions identityOptions:
+                return new ManagedIdentityCredential(identityOptions);
             default:
-                var chainOptions = new DefaultAzureCredentialOptions();
-                if (AuthorityHost is not null)
-                {
-                    chainOptions.AuthorityHost = AuthorityHost;
-                }
-
-                return new DefaultAzureCredential(chainOptions);
+                return new DefaultAzureCredential((DefaultAzureCredentialOptions)options);
         }
     }
 
     /// <summary>The authenticator for these options; it owns and disposes any certificate it loaded.</summary>
-    public AzureAdAuthenticator CreateAuthenticator(TimeProvider time)
+    public AzureAdAuthenticator CreateAuthenticator(TimeSpan timeout, TimeProvider time)
     {
-        var credential = CreateCredential(out var owned);
+        var credential = CreateCredential(timeout, out var owned);
         return new AzureAdAuthenticator(credential, Scope, Method, time, owned);
     }
 

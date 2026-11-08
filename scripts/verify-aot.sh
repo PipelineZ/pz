@@ -162,6 +162,7 @@ run_http_signin_case() {
 api:
   connector: http
   base_url: http://127.0.0.1:1
+  timeout_seconds: 5
   auth: $2
   entities:
     items:
@@ -189,7 +190,7 @@ run_http_signin_case http-azure-ad \
   'azure_ad'
 run_http_signin_case http-oauth2 \
   "{ type: oauth2_client_credentials, token_url: 'http://127.0.0.1:1/token', client_id: aot, client_secret: aot-secret }" \
-  'token endpoint http://127.0.0.1:1/token'
+  'token endpoint http://127.0.0.1:1 '
 
 echo "-- pz mcp: initialize handshake + tools/list --"
 MCP_OUT="$( (printf '%s\n' \

@@ -48,7 +48,7 @@ internal static class HttpAuth
         {
             case AzureAd:
                 return AzureAdOptions.TryParse(auth, baseDir, errors) is { } azure
-                    ? new Parsed(null, time => azure.CreateAuthenticator(time), azure.CertificatePath)
+                    ? new Parsed(null, time => azure.CreateAuthenticator(timeout, time), azure.CertificatePath)
                     : none;
             case OAuth2ClientCredentials:
                 return OAuth2ClientCredentialsOptions.TryParse(auth, errors) is { } oauth

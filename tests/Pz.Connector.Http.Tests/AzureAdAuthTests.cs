@@ -102,9 +102,36 @@ public class AzureAdAuthTests
 
     private static TokenCredential Create(AzureAdOptions o)
     {
-        var credential = o.CreateCredential(out var owned);
+        var credential = o.CreateCredential(TimeSpan.FromSeconds(7), out var owned);
         owned?.Dispose();
         return credential;
+    }
+
+    [Theory]
+    [InlineData("service_principal", false)]
+    [InlineData("service_principal", true)]
+    [InlineData("managed_identity", false)]
+    [InlineData("credential_chain", false)]
+    public void Credential_options_carry_the_connection_timeout_and_no_sdk_retries(string method, bool certificate)
+    {
+        var fields = new List<(string, object?)> { ("method", method), ("scope", Scope) };
+        if (method == "service_principal")
+        {
+            fields.AddRange([("tenant_id", "t"), ("client_id", "c"), certificate ? ("certificate_path", (object?)"app.pem") : ("client_secret", "s")]);
+        }
+
+        var options = Parse(Auth(fields.ToArray())).CreateCredentialOptions(TimeSpan.FromSeconds(7));
+        Assert.Equal(0, options.Retry.MaxRetries);
+        Assert.Equal(TimeSpan.FromSeconds(7), options.Retry.NetworkTimeout);
+    }
+
+    [Fact]
+    public void An_sdk_network_timeout_is_transient()
+    {
+        var timeout = new TaskCanceledException("The operation was cancelled because it exceeded the configured timeout of 0:00:05");
+        Assert.True(AzureAdAuth.Classify(new AuthenticationFailedException("failed", timeout), "service_principal").IsTransient);
+        Assert.True(AzureAdAuth.Classify(new RequestFailedException("timeout", timeout), "service_principal").IsTransient);
+        Assert.True(AzureAdAuth.Classify(new OperationCanceledException("timeout", timeout), "service_principal").IsTransient);
     }
 
     [Fact]
@@ -170,7 +197,7 @@ public class AzureAdAuthTests
         {
             try
             {
-                var credential = CertOptions(path, CertPassword).CreateCredential(out var owned);
+                var credential = CertOptions(path, CertPassword).CreateCredential(TimeSpan.FromSeconds(7), out var owned);
                 Assert.IsType<ClientCertificateCredential>(credential);
                 Assert.NotNull(owned);
                 owned.Dispose();
@@ -190,7 +217,7 @@ public class AzureAdAuthTests
         var path = kind == "pfx" ? WritePfx(CertPassword) : WriteEncryptedPem(CertPassword);
         try
         {
-            var ex = Assert.Throws<PzConnectorException>(() => CertOptions(path, "wrong-pw-123").CreateCredential(out _));
+            var ex = Assert.Throws<PzConnectorException>(() => CertOptions(path, "wrong-pw-123").CreateCredential(TimeSpan.FromSeconds(7), out _));
             Assert.False(ex.IsTransient);
             Assert.Contains("certificate_path", ex.Message);
             Assert.DoesNotContain("wrong-pw-123", ex.Message);
@@ -206,7 +233,7 @@ public class AzureAdAuthTests
     public void Missing_certificate_file_is_a_coded_error()
     {
         var path = Path.Combine(Path.GetTempPath(), $"pz-azuread-missing-{Guid.NewGuid():N}.pfx");
-        var ex = Assert.Throws<PzConnectorException>(() => CertOptions(path, CertPassword).CreateCredential(out _));
+        var ex = Assert.Throws<PzConnectorException>(() => CertOptions(path, CertPassword).CreateCredential(TimeSpan.FromSeconds(7), out _));
         Assert.False(ex.IsTransient);
         Assert.Contains("certificate_path", ex.Message);
         Assert.DoesNotContain(CertPassword, ex.Message);
