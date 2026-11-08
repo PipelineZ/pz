@@ -31,7 +31,7 @@ public sealed record OAuth2ClientCredentialsOptions(
         var tokenUrl = RequiredText(auth, "token_url", errors);
         var clientId = RequiredText(auth, "client_id", errors);
         var clientSecret = RequiredText(auth, "client_secret", errors);
-        var scope = auth.TryGetValue("scope", out var scopeRaw) ? ScalarText(scopeRaw) : null;
+        var scope = OptionalText(auth, "scope", errors);
         if (string.IsNullOrWhiteSpace(scope))
         {
             scope = null;
@@ -54,7 +54,7 @@ public sealed record OAuth2ClientCredentialsOptions(
         }
 
         var basic = false;
-        if (auth.TryGetValue("client_auth", out var clientAuthRaw) && ScalarText(clientAuthRaw) is { } clientAuth)
+        if (OptionalText(auth, "client_auth", errors) is { } clientAuth)
         {
             switch (clientAuth)
             {
@@ -82,7 +82,11 @@ public sealed record OAuth2ClientCredentialsOptions(
 
                 foreach (var (key, value) in map.Where(kv => !ReservedParams.Contains(kv.Key)))
                 {
-                    if (ScalarText(value) is { } text)
+                    if (NonScalarKind(value) is { } kind)
+                    {
+                        errors.Add($"auth.params.{key} must be a single value, not a {kind}");
+                    }
+                    else if (ScalarText(value) is { } text)
                     {
                         extra[key] = text;
                     }
@@ -103,7 +107,14 @@ public sealed record OAuth2ClientCredentialsOptions(
 
     private static string? RequiredText(IReadOnlyDictionary<string, object?> auth, string key, List<string> errors)
     {
-        var text = auth.TryGetValue(key, out var raw) ? ScalarText(raw) : null;
+        auth.TryGetValue(key, out var raw);
+        if (NonScalarKind(raw) is { } kind)
+        {
+            errors.Add($"auth.{key} must be a single value, not a {kind}");
+            return null;
+        }
+
+        var text = ScalarText(raw);
         if (string.IsNullOrWhiteSpace(text))
         {
             errors.Add($"auth.{key} is required");
@@ -113,15 +124,34 @@ public sealed record OAuth2ClientCredentialsOptions(
         return text;
     }
 
+    // Null when absent or blank; a list or map is an error rather than a stringified CLR type name.
+    private static string? OptionalText(IReadOnlyDictionary<string, object?> auth, string key, List<string> errors)
+    {
+        auth.TryGetValue(key, out var raw);
+        if (NonScalarKind(raw) is { } kind)
+        {
+            errors.Add($"auth.{key} must be a single value, not a {kind}");
+            return null;
+        }
+
+        return ScalarText(raw) is { } text && !string.IsNullOrWhiteSpace(text) ? text : null;
+    }
+
+    private static string? NonScalarKind(object? value) => value switch
+    {
+        System.Collections.IDictionary or IReadOnlyDictionary<string, object?> => "map",
+        System.Collections.IEnumerable and not string => "list",
+        _ => null,
+    };
+
     // YAML values arrive typed; they go on the wire as text, so bools are lowercase and numbers invariant.
     private static string? ScalarText(object? value) => value switch
     {
         null => null,
         string s => s,
         bool b => b ? "true" : "false",
-        IReadOnlyDictionary<string, object?> => null,
         IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
-        _ => value.ToString(),
+        _ => null,
     };
 }
 

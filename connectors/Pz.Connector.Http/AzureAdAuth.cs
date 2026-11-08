@@ -30,49 +30,62 @@ internal sealed record AzureAdOptions(
     public static AzureAdOptions? TryParse(IReadOnlyDictionary<string, object?> auth, string? baseDir, List<string> errors)
     {
         var before = errors.Count;
+        var refused = new HashSet<string>();
+        string? Text(string key)
+        {
+            auth.TryGetValue(key, out var raw);
+            if (YamlScalarText.NonScalarKind(raw) is { } kind)
+            {
+                errors.Add($"auth.{key} must be a single value, not a {kind}");
+                refused.Add(key);
+                return null;
+            }
 
-        var method = Text(auth, "method");
-        if (method is null)
+            return YamlScalarText.Of(raw) is { } text && !string.IsNullOrWhiteSpace(text) ? text : null;
+        }
+
+        var method = Text("method");
+        if (method is null && !refused.Contains("method"))
         {
             errors.Add($"auth.method is required (one of: {string.Join(", ", Methods)})");
         }
-        else if (!Methods.Contains(method))
+        else if (method is not null && !Methods.Contains(method))
         {
             errors.Add($"auth.method must be one of: {string.Join(", ", Methods)}");
         }
 
-        var scope = Text(auth, "scope");
-        if (scope is null)
+        var scope = Text("scope");
+        if (scope is null && !refused.Contains("scope"))
         {
             errors.Add("auth.scope is required (e.g. 'https://graph.microsoft.com/.default')");
         }
 
-        var tenantId = Text(auth, "tenant_id");
-        var clientId = Text(auth, "client_id");
-        var secret = Text(auth, "client_secret");
-        var certificate = Text(auth, "certificate_path");
-        var password = Text(auth, "certificate_password");
+        var tenantId = Text("tenant_id");
+        var clientId = Text("client_id");
+        var secret = Text("client_secret");
+        var certificate = Text("certificate_path");
+        var password = Text("certificate_password");
 
         if (method == "service_principal")
         {
-            if (tenantId is null)
+            if (tenantId is null && !refused.Contains("tenant_id"))
             {
                 errors.Add("auth.tenant_id is required for method service_principal");
             }
 
-            if (clientId is null)
+            if (clientId is null && !refused.Contains("client_id"))
             {
                 errors.Add("auth.client_id is required for method service_principal");
             }
 
-            if ((secret is null) == (certificate is null))
+            if ((secret is null) == (certificate is null) && !refused.Contains("client_secret") && !refused.Contains("certificate_path"))
             {
                 errors.Add("auth needs exactly one of client_secret or certificate_path for method service_principal");
             }
         }
 
         Uri? authority = null;
-        if (Text(auth, "authority_host") is { } host)
+        if (Text("authority_host") is { } host)
         {
             if (!Uri.TryCreate(host, UriKind.Absolute, out authority) || authority.Scheme != Uri.UriSchemeHttps)
             {
@@ -172,9 +185,6 @@ internal sealed record AzureAdOptions(
                 isTransient: false);
         }
     }
-
-    private static string? Text(IReadOnlyDictionary<string, object?> auth, string key)
-        => auth.TryGetValue(key, out var raw) && YamlScalarText.Of(raw) is { } text && !string.IsNullOrWhiteSpace(text) ? text : null;
 }
 
 /// <summary>Fetches bearer tokens from any Azure.Identity credential. Failures are reported through
@@ -199,6 +209,13 @@ internal sealed class AzureAdAuthenticator(TokenCredential credential, string sc
             && ex is AuthenticationFailedException or CredentialUnavailableException or RequestFailedException or TimeoutException or TaskCanceledException)
         {
             throw AzureAdAuth.Classify(ex, method, scope);
+        }
+        catch (ArgumentException) when (!ct.IsCancellationRequested)
+        {
+            // The SDK rejects malformed settings (e.g. a bad tenant_id) with an exception whose text can echo them.
+            throw new PzConnectorException(
+                $"azure_ad sign-in failed ({method}): the credential settings were refused; check tenant_id, client_id and scope",
+                isTransient: false);
         }
     }
 }

@@ -8,6 +8,14 @@ namespace Pz.Connector.Http;
 /// whose culture writes a comma.</summary>
 internal static class YamlScalarText
 {
+    /// <summary>"map" or "list" when <paramref name="value"/> is a YAML collection, else null.</summary>
+    public static string? NonScalarKind(object? value) => value switch
+    {
+        System.Collections.IDictionary or IReadOnlyDictionary<string, object?> => "map",
+        System.Collections.IEnumerable and not string => "list",
+        _ => null,
+    };
+
     public static string? Of(object? value) => value switch
     {
         null => null,

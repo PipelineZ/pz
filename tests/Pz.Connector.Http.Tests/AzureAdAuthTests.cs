@@ -306,6 +306,55 @@ public class AzureAdAuthTests
         Assert.DoesNotContain("Trace ID", ex.Message);
     }
 
+    [Theory]
+    [InlineData("scope")]
+    [InlineData("client_id")]
+    [InlineData("tenant_id")]
+    [InlineData("method")]
+    [InlineData("authority_host")]
+    public void A_list_or_map_where_a_single_value_is_expected_is_an_aggregated_error(string key)
+    {
+        var auth = Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"),
+            ("client_secret", "s"), ("authority_host", "https://login.example.com"));
+        auth[key] = new List<object?> { "a", "b" };
+        Assert.Contains($"auth.{key} must be a single value, not a list", Errors(auth));
+
+        auth[key] = new Dictionary<string, object?> { ["x"] = "y" };
+        Assert.Contains($"auth.{key} must be a single value, not a map", Errors(auth));
+    }
+
+    [Fact]
+    public void Several_non_scalar_values_are_all_reported_together()
+    {
+        var errors = Errors(Auth(("method", "service_principal"), ("scope", new List<object?> { "a" }), ("tenant_id", "t"),
+            ("client_id", new Dictionary<string, object?>()), ("client_secret", "s")));
+        Assert.Contains("auth.scope must be a single value, not a list", errors);
+        Assert.Contains("auth.client_id must be a single value, not a map", errors);
+        Assert.DoesNotContain(errors, e => e.Contains("System."));
+    }
+
+    [Fact]
+    public void A_non_scalar_certificate_path_or_password_is_refused()
+    {
+        var errors = Errors(Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"),
+            ("certificate_path", new List<object?> { "a" }), ("certificate_password", new Dictionary<string, object?>())));
+        Assert.Contains("auth.certificate_path must be a single value, not a list", errors);
+        Assert.Contains("auth.certificate_password must be a single value, not a map", errors);
+    }
+
+    [Fact]
+    public async Task An_argument_exception_from_the_credential_is_a_fixed_permanent_error()
+    {
+        var cred = new FakeCredential(() => throw new ArgumentException("scope 'S3CRET-ish' is bad"));
+        using var auth = new AzureAdAuthenticator(cred, Scope, "service_principal", new Clock());
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("azure_ad sign-in failed (service_principal)", ex.Message);
+        Assert.DoesNotContain("S3CRET", ex.Message);
+    }
+
     [Fact]
     public void Credential_unavailable_for_managed_identity_hints_at_credential_chain()
     {

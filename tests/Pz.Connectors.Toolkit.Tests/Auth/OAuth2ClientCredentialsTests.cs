@@ -42,6 +42,42 @@ public class OAuth2ClientCredentialsTests
             async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
     }
 
+    [Theory]
+    [InlineData("scope")]
+    [InlineData("client_id")]
+    [InlineData("client_secret")]
+    [InlineData("token_url")]
+    [InlineData("client_auth")]
+    public void A_list_or_map_where_a_single_value_is_expected_is_an_aggregated_error(string key)
+    {
+        foreach (var (value, kind) in new (object, string)[]
+        {
+            (new List<object?> { "a", "b" }, "list"),
+            (new Dictionary<string, object?> { ["x"] = "y" }, "map"),
+        })
+        {
+            var errors = new List<string>();
+            var block = Block("https://login.example.com/token", d => d[key] = value);
+            Assert.Null(OAuth2ClientCredentialsOptions.TryParse(block, errors));
+            Assert.Contains($"auth.{key} must be a single value, not a {kind}", errors);
+            Assert.DoesNotContain(errors, e => e.Contains("System.") || e.Contains("is required"));
+        }
+    }
+
+    [Fact]
+    public void A_list_or_map_params_value_is_refused_by_name()
+    {
+        var errors = new List<string>();
+        var block = Block("https://login.example.com/token", d => d["params"] = new Dictionary<string, object?>
+        {
+            ["audience"] = new List<object?> { "a" },
+            ["resource"] = new Dictionary<string, object?> { ["k"] = "v" },
+        });
+        Assert.Null(OAuth2ClientCredentialsOptions.TryParse(block, errors));
+        Assert.Contains("auth.params.audience must be a single value, not a list", errors);
+        Assert.Contains("auth.params.resource must be a single value, not a map", errors);
+    }
+
     [Fact]
     public void Parses_a_full_block()
     {
