@@ -50,13 +50,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   read different members of the same archive, each with its own format and columns). `if_missing: empty` reads zero
   rows when no member matches, and emits a notice naming the dataset and glob. The default `error` lists the entries.
   `file_column` adds the member path as a column; raw mode (no `columns:`) lands an exact envelope with `payload`,
-  `pz_file`, `pz_row` and `pz_fetched_at`. CSV and TSV also take `delimiter`, `header`, `skip_lines` and `encoding`.
+  `pz_file`, `pz_row` and `pz_fetched_at` (plus the cursor column when the dataset declares one). CSV takes
+  `delimiter` (TSV fixes it to tab and rejects it); CSV and TSV take `header` and `skip_lines`; `encoding`
+  (`utf-8`, `utf-16`, `iso-8859-1`) applies to every format.
   Files stream through a temp file that is always deleted; `max_download_mb` on the connection (default 4096) caps the
   download, and decompressed bytes are capped at 20 times that, so a zip bomb fails instead of filling the disk. A
   `200` response with an error-page content type (an HTML login page, or a JSON error for a non-JSON format) is refused
   instead of landed as rows. An `export:` block covers asynchronous exports: the dataset's request (often a `method:
   post`) starts the job, `status_path` is polled until `status_pointer` reaches a `ready` value (or fails on a `failed`
-  one, quoting `message_pointer`), then the file is downloaded from `download_pointer` or `download_path`. The start
+  one, quoting `message_pointer`), then the file is downloaded from `download_pointer` or `download_path`. Polling defaults to every 10 seconds
+  (`poll_interval_seconds`) and gives up after 30 minutes (`timeout_minutes`). The start
   request is never retried by the gate, so a 503 cannot create a duplicate job; a timeout is transient and the engine
   retries with a new job. A pre-signed download URL on another host must be in `allow_hosts` and is fetched without
   credentials. `{job_id}` and the engine bindings expand inside `status_path` and `download_path`. File datasets take
