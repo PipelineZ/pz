@@ -113,7 +113,17 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             return new ConnectionCheck(false, string.Join("; ", errors));
         }
 
-        var bound = connection.Bind(TimeProvider.System);
+        // Binding builds the credential (and loads a certificate), so its failures are sign-in failures too.
+        HttpConnectionConfig bound;
+        try
+        {
+            bound = connection.Bind(TimeProvider.System);
+        }
+        catch (PzConnectorException ex)
+        {
+            return new ConnectionCheck(false, "sign-in failed: " + ex.Message);
+        }
+
         try
         {
             using var client = HttpSource.CreateClient(connection);

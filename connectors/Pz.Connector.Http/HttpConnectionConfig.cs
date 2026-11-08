@@ -232,7 +232,8 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             return null;
         }
 
-        var root = Path.GetFullPath(baseDir) + Path.DirectorySeparatorChar;
-        return Path.GetFullPath(certificatePath).StartsWith(root, StringComparison.Ordinal) ? certificatePath : null;
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(baseDir)) + Path.DirectorySeparatorChar;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return Path.GetFullPath(certificatePath).StartsWith(root, comparison) ? certificatePath : null;
     }
 }

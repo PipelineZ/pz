@@ -100,6 +100,19 @@ public class AzureAdAuthTests
         Assert.Equal(Path.GetFullPath("/proj/certs/app.pem"), o.CertificatePath);
     }
 
+    [Theory]
+    [InlineData("~/certs/app.pem", "certs/app.pem")]
+    [InlineData("~", "")]
+    public void A_home_relative_certificate_path_resolves_under_the_user_profile(string configured, string rest)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var o = Parse(
+            Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"),
+                ("certificate_path", configured)),
+            "/proj");
+        Assert.Equal(rest.Length == 0 ? home : Path.Combine(home, rest), o.CertificatePath);
+    }
+
     private static TokenCredential Create(AzureAdOptions o)
     {
         var credential = o.CreateCredential(TimeSpan.FromSeconds(7), out var owned);

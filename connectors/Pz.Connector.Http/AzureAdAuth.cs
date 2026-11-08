@@ -96,7 +96,21 @@ internal sealed record AzureAdOptions(
 
         return errors.Count > before
             ? null
-            : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(certificate, baseDir), password, scope!, authority);
+            : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(ExpandHome(certificate), baseDir), password, scope!, authority);
+    }
+
+    // Neither the shared project-relative resolver nor the credential library expands '~', so a home-relative
+    // certificate path would never be found.
+    private static string? ExpandHome(string? path)
+    {
+        if (path is null || path[0] != '~'
+            || (path.Length > 1 && path[1] != Path.DirectorySeparatorChar && path[1] != Path.AltDirectorySeparatorChar))
+        {
+            return path;
+        }
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return home.Length == 0 ? path : Path.Combine(home, path[1..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
     }
 
     /// <summary>Non-blocking <c>pz validate</c> diagnostics for these options.</summary>

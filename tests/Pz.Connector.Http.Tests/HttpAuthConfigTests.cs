@@ -186,6 +186,49 @@ public class HttpAuthConfigTests
     }
 
     [Fact]
+    public void A_home_relative_certificate_does_not_warn_even_when_the_project_is_the_working_directory()
+    {
+        var auth = AzureAd("service_principal");
+        auth.Remove("client_secret");
+        auth["certificate_path"] = "~/certs/app.pem";
+        var errors = new List<string>();
+        var parsed = HttpConnectionConfig.Parse(
+            Config("https://api.example.com", auth, Directory.GetCurrentDirectory()), errors)!;
+        Assert.Empty(errors);
+        Assert.Empty(parsed.Warnings());
+    }
+
+    [Fact]
+    public void A_base_dir_with_a_trailing_separator_still_warns_for_an_in_project_certificate()
+    {
+        var auth = AzureAd("service_principal");
+        auth.Remove("client_secret");
+        auth["certificate_path"] = "certs/app.pem";
+        var errors = new List<string>();
+        var baseDir = Path.GetFullPath("/proj") + Path.DirectorySeparatorChar;
+        var parsed = HttpConnectionConfig.Parse(Config("https://api.example.com", auth, baseDir), errors)!;
+        Assert.Empty(errors);
+        Assert.Contains("certificate_path", Assert.Single(parsed.Warnings()), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Check_connection_reports_a_certificate_load_failure_as_a_sign_in_failure()
+    {
+        var auth = AzureAd("service_principal");
+        auth.Remove("client_secret");
+        auth["certificate_path"] = Path.Combine(Path.GetTempPath(), $"pz-missing-{Guid.NewGuid():N}.pfx");
+        auth["certificate_password"] = "Cert-P4ss-xyz";
+
+        var check = await new HttpConnector().CheckConnectionAsync(
+            Config("https://api.example.com", auth), CancellationToken.None);
+
+        Assert.False(check.Ok);
+        Assert.StartsWith("sign-in failed", check.Message, StringComparison.Ordinal);
+        Assert.Contains("certificate_path", check.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Cert-P4ss-xyz", check.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Certificate_outside_the_project_does_not_warn()
     {
         var auth = AzureAd("service_principal");
