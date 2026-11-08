@@ -145,4 +145,74 @@ public class CachedTokenAuthenticatorTests
         Assert.Equal("Bearer T", Bearer(r));
         Assert.Equal(AuthResponseOutcome.Unchanged, auth.OnResponse(r, 401));
     }
+
+    private static TaskCompletionSource NewGate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    [Fact]
+    public async Task A_token_shorter_than_the_refresh_margin_is_still_reused_and_shared()
+    {
+        var clock = new ManualClock();
+        var auth = new CountingAuthenticator(clock, TimeSpan.FromSeconds(60)) { Gate = NewGate() };
+        var requests = Enumerable.Range(0, 5).Select(_ => Req()).ToArray();
+        var tasks = requests.Select(r => auth.ApplyAsync(r, default).AsTask()).ToArray();
+        auth.Gate.SetResult();
+        await Task.WhenAll(tasks);
+        Assert.Equal(1, auth.Fetches);
+        clock.Advance(TimeSpan.FromSeconds(29));
+        await auth.ApplyAsync(Req(), default);
+        Assert.Equal(1, auth.Fetches);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        var r = Req();
+        await auth.ApplyAsync(r, default);
+        Assert.Equal(2, auth.Fetches);
+        Assert.Equal("Bearer token-2", Bearer(r));
+    }
+
+    [Fact]
+    public async Task A_failed_fetch_reaches_every_waiter_once_and_is_not_cached()
+    {
+        var auth = new CountingAuthenticator(new ManualClock()) { Gate = NewGate(), FailNext = true };
+        var tasks = Enumerable.Range(0, 5).Select(_ => auth.ApplyAsync(Req(), default).AsTask()).ToArray();
+        auth.Gate.SetResult();
+        var errors = new List<PzConnectorException>();
+        foreach (var t in tasks)
+        {
+            errors.Add(await Assert.ThrowsAsync<PzConnectorException>(() => t));
+        }
+
+        Assert.Equal(1, auth.Fetches);
+        Assert.All(errors, e => Assert.Same(errors[0], e));
+        var r = Req();
+        await auth.ApplyAsync(r, default);
+        Assert.Equal(2, auth.Fetches);
+        Assert.Equal("Bearer token-2", Bearer(r));
+    }
+
+    [Fact]
+    public async Task One_callers_cancellation_does_not_cancel_the_shared_fetch()
+    {
+        var auth = new CountingAuthenticator(new ManualClock()) { Gate = NewGate() };
+        using var cts = new CancellationTokenSource();
+        var first = auth.ApplyAsync(Req(), cts.Token).AsTask();
+        var others = Enumerable.Range(0, 4).Select(_ => Req()).ToArray();
+        var tasks = others.Select(r => auth.ApplyAsync(r, default).AsTask()).ToArray();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        auth.Gate.SetResult();
+        await Task.WhenAll(tasks);
+        Assert.All(others, r => Assert.Equal("Bearer token-1", Bearer(r)));
+        Assert.Equal(1, auth.Fetches);
+    }
+
+    [Fact]
+    public async Task A_second_401_for_the_same_never_accepted_token_is_also_fresh()
+    {
+        var auth = new CountingAuthenticator(new ManualClock());
+        var r1 = Req();
+        var r2 = Req();
+        await auth.ApplyAsync(r1, default);
+        await auth.ApplyAsync(r2, default);
+        Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(r1, 401));
+        Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(r2, 401));
+    }
 }

@@ -5,19 +5,24 @@ namespace Pz.Connectors.Toolkit.Auth;
 /// <summary>A bearer token and its absolute expiry (null = no expiry known).</summary>
 public sealed record FetchedToken(string AccessToken, DateTimeOffset? ExpiresOn);
 
-/// <summary>Caches one bearer token, refreshes it <see cref="RefreshMargin"/> before expiry, and
-/// shares a single in-flight fetch between concurrent callers. Each fetched token has a
-/// generation stamped on the requests that carry it, so a 401 for an older token cannot discard
-/// a newer one. Subclasses must not put the access token in any exception message.</summary>
+/// <summary>Caches one bearer token, refreshes it <see cref="RefreshMargin"/> before expiry
+/// (at most half its lifetime, so short-lived tokens are still reused), and shares a single
+/// in-flight fetch between concurrent callers. The fetch outlives any one caller's cancellation;
+/// it is cancelled only by <see cref="Dispose"/>. A failed fetch reaches every current waiter once
+/// and is not cached. Each fetched token has a generation stamped on the requests that carry it,
+/// so a 401 for an older token cannot discard a newer one. Subclasses must not put the access
+/// token in any exception message.</summary>
 public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuthenticator, IDisposable
 {
     public static readonly TimeSpan RefreshMargin = TimeSpan.FromMinutes(5);
 
     private static readonly HttpRequestOptionsKey<int> GenerationKey = new("pz.auth.token-generation");
 
-    private readonly SemaphoreSlim _fetchGate = new(1, 1);
     private readonly Lock _lock = new();
-    private FetchedToken? _token;
+    private readonly CancellationTokenSource _disposed = new();
+    private TaskCompletionSource<(string Token, int Generation)>? _inFlight;
+    private string? _token;
+    private DateTimeOffset? _refreshAt;
     private int _generation;
     private bool _accepted;
 
@@ -30,29 +35,40 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
     public async ValueTask ApplyAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        if (!TryGetCurrent(out var token, out var generation))
+        TaskCompletionSource<(string Token, int Generation)> flight;
+        var owner = false;
+        string token;
+        int generation;
+        lock (_lock)
         {
-            await _fetchGate.WaitAsync(ct).ConfigureAwait(false);
-            try
+            if (_token is { } cached && (_refreshAt is not { } at || time.GetUtcNow() < at))
             {
-                // Another caller may have fetched while this one waited for the gate.
-                if (!TryGetCurrent(out token, out generation))
+                token = cached;
+                generation = _generation;
+                flight = null!;
+            }
+            else
+            {
+                if (_inFlight is null)
                 {
-                    var fetched = await FetchTokenAsync(ct).ConfigureAwait(false);
-                    lock (_lock)
-                    {
-                        _token = fetched;
-                        _accepted = false;
-                        generation = ++_generation;
-                    }
-
-                    token = fetched.AccessToken;
+                    _inFlight = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    owner = true;
                 }
+
+                flight = _inFlight;
+                token = "";
+                generation = 0;
             }
-            finally
+        }
+
+        if (flight is not null)
+        {
+            if (owner)
             {
-                _fetchGate.Release();
+                _ = RunFetchAsync(flight);
             }
+
+            (token, generation) = await flight.Task.WaitAsync(ct).ConfigureAwait(false);
         }
 
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -68,10 +84,10 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
         lock (_lock)
         {
-            var current = generation == _generation && _token is not null;
+            var isLatest = generation == _generation;
             if (status is >= 200 and < 300)
             {
-                if (current)
+                if (isLatest && _token is not null)
                 {
                     _accepted = true;
                 }
@@ -84,36 +100,48 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                 return AuthResponseOutcome.Unchanged;
             }
 
-            if (!current)
+            if (!isLatest)
             {
                 return AuthResponseOutcome.TokenDiscarded;
             }
 
-            var wasAccepted = _accepted;
+            // The cache may already be cleared by an earlier 401 for this same generation;
+            // whether the token was ever accepted still decides the outcome.
             _token = null;
-            _accepted = false;
-            return wasAccepted ? AuthResponseOutcome.TokenDiscarded : AuthResponseOutcome.FreshTokenRejected;
+            return _accepted ? AuthResponseOutcome.TokenDiscarded : AuthResponseOutcome.FreshTokenRejected;
         }
     }
 
-    public virtual void Dispose()
-    {
-    }
+    public virtual void Dispose() => _disposed.Cancel();
 
-    private bool TryGetCurrent(out string token, out int generation)
+    private async Task RunFetchAsync(TaskCompletionSource<(string Token, int Generation)> flight)
     {
-        lock (_lock)
+        try
         {
-            if (_token is { } t && (t.ExpiresOn is not { } expires || time.GetUtcNow() < expires - RefreshMargin))
+            var fetched = await FetchTokenAsync(_disposed.Token).ConfigureAwait(false);
+            var now = time.GetUtcNow();
+            (string, int) result;
+            lock (_lock)
             {
-                token = t.AccessToken;
-                generation = _generation;
-                return true;
+                _token = fetched.AccessToken;
+                _refreshAt = fetched.ExpiresOn is { } expires
+                    ? expires - TimeSpan.FromTicks(Math.Clamp((expires - now).Ticks / 2, 0, RefreshMargin.Ticks))
+                    : null;
+                _accepted = false;
+                result = (fetched.AccessToken, ++_generation);
+                _inFlight = null;
             }
-        }
 
-        token = "";
-        generation = 0;
-        return false;
+            flight.SetResult(result);
+        }
+        catch (Exception ex)
+        {
+            lock (_lock)
+            {
+                _inFlight = null;
+            }
+
+            flight.SetException(ex);
+        }
     }
 }
