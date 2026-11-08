@@ -7,6 +7,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Security
+
+- **Build with .NET SDK 10.0.403 (runtime 10.0.14).** `global.json` now requires it, so the Native AOT compiler resolves
+  to `Microsoft.DotNet.ILCompiler` 10.0.14, which fixes the Brotli decoder out-of-bounds write (CVE-2026-111497,
+  GHSA-p3jp-9v83-76w9); with 10.0.400 the NuGet audit failed the build. The Rust workspace takes `pulldown-cmark`
+  0.13.6 (RUSTSEC-2026-0433, quadratic parsing; a build-time dependency).
+
 ## [0.17.0] - 2026-11-01
 
 ### Added
