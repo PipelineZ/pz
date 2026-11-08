@@ -18,7 +18,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **http: sign in with OAuth2.** Two new `auth` types. `azure_ad` signs in to Microsoft Entra ID (Azure AD) as a service
   principal (`client_secret` or `certificate_path`), a managed identity, or the default Azure credential chain
   (`credential_chain`, which includes `az login`). Its `scope` must be the API's `<resource>/.default`
-  (for example `https://graph.microsoft.com/.default`); `pz validate` warns about any other form, and a scope Entra
+  (for example `https://graph.microsoft.com/.default`); `pz validate` warns about any other form, a malformed `tenant_id` is refused at validation, and a scope Entra
   refuses fails with a hint naming it. `certificate_path` is resolved against the project directory and also accepts
   `~/` for the home directory. The generic `oauth2_client_credentials` works with any token endpoint (`token_url`,
   `client_id`, `client_secret`, optional `scope`). Both cache the access token and refresh it up to five minutes before

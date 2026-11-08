@@ -203,6 +203,88 @@ public class AzureAdAuthTests
         return WriteTemp(cert.ExportCertificatePem() + "\n" + key.ExportEncryptedPkcs8PrivateKeyPem(password, pbe));
     }
 
+    [Theory]
+    [InlineData("bad tenant!")]
+    [InlineData("tenant/evil")]
+    [InlineData("a_b")]
+    public void A_malformed_tenant_id_is_a_validation_error_for_service_principal(string tenant)
+    {
+        var errors = Errors(Auth(
+            ("method", "service_principal"), ("scope", Scope), ("tenant_id", tenant), ("client_id", "c"), ("client_secret", "s")));
+        Assert.Equal(
+            $"auth.tenant_id '{tenant}' is not a valid tenant id (a GUID or a domain such as contoso.onmicrosoft.com)",
+            Assert.Single(errors));
+    }
+
+    [Theory]
+    [InlineData("72f988bf-86f1-41af-91ab-2d7cd011db47")]
+    [InlineData("contoso.onmicrosoft.com")]
+    [InlineData("common")]
+    [InlineData("organizations")]
+    [InlineData("consumers")]
+    public void A_guid_a_domain_and_the_well_known_tenants_are_accepted(string tenant)
+    {
+        var o = Parse(Auth(
+            ("method", "service_principal"), ("scope", Scope), ("tenant_id", tenant), ("client_id", "c"), ("client_secret", "s")));
+        Assert.IsType<ClientSecretCredential>(Create(o));
+    }
+
+    [Fact]
+    public void Tenant_validation_agrees_with_the_credential_library_on_every_ascii_character()
+    {
+        for (var c = (char)0x20; c < 0x7f; c++)
+        {
+            var tenant = "a" + c + "b";
+            var errors = new List<string>();
+            var parsed = AzureAdOptions.TryParse(
+                Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", tenant), ("client_id", "c"), ("client_secret", "s")),
+                null, errors);
+            var sdkAccepts = true;
+            try
+            {
+                _ = new ClientSecretCredential(tenant, "c", "s");
+            }
+            catch (ArgumentException)
+            {
+                sdkAccepts = false;
+            }
+
+            Assert.True(sdkAccepts == (parsed is not null), $"tenant '{tenant}': sdk accepts={sdkAccepts}");
+        }
+    }
+
+    private static AzureAdOptions Unvalidated(string tenant, string? certificatePath = null, string? password = null) => new(
+        "service_principal", tenant, "c", certificatePath is null ? "s" : null, certificatePath, password, Scope, null);
+
+    [Fact]
+    public void A_credential_the_library_refuses_is_a_permanent_connector_error_without_its_text()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => Unvalidated("bad tenant!").CreateAuthenticator(Timeout, TimeProvider.System));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("azure_ad", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("tenant_id", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("bad tenant!", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Invalid tenant id", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_refused_credential_disposes_the_certificate_it_loaded()
+    {
+        var path = WritePfx(CertPassword);
+        try
+        {
+            IDisposable? owned = null;
+            Assert.Throws<PzConnectorException>(
+                () => Unvalidated("bad tenant!", path, CertPassword).CreateCredential(Timeout, out owned));
+            var certificate = Assert.IsType<X509Certificate2>(owned);
+            Assert.Equal(IntPtr.Zero, certificate.Handle);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void Password_protected_pkcs12_and_encrypted_pem_both_load()
     {

@@ -72,6 +72,10 @@ internal sealed record AzureAdOptions(
             {
                 errors.Add("auth.tenant_id is required for method service_principal");
             }
+            else if (tenantId is not null && !IsValidTenantId(tenantId))
+            {
+                errors.Add($"auth.tenant_id '{tenantId}' is not a valid tenant id (a GUID or a domain such as contoso.onmicrosoft.com)");
+            }
 
             if (clientId is null && !refused.Contains("client_id"))
             {
@@ -98,6 +102,12 @@ internal sealed record AzureAdOptions(
             ? null
             : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(ExpandHome(certificate), baseDir), password, scope!, authority);
     }
+
+    // The credential library accepts exactly letters, digits, '-' and '.' (so GUIDs, domains and the well-known
+    // 'common'/'organizations'/'consumers' all pass) and throws on anything else. Only service_principal reads
+    // tenant_id; the other methods never hand it to the library.
+    private static bool IsValidTenantId(string tenantId)
+        => tenantId.All(c => char.IsLetterOrDigit(c) || c is '-' or '.');
 
     // Neither the shared project-relative resolver nor the credential library expands '~', so a home-relative
     // certificate path would never be found.
@@ -144,29 +154,42 @@ internal sealed record AzureAdOptions(
     }
 
     /// <summary>Builds the Azure.Identity credential. <paramref name="owned"/> is the loaded certificate
-    /// (null unless a password-protected certificate was loaded); the caller disposes it with the credential.</summary>
+    /// (null unless a password-protected certificate was loaded); the caller disposes it with the credential.
+    /// When construction is refused it is already disposed and a <see cref="PzConnectorException"/> is thrown.</summary>
     public TokenCredential CreateCredential(TimeSpan timeout, out IDisposable? owned)
     {
         owned = null;
         var options = CreateCredentialOptions(timeout);
-        switch (options)
+        try
         {
-            case ClientCertificateCredentialOptions certOptions:
-                var path = CertificatePath!;
-                if (CertificatePassword is not { } pfxPassword)
-                {
-                    return new ClientCertificateCredential(TenantId, ClientId, path, certOptions);
-                }
+            switch (options)
+            {
+                case ClientCertificateCredentialOptions certOptions:
+                    var path = CertificatePath!;
+                    if (CertificatePassword is not { } pfxPassword)
+                    {
+                        return new ClientCertificateCredential(TenantId, ClientId, path, certOptions);
+                    }
 
-                var certificate = LoadProtectedCertificate(path, pfxPassword);
-                owned = certificate;
-                return new ClientCertificateCredential(TenantId, ClientId, certificate, certOptions);
-            case ClientSecretCredentialOptions secretOptions:
-                return new ClientSecretCredential(TenantId, ClientId, ClientSecret, secretOptions);
-            case ManagedIdentityCredentialOptions identityOptions:
-                return new ManagedIdentityCredential(identityOptions);
-            default:
-                return new DefaultAzureCredential((DefaultAzureCredentialOptions)options);
+                    var certificate = LoadProtectedCertificate(path, pfxPassword);
+                    owned = certificate;
+                    return new ClientCertificateCredential(TenantId, ClientId, certificate, certOptions);
+                case ClientSecretCredentialOptions secretOptions:
+                    return new ClientSecretCredential(TenantId, ClientId, ClientSecret, secretOptions);
+                case ManagedIdentityCredentialOptions identityOptions:
+                    return new ManagedIdentityCredential(identityOptions);
+                default:
+                    return new DefaultAzureCredential((DefaultAzureCredentialOptions)options);
+            }
+        }
+        catch (ArgumentException)
+        {
+            // The library's text can echo the refused settings; only the auth block is named. A loaded
+            // certificate is released here because the caller never receives a credential to own it.
+            owned?.Dispose();
+            throw new PzConnectorException(
+                "azure_ad: the credential could not be created from the auth settings (check tenant_id, client_id and authority_host)",
+                isTransient: false);
         }
     }
 

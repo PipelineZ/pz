@@ -212,6 +212,48 @@ public class HttpAuthConfigTests
     }
 
     [Fact]
+    public async Task Validate_reports_a_malformed_tenant_id()
+    {
+        var auth = AzureAd("service_principal");
+        auth["tenant_id"] = "bad tenant!";
+        var result = await new HttpConnector().ValidateAsync(Config("https://api.example.com", auth), CancellationToken.None);
+        Assert.False(result.IsValid);
+        Assert.Contains(result.Errors, e => e.Contains("auth.tenant_id 'bad tenant!' is not a valid tenant id", StringComparison.Ordinal));
+
+        foreach (var tenant in new[] { "72f988bf-86f1-41af-91ab-2d7cd011db47", "contoso.onmicrosoft.com" })
+        {
+            auth["tenant_id"] = tenant;
+            var ok = await new HttpConnector().ValidateAsync(Config("https://api.example.com", auth), CancellationToken.None);
+            Assert.True(ok.IsValid, string.Join("; ", ok.Errors));
+        }
+    }
+
+    [Fact]
+    public async Task Check_connection_reports_a_malformed_tenant_id_without_throwing()
+    {
+        var auth = AzureAd("service_principal");
+        auth["tenant_id"] = "bad tenant!";
+        var check = await new HttpConnector().CheckConnectionAsync(Config("https://api.example.com", auth), CancellationToken.None);
+        Assert.False(check.Ok);
+        Assert.Contains("auth.tenant_id", check.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Binding_a_connection_whose_credential_is_refused_is_a_connector_error()
+    {
+        var auth = AzureAd("service_principal");
+        var errors = new List<string>();
+        var connection = HttpConnectionConfig.Parse(Config("https://api.example.com", auth), errors)! with
+        {
+            AuthFactory = time => new AzureAdOptions(
+                "service_principal", "bad tenant!", "c", "s", null, null, "api://x/.default", null)
+                .CreateAuthenticator(TimeSpan.FromSeconds(5), time),
+        };
+        Assert.Empty(errors);
+        Assert.Throws<PzConnectorException>(() => connection.Bind(TimeProvider.System));
+    }
+
+    [Fact]
     public async Task Check_connection_reports_a_certificate_load_failure_as_a_sign_in_failure()
     {
         var auth = AzureAd("service_principal");
