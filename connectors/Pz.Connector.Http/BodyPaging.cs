@@ -52,6 +52,13 @@ internal abstract class BodyPaging
         }
 
         var param = PointerOption("param", required: true);
+        if (strategy is "page" or "offset" && Get("size") is not null && Get("size_param") is null)
+        {
+            errors.Add("pagination 'size' with 'location: body' requires 'size_param' (the body pointer the " +
+                "size is written to)");
+            return null;
+        }
+
         switch (strategy)
         {
             case "page":

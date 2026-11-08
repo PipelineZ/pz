@@ -92,6 +92,37 @@ public class BodyPagingTests
         Assert.Contains(errors, e => e.Contains("pagination 'param'"));
     }
 
+    [Theory]
+    [InlineData("page")]
+    [InlineData("offset")]
+    public void Body_size_without_size_param_is_a_validation_error(string strategy)
+    {
+        var errors = new List<string>();
+        var paging = BodyPaging.Parse(Pagination(strategy, ("param", "/p"), ("size", 500)), strategy, J("{}"),
+            "/items", errors);
+        Assert.Null(paging);
+        Assert.Contains(errors, e => e.Contains("pagination 'size' with 'location: body' requires 'size_param'"));
+    }
+
+    [Theory]
+    [InlineData("page")]
+    [InlineData("offset")]
+    public void Size_is_written_on_every_request_when_size_param_is_set(string strategy)
+    {
+        var paging = Parsed(Pagination(strategy, ("param", "/p"), ("size_param", "/size"), ("size", 7)), "{}");
+        var first = paging.First(J("{}"));
+        Assert.Equal(7, first["size"]!.GetValue<int>());
+        var second = paging.Next(first, J("""{"items":[1]}"""), 1)!;
+        Assert.Equal(7, second["size"]!.GetValue<int>());
+    }
+
+    [Fact]
+    public void Offset_in_body_without_size_and_size_param_still_parses()
+    {
+        var paging = Parsed(Pagination("offset", ("param", "/from")), "{}");
+        Assert.Equal("""{"from":0}""", Json(paging.First(J("{}"))));
+    }
+
     [Fact]
     public void Location_body_requires_post_and_a_map_body()
     {
@@ -132,7 +163,8 @@ public class BodyPagingTests
         var spec = new DatasetSpec("s", "d", new Dictionary<string, object?>
         {
             ["path"] = "/x", ["method"] = "post", ["body"] = new Dictionary<string, object?> { ["q"] = "1" },
-            ["pagination"] = Pagination("page", ("param", "/page"), ("size", 10), ("stop_on_short_page", true)),
+            ["pagination"] = Pagination("page", ("param", "/page"), ("size_param", "/size"), ("size", 10),
+                ("stop_on_short_page", true)),
         });
         var config = HttpDatasetConfig.Parse(spec);
         Assert.IsType<BodyPagePaging>(config.BodyPaging);
