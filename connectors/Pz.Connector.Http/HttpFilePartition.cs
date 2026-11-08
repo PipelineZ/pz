@@ -22,18 +22,19 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
-    // A download URL's query can itself be a credential (a signed link), so messages drop it whole.
+    // A plain download, and an export's start and polls: the dataset's own query is user config, so
+    // messages mask only the authenticator's secret params, as for JSON pages.
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
-        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: true);
+        $"http source '{spec.Source}.{spec.Dataset}'");
+
+    // An export's download URL is chosen by the API and its query can itself be a credential (a signed
+    // link), so messages drop that query whole.
+    private readonly HttpRequestSender _exportDownloadSender = new(client, bareClient, connection, config.Body,
+        gate, time, $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: true);
 
     /// <summary>Where a non-fatal notice goes (a zip with no member matching under
     /// `if_missing: empty`); null when the engine subscribed none.</summary>
     public Action<string>? Notice { get; init; }
-
-    /// <summary>Runs an export job to completion and returns the request that downloads its result,
-    /// and whether that request targets <c>base_url</c>'s origin. Null until export jobs are
-    /// supported.</summary>
-    private Func<CancellationToken, Task<(HttpPageRequest Download, bool SameOrigin)>>? ExportStep { get; }
 
     public string PartitionId => $"{spec.Source}.{spec.Dataset}";
 
@@ -54,26 +55,22 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
         var first = HttpFirstRequest.Build(connection, config, strategy: null, bindings, Label);
 
-        HttpPageRequest download;
-        if (config.Export is not null)
+        var download = first;
+        var sender = _sender;
+        if (config.Export is { } export)
         {
-            if (ExportStep is null)
-            {
-                throw new NotSupportedException($"{Label}: export jobs are not supported yet");
-            }
-
-            (download, _) = await ExportStep(ct).ConfigureAwait(false);
-        }
-        else
-        {
-            download = first;
+            // Same-origin needs no handling here: the send strips credentials from any request to
+            // another origin.
+            (download, _) = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings)
+                .RunAsync(first, ct).ConfigureAwait(false);
+            sender = _exportDownloadSender;
         }
 
         var reader = ReaderFor(file.Format);
         var budget = new DecompressionBudget(DecompressionFactor * connection.MaxDownloadBytes, Label);
         using var scratch = new DownloadScratch();
-        var (path, fallbackName) = await _sender.RunAsync("http.download", idempotent: true,
-            token => DownloadAsync(download, scratch, token), ct).ConfigureAwait(false);
+        var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
+            token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
 
         // Open is lazy: a bad, encrypted or non-matching zip throws on the first MoveNext, inside the
         // scratch's using. Each file's stream is opened by the enumerator and disposed here once its
@@ -111,24 +108,24 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
     /// <summary>Sends the download, refuses a non-2xx or error-page response, and saves the body
     /// within `max_download_mb`. Returns the saved file and the name a non-zip file goes by.</summary>
-    private async Task<(string Path, string FallbackName)> DownloadAsync(HttpPageRequest request,
-        DownloadScratch scratch, CancellationToken ct)
+    private async Task<(string Path, string FallbackName)> DownloadAsync(HttpRequestSender sender,
+        HttpPageRequest request, DownloadScratch scratch, CancellationToken ct)
     {
-        using var sent = await _sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true, ct)
+        using var sent = await sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true, ct)
             .ConfigureAwait(false);
         var content = sent.Response.Content;
         if (!sent.Response.IsSuccessStatusCode)
         {
-            throw _sender.StatusError(sent, await HeadAsync(content, ct).ConfigureAwait(false));
+            throw sender.StatusError(sent, await BodyHeadAsync(content, ct).ConfigureAwait(false));
         }
 
         var mediaType = content.Headers.ContentType?.MediaType?.ToLowerInvariant();
         if (IsErrorPageType(config.File!.Format, mediaType))
         {
-            var snippet = _sender.RedactSnippet(await HeadAsync(content, ct).ConfigureAwait(false));
+            var snippet = sender.RedactSnippet(await BodyHeadAsync(content, ct).ConfigureAwait(false));
             throw new PzConnectorException(
                 $"{Label}: expected a {FormatName(config.File.Format)} file but " +
-                $"{_sender.Target(sent.Method, sent.SendUri)} answered {mediaType}: {snippet}", isTransient: false);
+                $"{sender.Target(sent.Method, sent.SendUri)} answered {mediaType}: {snippet}", isTransient: false);
         }
 
         string path;
@@ -140,7 +137,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         catch (Exception ex) when (ex is IOException or HttpRequestException && !ct.IsCancellationRequested)
         {
             throw new PzConnectorException(
-                $"{Label}: download from {_sender.Target(sent.Method, sent.SendUri)} failed: {ex.Message}",
+                $"{Label}: download from {sender.Target(sent.Method, sent.SendUri)} failed: {ex.Message}",
                 isTransient: true, innerException: ex);
         }
 
@@ -170,6 +167,11 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         var last = Uri.UnescapeDataString(path[(path.LastIndexOf('/') + 1)..]);
         return last.Length == 0 ? "download" : last;
     }
+
+    /// <summary>The head of a refused body with the whole query of every URL in it dropped: an error
+    /// page or a storage error can echo a signed link, whose query is the credential.</summary>
+    private static async Task<string> BodyHeadAsync(HttpContent content, CancellationToken ct)
+        => HttpRequestSender.StripUrlQueries(await HeadAsync(content, ct).ConfigureAwait(false));
 
     /// <summary>At most the first <see cref="SnippetBytes"/> bytes of the body, as UTF-8 text.</summary>
     private static async Task<string> HeadAsync(HttpContent content, CancellationToken ct)

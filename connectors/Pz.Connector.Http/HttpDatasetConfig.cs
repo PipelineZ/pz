@@ -187,6 +187,20 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         options.TryGetValue("export", out var rawExport);
         var file = HttpFileConfig.Parse(rawFile, errors);
         var export = HttpExportConfig.Parse(rawExport, errors);
+        if (export is not null)
+        {
+            // A rejected status_path (already reported) leaves it null.
+            if (export.StatusPath is { } statusPath)
+            {
+                ValidateBindingTemplate(statusPath, "export.status_path", knownBindings, errors);
+            }
+
+            if (export.DownloadPath is { } downloadPath)
+            {
+                ValidateBindingTemplate(downloadPath, "export.download_path", knownBindings, errors);
+            }
+        }
+
         ValidateFileMode(options, rawFile is not null, rawExport is not null, file, columns, errors);
 
         if (errors.Count > 0)

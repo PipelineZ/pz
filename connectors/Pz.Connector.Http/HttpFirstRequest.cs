@@ -155,8 +155,8 @@ internal static class HttpFirstRequest
     // Each substituted value is escaped as one path segment, so a '/' in a value cannot add
     // segments, while the template's own literal characters stay as written. A query parameter
     // with a null binding can be dropped; a path cannot drop anything, so a null is an error.
-    private static string ExpandPath(string template, IReadOnlyDictionary<string, BindingValue> bindings,
-        string label)
+    internal static string ExpandPath(string template, IReadOnlyDictionary<string, BindingValue> bindings,
+        string label, string option = "path")
     {
         bool expanded;
         string? path, error;
@@ -168,20 +168,20 @@ internal static class HttpFirstRequest
         catch (FormatException ex)
         {
             throw new PzConnectorException(
-                $"{label}: option 'path': malformed binding template '{template}': {ex.Message}",
+                $"{label}: option '{option}': malformed binding template '{template}': {ex.Message}",
                 isTransient: false);
         }
 
         if (!expanded)
         {
-            throw new PzConnectorException($"{label}: option 'path': {error}", isTransient: false);
+            throw new PzConnectorException($"{label}: option '{option}': {error}", isTransient: false);
         }
 
         if (path is null)
         {
             var name = BindingExpander.ReferencedBindings(template).First(n => bindings[n].IsNull);
             throw new PzConnectorException(
-                $"{label}: option 'path' references '{{{{ {name} }}}}', which has no value on this run " +
+                $"{label}: option '{option}' references '{{{{ {name} }}}}', which has no value on this run " +
                 "(a first run or --full-refresh has no watermark) — declare 'initial:' so the first run " +
                 "has a lower bound, or use '{{ run_date }}'", isTransient: false);
         }

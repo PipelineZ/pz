@@ -305,6 +305,21 @@ public sealed class HttpFileReadTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Plain_download_message_keeps_the_dataset_query()
+    {
+        _server.Map("/exports/daily", _ => new StubResponse(404, "no file for that day"));
+        var options = FileOptions("/exports/daily", new() { ["format"] = "csv" });
+        options["query"] = new Dictionary<string, object?> { ["date"] = "{{ run_date }}" };
+        options["run_date"] = new Dictionary<string, object?> { ["offset_days"] = "-1" };
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec("daily", options)));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("HTTP 404", ex.Message);
+        Assert.Contains("/exports/daily?date=2026-11-07", ex.Message);
+    }
+
+    [Fact]
     public async Task Download_cap_enforced()
     {
         _server.Map("/big.csv", _ => File(new byte[2 * MiB]));

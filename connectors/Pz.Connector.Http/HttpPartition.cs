@@ -501,7 +501,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
 
             if (config.ErrorPointer is { } errorPointer)
             {
-                ThrowIfErrorReported(body, errorPointer, Target(sent, sendUri));
+                ThrowIfErrorReported(body, errorPointer, Target(sent, sendUri), Label, config.IsSyncMode, Redact);
             }
 
             if (!JsonPointer.TryResolve(body, config.ItemsPointer, out var itemsNode))
@@ -568,8 +568,11 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     /// <c>false</c>, an empty array or an empty object: a 200 that reports errors (GraphQL, including
     /// partial data alongside errors) would otherwise land wrong or incomplete rows silently. The
     /// message carries the first error's <c>message</c> field (or the value itself when it is a
-    /// string), redacted like a response snippet and cut to 200 characters.</summary>
-    private void ThrowIfErrorReported(JsonNode? body, string pointer, string target)
+    /// string), redacted like a response snippet and cut to 200 characters. <paramref name="stripUrlQueries"/>
+    /// drops the whole query of any URL in that text first (for a read whose queries are secrets with
+    /// server-defined names).</summary>
+    internal static void ThrowIfErrorReported(JsonNode? body, string pointer, string target, string label,
+        bool stripUrlQueries, Func<string, string> redact)
     {
         if (!JsonPointer.TryResolve(body, pointer, out var reported)
             || reported is null
@@ -592,12 +595,12 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
         if (!string.IsNullOrEmpty(detail))
         {
             // Redact before cutting, so a cut can never leave half a secret that no longer matches.
-            var flat = Redact((config.IsSyncMode ? HttpRequestSender.StripUrlQueries(detail) : detail).ReplaceLineEndings(" "));
+            var flat = redact((stripUrlQueries ? HttpRequestSender.StripUrlQueries(detail) : detail).ReplaceLineEndings(" "));
             suffix = $": {(flat.Length <= 200 ? flat : flat[..200] + "…")}";
         }
 
         throw new PzConnectorException(
-            $"{Label}: the response from {target} reports an error at 'error_pointer' '{pointer}'{suffix}",
+            $"{label}: the response from {target} reports an error at 'error_pointer' '{pointer}'{suffix}",
             isTransient: false);
     }
 
