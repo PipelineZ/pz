@@ -100,7 +100,9 @@ internal static class ArchiveReader
         Span<byte> head = stackalloc byte[4];
         using var stream = File.OpenRead(file);
         var n = stream.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
-        if (n == 4 && head is [0x50, 0x4B, 0x03, 0x04])
+        // A local file header, or the end-of-central-directory record that is all an empty zip holds
+        // (so `if_missing` applies to it rather than parsing it as a plain file).
+        if (n == 4 && head is [0x50, 0x4B, 0x03, 0x04] or [0x50, 0x4B, 0x05, 0x06])
         {
             return Kind.Zip;
         }

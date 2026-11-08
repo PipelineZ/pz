@@ -49,7 +49,7 @@ internal sealed class DownloadScratch : IDisposable
         {
             System.IO.Directory.Delete(Directory, recursive: true);
         }
-        catch (IOException)
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             // Best effort (already gone, or a file still held open): cleanup must not mask the
             // partition's outcome.

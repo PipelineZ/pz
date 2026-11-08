@@ -114,6 +114,18 @@ public sealed class ArchiveReaderTests : IDisposable
     }
 
     [Fact]
+    public void Empty_zip_is_sniffed_as_zip()
+    {
+        var empty = Zip();
+        Assert.Equal([0x50, 0x4B, 0x05, 0x06], File.ReadAllBytes(empty)[..4]);
+
+        Assert.Empty(ReadAll(ArchiveReader.Open(empty, Config("*.csv", ifMissingEmpty: true), "x.zip", Budget(), "s.d")));
+        var ex = Assert.Throws<PzConnectorException>(
+            () => ReadAll(ArchiveReader.Open(empty, Config("*.csv"), "x.zip", Budget(), "s.d")));
+        Assert.Contains("no zip entry matches", ex.Message);
+    }
+
+    [Fact]
     public void Explicit_archive_mode_overrides_sniffing()
     {
         var gz = Gzip("data.gz", text: "gzip-data");

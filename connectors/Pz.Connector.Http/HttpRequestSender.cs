@@ -207,7 +207,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
     /// <see cref="RedactQuery"/> -- the param name is opaque, not maskable by name), then apply the
     /// param-based <see cref="Redact(string)"/> as a second pass for any configured auth secret the body
     /// might also echo.</summary>
-    private string RedactSnippet(string text) =>
+    internal string RedactSnippet(string text) =>
         Redact(Snippet(redactWholeQuery ? StripUrlQueries(text) : text));
 
     private static readonly System.Text.RegularExpressions.Regex UrlWithQuery =

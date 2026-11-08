@@ -42,7 +42,7 @@ internal static class FileReaderRows
         return rows;
     }
 
-    private static object? Value(IArrowArray array, int row) => array switch
+    internal static object? Value(IArrowArray array, int row) => array switch
     {
         Int32Array a => a.GetValue(row),
         Int64Array a => a.GetValue(row),

@@ -4,7 +4,7 @@ using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Http;
 
-internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadShapeSource
+internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, INaturalReadShapeSource
 {
     private readonly HttpConnectionConfig _connection;
     private readonly TimeProvider _time;
@@ -12,6 +12,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     private readonly HttpClient _bareClient;
     private readonly bool _ownsAuthenticator;
     private IOperationGate? _gate;
+    private Action<string>? _notice;
 
     public HttpSource(HttpConnectionConfig connection) : this(connection, TimeProvider.System)
     {
@@ -71,9 +72,11 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
-        var schema = config.IsContractMode
-            ? ContractProjector.BuildSchema(config.Columns!)
-            : ContractProjector.BuildSchema(RawEnvelope.Columns(config));
+        var schema = config.IsFileMode
+            ? FileOutput.Schema(config)
+            : config.IsContractMode
+                ? ContractProjector.BuildSchema(config.Columns!)
+                : ContractProjector.BuildSchema(RawEnvelope.Columns(config));
         return ValueTask.FromResult(new DatasetSchema(schema));
     }
 
@@ -87,14 +90,20 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
         CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
-        return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>(
-            [new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate)]);
+        IDatasetPartition partition = config.IsFileMode
+            ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
+            : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate);
+        return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 
     /// <summary>The engine calls this exactly once per opened source, after OpenAsync returns and
     /// before any plan/read call — every <see cref="HttpPartition"/> this source hands out afterward
     /// routes its page fetches through the gate.</summary>
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
+
+    /// <summary>Called at most once per open, before any plan/read call; partitions planned afterward
+    /// report a file-mode zip with no matching member (`if_missing: empty`) through it.</summary>
+    public void UseNotice(Action<string> notice) => _notice = notice;
 
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
         HttpDatasetConfig.Parse(spec).IsSyncMode ? NaturalReadShape.Feed : NaturalReadShape.Full;
