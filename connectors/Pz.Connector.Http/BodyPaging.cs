@@ -120,11 +120,32 @@ internal abstract class BodyPaging
             : throw new InvalidOperationException($"pagination pointer '{pointer}' cannot be set in the request body");
     }
 
-    protected static bool TryReadLong(JsonNode body, string pointer, out long value)
+    /// <summary>The position the current request carries at <paramref name="pointer"/>; absent means
+    /// the crawl has not stamped one yet. A present value that is not an integer would silently repeat
+    /// pages, so it fails permanently (the message names the pointer, never the value).</summary>
+    protected static long ReadPosition(JsonNode body, string pointer, long fallback)
     {
-        value = 0;
-        return JsonPointer.TryResolve(body, pointer, out var node) && node is JsonValue v
-            && (v.TryGetValue(out value) || (v.TryGetValue(out int i) && (value = i) == i));
+        if (!JsonPointer.TryResolve(body, pointer, out var node))
+        {
+            return fallback;
+        }
+
+        if (node is JsonValue v)
+        {
+            if (v.TryGetValue(out long whole))
+            {
+                return whole;
+            }
+
+            if (v.TryGetValue(out double d) && Math.Floor(d) == d && Math.Abs(d) < 9e15)
+            {
+                return (long)d;
+            }
+        }
+
+        throw new PzConnectorException(
+            $"pagination.param '{pointer}' in the request body is not an integer " +
+            "(fix the 'body' template so the paged position is a whole number)", isTransient: false);
     }
 
     protected static JsonNode WriteSize(JsonNode body, string? sizeParam, int? size)
@@ -145,7 +166,7 @@ internal sealed class BodyPagePaging(string param, long start, string? sizeParam
             return null;
         }
 
-        var page = TryReadLong(currentBody, param, out var current) ? current : start;
+        var page = ReadPosition(currentBody, param, start);
         return WriteSize(Write(currentBody, param, JsonValue.Create(page + 1)), sizeParam, size);
     }
 }
@@ -171,7 +192,7 @@ internal sealed class BodyOffsetPaging(string param, long start, string? sizePar
             return null;
         }
 
-        var position = TryReadLong(currentBody, param, out var current) ? current : start;
+        var position = ReadPosition(currentBody, param, start);
         return WriteSize(Write(currentBody, param, JsonValue.Create(position + returned)), sizeParam, size);
     }
 }
@@ -186,7 +207,8 @@ internal sealed class BodyCursorPaging(string param, string responsePointer) : B
     {
         if (responseBody is null || !JsonPointer.TryResolve(responseBody, responsePointer, out var token)
             || token is null
-            || (token is JsonValue v && v.TryGetValue(out string? text) && string.IsNullOrEmpty(text)))
+            || (token is JsonValue v && v.TryGetValue(out string? text) && string.IsNullOrEmpty(text))
+            || (token is JsonArray { Count: 0 }) || (token is JsonObject { Count: 0 }))
         {
             return null;
         }

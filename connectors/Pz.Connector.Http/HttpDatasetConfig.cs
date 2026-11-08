@@ -169,7 +169,9 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 "(fix the dataset options and re-run)", isTransient: false);
         }
 
-        return new HttpDatasetConfig(path!, query, factory, items, columns, cursor, cursorType,
+        // Body paging replaces the URL strategy (which was parsed only for validation and the
+        // stop_on_short_page/size semantics); leaving it set would stamp the query string too.
+        return new HttpDatasetConfig(path!, query, bodyPaging is null ? factory : null, items, columns, cursor, cursorType,
             cursorPointer ?? (cursor is null ? "" : "/" + cursor), cursorOrder, maxPages, deltaPointer,
             stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging);
     }

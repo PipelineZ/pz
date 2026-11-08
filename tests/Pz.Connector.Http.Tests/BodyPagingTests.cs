@@ -165,4 +165,53 @@ public class BodyPagingTests
         Assert.False(JsonPointerWriter.TrySet(root, "/x/y", JsonValue.Create(9)));
         Assert.Equal("""{"a/b":{"c~d":2},"arr":[9]}""", Json(root));
     }
+
+    [Theory]
+    [InlineData("page")]
+    [InlineData("offset")]
+    [InlineData("cursor")]
+    public void Body_location_replaces_the_url_strategy(string strategy)
+    {
+        var extra = strategy == "cursor"
+            ? new[] { ("param", (object?)"/after"), ("pointer", "/t") }
+            : new[] { ("param", (object?)"/pos") };
+        var spec = new DatasetSpec("s", "d", new Dictionary<string, object?>
+        {
+            ["path"] = "/x", ["method"] = "post", ["body"] = new Dictionary<string, object?> { ["q"] = "1" },
+            ["pagination"] = Pagination(strategy, extra),
+        });
+        var config = HttpDatasetConfig.Parse(spec);
+        Assert.NotNull(config.BodyPaging);
+        Assert.Null(config.PageStrategyFactory);
+    }
+
+    [Theory]
+    [InlineData("""{"page":"1"}""")]
+    [InlineData("""{"page":2.5}""")]
+    [InlineData("""{"page":null}""")]
+    public void Unreadable_position_fails_permanently_naming_the_pointer(string current)
+    {
+        var paging = Parsed(Pagination("page", ("param", "/page")), """{"page":1}""");
+        var ex = Assert.Throws<PzConnectorException>(() => paging.Next(J(current), J("{}"), 3));
+        Assert.Contains("'/page'", ex.Message);
+        Assert.Contains("not an integer", ex.Message);
+        Assert.False(ex.IsTransient);
+        Assert.DoesNotContain("2.5", ex.Message);
+    }
+
+    [Fact]
+    public void Integral_double_position_is_accepted()
+    {
+        var paging = Parsed(Pagination("page", ("param", "/page")), """{"page":1}""");
+        Assert.Equal("""{"page":3}""", Json(paging.Next(J("""{"page":2.0}"""), J("{}"), 3)));
+    }
+
+    [Theory]
+    [InlineData("[]")]
+    [InlineData("{}")]
+    public void Empty_array_or_object_cursor_ends_the_crawl(string token)
+    {
+        var paging = Parsed(Pagination("cursor", ("param", "/after"), ("pointer", "/t")), "{}");
+        Assert.Null(paging.Next(J("{}"), J("{\"t\":" + token + "}"), 1));
+    }
 }
