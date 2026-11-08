@@ -1,0 +1,246 @@
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
+using Azure;
+using Azure.Core;
+using Azure.Identity;
+using Pz.Connector.Http;
+using Pz.Connectors.Abstractions;
+
+namespace Pz.Connector.Http.Tests;
+
+public class AzureAdAuthTests
+{
+    private const string Scope = "https://graph.microsoft.com/.default";
+    private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
+
+    private static Dictionary<string, object?> Auth(params (string Key, object? Value)[] pairs)
+    {
+        var d = new Dictionary<string, object?>();
+        foreach (var (key, value) in pairs)
+        {
+            d[key] = value;
+        }
+
+        return d;
+    }
+
+    private static AzureAdOptions Parse(Dictionary<string, object?> auth, string? baseDir = null)
+    {
+        var errors = new List<string>();
+        var options = AzureAdOptions.TryParse(auth, baseDir, errors);
+        Assert.Empty(errors);
+        return Assert.IsType<AzureAdOptions>(options);
+    }
+
+    private static List<string> Errors(Dictionary<string, object?> auth)
+    {
+        var errors = new List<string>();
+        Assert.Null(AzureAdOptions.TryParse(auth, null, errors));
+        return errors;
+    }
+
+    [Fact]
+    public void Service_principal_requires_tenant_client_and_one_secret_kind()
+    {
+        var errors = Errors(Auth(("method", "service_principal"), ("scope", Scope)));
+        Assert.Contains(errors, e => e.Contains("tenant_id"));
+        Assert.Contains(errors, e => e.Contains("client_id"));
+        Assert.Contains(errors, e => e.Contains("client_secret") && e.Contains("certificate_path"));
+    }
+
+    [Fact]
+    public void Service_principal_refuses_both_secret_and_certificate()
+    {
+        var errors = Errors(Auth(
+            ("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"),
+            ("client_secret", "s"), ("certificate_path", "/x.pem")));
+        Assert.Contains(errors, e => e.Contains("client_secret") && e.Contains("certificate_path"));
+    }
+
+    [Fact]
+    public void Scope_is_required_and_the_error_gives_an_example()
+    {
+        var errors = Errors(Auth(("method", "managed_identity")));
+        Assert.Contains(errors, e => e.Contains("auth.scope") && e.Contains("https://graph.microsoft.com/.default"));
+    }
+
+    [Fact]
+    public void Unknown_method_lists_the_three()
+    {
+        var errors = Errors(Auth(("method", "magic"), ("scope", Scope)));
+        var error = Assert.Single(errors);
+        Assert.Contains("service_principal", error);
+        Assert.Contains("managed_identity", error);
+        Assert.Contains("credential_chain", error);
+    }
+
+    [Fact]
+    public void Missing_method_is_an_error()
+    {
+        Assert.Contains(Errors(Auth(("scope", Scope))), e => e.Contains("auth.method"));
+    }
+
+    [Fact]
+    public void Authority_host_must_be_an_absolute_https_url()
+    {
+        var errors = Errors(Auth(("method", "credential_chain"), ("scope", Scope), ("authority_host", "http://login.example.com")));
+        Assert.Contains(errors, e => e.Contains("authority_host"));
+        var ok = Parse(Auth(("method", "credential_chain"), ("scope", Scope), ("authority_host", "https://login.microsoftonline.us")));
+        Assert.Equal(new Uri("https://login.microsoftonline.us"), ok.AuthorityHost);
+    }
+
+    [Fact]
+    public void Relative_certificate_path_resolves_against_base_dir()
+    {
+        var o = Parse(
+            Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"),
+                ("certificate_path", "certs/app.pem")),
+            "/proj");
+        Assert.Equal(Path.GetFullPath("/proj/certs/app.pem"), o.CertificatePath);
+    }
+
+    [Fact]
+    public void Credential_kind_follows_the_method()
+    {
+        var secret = Parse(Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"), ("client_secret", "s")));
+        Assert.IsType<ClientSecretCredential>(secret.CreateCredential());
+
+        Assert.IsType<ManagedIdentityCredential>(Parse(Auth(("method", "managed_identity"), ("scope", Scope))).CreateCredential());
+        Assert.IsType<ManagedIdentityCredential>(
+            Parse(Auth(("method", "managed_identity"), ("scope", Scope), ("client_id", "uami"))).CreateCredential());
+        Assert.IsType<DefaultAzureCredential>(
+            Parse(Auth(("method", "credential_chain"), ("scope", Scope), ("authority_host", "https://login.microsoftonline.us"))).CreateCredential());
+
+        var pem = WriteThrowawayCertificate();
+        try
+        {
+            var cert = Parse(Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"), ("certificate_path", pem)));
+            Assert.IsType<ClientCertificateCredential>(cert.CreateCredential());
+        }
+        finally
+        {
+            File.Delete(pem);
+        }
+    }
+
+    private static string WriteThrowawayCertificate()
+    {
+        using var key = RSA.Create(2048);
+        var request = new CertificateRequest("CN=pz-test", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+        var path = Path.Combine(Path.GetTempPath(), $"pz-azuread-{Guid.NewGuid():N}.pem");
+        File.WriteAllText(path, cert.ExportCertificatePem() + "\n" + key.ExportPkcs8PrivateKeyPem());
+        return path;
+    }
+
+    private sealed class FakeCredential(Func<AccessToken> next) : TokenCredential
+    {
+        public int Calls;
+        public string[]? Scopes;
+
+        public override AccessToken GetToken(TokenRequestContext requestContext, CancellationToken cancellationToken)
+            => throw new NotSupportedException();
+
+        public override ValueTask<AccessToken> GetTokenAsync(TokenRequestContext requestContext, CancellationToken cancellationToken)
+        {
+            Calls++;
+            Scopes = requestContext.Scopes;
+            return new(next());
+        }
+    }
+
+    private sealed class Clock : TimeProvider
+    {
+        public DateTimeOffset Now = DateTimeOffset.UnixEpoch.AddDays(1000);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    [Fact]
+    public async Task Token_and_expiry_come_from_the_credential()
+    {
+        var clock = new Clock();
+        var cred = new FakeCredential(() => new AccessToken("t", clock.Now.AddHours(1)));
+        using var auth = new AzureAdAuthenticator(cred, Scope, clock);
+
+        using var first = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+        await auth.ApplyAsync(first, CancellationToken.None).AsTask().WaitAsync(Timeout);
+        Assert.Equal("Bearer t", first.Headers.Authorization!.ToString());
+        Assert.Equal(Scope, Assert.Single(cred.Scopes!));
+
+        clock.Now = clock.Now.AddMinutes(30);
+        using var second = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+        await auth.ApplyAsync(second, CancellationToken.None).AsTask().WaitAsync(Timeout);
+        Assert.Equal(1, cred.Calls);
+
+        clock.Now = clock.Now.AddMinutes(30);
+        using var third = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+        await auth.ApplyAsync(third, CancellationToken.None).AsTask().WaitAsync(Timeout);
+        Assert.Equal(2, cred.Calls);
+    }
+
+    [Fact]
+    public async Task A_failing_credential_surfaces_as_a_classified_connector_exception()
+    {
+        var cred = new FakeCredential(() => throw new CredentialUnavailableException("no managed identity here; Trace ID: abc"));
+        using var auth = new AzureAdAuthenticator(cred, Scope, new Clock(), "managed_identity");
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
+        Assert.Contains("credential_chain", ex.Message);
+        Assert.DoesNotContain("Trace ID", ex.Message);
+    }
+
+    [Fact]
+    public void Credential_unavailable_for_managed_identity_hints_at_credential_chain()
+    {
+        var ex = AzureAdAuth.Classify(new CredentialUnavailableException("ManagedIdentityCredential authentication unavailable"), "managed_identity");
+        Assert.False(ex.IsTransient);
+        Assert.Contains("credential_chain", ex.Message);
+    }
+
+    [Fact]
+    public void Authentication_failure_carries_the_AADSTS_code_only()
+    {
+        var inner = new AuthenticationFailedException(
+            "ClientSecretCredential authentication failed: AADSTS7000215: Invalid client secret provided. Trace ID: 0000-1111 Correlation ID: 2222-3333 https://login.microsoftonline.com/x");
+        var ex = AzureAdAuth.Classify(inner, "service_principal");
+        Assert.False(ex.IsTransient);
+        Assert.Contains("AADSTS7000215", ex.Message);
+        Assert.DoesNotContain("Trace ID", ex.Message);
+        Assert.DoesNotContain("Correlation", ex.Message);
+        Assert.DoesNotContain("login.microsoftonline.com", ex.Message);
+        Assert.DoesNotContain("Invalid client secret", ex.Message);
+    }
+
+    [Fact]
+    public void Authentication_failure_without_a_code_still_gives_the_fixed_hint()
+    {
+        var ex = AzureAdAuth.Classify(new AuthenticationFailedException("boom with secret-ish text"), "service_principal");
+        Assert.False(ex.IsTransient);
+        Assert.Contains("tenant_id", ex.Message);
+        Assert.DoesNotContain("boom", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(429)]
+    [InlineData(503)]
+    public void Throttled_or_unavailable_identity_endpoint_is_transient(int status)
+    {
+        var inner = new AuthenticationFailedException("failed", new RequestFailedException(status, "throttled"));
+        Assert.True(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+    }
+
+    [Fact]
+    public void A_network_failure_is_transient()
+    {
+        var inner = new AuthenticationFailedException("failed", new HttpRequestException("down"));
+        Assert.True(AzureAdAuth.Classify(inner, "credential_chain").IsTransient);
+    }
+
+    [Fact]
+    public void A_client_error_from_the_identity_endpoint_is_permanent()
+    {
+        var inner = new AuthenticationFailedException("failed", new RequestFailedException(400, "bad"));
+        Assert.False(AzureAdAuth.Classify(inner, "service_principal").IsTransient);
+    }
+}
