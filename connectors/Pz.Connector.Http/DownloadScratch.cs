@@ -2,16 +2,18 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Http;
 
-/// <summary>A per-partition temp directory, `Path.GetTempPath()/pz-http-&lt;guid&gt;/`, holding the
-/// downloaded body. Archive members are never extracted into it; the download is the only file.
-/// Dispose in a `finally` so the directory goes on success, failure and cancellation.</summary>
+/// <summary>A per-partition temp directory, `&lt;root&gt;/pz-http-&lt;guid&gt;/` with root defaulting to
+/// `Path.GetTempPath()`, holding the downloaded body. Archive members are never extracted into it; the
+/// download is the only file. Dispose in a `finally` so the directory goes on success, failure and
+/// cancellation.</summary>
 internal sealed class DownloadScratch : IDisposable
 {
     private const long MiB = 1024 * 1024;
 
-    public DownloadScratch()
+    /// <param name="root">The parent directory; null means `Path.GetTempPath()`.</param>
+    public DownloadScratch(string? root = null)
     {
-        Directory = Path.Combine(Path.GetTempPath(), $"pz-http-{Guid.NewGuid():N}");
+        Directory = Path.Combine(root ?? Path.GetTempPath(), $"pz-http-{Guid.NewGuid():N}");
         System.IO.Directory.CreateDirectory(Directory);
     }
 

@@ -17,11 +17,22 @@ public sealed class HttpFileReadTests : IAsyncLifetime
     private readonly ManualClock _clock = new();
     private readonly List<string> _notices = [];
 
-    public HttpFileReadTests() => _clock.Advance(Now - _clock.GetUtcNow());
+    // This class's own scratch root: other test classes download into the shared temp dir in parallel.
+    private readonly string _scratchRoot = Path.Combine(Path.GetTempPath(), "pz-file-read-tests", Guid.NewGuid().ToString("N"));
+
+    public HttpFileReadTests()
+    {
+        _clock.Advance(Now - _clock.GetUtcNow());
+        Directory.CreateDirectory(_scratchRoot);
+    }
 
     public Task InitializeAsync() => Task.CompletedTask;
 
-    public async Task DisposeAsync() => await _server.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        await _server.DisposeAsync();
+        Directory.Delete(_scratchRoot, recursive: true);
+    }
 
     private HttpSource Source(Dictionary<string, object?>? extra = null, Uri? baseUrl = null)
     {
@@ -134,8 +145,8 @@ public sealed class HttpFileReadTests : IAsyncLifetime
     private static StubResponse File(string text, string contentType = "application/octet-stream")
         => File(Encoding.UTF8.GetBytes(text), contentType);
 
-    private static HashSet<string> TempDirs()
-        => [.. Directory.GetDirectories(Path.GetTempPath(), "pz-http-*")];
+    private HashSet<string> ScratchDirs()
+        => [.. Directory.GetDirectories(_scratchRoot, "pz-http-*")];
 
     [Fact]
     public async Task Users_daily_zip_three_datasets()
@@ -450,9 +461,11 @@ public sealed class HttpFileReadTests : IAsyncLifetime
         async Task<(HashSet<string> Created, Exception? Error)> ReadPausing(string path, bool cancelAfterFirst)
         {
             using var cts = new CancellationTokenSource();
-            var before = TempDirs();
+            var before = ScratchDirs();
             var spec = Spec("tmp", FileOptions(path, new() { ["format"] = "csv" }, columns));
-            var partition = Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
+            var partition = Assert.IsType<HttpFilePartition>(
+                Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None)));
+            partition.ScratchRoot = _scratchRoot;
             HashSet<string>? created = null;
             try
             {
@@ -461,7 +474,7 @@ public sealed class HttpFileReadTests : IAsyncLifetime
                     batch.Dispose();
                     if (created is null)
                     {
-                        created = [.. TempDirs().Except(before)];
+                        created = [.. ScratchDirs().Except(before)];
                         Assert.Single(created);
                         Assert.All(created, d => Assert.True(Directory.Exists(d)));
                         if (cancelAfterFirst)

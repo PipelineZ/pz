@@ -42,6 +42,10 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     /// `if_missing: empty`); null when the engine subscribed none.</summary>
     public Action<string>? Notice { get; init; }
 
+    /// <summary>The parent of the per-read scratch directory; null means `Path.GetTempPath()`. Tests
+    /// point it at a directory of their own.</summary>
+    internal string? ScratchRoot { get; set; }
+
     public string PartitionId => $"{spec.Source}.{spec.Dataset}";
 
     public bool TryResumeFrom(string checkpoint) => false;
@@ -74,7 +78,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
         var reader = ReaderFor(file.Format);
         var budget = new DecompressionBudget(DecompressionFactor * connection.MaxDownloadBytes, Label);
-        using var scratch = new DownloadScratch();
+        using var scratch = new DownloadScratch(ScratchRoot);
         var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
             token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
 
