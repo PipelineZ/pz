@@ -99,6 +99,33 @@ public class OAuth2ClientCredentialsTests
     }
 
     [Fact]
+    public void Refuses_a_token_url_with_userinfo()
+    {
+        var errors = new List<string>();
+        Assert.Null(OAuth2ClientCredentialsOptions.TryParse(Block("https://user:pw@login.example.com/token"), errors));
+        var error = Assert.Single(errors);
+        Assert.Contains("token_url", error);
+        Assert.Contains("credentials", error);
+        Assert.DoesNotContain("pw@", error);
+    }
+
+    [Fact]
+    public async Task No_message_contains_userinfo_even_when_options_are_built_directly()
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/token", _ => new StubResponse(401, """{"error":"invalid_client"}"""));
+        var url = new UriBuilder(server.BaseUrl + "token") { UserName = "user", Password = "UserinfoPw42" }.Uri;
+        using var auth = new OAuth2ClientCredentialsAuthenticator(
+            new OAuth2ClientCredentialsOptions(url, "my-id", Secret, null, false, new Dictionary<string, string>()),
+            TimeSpan.FromSeconds(10), new ManualClock());
+        using var request = new HttpRequestMessage(HttpMethod.Get, server.BaseUrl + "api");
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
+        Assert.DoesNotContain("UserinfoPw42", ex.Message);
+        Assert.Contains(server.BaseUrl.Authority, ex.Message);
+    }
+
+    [Fact]
     public void Refuses_an_unknown_client_auth()
     {
         var errors = new List<string>();
@@ -222,6 +249,8 @@ public class OAuth2ClientCredentialsTests
     [Theory]
     [InlineData(429)]
     [InlineData(503)]
+    [InlineData(501)]
+    [InlineData(507)]
     public async Task Throttling_and_server_errors_are_transient(int status)
     {
         await using var server = new StubHttpServer();

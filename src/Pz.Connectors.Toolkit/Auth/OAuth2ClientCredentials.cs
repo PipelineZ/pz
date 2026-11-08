@@ -46,6 +46,11 @@ public sealed record OAuth2ClientCredentialsOptions(
                 errors.Add("auth.token_url must be an https URL (http is allowed only for localhost)");
                 url = null;
             }
+            else if (url.UserInfo.Length > 0)
+            {
+                errors.Add("auth.token_url must not embed credentials; put them in client_id/client_secret");
+                url = null;
+            }
         }
 
         var basic = false;
@@ -138,7 +143,7 @@ public sealed class OAuth2ClientCredentialsAuthenticator : CachedTokenAuthentica
     {
         _options = options;
         _time = time;
-        _endpoint = options.TokenUrl.GetLeftPart(UriPartial.Authority);
+        _endpoint = options.TokenUrl.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped);
         _http = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false }) { Timeout = timeout };
     }
 
@@ -219,7 +224,8 @@ public sealed class OAuth2ClientCredentialsAuthenticator : CachedTokenAuthentica
             message.Append(" (configured scope: ").Append(scope).Append(')');
         }
 
-        var transient = TransientClassifier.IsTransientStatus(status);
+        // Every 5xx from the token endpoint is retryable, not only the shared classifier's subset.
+        var transient = status is 408 or 429 or (>= 500 and <= 599);
         TimeSpan? retryAfter = null;
         if (transient && response.Headers.TryGetValues("Retry-After", out var values))
         {
