@@ -64,7 +64,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "strategy": { "enum": ["page", "offset", "link_header", "cursor", "next_url"] },
                 "param": { "type": "string" }, "start": { "type": "integer" },
                 "size_param": { "type": "string" }, "size": { "type": "integer" },
-                "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" } },
+                "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" },
+                "location": { "enum": ["query", "body"] } },
                 "required": ["strategy"], "additionalProperties": false },
             "items": { "type": "string" },
             "columns": { "type": "object", "minProperties": 1, "additionalProperties": {

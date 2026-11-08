@@ -11,7 +11,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     IReadOnlyDictionary<string, string>? Columns, string? Cursor, string? CursorType,
     string CursorPointer, string? CursorOrder, int? MaxPages, string? DeltaLinkPointer,
     bool StopOnShortPage = false, int? PageSize = null,
-    HttpMethod? Method = null, HttpBody? Body = null, string? ErrorPointer = null)
+    HttpMethod? Method = null, HttpBody? Body = null, string? ErrorPointer = null,
+    BodyPaging? BodyPaging = null)
 {
     private static readonly HashSet<string> ContractTypes =
         ["int", "bigint", "double", "decimal", "varchar", "boolean", "date", "timestamp"];
@@ -59,6 +60,16 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
         var items = ValidatePointer(Get(options, "items") ?? "", "items", errors);
         var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize);
+        BodyPaging? bodyPaging = null;
+        if (method == HttpMethod.Post && options.TryGetValue("pagination", out var pg)
+            && pg is IReadOnlyDictionary<string, object?> pgBlock)
+        {
+            // A non-post method with `location: body` is already refused by ParseBody.
+            bodyPaging = BodyPaging.Parse(pgBlock,
+                pgBlock.TryGetValue("strategy", out var st) ? YamlScalarText.Of(st) ?? "" : "",
+                body?.Template, items, errors);
+        }
+
         var columns = options.TryGetValue("columns", out var c)
             ? c as IReadOnlyDictionary<string, string>
             : null;
@@ -160,7 +171,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
         return new HttpDatasetConfig(path!, query, factory, items, columns, cursor, cursorType,
             cursorPointer ?? (cursor is null ? "" : "/" + cursor), cursorOrder, maxPages, deltaPointer,
-            stopOnShortPage, pageSize, method, body, errorPointer);
+            stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging);
     }
 
     private static HttpMethod ParseMethod(IReadOnlyDictionary<string, object?> options, List<string> errors)
