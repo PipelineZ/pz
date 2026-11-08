@@ -34,7 +34,7 @@ body:
       label: Environment
       description: pz version (`pz --version`), OS, .NET SDK version, and — if a connector is involved — which one.
       placeholder: |
-        pz 0.1.0, Ubuntu 24.04, .NET 10.0.400, Pz.Connector.Postgres
+        pz 0.1.0, Ubuntu 24.04, .NET 10.0.403, Pz.Connector.Postgres
     validations:
       required: true
   - type: textarea
