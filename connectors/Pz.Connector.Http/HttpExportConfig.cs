@@ -23,22 +23,8 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
             return null;
         }
 
-        string? Get(string key)
-        {
-            if (!block.TryGetValue(key, out var v) || v is null)
-            {
-                return null;
-            }
-
-            if (YamlScalarText.NonScalarKind(v) is { } kind)
-            {
-                errors.Add($"export.{key} must be a string, got a {kind}");
-                return null;
-            }
-
-            return YamlScalarText.Of(v);
-        }
-
+        var rejected = HttpFileConfig.RejectCollections(block, "export", ["ready", "failed"], errors);
+        string? Get(string key) => rejected.Contains(key) || !block.TryGetValue(key, out var v) ? null : YamlScalarText.Of(v);
         var before = errors.Count;
 
         string? Pointer(string key, bool required)
@@ -46,7 +32,7 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
             var value = Get(key);
             if (value is null)
             {
-                if (required)
+                if (required && !rejected.Contains(key))
                 {
                     errors.Add($"export.{key} is required");
                 }
@@ -65,7 +51,10 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
         var statusPath = Get("status_path");
         if (statusPath is null)
         {
-            errors.Add("export.status_path is required");
+            if (!rejected.Contains("status_path"))
+            {
+                errors.Add("export.status_path is required");
+            }
         }
         else
         {
@@ -86,7 +75,11 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
             errors.Add($"export.download_path must start with '/', got '{downloadPath}'");
         }
 
-        if (downloadPointer is not null && downloadPath is not null)
+        if (rejected.Contains("download_pointer") || rejected.Contains("download_path"))
+        {
+            // Already reported as not a string.
+        }
+        else if (downloadPointer is not null && downloadPath is not null)
         {
             errors.Add("export takes exactly one of download_pointer and download_path, got both");
         }

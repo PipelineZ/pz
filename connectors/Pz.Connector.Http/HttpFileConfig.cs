@@ -50,30 +50,21 @@ internal sealed record HttpFileConfig(HttpFileFormat Format)
             return null;
         }
 
-        string? Get(string key)
-        {
-            if (!block.TryGetValue(key, out var v) || v is null)
-            {
-                return null;
-            }
-
-            if (YamlScalarText.NonScalarKind(v) is { } kind)
-            {
-                errors.Add($"file.{key} must be a string, got a {kind}");
-                return null;
-            }
-
-            return YamlScalarText.Of(v);
-        }
-
-        bool Has(string key) => block.TryGetValue(key, out var v) && v is not null;
-
+        // A collection where a scalar belongs is reported once and then treated as absent, so no
+        // later rule trips over it (or reports a second error for the same key).
+        var rejected = RejectCollections(block, "file", [], errors);
+        string? Get(string key) => rejected.Contains(key) || !block.TryGetValue(key, out var v) ? null : YamlScalarText.Of(v);
+        bool Has(string key) => !rejected.Contains(key) && block.TryGetValue(key, out var v) && v is not null;
 
         HttpFileFormat? format = null;
         switch (Get("format"))
         {
             case null:
-                errors.Add("file.format is required (csv, tsv, json or xml)");
+                if (!rejected.Contains("format"))
+                {
+                    errors.Add("file.format is required (csv, tsv, json or xml)");
+                }
+
                 break;
             case "csv": format = HttpFileFormat.Csv; break;
             case "tsv": format = HttpFileFormat.Tsv; break;
@@ -202,7 +193,7 @@ internal sealed record HttpFileConfig(HttpFileFormat Format)
             recordPath = ParseRecords(Get("records")!, errors);
             RequireFormat("records", format, errors, HttpFileFormat.Xml);
         }
-        else if (format == HttpFileFormat.Xml)
+        else if (format == HttpFileFormat.Xml && !rejected.Contains("records"))
         {
             errors.Add("file.records is required for xml (for example /report/items/item)");
         }
@@ -227,6 +218,24 @@ internal sealed record HttpFileConfig(HttpFileFormat Format)
             JsonLayout = format == HttpFileFormat.Json ? layout : HttpJsonLayout.Lines,
             RecordPath = recordPath,
         };
+    }
+
+    /// <summary>Reports every map/list value among <paramref name="block"/>'s keys other than
+    /// <paramref name="listKeys"/> and returns those keys.</summary>
+    internal static HashSet<string> RejectCollections(IReadOnlyDictionary<string, object?> block, string prefix,
+        string[] listKeys, List<string> errors)
+    {
+        var rejected = new HashSet<string>();
+        foreach (var (key, value) in block)
+        {
+            if (!listKeys.Contains(key) && YamlScalarText.NonScalarKind(value) is { } kind)
+            {
+                errors.Add($"{prefix}.{key} must be a string, got a {kind}");
+                rejected.Add(key);
+            }
+        }
+
+        return rejected;
     }
 
     private static void RequireFormat(string option, HttpFileFormat? format, List<string> errors,

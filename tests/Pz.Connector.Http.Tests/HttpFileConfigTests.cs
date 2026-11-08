@@ -289,6 +289,34 @@ public class HttpFileConfigTests
     }
 
     [Fact]
+    public void Collections_never_throw_and_report_once()
+    {
+        var list = new List<object?> { "x" };
+        var delimiter = FailFile(Map(("format", "csv"), ("delimiter", list)));
+        Assert.Contains("file.delimiter must be a string, got a list", delimiter);
+        Assert.Equal(1, Count(delimiter, "file.delimiter"));
+
+        var records = FailFile(Map(("format", "xml"), ("records", Map(("a", "b")))));
+        Assert.Contains("file.records must be a string, got a map", records);
+        Assert.DoesNotContain("file.records is required", records);
+
+        Assert.Equal(1, Count(FailFile(Map(("format", list))), "file.format"));
+        Assert.Equal(1, Count(FailFile(Map(("format", "csv"), ("skip_lines", list))), "file.skip_lines"));
+        Assert.Equal(1, Count(FailFile(Map(("format", "csv"), ("members", list))), "file.members"));
+        Assert.Equal(1, Count(FailFile(Map(("format", "json"), ("layout", list))), "file.layout"));
+
+        var export = FailFile(Map(("format", "csv")),
+            new() { ["export"] = ValidExport(("status_pointer", list), ("status_path", list), ("download_pointer", list)) });
+        Assert.Equal(1, Count(export, "export.status_pointer"));
+        Assert.Equal(1, Count(export, "export.status_path"));
+        Assert.Equal(1, Count(export, "export.download_pointer"));
+        Assert.DoesNotContain("download_path", export);
+    }
+
+    private static int Count(string text, string needle)
+        => text.Split(needle).Length - 1;
+
+    [Fact]
     public void Export_defaults()
     {
         var export = Parse(Map(("format", "csv")), export: ValidExport(("failed", null),
