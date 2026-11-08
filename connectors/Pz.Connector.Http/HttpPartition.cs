@@ -649,7 +649,11 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         for (var hop = 0; ; hop++)
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, target);
-            connection.Authenticator?.Apply(request);
+            if (connection.Authenticator is { } authenticator)
+            {
+                await authenticator.ApplyAsync(request, ct).ConfigureAwait(false);
+            }
+
             // Redact the POST-auth URI: an api_key-in-query authenticator just added the secret to
             // request.RequestUri, and that is the URL any error message must never echo unredacted.
             var sendUri = request.RequestUri ?? target;
@@ -685,6 +689,16 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
             var redirectStatus = (int)response.StatusCode;
             if (!IsRedirect(redirectStatus))
             {
+                try
+                {
+                    HttpAuth.ThrowIfTokenRejected(connection.Authenticator, request, redirectStatus, Label);
+                }
+                catch
+                {
+                    response.Dispose();
+                    throw;
+                }
+
                 return (response, sendUri);
             }
 

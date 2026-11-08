@@ -1,3 +1,4 @@
+using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Auth;
 
 namespace Pz.Connector.Http;
@@ -9,6 +10,25 @@ internal static class HttpAuth
 {
     private const string AzureAd = "azure_ad";
     private const string OAuth2ClientCredentials = "oauth2_client_credentials";
+
+    /// <summary>Reports a final response to the authenticator and turns a rejected token into the
+    /// exception the engine acts on: a token that was accepted before is discarded and the retry signs
+    /// in again (transient); one that never worked is a configuration problem (permanent).</summary>
+    internal static void ThrowIfTokenRejected(IRequestAuthenticator? authenticator, HttpRequestMessage request,
+        int status, string label)
+    {
+        switch (authenticator?.OnResponse(request, status))
+        {
+            case AuthResponseOutcome.TokenDiscarded:
+                throw new PzConnectorException(
+                    $"{label}: the API rejected the access token (HTTP 401); signing in again on retry",
+                    isTransient: true);
+            case AuthResponseOutcome.FreshTokenRejected:
+                throw new PzConnectorException(
+                    $"{label}: the API rejected a freshly issued token (HTTP 401); check that 'scope' names " +
+                    "this API and that the app has been granted access to it", isTransient: false);
+        }
+    }
 
     internal sealed record Parsed(
         IRequestAuthenticator? Static,

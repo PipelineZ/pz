@@ -139,7 +139,11 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
         {
             Content = new StringContent(body, Encoding.UTF8, contentType),
         };
-        connection.Authenticator?.Apply(request);
+        if (connection.Authenticator is { } authenticator)
+        {
+            await authenticator.ApplyAsync(request, ct).ConfigureAwait(false);
+        }
+
         // Never echo the REQUEST body, headers, or query string (auth may live there): error
         // messages carry the path-only URI. The response body is the endpoint's own diagnostic, so a
         // bounded snippet of it is surfaced below -- masked first, because it can echo the request URL.
@@ -164,6 +168,7 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
         using (response)
         {
             var status = (int)response.StatusCode;
+            HttpAuth.ThrowIfTokenRejected(connection.Authenticator, request, status, Label);
             if (response.IsSuccessStatusCode)
             {
                 return rows;

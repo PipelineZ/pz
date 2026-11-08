@@ -12,6 +12,7 @@ internal sealed class HttpSink : ISink, IOperationGateAware
     private readonly HttpConnectionConfig _connection;
     private readonly TimeProvider _time;
     private readonly HttpClient _client;
+    private readonly bool _ownsAuthenticator;
     private IOperationGate? _gate;
 
     public HttpSink(HttpConnectionConfig connection) : this(connection, TimeProvider.System)
@@ -20,7 +21,8 @@ internal sealed class HttpSink : ISink, IOperationGateAware
 
     internal HttpSink(HttpConnectionConfig connection, TimeProvider time)
     {
-        _connection = connection;
+        _connection = connection.Bind(time);
+        _ownsAuthenticator = connection.AuthFactory is not null;
         _time = time;
         _client = HttpSource.CreateClient(connection);
     }
@@ -73,6 +75,11 @@ internal sealed class HttpSink : ISink, IOperationGateAware
     public ValueTask DisposeAsync()
     {
         _client.Dispose();
+        if (_ownsAuthenticator)
+        {
+            (_connection.Authenticator as IDisposable)?.Dispose();
+        }
+
         return ValueTask.CompletedTask;
     }
 }

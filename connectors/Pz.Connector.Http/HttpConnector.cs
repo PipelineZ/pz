@@ -113,6 +113,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             return new ConnectionCheck(false, string.Join("; ", errors));
         }
 
+        var bound = connection.Bind(TimeProvider.System);
         try
         {
             using var client = HttpSource.CreateClient(connection);
@@ -129,8 +130,22 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             for (var hop = 0; ; hop++)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, target);
-                connection.Authenticator?.Apply(request);
+                if (bound.Authenticator is { } authenticator)
+                {
+                    // Sign-in is its own failure: "the credentials don't work" and "the API said no"
+                    // need different fixes, so the first request's sign-in is reported separately.
+                    try
+                    {
+                        await authenticator.ApplyAsync(request, ct).ConfigureAwait(false);
+                    }
+                    catch (PzConnectorException ex)
+                    {
+                        return new ConnectionCheck(false, "sign-in failed: " + ex.Message);
+                    }
+                }
+
                 using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+                bound.Authenticator?.OnResponse(request, (int)response.StatusCode);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -175,6 +190,13 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             // only swallow that case. Genuine caller cancellation must propagate, not report as a
             // connection failure.
             return new ConnectionCheck(false, $"could not reach '{connection.BaseUrl}': {ex.Message}");
+        }
+        finally
+        {
+            if (connection.AuthFactory is not null)
+            {
+                (bound.Authenticator as IDisposable)?.Dispose();
+            }
         }
     }
 

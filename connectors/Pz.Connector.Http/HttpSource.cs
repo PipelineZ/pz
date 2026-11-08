@@ -9,6 +9,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     private readonly HttpConnectionConfig _connection;
     private readonly TimeProvider _time;
     private readonly HttpClient _client;
+    private readonly bool _ownsAuthenticator;
     private IOperationGate? _gate;
 
     public HttpSource(HttpConnectionConfig connection) : this(connection, TimeProvider.System)
@@ -17,7 +18,8 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
 
     internal HttpSource(HttpConnectionConfig connection, TimeProvider time)
     {
-        _connection = connection;
+        _connection = connection.Bind(time);
+        _ownsAuthenticator = connection.AuthFactory is not null;
         _time = time;
         _client = CreateClient(connection);
     }
@@ -88,6 +90,11 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     public ValueTask DisposeAsync()
     {
         _client.Dispose();
+        if (_ownsAuthenticator)
+        {
+            (_connection.Authenticator as IDisposable)?.Dispose();
+        }
+
         return ValueTask.CompletedTask;
     }
 }
