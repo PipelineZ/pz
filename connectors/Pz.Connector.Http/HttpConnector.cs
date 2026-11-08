@@ -84,10 +84,11 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         var errors = new List<string>();
-        HttpConnectionConfig.Parse(config, errors);
-        return ValueTask.FromResult(errors.Count == 0
-            ? ValidationResult.Success
-            : new ValidationResult(errors));
+        var connection = HttpConnectionConfig.Parse(config, errors);
+        return ValueTask.FromResult(new ValidationResult(errors)
+        {
+            Warnings = connection?.Warnings() ?? [],
+        });
     }
 
     // Mirrors HttpPartition.MaxRedirects: the client itself never auto-follows (AllowAutoRedirect is
