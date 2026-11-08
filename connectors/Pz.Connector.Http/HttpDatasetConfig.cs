@@ -44,8 +44,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
 
-        var factory = ParsePagination(options, errors, out var stopOnShortPage, out var pageSize);
         var items = ValidatePointer(Get(options, "items") ?? "", "items", errors);
+        var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize);
         var columns = options.TryGetValue("columns", out var c)
             ? c as IReadOnlyDictionary<string, string>
             : null;
@@ -190,7 +190,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     }
 
     private static Func<IPageStrategy>? ParsePagination(
-        IReadOnlyDictionary<string, object?> options, List<string> errors,
+        IReadOnlyDictionary<string, object?> options, string itemsPointer, List<string> errors,
         out bool stopOnShortPage, out int? pageSize)
     {
         stopOnShortPage = false;
@@ -212,10 +212,11 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
         if (block.TryGetValue("stop_on_short_page", out var stopRaw) && stopRaw is not null)
         {
-            if (strategy != "page")
+            if (strategy is not ("page" or "offset"))
             {
-                errors.Add("pagination 'stop_on_short_page' is only valid with strategy 'page' " +
-                    $"(a numbered page can fall short of the requested size; got strategy '{strategy}')");
+                errors.Add("pagination 'stop_on_short_page' is only valid with strategy 'page' or " +
+                    "'offset' (a numbered or offset page can fall short of the requested size; got " +
+                    $"strategy '{strategy}')");
             }
             else if (stopRaw is not bool)
             {
@@ -227,56 +228,86 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
 
+        var stopsOnShort = stopOnShortPage;
         switch (strategy)
         {
             case "link_header":
                 return () => new LinkHeaderStrategy();
             case "page":
+            {
                 var param = Get("param") ?? "page";
-
-                var start = 1;
-                if (Get("start") is { } startRaw)
-                {
-                    // Page numbers are zero-or-positive offsets (some APIs page from 0); negative or
-                    // non-numeric values are rejected rather than silently coerced to the default.
-                    if (!int.TryParse(startRaw, out start) || start < 0)
-                    {
-                        errors.Add($"pagination 'start' must be a non-negative integer, got '{startRaw}'");
-                        start = 1;
-                    }
-                }
-
-                int? size = null;
-                if (Get("size") is { } sizeRaw)
-                {
-                    if (!int.TryParse(sizeRaw, out var sz) || sz <= 0)
-                    {
-                        errors.Add($"pagination 'size' must be a positive integer, got '{sizeRaw}'");
-                    }
-                    else
-                    {
-                        size = sz;
-                    }
-                }
-
-                if (stopOnShortPage && size is null)
-                {
-                    errors.Add("pagination 'stop_on_short_page' requires 'size' -- 'short' is relative " +
-                        "to the requested page size, and there is none declared to compare against");
-                }
-
-                pageSize = size;
-                return () => new PageParamsStrategy(param, start, Get("size_param"), size);
+                // Page numbers are zero-or-positive (some APIs page from 0); negative or non-numeric
+                // values are rejected rather than silently coerced to the default.
+                var start = ParseStart(defaultStart: 1);
+                var size = pageSize = ParseSize();
+                var sizeParam = Get("size_param");
+                return () => new PageParamsStrategy(param, (int)start, sizeParam, size);
+            }
+            case "offset":
+            {
+                var param = Get("param") ?? "offset";
+                var start = ParseStart(defaultStart: 0);
+                var size = pageSize = ParseSize();
+                var sizeParam = Get("size_param") ?? "limit";
+                return () => new OffsetStrategy(param, start, sizeParam, size, itemsPointer);
+            }
             case "cursor" when Get("pointer") is { } pointer && Get("param") is { } cursorParam:
                 ValidatePointer(pointer, "pagination.pointer", errors);
                 return () => new CursorTokenStrategy(pointer, cursorParam);
             case "cursor":
                 errors.Add("pagination strategy 'cursor' requires 'pointer' and 'param'");
                 return null;
+            case "next_url" when Get("pointer") is { } linkPointer:
+                ValidatePointer(linkPointer, "pagination.pointer", errors);
+                return () => new NextUrlStrategy(linkPointer);
+            case "next_url":
+                errors.Add("pagination strategy 'next_url' requires 'pointer' (the JSON pointer to the " +
+                    "next-page link in the response body, e.g. '/@odata.nextLink' or '/links/next')");
+                return null;
             case var unknown:
                 errors.Add($"unknown pagination strategy '{unknown}' " +
-                    "(accepted: page, link_header, cursor)");
+                    "(accepted: page, offset, link_header, cursor, next_url)");
                 return null;
+        }
+
+        long ParseStart(long defaultStart)
+        {
+            if (Get("start") is not { } startRaw)
+            {
+                return defaultStart;
+            }
+
+            if (!int.TryParse(startRaw, out var start) || start < 0)
+            {
+                errors.Add($"pagination 'start' must be a non-negative integer, got '{startRaw}'");
+                return defaultStart;
+            }
+
+            return start;
+        }
+
+        int? ParseSize()
+        {
+            int? size = null;
+            if (Get("size") is { } sizeRaw)
+            {
+                if (!int.TryParse(sizeRaw, out var sz) || sz <= 0)
+                {
+                    errors.Add($"pagination 'size' must be a positive integer, got '{sizeRaw}'");
+                }
+                else
+                {
+                    size = sz;
+                }
+            }
+
+            if (stopsOnShort && size is null)
+            {
+                errors.Add("pagination 'stop_on_short_page' requires 'size' -- 'short' is relative " +
+                    "to the requested page size, and there is none declared to compare against");
+            }
+
+            return size;
         }
     }
 }
