@@ -93,6 +93,52 @@ public class HttpPostConfigTests
     }
 
     [Fact]
+    public void Numeric_whole_value_binding_keeps_every_digit_and_exponent()
+    {
+        var body = BodyOf(new Dictionary<string, object?> { ["after"] = "{{ watermark }}" });
+        var big = "123456789012345678901234567890";
+
+        Assert.Equal($$"""{"after":{{big}}}""", Render(body, big, "bigint")!.ToJsonString());
+        var exp = Render(body, "1E+30", "double")!["after"];
+        Assert.Equal(JsonValueKind.Number, exp!.GetValueKind());
+    }
+
+    [Theory]
+    [InlineData("hunter2-not-a-number", "bigint")]
+    [InlineData("NaN", "double")]
+    [InlineData("Infinity", "decimal")]
+    public void Numeric_whole_value_binding_that_is_not_a_number_fails_without_the_value(string value, string type)
+    {
+        var body = BodyOf(new Dictionary<string, object?> { ["after"] = "{{ watermark }}" });
+
+        body.Render(Bind(value, type), HttpPartition.FormatBinding, out var error);
+
+        Assert.NotNull(error);
+        Assert.Contains("'watermark'", error);
+        Assert.Contains($"'{type}'", error);
+        Assert.DoesNotContain(value, error);
+    }
+
+    [Fact]
+    public void Malformed_template_at_render_time_does_not_echo_the_template()
+    {
+        var result = HttpBody.ExpandString("secret-text {{ Bad", Bind("1", "int"),
+            HttpPartition.FormatBinding, out var error);
+
+        Assert.Null(result);
+        Assert.Contains("malformed binding template", error);
+        Assert.DoesNotContain("secret-text", error);
+    }
+
+    [Fact]
+    public void Yaml_plain_null_is_sent_as_the_string_null()
+    {
+        var body = BodyOf(new Dictionary<string, object?> { ["v"] = "null" });
+
+        Assert.Equal("""{"v":"null"}""", Render(body, null, null)!.ToJsonString());
+    }
+
+    [Fact]
     public void Embedded_binding_renders_into_the_string()
     {
         var body = BodyOf(new Dictionary<string, object?> { ["q"] = "updated_at:>{{ watermark }}" });
@@ -150,11 +196,15 @@ public class HttpPostConfigTests
     [Fact]
     public void Form_body_renders_encoded_pairs_and_requires_a_flat_map()
     {
-        var form = BodyOf(new Dictionary<string, object?> { ["a b"] = "x&y", ["n"] = 3L },
+        var form = BodyOf(new Dictionary<string, object?>
+            {
+                ["a b"] = "x&y", ["n"] = 3L, ["b"] = true, ["f"] = 1.5,
+            },
             new() { ["body_format"] = "form" });
 
         Assert.Equal("application/x-www-form-urlencoded", form.MediaType);
-        Assert.Equal("a%20b=x%26y&n=3", form.RenderText(Bind(null, null), HttpPartition.FormatBinding));
+        Assert.Equal("a%20b=x%26y&n=3&b=true&f=1.5",
+            form.RenderText(Bind(null, null), HttpPartition.FormatBinding));
 
         var failures = Failures(Post(new Dictionary<string, object?>
         {

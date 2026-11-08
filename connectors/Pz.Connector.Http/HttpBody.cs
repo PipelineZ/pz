@@ -218,14 +218,39 @@ internal sealed class HttpBody
 
         var names = BindingExpander.ReferencedBindings(s);
         if (names.Count == 1 && IsWholeValue(s, names[0])
-            && bindings[names[0]].TypeName is { } type && NumericTypes.Contains(type)
-            && decimal.TryParse(text, System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var number))
+            && bindings[names[0]].TypeName is { } type && NumericTypes.Contains(type))
         {
-            return JsonValue.Create(number);
+            // Parsed as a JSON literal so big integers and exponents keep their digits; a value that
+            // is not a number is refused rather than sent as a string the API would misread.
+            if (TryParseNumber(text, out var number))
+            {
+                return number;
+            }
+
+            error ??= $"binding '{names[0]}' is not a number for cursor_type '{type}'";
+            return null;
         }
 
         return JsonValue.Create(text);
+    }
+
+    private static bool TryParseNumber(string text, out JsonNode? number)
+    {
+        number = null;
+        try
+        {
+            var node = JsonNode.Parse(text.Trim());
+            if (node is JsonValue v && v.GetValueKind() == System.Text.Json.JsonValueKind.Number)
+            {
+                number = node;
+                return true;
+            }
+        }
+        catch (System.Text.Json.JsonException)
+        {
+        }
+
+        return false;
     }
 
     private static bool IsWholeValue(string s, string name)
@@ -235,16 +260,16 @@ internal sealed class HttpBody
             && t[2..^2].Trim() == name;
     }
 
-    private static string? ExpandString(string s, IReadOnlyDictionary<string, BindingValue> bindings,
+    internal static string? ExpandString(string s, IReadOnlyDictionary<string, BindingValue> bindings,
         Func<string, BindingValue, string> format, out string? error)
     {
         try
         {
             return BindingExpander.TryExpand(s, bindings, format, out var result, out error) ? result : null;
         }
-        catch (FormatException ex)
+        catch (FormatException)
         {
-            error = $"malformed binding template: {ex.Message}";
+            error = "malformed binding template";
             return null;
         }
     }
