@@ -183,11 +183,14 @@ HTTPEOF
   [[ "${code}" -eq 1 ]] || { echo "FAIL: $1 expected exit 1 (node failure), got ${code}"; cat "${dir}/run.log"; exit 1; }
   grep -q '"status":"failed"' "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 source node not marked failed"; exit 1; }
   grep -q "$3" "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 failure is not the classified sign-in error"; cat "${dir}/.pz/runs"/*/run_results.json; exit 1; }
+  # A certificate that failed to load, or a credential rejected outright, would be a different failure.
+  ! grep -q 'certificate_path could not be loaded' "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 certificate did not load"; exit 1; }
+  ! grep -q 'sign-in failed' "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 sign-in failed instead of reaching the network"; exit 1; }
 }
 ZERO=00000000-0000-0000-0000-000000000000
 run_http_signin_case http-azure-ad \
   "{ type: azure_ad, method: service_principal, tenant_id: ${ZERO}, client_id: ${ZERO}, certificate_path: app.pem, scope: 'https://example.invalid/.default', authority_host: 'https://127.0.0.1:1/' }" \
-  'azure_ad'
+  'azure_ad token request failed temporarily (service_principal)'
 run_http_signin_case http-oauth2 \
   "{ type: oauth2_client_credentials, token_url: 'http://127.0.0.1:1/token', client_id: aot, client_secret: aot-secret }" \
   'token endpoint http://127.0.0.1:1 '

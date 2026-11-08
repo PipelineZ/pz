@@ -16,13 +16,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   returned, so an API that serves fewer than `size` rows cannot make the crawl skip any. Both work with checkpointed
   resume; `offset` also takes `stop_on_short_page`.
 - **http: sign in with OAuth2.** Two new `auth` types. `azure_ad` signs in to Microsoft Entra ID (Azure AD) as a service
-  principal (`client_secret` or `certificate_path`), a managed identity, or the developer's `az login` chain. The
-  generic `oauth2_client_credentials` works with any token endpoint (`token_url`, `client_id`, `client_secret`,
-  optional `scope`). Both cache the access token and refresh it shortly before it expires. A `401` from the API drops
-  the cached token and surfaces as a retryable error, so the engine's retry signs in again with a fresh one. A sign-in
-  failure is reported without the secret or token. `pz validate` warns when `certificate_path` points inside the
-  project directory, where it is easily committed. `certificate_path` is resolved against the project directory, so
-  `http` now joins the connectors anchored there.
+  principal (`client_secret` or `certificate_path`), a managed identity, or the default Azure credential chain
+  (`credential_chain`, which includes `az login`). The generic `oauth2_client_credentials` works with any token endpoint
+  (`token_url`, `client_id`, `client_secret`, optional `scope`). Both cache the access token and refresh it five minutes
+  before it expires. Sign-in is bounded by the connection's `timeout_seconds`, and retries are left to the engine. A
+  `401` from the API drops the cached token and surfaces as a retryable error, so the engine's retry signs in again with
+  a fresh one. A sign-in failure is reported without the secret or token. `pz validate` warns when `certificate_path`
+  points inside the project directory, where it is easily committed. `certificate_path` is resolved against the project
+  directory, so `http` now joins the connectors anchored there.
 
 ### Changed
 
