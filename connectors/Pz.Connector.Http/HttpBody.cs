@@ -162,7 +162,14 @@ internal sealed class HttpBody
     public static HttpContent ToContent(JsonNode? json, string? text, HttpBody body)
     {
         var payload = text ?? json?.ToJsonString() ?? "null";
-        return new StringContent(payload, Encoding.UTF8, body.MediaType);
+        // StringContent's media-type argument refuses parameters, but 'content_type' may carry them
+        // (Parse accepted it with TryParse). The payload is UTF-8, so a declared charset stays as
+        // written and a missing one is filled in.
+        var content = new StringContent(payload, Encoding.UTF8);
+        var header = MediaTypeHeaderValue.Parse(body.MediaType);
+        header.CharSet ??= "utf-8";
+        content.Headers.ContentType = header;
+        return content;
     }
 
     private static JsonNode? Expand(JsonNode? node, IReadOnlyDictionary<string, BindingValue> bindings,
