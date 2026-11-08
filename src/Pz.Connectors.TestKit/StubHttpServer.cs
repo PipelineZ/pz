@@ -7,7 +7,14 @@ namespace Pz.Connectors.TestKit;
 public sealed record StubRequest(string Method, Uri Url, IReadOnlyDictionary<string, string> Headers,
     string Body = "");
 
-public sealed record StubResponse(int Status, string Body, IReadOnlyDictionary<string, string>? Headers = null);
+public sealed record StubResponse(int Status, string Body, IReadOnlyDictionary<string, string>? Headers = null)
+{
+    /// <summary>Bytes sent verbatim instead of <see cref="Body"/>'s UTF-8 encoding — for a
+    /// compressed or binary payload (pair it with a matching <c>Content-Encoding</c>/
+    /// <c>Content-Type</c> header). An init-only member, not a constructor parameter, so code built
+    /// against the three-argument constructor keeps binding to it.</summary>
+    public byte[]? RawBody { get; init; }
+}
 
 /// <summary>In-proc scripted HTTP fixture for connector tests: exact-path routes, full request
 /// capture, no docker, no network. The listener loop swallows teardown races by design — a test
@@ -137,7 +144,7 @@ public sealed class StubHttpServer : IAsyncDisposable
                     context.Response.Headers[name] = value;
                 }
 
-                var bytes = Encoding.UTF8.GetBytes(response.Body);
+                var bytes = response.RawBody ?? Encoding.UTF8.GetBytes(response.Body);
                 await context.Response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
                 context.Response.Close();
             }

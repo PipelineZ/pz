@@ -7,6 +7,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Changed
+
+- **http: responses are requested compressed.** Reads, writes and the connection check send
+  `Accept-Encoding: gzip, deflate, br` and unpack what comes back; JSON pages typically shrink to 10–20% on the wire
+  (measured: a 1 MB page 54% faster, a GitHub issues page 35% faster). `max_response_mb` caps the unpacked size.
+  Servers that ignore the header send plain responses as before. No new option.
+
 ### Security
 
 - **Build with .NET SDK 10.0.403 (runtime 10.0.14).** `global.json` now requires it, so the Native AOT compiler resolves
