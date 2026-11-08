@@ -63,7 +63,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   request is never retried by the gate, so a 503 cannot create a duplicate job; a timeout is transient and the engine
   retries with a new job. A pre-signed download URL on another host must be in `allow_hosts` and is fetched without
   credentials. `{job_id}` and the engine bindings expand inside `status_path` and `download_path`. File datasets take
-  no checkpoint, `pagination`, `delta_pointer` or `max_pages`.
+  no checkpoint, `pagination`, `delta_pointer` or `max_pages`. In file mode, a redirect or download to another host
+  carries no credentials and no connection headers, and its query is hidden in messages.
 - **http: dated URLs.** `path` now expands bindings like `query` and `body`, each value escaped as one path segment
   (a null binding in `path` is an error that names the fix). The new `{{ run_date }}` binding is the day of the run
   shifted by whole days, configured by `run_date: { offset_days: -1, timezone: Europe/Bucharest, format: yyyy-MM-dd }`
