@@ -8,6 +8,11 @@ namespace Pz.Connector.Http;
 /// response.</summary>
 internal sealed record SentResponse(HttpResponseMessage Response, Uri SendUri, HttpMethod Method) : IDisposable
 {
+    /// <summary>A <c>credentialsOnlyToOrigin</c> send whose final hop is a redirect target off
+    /// <c>base_url</c>'s origin: the server picked that URL, and its query can be a credential (a signed
+    /// link), so messages drop the query whole.</summary>
+    public bool ServerChosen { get; init; }
+
     public void Dispose() => Response.Dispose();
 }
 
@@ -46,10 +51,18 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
     /// <paramref name="streamBody"/> returns once the headers arrive, leaving the body on the wire
     /// (no <c>max_response_mb</c> buffer cap applies). <paramref name="credentialsOnlyToOrigin"/> sends
     /// every hop whose origin differs from <c>base_url</c>'s on the bare client with no authenticator,
-    /// so neither the authenticator nor the connection's <c>headers:</c> reach that host.</summary>
-    public async Task<SentResponse> SendAsync(HttpPageRequest first, bool streamBody, bool credentialsOnlyToOrigin,
+    /// so neither the authenticator nor the connection's <c>headers:</c> reach that host, and names
+    /// such a redirect target in messages without its query. <paramref name="stage"/>, when set, follows
+    /// the label in every message (<c>export poll</c>).</summary>
+    public Task<SentResponse> SendAsync(HttpPageRequest first, bool streamBody, bool credentialsOnlyToOrigin,
         CancellationToken ct)
+        => SendAsync(first, streamBody, credentialsOnlyToOrigin, stage: null, ct);
+
+    /// <inheritdoc cref="SendAsync(HttpPageRequest, bool, bool, CancellationToken)"/>
+    public async Task<SentResponse> SendAsync(HttpPageRequest first, bool streamBody, bool credentialsOnlyToOrigin,
+        string? stage, CancellationToken ct)
     {
+        var prefix = Prefix(stage);
         var completion = streamBody ? HttpCompletionOption.ResponseHeadersRead : HttpCompletionOption.ResponseContentRead;
         var current = first;
         for (var hop = 0; ; hop++)
@@ -66,6 +79,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
             // request.RequestUri, and that is the URL any error message must never echo unredacted.
             var sendUri = request.RequestUri ?? current.Url;
             var sent = current.Method;
+            var serverChosen = credentialsOnlyToOrigin && hop > 0 && !IsBaseOrigin(current.Url);
 
             HttpResponseMessage response;
             try
@@ -80,18 +94,19 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
                 // option that set the limit, so callers see a bare "configured maximum buffer size"
                 // with nothing to act on.
                 throw new PzConnectorException(
-                    $"{label}: response from {Target(sent, sendUri)} exceeds 'max_response_mb' " +
+                    $"{prefix}: response from {Target(sent, sendUri, serverChosen)} exceeds 'max_response_mb' " +
                     $"({connection.MaxResponseBytes / (1024 * 1024)} MiB)", isTransient: false,
                     innerException: ex);
             }
             catch (HttpRequestException ex)
             {
-                throw new PzConnectorException($"{label}: request to {Target(sent, sendUri)} failed: {ex.Message}",
+                throw new PzConnectorException(
+                    $"{prefix}: request to {Target(sent, sendUri, serverChosen)} failed: {ex.Message}",
                     TransientClassifier.IsTransientException(ex), innerException: ex);
             }
             catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
-                throw new PzConnectorException($"{label}: request to {Target(sent, sendUri)} timed out",
+                throw new PzConnectorException($"{prefix}: request to {Target(sent, sendUri, serverChosen)} timed out",
                     isTransient: true, innerException: ex);
             }
 
@@ -100,7 +115,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
             {
                 try
                 {
-                    HttpAuth.ThrowIfTokenRejected(authenticator, request, redirectStatus, label);
+                    HttpAuth.ThrowIfTokenRejected(authenticator, request, redirectStatus, prefix);
                 }
                 catch
                 {
@@ -108,7 +123,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
                     throw;
                 }
 
-                return new SentResponse(response, sendUri, sent);
+                return new SentResponse(response, sendUri, sent) { ServerChosen = serverChosen };
             }
 
             var location = response.Headers.Location;
@@ -117,27 +132,28 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
             if (location is null)
             {
                 throw new PzConnectorException(
-                    $"{label}: HTTP {redirectStatus} from {Target(sent, sendUri)} has no Location " +
+                    $"{prefix}: HTTP {redirectStatus} from {Target(sent, sendUri, serverChosen)} has no Location " +
                     "header (check the endpoint path)", isTransient: false);
             }
 
             if (hop >= MaxRedirects)
             {
                 throw new PzConnectorException(
-                    $"{label}: more than {MaxRedirects} redirects starting at {Target(first.Method, first.Url)}; " +
+                    $"{prefix}: more than {MaxRedirects} redirects starting at {Target(first.Method, first.Url)}; " +
                     "point 'base_url'/'path' at the endpoint's final location", isTransient: false);
             }
 
             var target = new Uri(sendUri, location);
-            EnsureAllowedTarget(target, "a redirect from the endpoint");
+            EnsureAllowedTarget(target, "a redirect from the endpoint", stage);
             current = current.RedirectedTo(target, redirectStatus);
         }
     }
 
     /// <summary>The generic non-2xx classification: 408/429/5xx are transient (with the response's
     /// <c>Retry-After</c>), everything else permanent with a redacted body snippet.</summary>
-    public PzConnectorException StatusError(SentResponse sent, string bodyText)
+    public PzConnectorException StatusError(SentResponse sent, string bodyText, string? stage = null)
     {
+        var prefix = Prefix(stage);
         var status = (int)sent.Response.StatusCode;
         if (TransientClassifier.IsTransientStatus(status))
         {
@@ -146,12 +162,12 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
                     ? values.FirstOrDefault()
                     : null,
                 time.GetUtcNow());
-            return new PzConnectorException($"{label}: HTTP {status} from {Target(sent.Method, sent.SendUri)}",
+            return new PzConnectorException($"{prefix}: HTTP {status} from {Target(sent)}",
                 isTransient: true, retryAfter);
         }
 
         return new PzConnectorException(
-            $"{label}: HTTP {status} from {Target(sent.Method, sent.SendUri)}: {RedactSnippet(bodyText)} " +
+            $"{prefix}: HTTP {status} from {Target(sent)}: {RedactSnippet(bodyText, sent.ServerChosen)} " +
             "(check the endpoint path and auth config)", isTransient: false);
     }
 
@@ -168,7 +184,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
     /// Authorization/api-key headers — so without this a single hostile response turns pz into a
     /// credential-exfiltration channel. Only the authority is named: the rest of the URL can embed the
     /// secret itself.</summary>
-    public void EnsureAllowedTarget(Uri candidate, string what)
+    public void EnsureAllowedTarget(Uri candidate, string what, string? stage = null)
     {
         if (connection.IsAllowedTarget(candidate))
         {
@@ -176,7 +192,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
         }
 
         throw new PzConnectorException(
-            $"{label}: {what} points at '{candidate.GetLeftPart(UriPartial.Authority)}', which is not " +
+            $"{Prefix(stage)}: {what} points at '{candidate.GetLeftPart(UriPartial.Authority)}', which is not " +
             $"this connection's host '{connection.BaseUrl.GetLeftPart(UriPartial.Authority)}' — pz will " +
             "not send this connection's credentials to a host the endpoint chose; if this really is " +
             "part of the same API, add the host to 'allow_hosts' on the connection", isTransient: false);
@@ -184,8 +200,19 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
 
     // How a request is named in a message: the redacted URL, prefixed by the method when it is not
     // GET (GET messages stay exactly as they were). Never the body.
-    public string Target(HttpMethod method, Uri uri)
-        => method == HttpMethod.Get ? Redact(uri) : $"{method.Method} {Redact(uri)}";
+    public string Target(HttpMethod method, Uri uri) => Target(method, uri, wholeQuery: false);
+
+    /// <summary>How the request that produced <paramref name="sent"/> is named: a server-chosen URL
+    /// loses its whole query.</summary>
+    public string Target(SentResponse sent) => Target(sent.Method, sent.SendUri, sent.ServerChosen);
+
+    private string Target(HttpMethod method, Uri uri, bool wholeQuery)
+    {
+        var named = wholeQuery ? RedactQuery(uri) : Redact(uri);
+        return method == HttpMethod.Get ? named : $"{method.Method} {named}";
+    }
+
+    private string Prefix(string? stage) => stage is null ? label : $"{label}: {stage}";
 
     /// <summary>Redacts a URI before it is surfaced in an exception message. When the query is itself
     /// a secret with a server-defined name (e.g. Graph's `$deltatoken`), it is replaced wholesale
@@ -207,8 +234,8 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
     /// <see cref="RedactQuery"/> -- the param name is opaque, not maskable by name), then apply the
     /// param-based <see cref="Redact(string)"/> as a second pass for any configured auth secret the body
     /// might also echo.</summary>
-    internal string RedactSnippet(string text) =>
-        Redact(Snippet(redactWholeQuery ? StripUrlQueries(text) : text));
+    internal string RedactSnippet(string text, bool wholeQuery = false) =>
+        Redact(Snippet(redactWholeQuery || wholeQuery ? StripUrlQueries(text) : text));
 
     private static readonly System.Text.RegularExpressions.Regex UrlWithQuery =
         new(@"https?://[^\s""'?]+\?[^\s""']*", System.Text.RegularExpressions.RegexOptions.Compiled);

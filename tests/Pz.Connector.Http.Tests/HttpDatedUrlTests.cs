@@ -161,6 +161,29 @@ public sealed class HttpDatedUrlTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Run_date_offset_days_is_bounded()
+    {
+        Assert.Equal(36500, HttpDatasetConfig.Parse(Spec(new()
+        {
+            ["path"] = "/d",
+            ["run_date"] = new Dictionary<string, object?> { ["offset_days"] = "36500" },
+        })).RunDate.OffsetDays);
+
+        var ex = Assert.Throws<PzConnectorException>(() => HttpDatasetConfig.Parse(Spec(new()
+        {
+            ["path"] = "/d",
+            ["run_date"] = new Dictionary<string, object?> { ["offset_days"] = "-36501", ["timezone"] = "Mars/Base" },
+        })));
+
+        Assert.Contains("'run_date.offset_days' must be between -36500 and 36500, got '-36501'", ex.Message);
+        Assert.Contains("'run_date.timezone' 'Mars/Base' is not a known time zone id", ex.Message);
+        var offsetSchema = System.Text.Json.Nodes.JsonNode.Parse(new HttpConnector().DatasetConfigSchema)!
+            ["properties"]!["run_date"]!["properties"]!["offset_days"]!;
+        Assert.Equal(-36500, (int)offsetSchema["minimum"]!);
+        Assert.Equal(36500, (int)offsetSchema["maximum"]!);
+    }
+
+    [Fact]
     public async Task Window_upper_date_renders_plain_date()
     {
         _server.Map("/d/2026-11-07.zip", _ => new StubResponse(200, "[]"));

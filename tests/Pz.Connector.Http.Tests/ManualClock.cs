@@ -40,6 +40,10 @@ internal sealed class ManualClock : TimeProvider
         }
     }
 
+    /// <summary>A due delay whose timers are scheduled as usual but never reported by
+    /// <see cref="NextTimerAsync"/> — for timers a test must not advance to on purpose.</summary>
+    public TimeSpan? Unannounced { get; set; }
+
     /// <summary>The due delay of the next timer created (in creation order).</summary>
     public Task<TimeSpan> NextTimerAsync() => _created.Reader.ReadAsync().AsTask();
 
@@ -64,7 +68,10 @@ internal sealed class ManualClock : TimeProvider
             _timers.Add(timer);
         }
 
-        _created.Writer.TryWrite(dueTime);
+        if (dueTime != Unannounced)
+        {
+            _created.Writer.TryWrite(dueTime);
+        }
     }
 
     private void Unschedule(ManualTimer timer)

@@ -167,6 +167,19 @@ public class HttpCsvFileReaderTests
     }
 
     [Fact]
+    public async Task Raw_mode_extra_field_fails_short_row_pads()
+    {
+        var config = Config(File(("skip_lines", "1")));
+
+        var padded = Assert.Single(await Rows("report\nid,name\n1\n", config));
+        Assert.Equal("""{"id":"1","name":""}""", padded[0]);
+
+        var ex = await Fails(Encoding.UTF8.GetBytes("report\nid,name\n1,a\n2,b,extra\n"), config);
+        Assert.False(ex.IsTransient);
+        Assert.Equal("s.d: file 'a.csv' line 4: expected 2 fields, got 3", ex.Message);
+    }
+
+    [Fact]
     public async Task Raw_mode_no_header_names_c1()
     {
         var config = Config(File(("header", false)));

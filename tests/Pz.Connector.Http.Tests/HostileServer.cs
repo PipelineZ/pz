@@ -8,8 +8,18 @@ namespace Pz.Connector.Http.Tests;
 /// well-formed HTTP through <c>HttpListener</c> and therefore cannot misbehave at the transport
 /// layer; this fixture writes the response bytes itself, so it can lie about Content-Length, cut a
 /// body in half, send a RST instead of a FIN, or simply never answer.</summary>
-public sealed record HostileReply(byte[] Bytes, bool Reset = false, bool Hang = false)
+public sealed record HostileReply(byte[] Bytes, bool Reset = false, bool Hang = false, bool HangAfter = false)
 {
+    /// <summary>Sends <paramref name="status"/> with headers declaring <paramref name="declaredLength"/>
+    /// body bytes, then only <paramref name="prefix"/>, and holds the socket open until the fixture is
+    /// disposed — a server that stalls mid-body.</summary>
+    public static HostileReply StallMidBody(int status, string contentType, string prefix, int declaredLength)
+    {
+        var head = $"HTTP/1.1 {status} X\r\nContent-Type: {contentType}\r\n" +
+            $"Content-Length: {declaredLength}\r\nConnection: close\r\n\r\n";
+        return new HostileReply([.. Encoding.UTF8.GetBytes(head), .. Encoding.UTF8.GetBytes(prefix)], HangAfter: true);
+    }
+
     public static HostileReply Raw(string text, bool reset = false) =>
         new(Encoding.UTF8.GetBytes(text.ReplaceLineEndings("\r\n")), reset);
 
@@ -129,6 +139,18 @@ public sealed class HostileServer : IAsyncDisposable
             if (reply.Bytes.Length > 0)
             {
                 await socket.SendAsync(reply.Bytes, SocketFlags.None).ConfigureAwait(false);
+            }
+
+            if (reply.HangAfter)
+            {
+                try
+                {
+                    await Task.Delay(Timeout.Infinite, _shutdown.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    // shutting down
+                }
             }
 
             if (reply.Reset)

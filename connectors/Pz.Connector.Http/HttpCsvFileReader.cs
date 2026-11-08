@@ -17,7 +17,8 @@ namespace Pz.Connector.Http;
 /// Contract mode without a header reads positionally, value by value through
 /// <see cref="TextValueParser"/> (the same rules), so a row with fewer fields than the contract is an
 /// error rather than trailing NULLs. Raw mode lands each row as a JSON object of strings keyed by
-/// header name, or `c1..cN` without a header.</summary>
+/// header name (a short row pads with "", a row longer than the header is an error), or `c1..cN`
+/// without a header.</summary>
 internal sealed class HttpCsvFileReader : IFileFormatReader
 {
     /// <summary>Sylvan refuses any row wider than its read buffer; this is a ceiling, not a
@@ -165,6 +166,15 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
             var payload = new JsonObject();
             if (header is not null)
             {
+                // A short row pads with "" (Sylvan's own reading); a long one has values with no name
+                // to land under, and dropping them would lose data silently.
+                if (csv.RowFieldCount > header.Length)
+                {
+                    throw new PzConnectorException(
+                        $"{label}: file '{name}' line {csv.RowNumber + lineOffset}: expected {header.Length} " +
+                        $"fields, got {csv.RowFieldCount}", isTransient: false);
+                }
+
                 for (var i = 0; i < header.Length; i++)
                 {
                     payload[header[i]] = csv.GetString(i);

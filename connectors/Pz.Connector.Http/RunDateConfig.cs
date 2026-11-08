@@ -12,6 +12,10 @@ internal sealed record RunDateConfig(int OffsetDays, TimeZoneInfo Zone, string F
 
     private const string FormatChars = "yMd-_/. ";
 
+    /// <summary>The most whole days `offset_days` may shift the date either way (about a century),
+    /// so the shifted date always stays inside <see cref="DateOnly"/>'s range.</summary>
+    public const int MaxOffsetDays = 36500;
+
     public static RunDateConfig Parse(object? raw, List<string> errors)
     {
         if (raw is null)
@@ -32,6 +36,12 @@ internal sealed record RunDateConfig(int OffsetDays, TimeZoneInfo Zone, string F
             && !int.TryParse(offsetRaw, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out offsetDays))
         {
             errors.Add($"'run_date.offset_days' must be an integer, got '{offsetRaw}'");
+        }
+        else if (offsetDays is < -MaxOffsetDays or > MaxOffsetDays)
+        {
+            errors.Add($"'run_date.offset_days' must be between -{MaxOffsetDays} and {MaxOffsetDays}, " +
+                $"got '{offsetDays}'");
+            offsetDays = Default.OffsetDays;
         }
 
         var zone = Default.Zone;

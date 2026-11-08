@@ -22,8 +22,14 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
+    private const string DownloadStage = "download";
+
+    /// <summary>Every message about the download names its stage after the label.</summary>
+    private string DownloadLabel => $"{Label}: {DownloadStage}";
+
     // A plain download, and an export's start and polls: the dataset's own query is user config, so
-    // messages mask only the authenticator's secret params, as for JSON pages.
+    // messages mask only the authenticator's secret params, as for JSON pages. A redirect off
+    // base_url's origin is server-chosen and loses its whole query (SentResponse.ServerChosen).
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
         $"http source '{spec.Source}.{spec.Dataset}'");
 
@@ -61,7 +67,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         {
             // Same-origin needs no handling here: the send strips credentials from any request to
             // another origin.
-            (download, _) = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings)
+            download = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings)
                 .RunAsync(first, ct).ConfigureAwait(false);
             sender = _exportDownloadSender;
         }
@@ -111,33 +117,38 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     private async Task<(string Path, string FallbackName)> DownloadAsync(HttpRequestSender sender,
         HttpPageRequest request, DownloadScratch scratch, CancellationToken ct)
     {
-        using var sent = await sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true, ct)
-            .ConfigureAwait(false);
+        using var sent = await sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true,
+            DownloadStage, ct).ConfigureAwait(false);
         var content = sent.Response.Content;
+        var target = sender.Target(sent);
+        var idle = new IdleRead(connection.Timeout, time,
+            () => $"{DownloadLabel}: download from {target} {IdleRead.Tail(connection.Timeout)}");
         if (!sent.Response.IsSuccessStatusCode)
         {
-            throw sender.StatusError(sent, await BodyHeadAsync(content, ct).ConfigureAwait(false));
+            throw sender.StatusError(sent, await BodyHeadAsync(content, idle, ct).ConfigureAwait(false),
+                DownloadStage);
         }
 
         var mediaType = content.Headers.ContentType?.MediaType?.ToLowerInvariant();
         if (IsErrorPageType(config.File!.Format, mediaType))
         {
-            var snippet = sender.RedactSnippet(await BodyHeadAsync(content, ct).ConfigureAwait(false));
+            var snippet = sender.RedactSnippet(await BodyHeadAsync(content, idle, ct).ConfigureAwait(false));
             throw new PzConnectorException(
-                $"{Label}: expected a {FormatName(config.File.Format)} file but " +
-                $"{sender.Target(sent.Method, sent.SendUri)} answered {mediaType}: {snippet}", isTransient: false);
+                $"{DownloadLabel}: expected a {FormatName(config.File.Format)} file but " +
+                $"{target} answered {mediaType}: {snippet}", isTransient: false);
         }
 
         string path;
         try
         {
             await using var body = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-            path = await scratch.SaveAsync(body, connection.MaxDownloadBytes, Label, ct).ConfigureAwait(false);
+            path = await scratch.SaveAsync(body, connection.MaxDownloadBytes, DownloadLabel, idle, ct)
+                .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is IOException or HttpRequestException && !ct.IsCancellationRequested)
         {
             throw new PzConnectorException(
-                $"{Label}: download from {sender.Target(sent.Method, sent.SendUri)} failed: {ex.Message}",
+                $"{DownloadLabel}: download from {target} failed: {ex.Message}",
                 isTransient: true, innerException: ex);
         }
 
@@ -170,16 +181,23 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
     /// <summary>The head of a refused body with the whole query of every URL in it dropped: an error
     /// page or a storage error can echo a signed link, whose query is the credential.</summary>
-    private static async Task<string> BodyHeadAsync(HttpContent content, CancellationToken ct)
-        => HttpRequestSender.StripUrlQueries(await HeadAsync(content, ct).ConfigureAwait(false));
+    private static async Task<string> BodyHeadAsync(HttpContent content, IdleRead idle, CancellationToken ct)
+        => HttpRequestSender.StripUrlQueries(await HeadAsync(content, idle, ct).ConfigureAwait(false));
 
-    /// <summary>At most the first <see cref="SnippetBytes"/> bytes of the body, as UTF-8 text.</summary>
-    private static async Task<string> HeadAsync(HttpContent content, CancellationToken ct)
+    /// <summary>At most the first <see cref="SnippetBytes"/> bytes of the body, as UTF-8 text, each
+    /// read bounded by <paramref name="idle"/>.</summary>
+    private static async Task<string> HeadAsync(HttpContent content, IdleRead idle, CancellationToken ct)
     {
         await using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
         var buffer = new byte[SnippetBytes];
-        var n = await stream.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, ct)
-            .ConfigureAwait(false);
+        var n = 0;
+        int read;
+        while (n < buffer.Length
+               && (read = await idle.ReadAsync(stream, buffer.AsMemory(n), ct).ConfigureAwait(false)) > 0)
+        {
+            n += read;
+        }
+
         return Encoding.UTF8.GetString(buffer, 0, n);
     }
 }

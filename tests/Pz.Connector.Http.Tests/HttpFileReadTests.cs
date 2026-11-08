@@ -23,9 +23,9 @@ public sealed class HttpFileReadTests : IAsyncLifetime
 
     public async Task DisposeAsync() => await _server.DisposeAsync();
 
-    private HttpSource Source(Dictionary<string, object?>? extra = null)
+    private HttpSource Source(Dictionary<string, object?>? extra = null, Uri? baseUrl = null)
     {
-        var values = new Dictionary<string, object?> { ["base_url"] = _server.BaseUrl.ToString() };
+        var values = new Dictionary<string, object?> { ["base_url"] = (baseUrl ?? _server.BaseUrl).ToString() };
         foreach (var (key, value) in extra ?? [])
         {
             values[key] = value;
@@ -317,6 +317,105 @@ public sealed class HttpFileReadTests : IAsyncLifetime
         Assert.False(ex.IsTransient);
         Assert.Contains("HTTP 404", ex.Message);
         Assert.Contains("/exports/daily?date=2026-11-07", ex.Message);
+    }
+
+    [Fact]
+    public async Task Redirect_to_signed_url_hides_its_query()
+    {
+        await using var bucket = new StubHttpServer();
+        var signed = new Uri(bucket.BaseUrl, "/x.csv?X-Amz-Signature=SECRET").ToString();
+        var status = 403;
+        bucket.Map("/x.csv", _ => new StubResponse(status, $"<Error>denied for {signed}</Error>"));
+        _server.Map("/reports/123/file", _ => new StubResponse(302, "",
+            new Dictionary<string, string> { ["Location"] = signed }));
+        await using var source = Source(new() { ["allow_hosts"] = new List<object?> { bucket.BaseUrl.Host } });
+        var spec = Spec("signed", FileOptions("/reports/123/file", new() { ["format"] = "csv" }));
+
+        var denied = await Assert.ThrowsAsync<PzConnectorException>(() => Read(spec, source));
+        Assert.False(denied.IsTransient);
+        Assert.Contains("HTTP 403", denied.Message);
+        Assert.Contains(bucket.BaseUrl.GetLeftPart(UriPartial.Authority) + "/x.csv", denied.Message);
+        Assert.DoesNotContain("SECRET", denied.Message);
+
+        status = 503;
+        var busy = await Assert.ThrowsAsync<PzConnectorException>(() => Read(spec, source));
+        Assert.True(busy.IsTransient);
+        Assert.Contains("HTTP 503", busy.Message);
+        Assert.Contains(bucket.BaseUrl.GetLeftPart(UriPartial.Authority) + "/x.csv", busy.Message);
+        Assert.DoesNotContain("SECRET", busy.Message);
+    }
+
+    /// <summary>Starts a read against <paramref name="hostile"/> and advances the clock past every
+    /// idle-read timer the download arms until the read ends.</summary>
+    private async Task<Exception> ReadUntilStalled(HostileServer hostile)
+    {
+        await using var source = Source(new() { ["timeout_seconds"] = "5" }, hostile.BaseUrl);
+        var spec = Spec("stall", FileOptions("/f.csv", new() { ["format"] = "csv" }));
+        var work = Read(spec, source);
+        while (true)
+        {
+            var next = _clock.NextTimerAsync();
+            var done = await Task.WhenAny(work, next).WaitAsync(TimeSpan.FromSeconds(30));
+            if (done == work)
+            {
+                return await Assert.ThrowsAnyAsync<Exception>(() => work);
+            }
+
+            var due = await next;
+            Assert.Equal(TimeSpan.FromSeconds(5), due);
+            _clock.Advance(due);
+        }
+    }
+
+    [Fact]
+    public async Task Stalled_download_body_times_out()
+    {
+        await using var hostile = new HostileServer((_, _) =>
+            HostileReply.StallMidBody(200, "text/csv", "id,name\n1,a\n", 100_000));
+
+        var ex = Assert.IsType<PzConnectorException>(await ReadUntilStalled(hostile));
+
+        Assert.True(ex.IsTransient);
+        Assert.Equal($"http source 'stub.stall': download: download from {hostile.BaseUrl}f.csv stalled: " +
+            "no data for 5 s ('timeout_seconds')", ex.Message);
+    }
+
+    [Fact]
+    public async Task Stalled_error_body_times_out()
+    {
+        await using var hostile = new HostileServer((_, _) =>
+            HostileReply.StallMidBody(500, "text/plain", "internal", 100_000));
+
+        var ex = Assert.IsType<PzConnectorException>(await ReadUntilStalled(hostile));
+
+        Assert.True(ex.IsTransient);
+        Assert.Contains("stalled: no data for 5 s ('timeout_seconds')", ex.Message);
+    }
+
+    [Fact]
+    public async Task Cancel_during_stalled_download_is_cancellation()
+    {
+        await using var hostile = new HostileServer((_, _) =>
+            HostileReply.StallMidBody(200, "text/csv", "id,name\n1,a\n", 100_000));
+        await using var source = Source(new() { ["timeout_seconds"] = "5" }, hostile.BaseUrl);
+        var spec = Spec("stall", FileOptions("/f.csv", new() { ["format"] = "csv" }));
+        var partition = Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
+        using var cts = new CancellationTokenSource();
+
+        async Task Drain()
+        {
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(), cts.Token))
+            {
+                batch.Dispose();
+            }
+        }
+
+        var work = Drain();
+        // An idle-read timer exists once the body is being read.
+        await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        await cts.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work);
     }
 
     [Fact]

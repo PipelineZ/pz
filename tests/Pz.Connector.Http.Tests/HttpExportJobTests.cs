@@ -20,7 +20,16 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     private readonly ManualClock _clock = new();
     private Task<TimeSpan>? _nextTimer;
 
-    public HttpExportJobTests() => _clock.Advance(Now - _clock.GetUtcNow());
+    /// <summary>The connection timeout these tests configure. The download arms an idle-read timer of
+    /// this length per read; the clock keeps those out of <see cref="ManualClock.NextTimerAsync"/>, so
+    /// advancing past a poll wait never fires a stall.</summary>
+    private static readonly TimeSpan IdleTimeout = TimeSpan.FromSeconds(77);
+
+    public HttpExportJobTests()
+    {
+        _clock.Advance(Now - _clock.GetUtcNow());
+        _clock.Unannounced = IdleTimeout;
+    }
 
     public Task InitializeAsync() => Task.CompletedTask;
 
@@ -57,6 +66,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
             ["base_url"] = _server.BaseUrl.ToString(),
             ["auth"] = auth ?? new Dictionary<string, object?> { ["type"] = "bearer", ["token"] = "secret-token" },
             ["headers"] = new Dictionary<string, object?> { ["X-Conn"] = "header-secret" },
+            ["timeout_seconds"] = IdleTimeout.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
         if (allowFiles)
         {
@@ -261,7 +271,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
             () => Read(Spec(Export(("timeout_minutes", "1"), ("poll_interval_seconds", "25")))));
 
         Assert.True(ex.IsTransient);
-        Assert.Contains("export job j1 not ready after 1 minutes", ex.Message);
+        Assert.Contains("'stub.traffic': export poll: export job j1 not ready after 1 minutes", ex.Message);
         // Waits of 25 s, 25 s, then the 10 s left before the deadline, with a poll after each.
         Assert.Equal(3, Polls("/reports/j1").Count());
         Assert.Equal(Now + TimeSpan.FromMinutes(1), _clock.GetUtcNow());
@@ -351,9 +361,36 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export())));
 
         Assert.False(ex.IsTransient);
-        Assert.Contains("HTTP 403", ex.Message);
+        Assert.Contains("'stub.traffic': download: HTTP 403", ex.Message);
         Assert.Contains("/bucket/abc.csv", ex.Message);
         Assert.DoesNotContain("SECRET", ex.Message);
+    }
+
+    [Fact]
+    public async Task Poll_failure_names_the_stage()
+    {
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => new StubResponse(500, "boom"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export())));
+
+        Assert.True(ex.IsTransient);
+        Assert.StartsWith("http source 'stub.traffic': export poll: HTTP 500 from ", ex.Message);
+    }
+
+    [Fact]
+    public async Task Job_id_is_flattened_and_capped_in_messages()
+    {
+        var id = "a\r\nb" + new string('x', 150);
+        MapJob("/reports/" + Uri.EscapeDataString(id), System.Text.Json.JsonSerializer.Serialize(id),
+            """{"state":"failed"}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export())));
+
+        var shown = ("a b" + new string('x', 150))[..100] + "…";
+        Assert.Contains($"export job {shown} failed with status 'failed'", ex.Message);
+        Assert.DoesNotContain("\n", ex.Message);
+        Assert.DoesNotContain(new string('x', 98), ex.Message);
     }
 
     [Fact]
@@ -406,6 +443,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export())));
 
         Assert.False(ex.IsTransient);
+        Assert.Contains("'stub.traffic': export start: response from ", ex.Message);
         Assert.Contains("not valid JSON", ex.Message);
     }
 

@@ -82,7 +82,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "error_pointer": { "type": "string" },
             "max_pages": { "type": "integer", "minimum": 1 },
             "run_date": { "type": "object", "properties": {
-                "offset_days": { "type": "integer" }, "timezone": { "type": "string" },
+                "offset_days": { "type": "integer", "minimum": -36500, "maximum": 36500 }, "timezone": { "type": "string" },
                 "format": { "type": "string" } },
                 "additionalProperties": false },
             "file": { "type": "object", "properties": {

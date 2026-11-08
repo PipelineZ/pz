@@ -20,7 +20,13 @@ internal sealed class DownloadScratch : IDisposable
     /// <summary>Copies <paramref name="body"/> to `download.bin` and returns its path. Throws a
     /// permanent error as soon as more than <paramref name="maxBytes"/> arrive; the partial file stays
     /// until <see cref="Dispose"/>.</summary>
-    public async Task<string> SaveAsync(Stream body, long maxBytes, string label, CancellationToken ct)
+    public Task<string> SaveAsync(Stream body, long maxBytes, string label, CancellationToken ct)
+        => SaveAsync(body, maxBytes, label, idle: null, ct);
+
+    /// <summary>As <see cref="SaveAsync(Stream, long, string, CancellationToken)"/>, with each read of
+    /// <paramref name="body"/> bounded by <paramref name="idle"/> when set.</summary>
+    public async Task<string> SaveAsync(Stream body, long maxBytes, string label, IdleRead? idle,
+        CancellationToken ct)
     {
         var path = Path.Combine(Directory, "download.bin");
         await using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None,
@@ -28,7 +34,9 @@ internal sealed class DownloadScratch : IDisposable
         var buffer = new byte[81920];
         long total = 0;
         int n;
-        while ((n = await body.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+        while ((n = idle is null
+                   ? await body.ReadAsync(buffer, ct).ConfigureAwait(false)
+                   : await idle.ReadAsync(body, buffer, ct).ConfigureAwait(false)) > 0)
         {
             total += n;
             if (total > maxBytes)

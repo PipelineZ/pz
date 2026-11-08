@@ -26,7 +26,20 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     /// <summary>How much of a failed job's message is quoted.</summary>
     private const int MaxMessageChars = 200;
 
-    public async Task<(HttpPageRequest Download, bool SameOrigin)> RunAsync(HttpPageRequest start, CancellationToken ct)
+    /// <summary>How much of a job id a message shows.</summary>
+    private const int MaxJobIdChars = 100;
+
+    private const string StartStage = "export start";
+    private const string PollStage = "export poll";
+
+    /// <summary>Every message about the start request names this stage after the label.</summary>
+    private string StartLabel => $"{label}: {StartStage}";
+
+    /// <summary>Every message about a poll, or the job state it reports, names this stage after the
+    /// label.</summary>
+    private string PollLabel => $"{label}: {PollStage}";
+
+    public async Task<HttpPageRequest> RunAsync(HttpPageRequest start, CancellationToken ct)
     {
         var jobId = await sender.RunAsync("http.export_start", idempotent: false,
             token => StartAsync(start, token), ct).ConfigureAwait(false);
@@ -50,8 +63,7 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
                 token => PollAsync(poll, jobId, token), ct).ConfigureAwait(false);
             if (ready)
             {
-                var download = DownloadUrl(body, jobId);
-                return (new HttpPageRequest(HttpMethod.Get, download, null, null), IsBaseOrigin(download));
+                return new HttpPageRequest(HttpMethod.Get, DownloadUrl(body, jobId), null, null);
             }
 
             if (time.GetUtcNow() >= deadline)
@@ -65,15 +77,15 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     }
 
     private PzConnectorException NotReady(string jobId)
-        => new($"{label}: export job {jobId} not ready after {(int)export.Timeout.TotalMinutes} minutes",
+        => new($"{PollLabel}: export job {Shown(jobId)} not ready after {(int)export.Timeout.TotalMinutes} minutes",
             isTransient: true);
 
     private async Task<string> StartAsync(HttpPageRequest start, CancellationToken ct)
     {
-        var (body, target, _) = await GetJsonAsync(start, ct).ConfigureAwait(false);
+        var (body, target, _) = await GetJsonAsync(start, StartStage, ct).ConfigureAwait(false);
         if (config.ErrorPointer is { } errorPointer)
         {
-            HttpPartition.ThrowIfErrorReported(body, errorPointer, target, label, stripUrlQueries: false,
+            HttpPartition.ThrowIfErrorReported(body, errorPointer, target, StartLabel, stripUrlQueries: false,
                 connection.RedactSecretParams);
         }
 
@@ -93,7 +105,7 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         }
 
         throw new PzConnectorException(
-            $"{label}: export.job_id '{export.JobIdPointer}' does not resolve to a string or number in the " +
+            $"{StartLabel}: export.job_id '{export.JobIdPointer}' does not resolve to a string or number in the " +
             $"response from {target} (check the pointer against the start response)", isTransient: false);
     }
 
@@ -103,11 +115,11 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     private async Task<(bool Ready, JsonNode? Body, TimeSpan? RetryAfter)> PollAsync(
         HttpPageRequest poll, string jobId, CancellationToken ct)
     {
-        var (body, target, retryAfter) = await GetJsonAsync(poll, ct).ConfigureAwait(false);
+        var (body, target, retryAfter) = await GetJsonAsync(poll, PollStage, ct).ConfigureAwait(false);
         if (!JsonPointer.TryResolve(body, export.StatusPointer, out var node))
         {
             throw new PzConnectorException(
-                $"{label}: export.status_pointer '{export.StatusPointer}' not found in the response from {target}",
+                $"{PollLabel}: export.status_pointer '{export.StatusPointer}' not found in the response from {target}",
                 isTransient: false);
         }
 
@@ -117,14 +129,14 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
             JsonValue v when v.GetValueKind() == JsonValueKind.String => v.GetValue<string>(),
             JsonValue v when v.GetValueKind() == JsonValueKind.Number => v.ToJsonString(),
             _ => throw new PzConnectorException(
-                $"{label}: export.status_pointer '{export.StatusPointer}' resolves to neither a string nor a " +
+                $"{PollLabel}: export.status_pointer '{export.StatusPointer}' resolves to neither a string nor a " +
                 $"number in the response from {target}", isTransient: false),
         };
 
         if (status is not null && Matches(export.Failed, status))
         {
             throw new PzConnectorException(
-                $"{label}: export job {jobId} failed with status '{status}'{FailureMessage(body)}", isTransient: false);
+                $"{PollLabel}: export job {Shown(jobId)} failed with status '{status}'{FailureMessage(body)}", isTransient: false);
         }
 
         return (status is not null && Matches(export.Ready, status), body, retryAfter);
@@ -151,19 +163,19 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
 
     /// <summary>Sends a buffered request on the file-mode credential rules, refuses a non-2xx
     /// response, and parses the body as JSON. Returns the body, the request as messages name it, and
-    /// a 2xx response's <c>Retry-After</c>.</summary>
+    /// a 2xx response's <c>Retry-After</c>. Every message names <paramref name="stage"/>.</summary>
     private async Task<(JsonNode? Body, string Target, TimeSpan? RetryAfter)> GetJsonAsync(HttpPageRequest request,
-        CancellationToken ct)
+        string stage, CancellationToken ct)
     {
-        using var sent = await sender.SendAsync(request, streamBody: false, credentialsOnlyToOrigin: true, ct)
+        using var sent = await sender.SendAsync(request, streamBody: false, credentialsOnlyToOrigin: true, stage, ct)
             .ConfigureAwait(false);
         var text = await sent.Response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!sent.Response.IsSuccessStatusCode)
         {
-            throw sender.StatusError(sent, text);
+            throw sender.StatusError(sent, text, stage);
         }
 
-        var target = sender.Target(sent.Method, sent.SendUri);
+        var target = sender.Target(sent);
         JsonNode? body;
         try
         {
@@ -171,7 +183,8 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         }
         catch (JsonException ex)
         {
-            throw new PzConnectorException($"{label}: response from {target} is not valid JSON", isTransient: false,
+            throw new PzConnectorException($"{label}: {stage}: response from {target} is not valid JSON",
+                isTransient: false,
                 innerException: ex);
         }
 
@@ -194,17 +207,19 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
             || value.GetValue<string>() is not { Length: > 0 } text)
         {
             throw new PzConnectorException(
-                $"{label}: export.download_pointer '{pointer}' does not resolve to a URL in export job {jobId}'s " +
+                $"{PollLabel}: export.download_pointer '{pointer}' does not resolve to a URL in export job " +
+                $"{Shown(jobId)}'s " +
                 "ready response", isTransient: false);
         }
 
         if (!Uri.TryCreate(connection.BaseUrl, text, out var url))
         {
             throw new PzConnectorException(
-                $"{label}: export job {jobId}'s download URL at '{pointer}' is not a valid URL", isTransient: false);
+                $"{PollLabel}: export job {Shown(jobId)}'s download URL at '{pointer}' is not a valid URL",
+                isTransient: false);
         }
 
-        sender.EnsureAllowedTarget(url, $"export job {jobId}'s download URL");
+        sender.EnsureAllowedTarget(url, $"export job {Shown(jobId)}'s download URL", PollStage);
         return url;
     }
 
@@ -218,8 +233,11 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         return new Uri(connection.BaseUrl, expanded[1..]);
     }
 
-    private bool IsBaseOrigin(Uri uri)
-        => string.Equals(uri.Scheme, connection.BaseUrl.Scheme, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(uri.Host, connection.BaseUrl.Host, StringComparison.OrdinalIgnoreCase)
-            && uri.Port == connection.BaseUrl.Port;
+    /// <summary>A job id as messages show it: on one line, and at most <see cref="MaxJobIdChars"/>
+    /// characters (a server can return anything as an id).</summary>
+    private static string Shown(string jobId)
+    {
+        var flat = jobId.Replace("\r\n", " ", StringComparison.Ordinal).Replace('\r', ' ').Replace('\n', ' ');
+        return flat.Length <= MaxJobIdChars ? flat : flat[..MaxJobIdChars] + "…";
+    }
 }
