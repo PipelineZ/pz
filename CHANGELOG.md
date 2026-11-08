@@ -7,12 +7,28 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **http: two more pagination strategies.** `next_url` follows a next-page link in the response body
+  (`pointer: /@odata.nextLink` for Microsoft Graph/OData, `/links/next`, `/next`); a relative link resolves against the
+  current request, and every link is still checked against the connection's allowed hosts. `offset` pages with
+  `offset`/`limit` (rename with `param`/`size_param`, start with `start`) and advances by the rows each page actually
+  returned, so an API that serves fewer than `size` rows cannot make the crawl skip any. Both work with checkpointed
+  resume; `offset` also takes `stop_on_short_page`.
+
 ### Changed
 
 - **http: responses are requested compressed.** Reads, writes and the connection check send
   `Accept-Encoding: gzip, deflate, br` and unpack what comes back; JSON pages typically shrink to 10–20% on the wire
   (measured: a 1 MB page 54% faster, a GitHub issues page 35% faster). `max_response_mb` caps the unpacked size.
   Servers that ignore the header send plain responses as before. No new option.
+
+### Fixed
+
+- **http: an `allow_hosts` entry no longer receives credentials over plain http.** A next-page link or redirect to
+  `http://<allowed host>` from an `https://` `base_url` sent the connection's token unencrypted; it is now refused.
+  An `http://` `base_url` may still reach allowed hosts over http. `pz validate` now warns when an `auth:` block or an
+  `Authorization` header is sent to an `http://` `base_url` (loopback excepted).
 
 ### Security
 
