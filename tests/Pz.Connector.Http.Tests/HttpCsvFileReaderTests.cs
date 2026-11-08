@@ -11,8 +11,8 @@ namespace Pz.Connector.Http.Tests;
 
 public class HttpCsvFileReaderTests
 {
-    private const string Label = "s.d";
-    private static readonly DateTimeOffset FetchedAt = new(2026, 11, 8, 9, 30, 0, TimeSpan.Zero);
+    private const string Label = FileReaderRows.Label;
+    private static readonly DateTimeOffset FetchedAt = FileReaderRows.FetchedAt;
 
     private static HttpDatasetConfig Config(Dictionary<string, object?>? file = null,
         Dictionary<string, string>? columns = null, string? cursor = null, string? cursorType = null)
@@ -50,52 +50,9 @@ public class HttpCsvFileReaderTests
     private static Task<List<object?[]>> Rows(string text, HttpDatasetConfig config, string name = "a.csv")
         => Rows(Encoding.UTF8.GetBytes(text), config, name);
 
-    private static async Task<List<object?[]>> Rows(byte[] bytes, HttpDatasetConfig config, string name = "a.csv",
+    private static Task<List<object?[]>> Rows(byte[] bytes, HttpDatasetConfig config, string name = "a.csv",
         BatchOptions? options = null)
-    {
-        var rows = new List<object?[]>();
-        var expected = FileOutput.Schema(config);
-        using var source = new FileSource(name, new MemoryStream(bytes));
-        await foreach (var batch in new HttpCsvFileReader().ReadAsync(
-            source, config, FetchedAt, options ?? new BatchOptions(), Label, CancellationToken.None))
-        {
-            using (batch)
-            {
-                AssertSchema(expected, batch.Schema);
-                for (var r = 0; r < batch.Length; r++)
-                {
-                    var row = new object?[batch.ColumnCount];
-                    for (var c = 0; c < batch.ColumnCount; c++)
-                    {
-                        row[c] = Value(batch.Column(c), r);
-                    }
-
-                    rows.Add(row);
-                }
-            }
-        }
-
-        return rows;
-    }
-
-    private static void AssertSchema(Schema expected, Schema actual)
-    {
-        Assert.Equal(expected.FieldsList.Select(f => f.Name), actual.FieldsList.Select(f => f.Name));
-        Assert.Equal(expected.FieldsList.Select(f => f.DataType.TypeId), actual.FieldsList.Select(f => f.DataType.TypeId));
-    }
-
-    private static object? Value(IArrowArray array, int row) => array switch
-    {
-        Int32Array a => a.GetValue(row),
-        Int64Array a => a.GetValue(row),
-        DoubleArray a => a.GetValue(row),
-        Decimal128Array a => a.GetValue(row),
-        BooleanArray a => a.GetValue(row),
-        StringArray a => a.GetString(row),
-        Date32Array a => a.GetDateOnly(row),
-        TimestampArray a => a.GetTimestamp(row),
-        _ => throw new InvalidOperationException(array.GetType().Name),
-    };
+        => FileReaderRows.ReadAsync(new HttpCsvFileReader(), bytes, config, name, options);
 
     private static async Task<PzConnectorException> Fails(byte[] bytes, HttpDatasetConfig config, string name = "a.csv")
         => await Assert.ThrowsAsync<PzConnectorException>(() => Rows(bytes, config, name));

@@ -1,5 +1,4 @@
 using System.Text;
-using Apache.Arrow;
 using Pz.Connector.Http;
 using Pz.Connectors.Abstractions;
 
@@ -7,8 +6,7 @@ namespace Pz.Connector.Http.Tests;
 
 public class HttpXmlFileReaderTests
 {
-    private const string Label = "s.d";
-    private static readonly DateTimeOffset FetchedAt = new(2026, 11, 8, 9, 30, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset FetchedAt = FileReaderRows.FetchedAt;
 
     private static HttpDatasetConfig Config(string records, Dictionary<string, string>? columns = null,
         string? fileColumn = null)
@@ -31,40 +29,8 @@ public class HttpXmlFileReaderTests
     private static Task<List<object?[]>> Rows(string text, HttpDatasetConfig config, string name = "a.xml")
         => Rows(Encoding.UTF8.GetBytes(text), config, name);
 
-    private static async Task<List<object?[]>> Rows(byte[] bytes, HttpDatasetConfig config, string name = "a.xml")
-    {
-        var rows = new List<object?[]>();
-        var expected = FileOutput.Schema(config);
-        using var source = new FileSource(name, new MemoryStream(bytes));
-        await foreach (var batch in new HttpXmlFileReader().ReadAsync(
-            source, config, FetchedAt, new BatchOptions(), Label, CancellationToken.None))
-        {
-            using (batch)
-            {
-                Assert.Equal(expected.FieldsList.Select(f => f.Name), batch.Schema.FieldsList.Select(f => f.Name));
-                for (var r = 0; r < batch.Length; r++)
-                {
-                    var row = new object?[batch.ColumnCount];
-                    for (var c = 0; c < batch.ColumnCount; c++)
-                    {
-                        row[c] = batch.Column(c) switch
-                        {
-                            Int32Array a => a.GetValue(r),
-                            Int64Array a => a.GetValue(r),
-                            Decimal128Array a => a.GetValue(r),
-                            StringArray a => a.GetString(r),
-                            TimestampArray a => a.GetTimestamp(r),
-                            var other => throw new InvalidOperationException(other.GetType().Name),
-                        };
-                    }
-
-                    rows.Add(row);
-                }
-            }
-        }
-
-        return rows;
-    }
+    private static Task<List<object?[]>> Rows(byte[] bytes, HttpDatasetConfig config, string name = "a.xml")
+        => FileReaderRows.ReadAsync(new HttpXmlFileReader(), bytes, config, name);
 
     private static readonly Dictionary<string, string> Campaign =
         new() { ["id"] = "int", ["name"] = "varchar", ["budget"] = "decimal" };
@@ -188,6 +154,45 @@ public class HttpXmlFileReaderTests
         Assert.StartsWith("s.d: file 'evil.xml': ", ex.Message);
         Assert.IsType<System.Xml.XmlException>(ex.InnerException);
         Assert.Contains("DTD", ex.Message);
+    }
+
+    [Fact]
+    public async Task Doctype_is_refused_with_encoding_set()
+    {
+        var file = new Dictionary<string, object?>
+        {
+            ["format"] = "xml", ["records"] = "/r/i", ["encoding"] = "utf-8",
+        };
+        var config = HttpDatasetConfig.Parse(new DatasetSpec("s", "d",
+            new Dictionary<string, object?> { ["path"] = "/f", ["file"] = file }));
+        const string xml = """
+            <!DOCTYPE r [<!ENTITY x SYSTEM "file:///etc/passwd">]>
+            <r><i>&x;</i></r>
+            """;
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Rows(xml, config, "evil.xml"));
+
+        Assert.False(ex.IsTransient);
+        Assert.StartsWith("s.d: file 'evil.xml': ", ex.Message);
+        Assert.IsType<System.Xml.XmlException>(ex.InnerException);
+    }
+
+    [Fact]
+    public async Task Nested_same_name_records_are_outer_only()
+    {
+        var rows = await Rows("""<a><b id="1"><b id="2"/></b><b id="3"/></a>""", Config("/a/b"));
+
+        Assert.Equal(["""{"@id":"1","b":{"@id":"2"}}""", """{"@id":"3"}"""], rows.Select(r => r[0]));
+    }
+
+    [Fact]
+    public async Task Wrong_root_fails()
+    {
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() =>
+            Rows("<export><r/></export>", Config("/report/r"), "w.xml"));
+
+        Assert.False(ex.IsTransient);
+        Assert.Equal("s.d: file 'w.xml': root element is <export>, but records starts with /report", ex.Message);
     }
 
     [Fact]

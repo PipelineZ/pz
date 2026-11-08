@@ -1,5 +1,4 @@
 using System.Text;
-using Apache.Arrow;
 using Pz.Connector.Http;
 using Pz.Connectors.Abstractions;
 
@@ -7,8 +6,7 @@ namespace Pz.Connector.Http.Tests;
 
 public class HttpJsonFileReaderTests
 {
-    private const string Label = "s.d";
-    private static readonly DateTimeOffset FetchedAt = new(2026, 11, 8, 9, 30, 0, TimeSpan.Zero);
+    private static readonly DateTimeOffset FetchedAt = FileReaderRows.FetchedAt;
 
     private static HttpDatasetConfig Config(string layout = "lines", Dictionary<string, string>? columns = null,
         string? items = null, string? fileColumn = null)
@@ -33,41 +31,10 @@ public class HttpJsonFileReaderTests
         return HttpDatasetConfig.Parse(new DatasetSpec("s", "d", options));
     }
 
-    private static async Task<List<object?[]>> Rows(string text, HttpDatasetConfig config, string name = "a.json",
+    private static Task<List<object?[]>> Rows(string text, HttpDatasetConfig config, string name = "a.json",
         long maxDocumentBytes = 1024 * 1024)
-    {
-        var rows = new List<object?[]>();
-        var expected = FileOutput.Schema(config);
-        using var source = new FileSource(name, new MemoryStream(Encoding.UTF8.GetBytes(text)));
-        await foreach (var batch in new HttpJsonFileReader(maxDocumentBytes).ReadAsync(
-            source, config, FetchedAt, new BatchOptions(), Label, CancellationToken.None))
-        {
-            using (batch)
-            {
-                Assert.Equal(expected.FieldsList.Select(f => f.Name), batch.Schema.FieldsList.Select(f => f.Name));
-                for (var r = 0; r < batch.Length; r++)
-                {
-                    var row = new object?[batch.ColumnCount];
-                    for (var c = 0; c < batch.ColumnCount; c++)
-                    {
-                        row[c] = batch.Column(c) switch
-                        {
-                            Int32Array a => a.GetValue(r),
-                            Int64Array a => a.GetValue(r),
-                            Decimal128Array a => a.GetValue(r),
-                            StringArray a => a.GetString(r),
-                            TimestampArray a => a.GetTimestamp(r),
-                            var other => throw new InvalidOperationException(other.GetType().Name),
-                        };
-                    }
-
-                    rows.Add(row);
-                }
-            }
-        }
-
-        return rows;
-    }
+        => FileReaderRows.ReadAsync(new HttpJsonFileReader(maxDocumentBytes), Encoding.UTF8.GetBytes(text), config,
+            name);
 
     [Fact]
     public async Task Lines_contract_and_raw()
@@ -99,6 +66,27 @@ public class HttpJsonFileReaderTests
 
         Assert.False(ex.IsTransient);
         Assert.Equal("s.d: file 'x.ndjson' line 3 is not valid JSON", ex.Message);
+    }
+
+    [Fact]
+    public async Task Lines_crlf_and_last_line_without_newline()
+    {
+        var rows = await Rows("{\"id\":1}\r\n\r\n{\"id\":2}", Config(columns: new() { ["id"] = "int" }));
+
+        Assert.Equal([[1], [2]], rows);
+    }
+
+    [Fact]
+    public async Task Lines_over_cap_names_line_and_option()
+    {
+        var text = "{\"id\":1}\n" + new string(' ', 2048) + "{\"id\":2}";
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() =>
+            Rows(text, Config(columns: new() { ["id"] = "int" }), "x.ndjson", maxDocumentBytes: 1024));
+
+        Assert.False(ex.IsTransient);
+        Assert.Equal("s.d: file 'x.ndjson' line 2 exceeds 'max_response_mb' (1024 bytes) for one json line",
+            ex.Message);
     }
 
     [Fact]

@@ -10,7 +10,8 @@ using Pz.Connectors.Abstractions.Batches;
 namespace Pz.Connector.Http;
 
 /// <summary>Reads an XML file by streaming: a record is an element whose chain of local names from the
-/// root equals `records`, and only that branch is descended — every other subtree is skipped unread.
+/// root equals `records`, and only that branch is descended — every other subtree is skipped without
+/// being loaded. A root element other than the first `records` segment is an error, not zero rows.
 /// Each record is loaded alone as an <see cref="XElement"/>. A DTD is refused and nothing external is
 /// ever resolved. The declared encoding is honoured unless `encoding` overrides it. Namespaces are
 /// ignored: elements and attributes match by local name, and namespace declarations are never data.
@@ -22,32 +23,9 @@ namespace Pz.Connector.Http;
 /// nested children as objects), and its own non-whitespace text as `"#text"`.</summary>
 internal sealed class HttpXmlFileReader : IFileFormatReader
 {
-    public async IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
-        DateTimeOffset fetchedAt, BatchOptions options, string label, [EnumeratorCancellation] CancellationToken ct)
-    {
-        await using var batches = ReadCoreAsync(file, config, fetchedAt, options, label, ct).GetAsyncEnumerator(ct);
-        while (true)
-        {
-            bool more;
-            try
-            {
-                more = await batches.MoveNextAsync().ConfigureAwait(false);
-            }
-            catch (Exception ex) when (ex is InvalidDataException or XmlException)
-            {
-                // InvalidDataException: a corrupt deflate stream; XmlException: malformed XML or a DTD.
-                throw new PzConnectorException($"{label}: file '{file.Name}': {ex.Message}", isTransient: false,
-                    innerException: ex);
-            }
-
-            if (!more)
-            {
-                yield break;
-            }
-
-            yield return batches.Current;
-        }
-    }
+    public IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
+        DateTimeOffset fetchedAt, BatchOptions options, string label, CancellationToken ct) =>
+        FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, fetchedAt, options, label, ct), label, file.Name, ct);
 
     private static async IAsyncEnumerable<RecordBatch> ReadCoreAsync(FileSource file, HttpDatasetConfig config,
         DateTimeOffset fetchedAt, BatchOptions options, string label, [EnumeratorCancellation] CancellationToken ct)
@@ -68,7 +46,7 @@ internal sealed class HttpXmlFileReader : IFileFormatReader
         var builder = new ArrowBatchBuilder(FileOutput.Schema(config), options.TargetBatchBytes,
             maxRowsPerBatch: options.MaxRowsPerBatch);
         long row = 0;
-        await foreach (var record in RecordsAsync(reader, config.File.RecordPath!, ct).ConfigureAwait(false))
+        await foreach (var record in RecordsAsync(reader, config.File.RecordPath!, $"{label}: file '{file.Name}'", ct).ConfigureAwait(false))
         {
             row++;
             var context = $"{label}: file '{file.Name}' record {row}";
@@ -90,7 +68,7 @@ internal sealed class HttpXmlFileReader : IFileFormatReader
     /// <summary>Descends only into elements on <paramref name="path"/>, so every element seen at depth d
     /// already has the path's first d names as its ancestors.</summary>
     private static async IAsyncEnumerable<XElement> RecordsAsync(XmlReader reader, IReadOnlyList<string> path,
-        [EnumeratorCancellation] CancellationToken ct)
+        string context, [EnumeratorCancellation] CancellationToken ct)
     {
         if (!await reader.ReadAsync().ConfigureAwait(false))
         {
@@ -107,6 +85,14 @@ internal sealed class HttpXmlFileReader : IFileFormatReader
             }
 
             var depth = reader.Depth;
+            if (depth == 0 && reader.LocalName != path[0])
+            {
+                // A wrong `records` would otherwise land a green, empty read.
+                throw new PzConnectorException(
+                    $"{context}: root element is <{reader.LocalName}>, but records starts with /{path[0]}",
+                    isTransient: false);
+            }
+
             if (depth >= path.Count || reader.LocalName != path[depth])
             {
                 await reader.SkipAsync().ConfigureAwait(false);

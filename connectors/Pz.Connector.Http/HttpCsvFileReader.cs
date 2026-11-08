@@ -24,32 +24,9 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
     /// preallocation, so narrow rows pay nothing for the headroom.</summary>
     private const int MaxRowBytes = 16 * 1024 * 1024;
 
-    public async IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
-        DateTimeOffset fetchedAt, BatchOptions options, string label, [EnumeratorCancellation] CancellationToken ct)
-    {
-        // A corrupt deflate stream throws InvalidDataException from whichever read reaches it.
-        await using var batches = ReadCoreAsync(file, config, fetchedAt, options, label, ct).GetAsyncEnumerator(ct);
-        while (true)
-        {
-            bool more;
-            try
-            {
-                more = await batches.MoveNextAsync().ConfigureAwait(false);
-            }
-            catch (InvalidDataException ex)
-            {
-                throw new PzConnectorException($"{label}: file '{file.Name}': {ex.Message}", isTransient: false,
-                    innerException: ex);
-            }
-
-            if (!more)
-            {
-                yield break;
-            }
-
-            yield return batches.Current;
-        }
-    }
+    public IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
+        DateTimeOffset fetchedAt, BatchOptions options, string label, CancellationToken ct) =>
+        FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, fetchedAt, options, label, ct), label, file.Name, ct);
 
     private static CsvDataReaderOptions CsvOptions(char delimiter, bool header) =>
         new() { HasHeaders = header, MaxBufferSize = MaxRowBytes, Delimiter = delimiter };

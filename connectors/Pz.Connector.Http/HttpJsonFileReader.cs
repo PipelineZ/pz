@@ -13,36 +13,13 @@ namespace Pz.Connector.Http;
 /// <summary>Reads a JSON file, as one record per line (`layout: lines`, blank lines skipped) or as one
 /// document whose `items` pointer resolves to the array of records (`layout: document`). A document is
 /// parsed whole, so at most <paramref name="maxDocumentBytes"/> (`max_response_mb`) are read; a larger
-/// file must use `layout: lines`. Contract mode projects through <see cref="ContractProjector"/>; raw
+/// file must use `layout: lines`, where the same cap bounds each line (counted in characters). Contract mode projects through <see cref="ContractProjector"/>; raw
 /// mode lands each record as its payload, a non-object record wrapped as `{"value": record}`.</summary>
 internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatReader
 {
-    public async IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
-        DateTimeOffset fetchedAt, BatchOptions options, string label, [EnumeratorCancellation] CancellationToken ct)
-    {
-        // A corrupt deflate stream throws InvalidDataException from whichever read reaches it.
-        await using var batches = ReadCoreAsync(file, config, fetchedAt, options, label, ct).GetAsyncEnumerator(ct);
-        while (true)
-        {
-            bool more;
-            try
-            {
-                more = await batches.MoveNextAsync().ConfigureAwait(false);
-            }
-            catch (InvalidDataException ex)
-            {
-                throw new PzConnectorException($"{label}: file '{file.Name}': {ex.Message}", isTransient: false,
-                    innerException: ex);
-            }
-
-            if (!more)
-            {
-                yield break;
-            }
-
-            yield return batches.Current;
-        }
-    }
+    public IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
+        DateTimeOffset fetchedAt, BatchOptions options, string label, CancellationToken ct) =>
+        FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, fetchedAt, options, label, ct), label, file.Name, ct);
 
     private async IAsyncEnumerable<RecordBatch> ReadCoreAsync(FileSource file, HttpDatasetConfig config,
         DateTimeOffset fetchedAt, BatchOptions options, string label, [EnumeratorCancellation] CancellationToken ct)
@@ -88,32 +65,77 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
         }
     }
 
-    private static async IAsyncEnumerable<(JsonNode? Record, string Context)> ReadLinesAsync(FileSource file,
+    /// <summary>Lines end at LF (a CR before it is JSON whitespace). A line is bounded by the same cap
+    /// as a document and is checked as it accumulates, so a file without newlines never grows past it
+    /// in memory.</summary>
+    private async IAsyncEnumerable<(JsonNode? Record, string Context)> ReadLinesAsync(FileSource file,
         HttpDatasetConfig config, string label, [EnumeratorCancellation] CancellationToken ct)
     {
         using var reader = new StreamReader(file.Stream, config.File!.Encoding ?? Encoding.UTF8,
             detectEncodingFromByteOrderMarks: true, leaveOpen: true);
+        var chunk = new char[8192];
+        var pending = new StringBuilder();
         long line = 0;
-        while (await reader.ReadLineAsync(ct).ConfigureAwait(false) is { } text)
+        int read;
+        while ((read = await reader.ReadAsync(chunk.AsMemory(), ct).ConfigureAwait(false)) > 0)
         {
-            line++;
-            if (string.IsNullOrWhiteSpace(text))
+            var start = 0;
+            for (var i = 0; i < read; i++)
             {
-                continue;
+                if (chunk[i] != '\n')
+                {
+                    continue;
+                }
+
+                pending.Append(chunk, start, i - start);
+                start = i + 1;
+                line++;
+                CheckLineLength(pending, file.Name, label, line);
+                if (ParseLine(pending, $"{label}: file '{file.Name}' line {line}") is { } record)
+                {
+                    yield return record;
+                }
+
+                pending.Clear();
             }
 
-            var context = $"{label}: file '{file.Name}' line {line}";
-            JsonNode? node;
-            try
-            {
-                node = JsonNode.Parse(text);
-            }
-            catch (JsonException ex)
-            {
-                throw new PzConnectorException($"{context} is not valid JSON", isTransient: false, innerException: ex);
-            }
+            pending.Append(chunk, start, read - start);
+            CheckLineLength(pending, file.Name, label, line + 1);
+        }
 
-            yield return (node, context);
+        if (pending.Length > 0
+            && ParseLine(pending, $"{label}: file '{file.Name}' line {line + 1}") is { } last)
+        {
+            yield return last;
+        }
+    }
+
+    private void CheckLineLength(StringBuilder pending, string name, string label, long line)
+    {
+        if (pending.Length > maxDocumentBytes)
+        {
+            throw new PzConnectorException(
+                $"{label}: file '{name}' line {line} exceeds 'max_response_mb' ({FormatCap(maxDocumentBytes)}) " +
+                "for one json line", isTransient: false);
+        }
+    }
+
+    /// <summary>Null for a blank line, which is skipped.</summary>
+    private static (JsonNode? Record, string Context)? ParseLine(StringBuilder pending, string context)
+    {
+        var text = pending.ToString();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        try
+        {
+            return (JsonNode.Parse(text), context);
+        }
+        catch (JsonException ex)
+        {
+            throw new PzConnectorException($"{context} is not valid JSON", isTransient: false, innerException: ex);
         }
     }
 
@@ -121,26 +143,7 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
         HttpDatasetConfig config, string label, [EnumeratorCancellation] CancellationToken ct)
     {
         var context = $"{label}: file '{file.Name}'";
-        using var buffer = await BufferCappedAsync(file.Stream, context, ct).ConfigureAwait(false);
-
-        JsonNode? root;
-        try
-        {
-            if (config.File!.Encoding is { } encoding and not UTF8Encoding)
-            {
-                using var text = new StreamReader(buffer, encoding, detectEncodingFromByteOrderMarks: true);
-                root = JsonNode.Parse(await text.ReadToEndAsync(ct).ConfigureAwait(false));
-            }
-            else
-            {
-                root = JsonNode.Parse(buffer);
-            }
-        }
-        catch (JsonException ex)
-        {
-            throw new PzConnectorException($"{context} is not a valid JSON document", isTransient: false,
-                innerException: ex);
-        }
+        var root = await ParseDocumentAsync(file.Stream, config.File!.Encoding, context, ct).ConfigureAwait(false);
 
         var pointer = config.ItemsPointer;
         if (!JsonPointer.TryResolve(root, pointer, out var items) || items is not JsonArray array)
@@ -152,6 +155,28 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
         for (var i = 0; i < array.Count; i++)
         {
             yield return (array[i], $"{context} record {i + 1}");
+        }
+    }
+
+    /// <summary>The raw bytes are released as soon as the document is parsed.</summary>
+    private async Task<JsonNode?> ParseDocumentAsync(Stream stream, Encoding? encoding, string context,
+        CancellationToken ct)
+    {
+        using var buffer = await BufferCappedAsync(stream, context, ct).ConfigureAwait(false);
+        try
+        {
+            if (encoding is not null and not UTF8Encoding)
+            {
+                using var text = new StreamReader(buffer, encoding, detectEncodingFromByteOrderMarks: true);
+                return JsonNode.Parse(await text.ReadToEndAsync(ct).ConfigureAwait(false));
+            }
+
+            return JsonNode.Parse(buffer);
+        }
+        catch (JsonException ex)
+        {
+            throw new PzConnectorException($"{context} is not a valid JSON document", isTransient: false,
+                innerException: ex);
         }
     }
 
