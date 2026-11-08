@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace Pz.Connector.Http;
@@ -12,6 +14,10 @@ internal sealed record HttpPageRequest(HttpMethod Method, Uri Url, JsonNode? Jso
     /// body-paged request a repeat (or, compared with <c>==</c>, never a change).</summary>
     public string Key
         => BodyText is { } body ? $"{Method.Method} {Url}\n{body}" : $"{Method.Method} {Url}";
+
+    /// <summary>SHA-256 hex digest of <see cref="Key"/>: a fixed-size stand-in for the whole request, so
+    /// a set of up to tens of thousands of requests does not hold every serialised body.</summary>
+    public string KeyDigest => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Key)));
 
     private string? BodyText => JsonBody?.ToJsonString() ?? TextBody;
 
