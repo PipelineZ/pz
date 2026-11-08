@@ -23,7 +23,22 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
             return null;
         }
 
-        string? Get(string key) => block.TryGetValue(key, out var v) ? YamlScalarText.Of(v) : null;
+        string? Get(string key)
+        {
+            if (!block.TryGetValue(key, out var v) || v is null)
+            {
+                return null;
+            }
+
+            if (YamlScalarText.NonScalarKind(v) is { } kind)
+            {
+                errors.Add($"export.{key} must be a string, got a {kind}");
+                return null;
+            }
+
+            return YamlScalarText.Of(v);
+        }
+
         var before = errors.Count;
 
         string? Pointer(string key, bool required)
@@ -54,7 +69,7 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
         }
         else
         {
-            if (statusPath[0] != '/')
+            if (statusPath.Length == 0 || statusPath[0] != '/')
             {
                 errors.Add($"export.status_path must start with '/', got '{statusPath}'");
             }

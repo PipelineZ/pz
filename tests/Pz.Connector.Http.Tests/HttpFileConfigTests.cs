@@ -274,6 +274,21 @@ public class HttpFileConfigTests
     }
 
     [Fact]
+    public void Empty_status_path_is_a_config_error_not_a_crash()
+        => Assert.Contains("export.status_path must start with '/'", FailFile(Map(("format", "csv")),
+            new() { ["export"] = ValidExport(("status_path", "")) }));
+
+    [Fact]
+    public void Collections_for_scalar_keys_are_refused()
+    {
+        var file = Map(("format", "csv"));
+        Assert.Contains("export.status_pointer must be a string, got a list", FailFile(file,
+            new() { ["export"] = ValidExport(("status_pointer", new List<object?> { "/a" })) }));
+        Assert.Contains("file.members must be a string, got a map", FailFile(
+            Map(("format", "csv"), ("members", Map(("a", "b"))))));
+    }
+
+    [Fact]
     public void Export_defaults()
     {
         var export = Parse(Map(("format", "csv")), export: ValidExport(("failed", null),

@@ -50,7 +50,22 @@ internal sealed record HttpFileConfig(HttpFileFormat Format)
             return null;
         }
 
-        string? Get(string key) => block.TryGetValue(key, out var v) ? YamlScalarText.Of(v) : null;
+        string? Get(string key)
+        {
+            if (!block.TryGetValue(key, out var v) || v is null)
+            {
+                return null;
+            }
+
+            if (YamlScalarText.NonScalarKind(v) is { } kind)
+            {
+                errors.Add($"file.{key} must be a string, got a {kind}");
+                return null;
+            }
+
+            return YamlScalarText.Of(v);
+        }
+
         bool Has(string key) => block.TryGetValue(key, out var v) && v is not null;
 
 
