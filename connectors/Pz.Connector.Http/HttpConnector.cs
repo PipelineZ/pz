@@ -144,7 +144,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 ? new Uri(connection.BaseUrl, checkPath.TrimStart('/'))
                 : connection.BaseUrl;
 
-            // A real read follows a 3xx by hand (HttpPartition.SendFollowingRedirectsAsync) rather
+            // A real read follows a 3xx by hand (HttpRequestSender.SendAsync) rather
             // than treating it as failure -- the check must accept the same shape of response a read
             // against this exact path would.
             for (var hop = 0; ; hop++)

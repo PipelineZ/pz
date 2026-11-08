@@ -9,6 +9,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     private readonly HttpConnectionConfig _connection;
     private readonly TimeProvider _time;
     private readonly HttpClient _client;
+    private readonly HttpClient _bareClient;
     private readonly bool _ownsAuthenticator;
     private IOperationGate? _gate;
 
@@ -22,9 +23,10 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
         _ownsAuthenticator = connection.AuthFactory is not null;
         _time = time;
         _client = CreateClient(connection);
+        _bareClient = CreateBareClient(connection);
     }
 
-    /// <summary>Redirects are followed by <see cref="HttpPartition"/> itself, not by the handler.
+    /// <summary>Redirects are followed by <see cref="HttpRequestSender"/> itself, not by the handler.
     /// HttpClient's automatic redirect strips only the <c>Authorization</c> header when the target
     /// changes origin — a connection's configured <c>headers:</c> (commonly where an API key lives)
     /// and any api-key-header authenticator ride along to whatever host the endpoint names, which
@@ -36,6 +38,22 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     /// unpacked size — a small compressed response cannot expand past it.</remarks>
     internal static HttpClient CreateClient(HttpConnectionConfig connection)
     {
+        var client = CreateBareClient(connection);
+        client.BaseAddress = connection.BaseUrl;
+        foreach (var (name, value) in connection.Headers)
+        {
+            client.DefaultRequestHeaders.TryAddWithoutValidation(name, value);
+        }
+
+        return client;
+    }
+
+    /// <summary>The client for requests to a host other than <c>base_url</c>'s origin: the same handler
+    /// settings, timeout, buffer cap and user agent as <see cref="CreateClient"/>, but none of the
+    /// connection's <c>headers:</c> (commonly where an API key lives) and no base address, so every
+    /// request names its absolute target.</summary>
+    internal static HttpClient CreateBareClient(HttpConnectionConfig connection)
+    {
         var handler = new HttpClientHandler
         {
             AllowAutoRedirect = false,
@@ -43,16 +61,10 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
         };
         var client = new HttpClient(handler)
         {
-            BaseAddress = connection.BaseUrl,
             Timeout = connection.Timeout,
             MaxResponseContentBufferSize = connection.MaxResponseBytes,
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("pz-http/0.1");
-        foreach (var (name, value) in connection.Headers)
-        {
-            client.DefaultRequestHeaders.TryAddWithoutValidation(name, value);
-        }
-
         return client;
     }
 
@@ -76,7 +88,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     {
         var config = HttpDatasetConfig.Parse(spec);
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>(
-            [new HttpPartition(_client, _connection, config, spec, _time, _gate)]);
+            [new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate)]);
     }
 
     /// <summary>The engine calls this exactly once per opened source, after OpenAsync returns and
@@ -90,6 +102,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     public ValueTask DisposeAsync()
     {
         _client.Dispose();
+        _bareClient.Dispose();
         if (_ownsAuthenticator)
         {
             (_connection.Authenticator as IDisposable)?.Dispose();
