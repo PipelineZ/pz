@@ -25,7 +25,9 @@ namespace Pz.Connector.LocalFiles;
 /// Behaviour is deliberately identical to the boxed path, cell for cell: the same invariant-culture
 /// parses, the same "empty means NULL for every type including varchar" policy, the same batch
 /// boundaries, and the same <see cref="PzConnectorException"/> message naming file, line, column, value
-/// and type.</summary>
+/// and type.
+///
+/// Replicated in Pz.Connector.LocalFiles, Pz.Connector.Sftp and Pz.Connector.Http per the no-cross-connector-reference rule; keep the three copies in lockstep.</summary>
 internal static class CsvArrowReader
 {
     /// <summary>Streams <paramref name="csv"/>'s rows as Arrow batches, reading exactly the columns of
