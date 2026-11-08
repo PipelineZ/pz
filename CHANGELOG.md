@@ -43,6 +43,32 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   is retried by the engine, which signs in again. A sign-in failure is reported without the secret or token.
   `pz validate` warns when `certificate_path` points inside the project directory, where it is easily committed.
   `http` now joins the connectors anchored on the project directory.
+- **http: read files, zip archives and export jobs.** A dataset with a `file:` block reads the response as a file
+  instead of a JSON page: `format` is `csv`, `tsv`, `json` (`layout: lines` for NDJSON, or `document` with `items`) or
+  `xml` (`records: /a/b/c`, DTDs prohibited). `archive: auto` (default) sniffs a zip or gzip from the first bytes; a
+  zip needs `members`, a glob such as `sessions_*.csv`, so one daily zip becomes several tables (several datasets can
+  read different members of the same archive, each with its own format and columns). `if_missing: empty` reads zero
+  rows when no member matches, and emits a notice naming the dataset and glob. The default `error` lists the entries.
+  `file_column` adds the member path as a column; raw mode (no `columns:`) lands an exact envelope with `payload`,
+  `pz_file`, `pz_row` and `pz_fetched_at`. CSV and TSV also take `delimiter`, `header`, `skip_lines` and `encoding`.
+  Files stream through a temp file that is always deleted; `max_download_mb` on the connection (default 4096) caps the
+  download, and decompressed bytes are capped at 20 times that, so a zip bomb fails instead of filling the disk. A
+  `200` response with an error-page content type (an HTML login page, or a JSON error for a non-JSON format) is refused
+  instead of landed as rows. An `export:` block covers asynchronous exports: the dataset's request (often a `method:
+  post`) starts the job, `status_path` is polled until `status_pointer` reaches a `ready` value (or fails on a `failed`
+  one, quoting `message_pointer`), then the file is downloaded from `download_pointer` or `download_path`. The start
+  request is never retried by the gate, so a 503 cannot create a duplicate job; a timeout is transient and the engine
+  retries with a new job. A pre-signed download URL on another host must be in `allow_hosts` and is fetched without
+  credentials. `{job_id}` and the engine bindings expand inside `status_path` and `download_path`. File datasets take
+  no checkpoint, `pagination`, `delta_pointer` or `max_pages`.
+- **http: dated URLs.** `path` now expands bindings like `query` and `body`, each value escaped as one path segment
+  (a null binding in `path` is an error that names the fix). The new `{{ run_date }}` binding is the day of the run
+  shifted by whole days, configured by `run_date: { offset_days: -1, timezone: Europe/Bucharest, format: yyyy-MM-dd }`
+  (defaults 0, UTC, `yyyy-MM-dd`), and read once per partition so start, polls and download agree across midnight. For
+  a file with a date column, a windowed dataset catches up a missed day per run: `sync: { mode: incremental, cursor:
+  day, initial: "2026-10-01", max_window: 1d }` with `path: /exports/daily/{{ window_upper }}.zip`. The window's upper
+  bound can reach today, whose file may not be published yet: that download fails (404) and nothing is lost, the
+  watermark stays and a later run fetches the day. Use `until:` or schedule the run after the vendor publishes.
 
 ### Changed
 
