@@ -382,10 +382,11 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     public async Task Job_id_is_flattened_and_capped_in_messages()
     {
         var id = "a\r\nb" + new string('x', 150);
-        MapJob("/reports/" + Uri.EscapeDataString(id), System.Text.Json.JsonSerializer.Serialize(id),
-            """{"state":"failed"}""");
+        // Fixed status_path: the id never reaches the URL (http.sys rejects encoded CR/LF in paths).
+        MapJob("/reports/status", System.Text.Json.JsonSerializer.Serialize(id), """{"state":"failed"}""");
 
-        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export())));
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => Read(Spec(Export(("status_path", "/reports/status")))));
 
         var shown = ("a b" + new string('x', 150))[..100] + "…";
         Assert.Contains($"export job {shown} failed with status 'failed'", ex.Message);
