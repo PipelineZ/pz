@@ -492,7 +492,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     //     accept_duplicates, PZ0214). Truncating the upper DOWN would instead drop the fractional
     //     tail: an empty truncated slice advances the watermark to the full untruncated upper
     //     (empty-slice advancement), silently skipping those rows.
-    private static string FormatBinding(string name, BindingValue value)
+    internal static string FormatBinding(string name, BindingValue value)
     {
         if (value.TypeName != "timestamp"
             || !DateTimeOffset.TryParse(value.Value, CultureInfo.InvariantCulture,

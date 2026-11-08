@@ -73,6 +73,11 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "cursor_pointer": { "type": "string" },
             "cursor_order": { "enum": ["asc", "desc"] },
             "delta_pointer": { "type": "string" },
+            "method": { "enum": ["get", "post"] },
+            "body": { "type": ["object", "string"] },
+            "body_format": { "enum": ["json", "form"] },
+            "content_type": { "type": "string" },
+            "error_pointer": { "type": "string" },
             "max_pages": { "type": "integer", "minimum": 1 } },
           "additionalProperties": false }
         """;
