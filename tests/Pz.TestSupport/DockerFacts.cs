@@ -60,58 +60,77 @@ public static class DockerFacts
     /// <summary>How long one image pull may take before the suite counts the image as unavailable.</summary>
     private static readonly TimeSpan PullTimeout = TimeSpan.FromMinutes(10);
 
-    private static readonly ConcurrentDictionary<string, Lazy<string?>> ImageProblems = new(StringComparer.Ordinal);
+    /// <summary>What a docker suite does about one image.</summary>
+    public enum ImageVerdict { Run, Skip, Fail }
 
-    /// <summary>Why docker cannot provide <paramref name="image"/> to this machine (no docker, offline with the
-    /// image absent, or a pull docker refused: "pull access denied", a rate limit, an unreachable registry); null
-    /// when the image is present or was pulled. An image docker cannot provide makes its suite as unrunnable as no
-    /// docker at all, so it must skip the same way, not fail in a fixture. Asked once per image per process.</summary>
-    public static string? ImageProblem(string image) =>
-        ImageProblems.GetOrAdd(image, i => new Lazy<string?>(() => ProbeImage(i))).Value;
+    /// <summary>A verdict and, unless it is <see cref="ImageVerdict.Run"/>, the reason.</summary>
+    public sealed record ImageGate(ImageVerdict Verdict, string? Reason);
+
+    /// <summary>True under CI (<c>CI</c> set), where a docker suite must run or fail, never skip because of an
+    /// image.</summary>
+    public static bool UnderCi => !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("CI"));
+
+    private static readonly ConcurrentDictionary<string, Lazy<ImageGate>> ImageGates = new(StringComparer.Ordinal);
+
+    /// <summary>The rule, without docker: no usable daemon skips (as a docker-less machine always has). Otherwise a
+    /// missing image is always pulled; <c>PZ_TESTS_OFFLINE</c> governs network-dependent tests, not fixtures, so it
+    /// is not consulted here. A pull that fails (denied, rate-limited, a registry out of reach) skips with its reason
+    /// locally, and fails under CI, so a CI run never quietly loses a docker suite.</summary>
+    public static ImageGate DecideImage(string image, bool daemonAvailable, Func<bool> isPresent,
+        Func<(int ExitCode, string Error)> pull, bool underCi)
+    {
+        if (!daemonAvailable)
+        {
+            return new(ImageVerdict.Skip, "docker is not available");
+        }
+
+        if (isPresent())
+        {
+            return new(ImageVerdict.Run, null);
+        }
+
+        var (exitCode, error) = pull();
+        if (exitCode == 0)
+        {
+            return new(ImageVerdict.Run, null);
+        }
+
+        var line = error.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? (exitCode < 0 ? "the pull timed out" : $"docker pull exited {exitCode}");
+        var reason = $"docker pull {image} failed: {(line.Length > 300 ? line[..300] : line)}";
+        return new(underCi ? ImageVerdict.Fail : ImageVerdict.Skip, reason);
+    }
+
+    /// <summary><see cref="DecideImage"/> against this machine's docker, asked once per image per process.</summary>
+    public static ImageGate GateFor(string image) =>
+        ImageGates.GetOrAdd(image, i => new Lazy<ImageGate>(() => DecideImage(i, DockerAvailable.Value,
+            () => RunDocker(TimeSpan.FromSeconds(30), "image", "inspect", "--format", "{{.Id}}", i).ExitCode == 0,
+            () => RunDocker(PullTimeout, "pull", i), UnderCi))).Value;
+
+    /// <summary>Why a suite cannot run with <paramref name="image"/>; null when it can.</summary>
+    public static string? ImageProblem(string image) => GateFor(image).Reason;
 
     /// <summary>Non-throwing form of <see cref="SkipUnlessImage"/>, for a fixture that must no-op rather than throw
-    /// (see <see cref="IsAvailable"/>).</summary>
-    public static bool CanProvide(string image) => ImageProblem(image) is null;
+    /// (see <see cref="IsAvailable"/>). False only for a skip: under CI a failed pull answers true, so the fixture
+    /// goes on to start its container and the suite fails loudly.</summary>
+    public static bool CanProvide(string image) => GateFor(image).Verdict != ImageVerdict.Skip;
 
-    /// <summary>Skips unless docker can provide every one of <paramref name="images"/>; call it where
-    /// <see cref="SkipUnlessDocker"/> is called, before any container is built.</summary>
+    /// <summary>Skips (locally) or fails (under CI) unless docker can provide every one of <paramref name="images"/>;
+    /// call it where <see cref="SkipUnlessDocker"/> is called, before any container is built.</summary>
     public static void SkipUnlessImage(params string[] images)
     {
         foreach (var image in images)
         {
-            if (ImageProblem(image) is { } problem)
+            var gate = GateFor(image);
+            switch (gate.Verdict)
             {
-                throw new SkipException($"docker cannot provide image '{image}': {problem}");
+                case ImageVerdict.Skip:
+                    throw new SkipException($"docker cannot provide image '{image}': {gate.Reason}");
+                case ImageVerdict.Fail:
+                    throw new InvalidOperationException(
+                        $"docker cannot provide image '{image}' under CI, where a docker suite must run: {gate.Reason}");
             }
         }
-    }
-
-    private static string? ProbeImage(string image)
-    {
-        if (!DockerAvailable.Value)
-        {
-            return "docker is not available";
-        }
-
-        if (RunDocker(TimeSpan.FromSeconds(30), "image", "inspect", "--format", "{{.Id}}", image).ExitCode == 0)
-        {
-            return null;
-        }
-
-        if (IsOffline)
-        {
-            return $"{image} is not present locally and PZ_TESTS_OFFLINE=1 forbids pulling it";
-        }
-
-        var pull = RunDocker(PullTimeout, "pull", image);
-        if (pull.ExitCode == 0)
-        {
-            return null;
-        }
-
-        var reason = pull.Error.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .FirstOrDefault() ?? (pull.ExitCode < 0 ? "the pull timed out" : $"docker pull exited {pull.ExitCode}");
-        return $"docker pull {image} failed: {(reason.Length > 300 ? reason[..300] : reason)}";
     }
 
     private static (int ExitCode, string Error) RunDocker(TimeSpan timeout, params string[] args)
