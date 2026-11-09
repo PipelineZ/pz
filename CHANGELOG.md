@@ -150,17 +150,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **Mark sensitive columns with `redact: true`.** On a source `columns:` entry, with the long form
   `email: { type: varchar, redact: true }` (in `connections.yml` or at the `source()` call site), and in a pipeline
   sidecar's new `columns:` list (`- name: contact` / `redact: true`), which only marks and enforces nothing. Marks do
@@ -224,17 +213,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **`pz state set` creates a missing watermark.** It used to edit existing entries only, so a fresh clone could not
   be given a starting point: the first run always extracted in full. Pass the cursor column and its type with the
   value: `pz state set erp.orders --value 2026-07-01 --cursor updated_at --type timestamp`. Without both, a missing
@@ -255,17 +233,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **Opt-in ambient cloud identity for external connectors.** pz starts every connector process with a
   cleared environment, so a connector using a cloud SDK's managed identity, workload identity, IRSA, ECS task
   role or GCP federation could not find it (only the VM metadata service and credential files under `HOME`
@@ -286,17 +253,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **`--log-sql` on `pz run` and `pz retry`** publishes a `node_sql` event with the exact statement each
   pipeline node and `custom_sql` check hands DuckDB, after templating and watermark substitution, once per
   attempt and before it runs. Capped at 65,536 characters (`truncated` and `chars` say when it was cut). Off by
@@ -308,17 +264,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **`IProjectingNativeScan`**, for connector authors whose native scan can read only the requested columns.
 - **`extensions:` in `project.yml`** lists DuckDB extensions, core or community (such as `jev`), that pipeline
   SQL calls. pz installs and loads them the way DuckDB does, before any SQL runs, in every session that runs or
@@ -415,17 +360,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **Connector stats ABI.** A connector reports what its remote service did through `ConnectorStats.Current`
   (requests, wire bytes, remote time, throttles, one cost unit, up to eight namespaced extras) and declares
   `ConnectorCapabilities.ReportsStats`. Invalid values are dropped, never thrown. The TestKit gains opt-in
@@ -477,17 +411,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **Node facts on every completed node.** `node_completed` and `run_results.json`'s `nodes[]` carry `connector`,
   `connection`, `strategy` (`native_scan`, `native_copy` or `arrow` — the tier that actually moved the data),
   `stages` (`extractMs`, `ingestMs`, `egressMs`, `writeMs`, each stage's own wall time in the last attempt, plus
@@ -508,17 +431,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **`pz run --until-caught-up [--max-runs N]`.** Repeats the run while any windowed source with a stop (`until`,
   `until: now`, or a SQL ceiling) reports `caughtUp: false`, so a backfill in slices no longer needs a shell loop.
   Each pass is a full run that writes its sinks and advances the watermark before the next starts. The loop stops when
@@ -541,17 +453,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **OTLP over HTTP.** `pz run`, `pz test` and `pz retry` take `--otel-protocol http/protobuf` with
   `--otel-traces-endpoint` and `--otel-metrics-endpoint` (full URLs, used as-is; either alone is fine), so a run can
   export straight to a backend that only takes OTLP/HTTP, such as Azure Monitor. Bodies are gzipped and span batches
@@ -579,17 +480,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **`pz run`, `pz test` and `pz retry` join a caller's trace.** With telemetry on, a W3C `TRACEPARENT` (and
   `TRACESTATE`) in the environment makes the `run` span a child in that trace, so an orchestrator can link a run
   to its trace before it starts. The caller's sampling decision is honored: an unsampled parent (flags `00`) means
@@ -606,17 +496,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - **`pz cdc status` and `pz cdc drop` take `--state-url` and `--log-format json`.** A platform can run them
   against the state store its runs use and read `cdc_status` / `cdc_dropped` NDJSON events.
 
@@ -649,17 +528,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - `pz runs`: list prior runs (`--json` supported, local or SQL Server state).
 - `pz completion bash|zsh|fish|pwsh`.
 - `engine.node_timeout`: bound one node attempt; exceeding it fails with PZ0525.
@@ -745,17 +613,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
-- **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
 - Out-of-process connector telemetry: `HostInfo` carries the run id and OTLP
   endpoint, and PCP injects W3C trace context into the connector handshake, so
   a connector process's own OpenTelemetry spans and meters nest under the
