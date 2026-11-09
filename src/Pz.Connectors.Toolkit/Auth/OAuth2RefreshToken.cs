@@ -60,7 +60,7 @@ public sealed record OAuth2RefreshTokenOptions(
 /// a response that issues a different <c>refresh_token</c> fails the read (PZ0366) and its access token is never
 /// used, unless <see cref="OAuth2RefreshTokenOptions.IgnoreRotation"/> is set: then the access token is used, the
 /// configured refresh token stays in use for later refreshes, and a notice says so. A PZ0366 refusal and an
-/// <c>invalid_grant</c> answer are remembered for the process (<see cref="CachedTokenAuthenticator.SignInKey"/>),
+/// <c>invalid_grant</c>, <c>invalid_client</c> or <c>unauthorized_client</c> answer are remembered for the process (<see cref="CachedTokenAuthenticator.SignInKey"/>),
 /// so a refused refresh token is never replayed. Owns its HttpClient (no redirects). Messages never carry the
 /// refresh token, the secret or a token.</summary>
 public sealed class OAuth2RefreshTokenAuthenticator : CachedTokenAuthenticator
@@ -75,7 +75,9 @@ public sealed class OAuth2RefreshTokenAuthenticator : CachedTokenAuthenticator
             + "update auth.refresh_token",
     };
 
-    private static readonly string[] TerminalErrors = ["invalid_grant"];
+    // A revoked refresh token and a refused client both fail every later attempt the same way; replaying them only
+    // feeds the provider's lockout and reuse detection.
+    private static readonly string[] TerminalErrors = ["invalid_grant", "invalid_client", "unauthorized_client"];
 
     private readonly OAuth2RefreshTokenOptions _options;
     private readonly OAuth2TokenEndpoint _endpoint;

@@ -324,4 +324,54 @@ public class CachedTokenAuthenticatorTests
         await Assert.ThrowsAsync<PzConnectorException>(async () => await auth.ApplyAsync(Req(), default));
         Assert.Equal(2, auth.Fetches);
     }
+
+    private sealed class GatedAuthenticator(ManualClock clock, string key, Task release) : CachedTokenAuthenticator(clock)
+    {
+        public int Fetches;
+
+        protected override string? SignInKey => key;
+
+        protected override async ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
+        {
+            Interlocked.Increment(ref Fetches);
+            await release;
+            return new FetchedToken("tok", null);
+        }
+    }
+
+    [Fact]
+    public async Task A_caller_waiting_behind_another_sign_in_with_the_same_key_can_cancel()
+    {
+        var key = Guid.NewGuid().ToString("N");
+        var release = new TaskCompletionSource();
+        var holder = new GatedAuthenticator(new ManualClock(), key, release.Task);
+        var waiter = new GatedAuthenticator(new ManualClock(), key, Task.CompletedTask);
+
+        var held = holder.ApplyAsync(Req(), default).AsTask();
+        while (Volatile.Read(ref holder.Fetches) == 0)
+        {
+            await Task.Yield();
+        }
+
+        // The waiter queues behind the holder's sign-in, then its node is cancelled.
+        using var cts = new CancellationTokenSource();
+        var waiting = waiter.ApplyAsync(Req(), cts.Token).AsTask();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        release.SetResult();
+        await held.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Gate waiters are served in order: had the abandoned sign-in still been queued, it would run before this.
+        var gate = SignInRefusals.Gate(key);
+        await gate.WaitAsync(TimeSpan.FromSeconds(10));
+        gate.Release();
+        Assert.Equal(0, waiter.Fetches);
+
+        // The abandoned sign-in never ran; the next call starts its own and gets a token.
+        var r = Req();
+        await waiter.ApplyAsync(r, default).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, waiter.Fetches);
+        Assert.Equal("Bearer tok", Bearer(r));
+    }
 }

@@ -9,7 +9,8 @@ public sealed record FetchedToken(string AccessToken, DateTimeOffset? ExpiresOn)
 /// <summary>Caches one bearer token, refreshes it <see cref="RefreshMargin"/> before expiry
 /// (at most half its lifetime, so short-lived tokens are still reused), and shares a single
 /// in-flight fetch between concurrent callers. The fetch outlives any one caller's cancellation;
-/// it is cancelled only by <see cref="Dispose"/>. A failed fetch reaches every current waiter once
+/// it is cancelled only by <see cref="Dispose"/>, though a wait for the sign-in gate (below) stops once
+/// every caller waiting on it has cancelled. A failed fetch reaches every current waiter once
 /// and is not cached. Each fetched token has a generation stamped on the requests that carry it,
 /// so a 401 for an older token cannot discard a newer one. Subclasses must not put the access
 /// token in any exception message. A subclass that names a <see cref="SignInKey"/> gets two more
@@ -24,7 +25,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
     private readonly Lock _lock = new();
     private readonly CancellationTokenSource _disposed = new();
-    private TaskCompletionSource<(string Token, int Generation)>? _inFlight;
+    private Flight? _inFlight;
     private string? _token;
     private DateTimeOffset? _refreshAt;
     private int _generation;
@@ -70,9 +71,22 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
     public void Apply(HttpRequestMessage request)
         => throw new InvalidOperationException("this authenticator fetches tokens asynchronously; use ApplyAsync");
 
+    /// <summary>One shared sign-in and the callers waiting on it. When every waiter has cancelled before it
+    /// finishes, it is abandoned: a wait for the process-wide sign-in gate stops, and the next caller starts a
+    /// new one. A fetch already under way still runs to the end.</summary>
+    private sealed class Flight
+    {
+        public TaskCompletionSource<(string Token, int Generation)> Result { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public CancellationTokenSource Abandoned { get; } = new();
+
+        public int Waiters;
+    }
+
     public async ValueTask ApplyAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        TaskCompletionSource<(string Token, int Generation)> flight;
+        Flight flight;
         var owner = false;
         string token;
         int generation;
@@ -86,13 +100,14 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
             }
             else
             {
-                if (_inFlight is null)
+                if (_inFlight is null || _inFlight.Abandoned.IsCancellationRequested)
                 {
-                    _inFlight = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _inFlight = new Flight();
                     owner = true;
                 }
 
                 flight = _inFlight;
+                flight.Waiters++;
                 token = "";
                 generation = 0;
             }
@@ -105,7 +120,17 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                 _ = RunFetchAsync(flight);
             }
 
-            (token, generation) = await flight.Task.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                (token, generation) = await flight.Result.Task.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Left here rather than in a token callback: the wait can resume inline inside Cancel and
+                // dispose such a registration before it runs.
+                Leave(flight);
+                throw;
+            }
         }
 
         ApplyToken(request, token);
@@ -158,11 +183,25 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
     public virtual void Dispose() => _disposed.Cancel();
 
-    private async Task RunFetchAsync(TaskCompletionSource<(string Token, int Generation)> flight)
+    private void Leave(Flight flight)
+    {
+        bool abandon;
+        lock (_lock)
+        {
+            abandon = --flight.Waiters == 0 && !flight.Result.Task.IsCompleted;
+        }
+
+        if (abandon)
+        {
+            flight.Abandoned.Cancel();
+        }
+    }
+
+    private async Task RunFetchAsync(Flight flight)
     {
         try
         {
-            var fetched = await FetchOnceAsync().ConfigureAwait(false);
+            var fetched = await FetchOnceAsync(flight.Abandoned.Token).ConfigureAwait(false);
             var now = time.GetUtcNow();
             (string, int) result;
             lock (_lock)
@@ -175,23 +214,29 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                     && string.Equals(fetched.AccessToken, _discardedAccepted, StringComparison.Ordinal);
                 _discardedAccepted = null;
                 result = (fetched.AccessToken, ++_generation);
-                _inFlight = null;
+                if (_inFlight == flight)
+                {
+                    _inFlight = null;
+                }
             }
 
-            flight.SetResult(result);
+            flight.Result.SetResult(result);
         }
         catch (Exception ex)
         {
             lock (_lock)
             {
-                _inFlight = null;
+                if (_inFlight == flight)
+                {
+                    _inFlight = null;
+                }
             }
 
-            flight.SetException(ex);
+            flight.Result.SetException(ex);
         }
     }
 
-    private async ValueTask<FetchedToken> FetchOnceAsync()
+    private async ValueTask<FetchedToken> FetchOnceAsync(CancellationToken abandoned)
     {
         if (SignInKey is not { } key)
         {
@@ -199,7 +244,19 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
         }
 
         var gate = SignInRefusals.Gate(key);
-        await gate.WaitAsync(_disposed.Token).ConfigureAwait(false);
+        // Waiting behind another sign-in with this key stops as soon as nobody wants this one any more.
+        using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(_disposed.Token, abandoned))
+        {
+            await gate.WaitAsync(waiting.Token).ConfigureAwait(false);
+        }
+
+        // A cancelled semaphore wait can still be handed the slot when a release races the cancellation.
+        if (abandoned.IsCancellationRequested)
+        {
+            gate.Release();
+            throw new OperationCanceledException(abandoned);
+        }
+
         try
         {
             if (SignInRefusals.TryGet(key, out var refused))

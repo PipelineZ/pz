@@ -390,4 +390,24 @@ public class OAuth2RefreshTokenTests
         await auth.ApplyAsync(first, CancellationToken.None).AsTask().WaitAsync(Timeout);
         Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(first, 401));
     }
+
+    [Theory]
+    [InlineData("invalid_client")]
+    [InlineData("unauthorized_client")]
+    public async Task A_refused_client_is_not_replayed_either(string error)
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/token", _ => new StubResponse(401, $$"""{"error":"{{error}}"}"""));
+        var options = Parse(Block(server.BaseUrl + "token"));
+        using var first = new OAuth2RefreshTokenAuthenticator(options, Timeout, new ManualClock());
+        using var second = new OAuth2RefreshTokenAuthenticator(options, Timeout, new ManualClock());
+
+        Assert.Contains(error, (await ApplyFailsAsync(first, server)).Message);
+        var again = await ApplyFailsAsync(second, server);
+
+        Assert.False(again.IsTransient);
+        Assert.Contains(error, again.Message);
+        Assert.Contains("pz did not try again", again.Message);
+        Assert.Single(server.Requests);
+    }
 }
