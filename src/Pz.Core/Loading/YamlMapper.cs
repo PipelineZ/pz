@@ -22,6 +22,53 @@ public delegate string YamlScalarInterpolator(string text, bool isPlain, IReadOn
 /// </summary>
 public static class YamlMapper
 {
+    private const string FlowVariableHint =
+        "a ${...} inside a { } or [ ] collection is read as the start of another map, so quote it: " +
+        "write token: \"${X}\", not token: ${X} (or use block style, one key per line)";
+
+    /// <summary>For a parser failure with no position: true when some line holds an unquoted <c>${</c> after a
+    /// <c>{</c> or <c>[</c> on that same line, the shape of a variable written inside a flow collection.</summary>
+    private static bool UnquotedVariableAfterFlowOpener(string path)
+    {
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(path);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+
+        foreach (var text in lines)
+        {
+            for (var at = text.IndexOf("${", StringComparison.Ordinal); at >= 0;
+                 at = text.IndexOf("${", at + 2, StringComparison.Ordinal))
+            {
+                if ((at == 0 || text[at - 1] is not ('"' or '\'')) && HasFlowOpener(text, at))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // A { or [ before `end` that opens a collection, not the { of an earlier ${.
+    private static bool HasFlowOpener(string text, int end)
+    {
+        for (var i = 0; i < end; i++)
+        {
+            if (text[i] == '[' || (text[i] == '{' && (i == 0 || text[i - 1] != '$')))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>True when a line the parser failed on holds an unquoted <c>${</c>: inside a flow collection
     /// (<c>auth: { token: ${X} }</c>) the <c>{</c> of a variable reference opens a nested flow map, and the
     /// parser's own message ("did not find expected ',' or '}'") never says why.</summary>
@@ -94,10 +141,7 @@ public static class YamlMapper
                 $"Malformed YAML: {ex.Message}",
                 relativePath,
                 line,
-                UnquotedVariableInFlow(path, ex)
-                    ? "a ${...} inside a { } or [ ] collection is read as the start of another map, so quote it: " +
-                      "write token: \"${X}\", not token: ${X} (or use block style, one key per line)"
-                    : "fix the YAML syntax near this location"));
+                UnquotedVariableInFlow(path, ex) ? FlowVariableHint : "fix the YAML syntax near this location"));
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -108,7 +152,7 @@ public static class YamlMapper
                 $"Malformed YAML: {ex.Message}",
                 relativePath,
                 null,
-                "fix the YAML syntax in this file"));
+                UnquotedVariableAfterFlowOpener(path) ? FlowVariableHint : "fix the YAML syntax in this file"));
         }
 
         if (yamlStream.Documents.Count > 1)
