@@ -504,6 +504,15 @@ public static class PzErrorCode
     /// location entirely, by design. Next step: use an absolute path, or fix <c>root:</c>.</summary>
     public const string RootEscape = "PZ0365";
 
+    /// <summary>An http connection with <c>auth.type: oauth2_refresh_token</c> got a token response carrying a
+    /// <c>refresh_token</c> different from the configured one: the provider rotates refresh tokens. pz has no
+    /// secret store to keep the new one, and the configured token may now be revoked, so the read fails
+    /// permanently and the new access token is never used. Raised by
+    /// <c>Pz.Connectors.Toolkit.Auth.OAuth2RefreshTokenAuthenticator</c>, which cannot reference this project,
+    /// so the value is duplicated there as a bare literal. Next step: configure the provider for
+    /// non-rotating refresh tokens, authorize again and update <c>auth.refresh_token</c>.</summary>
+    public const string OAuth2RefreshTokenRotated = "PZ0366";
+
     public const string SqlDryCompile = "PZ0401";
 
     /// <summary>An extension listed under project.yml's <c>extensions:</c> could not be installed or
