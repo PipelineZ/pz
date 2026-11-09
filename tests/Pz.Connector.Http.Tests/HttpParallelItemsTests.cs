@@ -459,9 +459,14 @@ public sealed class HttpParallelItemsTests : IDisposable
     }
 
     /// <summary>Holds a timed-out request's failure until its item has been stopped, so it is recorded
-    /// only after a higher record's failure has cancelled the page.</summary>
+    /// only after a higher record's failure has cancelled the page. <see cref="TimedOut"/> completes once
+    /// the timeout has been caught, before the stop.</summary>
     private sealed class TimeoutAfterStopGate : IOperationGate
     {
+        private readonly TaskCompletionSource _timedOut = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task TimedOut => _timedOut.Task.WaitAsync(Bound);
+
         public async Task<T> ExecuteAsync<T>(string opLabel, bool idempotent, Func<CancellationToken, Task<T>> op,
             CancellationToken ct)
         {
@@ -471,6 +476,7 @@ public sealed class HttpParallelItemsTests : IDisposable
             }
             catch (PzConnectorException ex) when (ex.InnerException is TaskCanceledException)
             {
+                _timedOut.TrySetResult();
                 var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                 await using (ct.Register(() => stopped.TrySetResult()))
                 {
@@ -491,6 +497,8 @@ public sealed class HttpParallelItemsTests : IDisposable
     {
         // o2 (record 1) fails first and stops the page; o1 (record 0) then fails with a timeout, a transient
         // PzConnectorException wrapping a TaskCanceledException. That is o1's own failure, not the stop.
+        // o2 is answered only once o1 has timed out: answered earlier, the stop would reach o1's request
+        // while it is still waiting, a bare cancellation that is rightly no failure of o1's.
         var handler = new ItemsHandler
         {
             List = Paged(Ids(1, 2)),
@@ -498,10 +506,16 @@ public sealed class HttpParallelItemsTests : IDisposable
                 ? (500, """{"error":"boom"}""", "application/json")
                 : (200, $$"""{"lines":[{"sku":"{{id}}-a"}]}""", "application/json"),
             TimesOut = id => id == "o1",
-        }.OpenAll();
-        var partition = Partition(Options(2), handler, new TimeoutAfterStopGate());
+        };
+        var gate = new TimeoutAfterStopGate();
+        var partition = Partition(Options(2), handler, gate);
 
-        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Drain(partition).WaitAsync(Bound));
+        var read = Task.Run(() => Drain(partition));
+        await handler.Arrived("o1", "o2");
+        handler.Open("o1");
+        await gate.TimedOut;
+        handler.Open("o2");
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => read.WaitAsync(Bound));
 
         Assert.Contains("timed out", ex.Message);
         Assert.EndsWith($"({Identity("o1")})", ex.Message);
