@@ -85,15 +85,20 @@ public static class ConnectorConfigValidator
             // participate in the connection-level dedup.
             var connectionFlaggedKeys = new HashSet<string>(StringComparer.Ordinal);
             var requiredFlaggedKeys = new HashSet<string>(StringComparer.Ordinal);
+            var connectionErrors = errors.Count;
             ValidateSchema(connector.ConnectionConfigSchema, source.Connection, "connection", source.Name,
                 "connection", source.FilePath, errors, connectionFlaggedKeys, requiredFlaggedKeys);
+            connectionErrors = errors.Count - connectionErrors;
 
-            // Datasets the connector's own dataset check may see: those its DatasetConfigSchema accepted. A
-            // schema-rejected dataset would only have its schema findings repeated by the connector's parse.
-            var schemaClean = new HashSet<string>(StringComparer.Ordinal);
+            // The options each dataset's schema flagged, so the connector's own dataset check (which sees every
+            // dataset) does not repeat a finding about them; and the datasets with any finding at all, which the
+            // offline probe below leaves alone.
+            var schemaFlagged = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            var datasetsWithFindings = new HashSet<string>(StringComparer.Ordinal);
             foreach (var dataset in source.Datasets)
             {
                 var errorsBefore = errors.Count;
+                var flagged = new HashSet<string>(StringComparer.Ordinal);
                 var options = MergeColumns(dataset.Options, dataset.Columns);
                 // pz wrote this key, not the user: its refusal comes after the cross-field check below
                 // (whose spawn gives an external connector its schema), never as an "unknown option".
@@ -103,20 +108,36 @@ public static class ConnectorConfigValidator
                 }
 
                 ValidateSchema(connector.DatasetConfigSchema, options, "connection", source.Name,
-                    $"dataset '{dataset.Name}'", source.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
+                    $"dataset '{dataset.Name}'", source.FilePath, errors, flagged,
                     new HashSet<string>(StringComparer.Ordinal));
-                if (errors.Count == errorsBefore)
+                schemaFlagged[dataset.Name] = flagged;
+                if (errors.Count > errorsBefore)
                 {
-                    schemaClean.Add(dataset.Name);
+                    datasetsWithFindings.Add(dataset.Name);
                 }
             }
 
+            var crossFieldBefore = errors.Count;
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(source), "connection", source.Name, source.FilePath,
                 errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
+            connectionErrors += errors.Count - crossFieldBefore;
 
             if (connector is IDatasetConfigValidator datasetValidator)
             {
-                await ValidateDatasetsAsync(datasetValidator, registry.ConfigFor(source), source, schemaClean, errors, ct)
+                await ValidateDatasetsAsync(datasetValidator, registry.ConfigFor(source), source, schemaFlagged,
+                    datasetsWithFindings, errors, ct).ConfigureAwait(false);
+            }
+
+            // Outputs on a connection whose connector also reads are checked here; the loop below covers
+            // write-only connectors.
+            if (registry.TryGetSink(source.Connector, out var sinkConnector) && sinkConnector is IOutputConfigSchema readWriteSchema)
+            {
+                ValidateOutputs(readWriteSchema, source, errors);
+            }
+
+            if (connectionErrors == 0 && !registry.IsHosted(source.Connector))
+            {
+                await ProbeAsync(registry, source, connector, sinkConnector, datasetsWithFindings, errors, ct)
                     .ConfigureAwait(false);
             }
 
@@ -130,8 +151,8 @@ public static class ConnectorConfigValidator
             }
         }
 
-        // A connection whose connector also reads was config-validated in the loop above, so this one
-        // covers write-only connectors -- a postgres connection is not validated, and its every config
+        // A connection whose connector also reads was config-validated in the loop above (its outputs
+        // included), so this one covers write-only connectors -- a postgres connection is not validated, and its every config
         // error not reported, twice.
         foreach (var sink in project.Connections)
         {
@@ -142,39 +163,119 @@ public static class ConnectorConfigValidator
 
             var connectionFlaggedKeys = new HashSet<string>(StringComparer.Ordinal);
             var requiredFlaggedKeys = new HashSet<string>(StringComparer.Ordinal);
+            var connectionErrors = errors.Count;
             ValidateSchema(connector.ConnectionConfigSchema, sink.Connection, "connection", sink.Name,
                 "connection", sink.FilePath, errors, connectionFlaggedKeys, requiredFlaggedKeys);
+            connectionErrors = errors.Count - connectionErrors;
 
-            // Sink OUTPUT (write:) options are schema-validated only when the connector offers
-            // IOutputConfigSchema -- an optional capability (Abstractions' ABI is additive-only, so
-            // this could not be a new ISinkConnector member). A connector that does not implement it is
-            // validated exactly as before: its output options reach it unchecked. sink.Outputs is
-            // DagCompiler's EFFECTIVE, already-merged output list -- whichever of entities:write: /
-            // sink() kwargs declared an output, it lands here once (PZ0341 refuses declaring both).
             if (connector is IOutputConfigSchema outputSchema)
             {
-                foreach (var output in sink.Outputs)
-                {
-                    // partition_by is set aside first. It stays among an output's options because the
-                    // sinks that partition read it, but its shape is the compiler's to check and whether
-                    // this connector can honour it is the planner's, answered from its capabilities. A
-                    // schema that does not list it must not turn that answer into "unknown option".
-                    var options = output.Options.ContainsKey(PartitionColumns.OptionName)
-                        ? output.Options.Where(o => o.Key != PartitionColumns.OptionName)
-                            .ToDictionary(o => o.Key, o => o.Value, StringComparer.Ordinal)
-                        : output.Options;
-                    ValidateSchema(outputSchema.OutputConfigSchema, options, "connection", sink.Name,
-                        $"output '{output.Name}'", sink.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
-                        new HashSet<string>(StringComparer.Ordinal));
-                }
+                ValidateOutputs(outputSchema, sink, errors);
             }
 
+            var crossFieldBefore = errors.Count;
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(sink), "connection", sink.Name, sink.FilePath,
                 errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
+            connectionErrors += errors.Count - crossFieldBefore;
+
+            // Output-schema findings are about the outputs, not the connection, so they do not stop the probe.
+            if (connectionErrors == 0 && !registry.IsHosted(sink.Connector))
+            {
+                await ProbeAsync(registry, sink, null, connector, [], errors, ct).ConfigureAwait(false);
+            }
         }
 
         return errors;
     }
+
+    /// <summary>Every output's <c>write:</c> options against the sink's <see cref="IOutputConfigSchema"/>. Optional:
+    /// a sink that does not offer it has its output options reach it unchecked. <see cref="ConnectionDef.Outputs"/> is
+    /// DagCompiler's EFFECTIVE, already-merged output list -- whichever of entities:write: / sink() kwargs declared an
+    /// output, it lands here once (PZ0341 refuses declaring both).</summary>
+    private static void ValidateOutputs(IOutputConfigSchema outputSchema, ConnectionDef connection, List<PzError> errors)
+    {
+        foreach (var output in connection.Outputs)
+        {
+            // partition_by is set aside first. It stays among an output's options because the
+            // sinks that partition read it, but its shape is the compiler's to check and whether
+            // this connector can honour it is the planner's, answered from its capabilities. A
+            // schema that does not list it must not turn that answer into "unknown option".
+            var options = output.Options.ContainsKey(PartitionColumns.OptionName)
+                ? output.Options.Where(o => o.Key != PartitionColumns.OptionName)
+                    .ToDictionary(o => o.Key, o => o.Value, StringComparer.Ordinal)
+                : output.Options;
+            ValidateSchema(outputSchema.OutputConfigSchema, options, "connection", connection.Name,
+                $"output '{output.Name}'", connection.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
+                new HashSet<string>(StringComparer.Ordinal));
+        }
+    }
+
+    /// <summary>The planner's own offline probes of a builtin connection whose connection-level checks passed, so
+    /// `pz validate` refuses whatever the plan would: opening the source (when the connection has datasets) and the
+    /// sink (when it has outputs), then each dataset's read shape (<see cref="INaturalReadShapeSource"/>), skipping
+    /// datasets that already have findings. A connector failure is classified like the plan's
+    /// (<see cref="ConnectorFailures"/>); a connection refused at open is reported once. Never for a hosted
+    /// connector: its OpenAsync spawns a process and runs the connector's own configure, which the ABI does not
+    /// promise is offline.</summary>
+    private static async Task ProbeAsync(ConnectorRegistry registry, ConnectionDef connection,
+        ISourceConnector? sourceConnector, ISinkConnector? sinkConnector, HashSet<string> datasetsWithFindings,
+        List<PzError> errors, CancellationToken ct)
+    {
+        var config = registry.ConfigFor(connection);
+        var subject = $"connection '{connection.Name}'";
+        if (sourceConnector is not null && connection.Datasets.Count > 0)
+        {
+            ISource source;
+            try
+            {
+                source = await sourceConnector.OpenAsync(config, ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException &&
+                                       Classify(ex, connection, subject, registry) is { } refusal)
+            {
+                errors.Add(refusal);
+                return;
+            }
+
+            await using (source.ConfigureAwait(false))
+            {
+                if (source is INaturalReadShapeSource shapes)
+                {
+                    foreach (var dataset in connection.Datasets.Where(d => !datasetsWithFindings.Contains(d.Name)))
+                    {
+                        try
+                        {
+                            shapes.GetNaturalReadShape(SpecBuilder.ForSourceLoad(new SourceDatasetDef(connection, dataset)));
+                        }
+                        catch (Exception ex) when (ex is not OperationCanceledException &&
+                                                   Classify(ex, connection, $"{subject} dataset '{dataset.Name}'",
+                                                       registry) is { } refusal)
+                        {
+                            errors.Add(refusal);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (sinkConnector is not null && connection.Outputs.Count > 0)
+        {
+            try
+            {
+                var sink = await sinkConnector.OpenAsync(config, ct).ConfigureAwait(false);
+                await sink.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException &&
+                                       Classify(ex, connection, subject, registry) is { } refusal)
+            {
+                errors.Add(refusal);
+            }
+        }
+    }
+
+    private static PzError? Classify(Exception ex, ConnectionDef connection, string subject, ConnectorRegistry registry) =>
+        ConnectorFailures.Classify(ex, connection.Connector, subject, connection.FilePath, "validating",
+            registry.DescribeHostFailure);
 
     /// <summary>Nothing upstream checks a connection's connector NAME against the registry (PZ0305's
     /// other raise sites cover missing packages and cross-package collisions), so without this a typo'd
@@ -683,20 +784,17 @@ public static class ConnectorConfigValidator
     /// (<see cref="IDatasetConfigValidator"/>, optional), one error per finding, naming the dataset. The options
     /// are shaped as the plan's <see cref="DatasetSpec"/> (<see cref="SpecBuilder.ForSourceLoad(SourceDatasetDef)"/>:
     /// the dataset's options plus its contract columns, and a declared incremental's cursor), so the check sees what
-    /// the plan will. Only datasets in
-    /// <paramref name="schemaClean"/> are asked about. A connector that refuses by throwing
-    /// <see cref="PzConnectorException"/> instead of returning its findings is reported the same way: a refusal of
-    /// the config is a config error, whichever way the connector says it.</summary>
+    /// the plan will. Every dataset is checked, a schema-rejected one too, so validation reports every problem at
+    /// once; a finding that names an option the dataset's schema already flagged (<paramref name="schemaFlagged"/>)
+    /// is the same problem said twice and is dropped. A connector that refuses by throwing
+    /// <see cref="PzConnectorException"/> instead of returning its findings is reported the same way. A dataset
+    /// with a finding is added to <paramref name="datasetsWithFindings"/>.</summary>
     private static async Task ValidateDatasetsAsync(IDatasetConfigValidator validator, ConnectorConfig config,
-        ConnectionDef source, HashSet<string> schemaClean, List<PzError> errors, CancellationToken ct)
+        ConnectionDef source, Dictionary<string, HashSet<string>> schemaFlagged, HashSet<string> datasetsWithFindings,
+        List<PzError> errors, CancellationToken ct)
     {
         foreach (var dataset in source.Datasets)
         {
-            if (!schemaClean.Contains(dataset.Name))
-            {
-                continue;
-            }
-
             // The plan's own probe spec, declared incremental cursor included: a rule that holds only for an
             // incremental dataset must see the dataset as the plan will.
             var spec = SpecBuilder.ForSourceLoad(new SourceDatasetDef(source, dataset));
@@ -710,13 +808,35 @@ public static class ConnectorConfigValidator
                 result = ValidationResult.Failed(ex.Message);
             }
 
-            foreach (var message in result.Errors)
+            var flagged = TopLevelOptions(schemaFlagged.GetValueOrDefault(dataset.Name));
+            foreach (var message in result.Errors.Where(m => !NamesAnyOption(m, flagged)))
             {
+                datasetsWithFindings.Add(dataset.Name);
                 errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
-                    $"connection '{source.Name}' dataset '{dataset.Name}': {message}", source.FilePath, null, Hint));
+                    $"connection '{source.Name}' dataset '{dataset.Name}': {message}", source.FilePath, null, DatasetHint));
             }
         }
     }
+
+    private const string DatasetHint = "fix the dataset's options the message names";
+
+    /// <summary>The top-level option of each schema-flagged key: a flagged key is an instance path such as
+    /// <c>for_each/values</c>, or a missing property's name.</summary>
+    private static HashSet<string> TopLevelOptions(HashSet<string>? flaggedKeys) =>
+        flaggedKeys is null
+            ? []
+            : flaggedKeys.Select(k => k.Split('/')[0]).Where(k => k.Length > 0).ToHashSet(StringComparer.Ordinal);
+
+    /// <summary>Whether a connector's finding is about one of <paramref name="options"/>: it names it quoted
+    /// (<c>'path'</c>, <c>'for_each.max_items'</c>) or starts with it as a path (<c>on_status[0]: ...</c>,
+    /// <c>for_each.max_items cannot ...</c>), the two ways connector messages name an option.</summary>
+    private static bool NamesAnyOption(string message, HashSet<string> options) =>
+        options.Any(o =>
+            message.Contains($"'{o}'", StringComparison.Ordinal) ||
+            message.Contains($"'{o}.", StringComparison.Ordinal) ||
+            message.Contains($"'{o}[", StringComparison.Ordinal) ||
+            (message.StartsWith(o, StringComparison.Ordinal) && message.Length > o.Length &&
+             message[o.Length] is '.' or '[' or ':' or ' '));
 
     /// <summary>True only when BOTH (a) <paramref name="message"/> uses every connector's own
     /// <c>ValidateAsync</c> message convention of "requires '&lt;key&gt;'" and (b) that key's ONLY schema

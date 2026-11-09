@@ -653,33 +653,134 @@ public sealed class ConnectorConfigValidatorTests
         Assert.NotNull(orders.Options["columns"]);
     }
 
-    // The connector's dataset check reads the dataset the way the plan will, so for a dataset its schema already
-    // rejected it would only repeat those findings: it is asked about schema-clean datasets alone. A connector
-    // that refuses by throwing is reported like one that returns its findings, never as an escaped exception.
+    // Validation reports every problem at once, so the connector's dataset check sees a schema-rejected dataset
+    // too; a finding naming an option the schema already flagged is the same problem said twice and is dropped. A
+    // connector that refuses by throwing is reported like one that returns its findings.
     [Fact]
-    public async Task Dataset_check_skips_schema_rejected_datasets_and_reports_a_thrown_refusal()
+    public async Task Dataset_check_sees_schema_rejected_datasets_without_repeating_schema_findings()
     {
         var registry = new ConnectorRegistry();
         var connector = new StubDatasetValidatorConnector
         {
-            DatasetConfigSchema = """{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}""",
-            ValidateDatasetFunc = (_, dataset) =>
-                throw new PzConnectorException($"'{dataset.Options["path"]}' clashes", isTransient: false),
+            DatasetConfigSchema = """{"type":"object","properties":{"path":{"type":"string"},"mode":{"type":"string"}},"additionalProperties":false}""",
+            ValidateDatasetFunc = (_, dataset) => dataset.Dataset == "orders"
+                ? throw new PzConnectorException("'/o' clashes", isTransient: false)
+                : ValidationResult.Failed("option 'pathh' is not known", "pathh.x cannot be set", "'mode' needs 'path'"),
         };
         registry.AddSource("stub-ds", connector);
 
         var source = new ConnectionDef("api", "stub-ds", new Dictionary<string, object?>(),
             [
-                new DatasetDef("typo", new Dictionary<string, object?> { ["path"] = "/a", ["pathh"] = "/b" }, null),
+                new DatasetDef("typo", new Dictionary<string, object?> { ["mode"] = "x", ["pathh"] = "/b" }, null),
                 new DatasetDef("orders", new Dictionary<string, object?> { ["path"] = "/o" }, null),
             ], "connections.yml");
 
         var errors = await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default);
 
-        Assert.Equal(["connection 'api' dataset 'typo': unknown option 'pathh'", "connection 'api' dataset 'orders': '/o' clashes"],
+        Assert.Equal(
+            [
+                "connection 'api' dataset 'typo': unknown option 'pathh'",
+                "connection 'api' dataset 'typo': 'mode' needs 'path'",
+                "connection 'api' dataset 'orders': '/o' clashes",
+            ],
             errors.Select(e => e.Message));
         Assert.All(errors, e => Assert.Equal(PzErrorCode.ConnectorConfigInvalid, e.Code));
-        Assert.Equal(["orders"], connector.Seen.Select(d => d.Dataset));
+        Assert.Equal(["typo", "orders"], connector.Seen.Select(d => d.Dataset));
+    }
+
+    // Tier 3 runs the plan's own offline probes on a builtin connection, so `pz validate` refuses what `pz plan`
+    // would: a connection the connector refuses to open (once, however many datasets use it), and a dataset whose
+    // read shape it refuses. A dataset that already has a finding is not probed again.
+    [Fact]
+    public async Task A_connection_refused_at_open_is_reported_once_at_validate()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub-ds", new StubDatasetValidatorConnector
+        {
+            OpenThrows = () => new PzConnectorException("gcs sources require 'auth: hmac'", isTransient: false,
+                code: PzConnectorErrorCodes.Config),
+        });
+        var source = new ConnectionDef("lake", "stub-ds", new Dictionary<string, object?>(),
+            [
+                new DatasetDef("a", new Dictionary<string, object?>(), null),
+                new DatasetDef("b", new Dictionary<string, object?>(), null),
+            ], "connections.yml");
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Equal("connection 'lake': gcs sources require 'auth: hmac'", error.Message);
+        Assert.Equal("fix the options the connector names", error.Hint);
+    }
+
+    [Fact]
+    public async Task A_dataset_refused_by_the_read_shape_probe_is_reported_at_validate()
+    {
+        var registry = new ConnectorRegistry();
+        var connector = new StubDatasetValidatorConnector
+        {
+            ValidateDatasetFunc = (_, d) => d.Dataset == "flagged" ? ValidationResult.Failed("'x' is wrong") : ValidationResult.Success,
+            ShapeThrows = spec => new PzConnectorException($"'{spec.Dataset}' refused", isTransient: false,
+                code: PzConnectorErrorCodes.Config),
+        };
+        registry.AddSource("stub-ds", connector);
+        var source = new ConnectionDef("api", "stub-ds", new Dictionary<string, object?>(),
+            [
+                new DatasetDef("flagged", new Dictionary<string, object?>(), null),
+                new DatasetDef("probed", new Dictionary<string, object?>(), null),
+            ], "connections.yml");
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default);
+
+        Assert.Equal(
+            ["connection 'api' dataset 'flagged': 'x' is wrong", "connection 'api' dataset 'probed': 'probed' refused"],
+            errors.Select(e => e.Message));
+        Assert.Equal(["probed"], connector.ShapeProbed);
+    }
+
+    [Fact]
+    public async Task A_hosted_connector_or_a_connection_with_findings_is_not_probed()
+    {
+        var hosted = new StubDatasetValidatorConnector { OpenThrows = () => new InvalidOperationException("opened") };
+        var builtin = new StubDatasetValidatorConnector
+        {
+            ConnectionConfigSchema = """{"type":"object","required":["host"]}""",
+            OpenThrows = () => new InvalidOperationException("opened"),
+        };
+        var registry = new ConnectorRegistry();
+        registry.AddSource("remote", hosted, hosted: true);
+        registry.AddSource("local", builtin);
+        var dataset = new DatasetDef("d", new Dictionary<string, object?>(), null);
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project(
+            [
+                new ConnectionDef("r", "remote", new Dictionary<string, object?>(), [dataset], "connections.yml"),
+                new ConnectionDef("l", "local", new Dictionary<string, object?>(), [dataset], "connections.yml"),
+            ]), registry, default);
+
+        Assert.Equal(["connection 'l': 'host' is required"], errors.Select(e => e.Message));
+    }
+
+    // An output on a connection whose connector also reads is schema-checked too, not only a write-only one's.
+    [Fact]
+    public async Task Outputs_of_a_read_write_connection_are_schema_validated()
+    {
+        var registry = new ConnectorRegistry();
+        var connector = new StubOutputSchemaConnector
+        {
+            OutputConfigSchema = """{"type":"object","properties":{"tablock":{"type":"boolean"}},"additionalProperties":false}""",
+        };
+        registry.AddSource("rw", connector);
+        registry.AddSink("rw", connector);
+        var connection = new ConnectionDef("db", "rw", new Dictionary<string, object?>(), [], "connections.yml")
+        {
+            Outputs = [new OutputDef("orders", "", "append", "fail_on_change",
+                new Dictionary<string, object?> { ["tablok"] = true }, [])],
+        };
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([connection]), registry, default));
+
+        Assert.Equal("connection 'db' output 'orders': unknown option 'tablok'", error.Message);
     }
 
     // A sink's write: options were never schema-validated at all before IOutputConfigSchema: a typo'd
@@ -817,7 +918,6 @@ public sealed class ConnectorConfigValidatorTests
         public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
             ValueTask.FromResult(new ConnectionCheck(true));
 
-        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-            throw new NotSupportedException();
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(new NoopSource());
     }
 }

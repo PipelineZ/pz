@@ -4,7 +4,8 @@ namespace Pz.Cli.Tests;
 
 /// <summary>An http dataset the connector refuses to parse -- a cross-field rule no JSON Schema can state --
 /// is a config error: `pz validate` reports it as PZ0301 naming the connection, dataset and option, and
-/// `pz plan` refuses it the same way (exit 2), never as the PZ0500 "bug in pz" catch-all.</summary>
+/// `pz plan` refuses it the same way (exit 2), never as the PZ0500 "bug in pz" catch-all. A connection-level
+/// refusal is one error naming the connection.</summary>
 // See the "console-and-env-serialized" collection definition in RestoreCommandTests.cs: this class redirects
 // Console.Out/Error to assert on CLI output.
 [Collection("console-and-env-serialized")]
@@ -94,15 +95,61 @@ public sealed class HttpDatasetRefusalTests : IDisposable
         Assert.DoesNotContain("bug in pz", stderr);
         var line = Assert.Single(stderr.Split('\n'), l => l.Contains(expected, StringComparison.Ordinal));
         Assert.StartsWith("error PZ0301: connection 'api' dataset 'items': ", line);
+        Assert.DoesNotContain("'api.items'", line);
+        Assert.Contains("hint: fix the options the connector names", line);
+        Assert.DoesNotContain("pz validate", line);
     }
 
-    private void WriteProject(string itemsRead, string? otherRead = null)
+    // A connection the connector refuses is one error, attributed to the connection, at validate and at plan alike,
+    // however many datasets read it.
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("plan")]
+    public void A_refused_connection_is_one_error_naming_the_connection(string verb)
+    {
+        WriteProject("        path: /items\n", "        path: /other\n", baseUrl: "not-a-url");
+        File.WriteAllText(Path.Combine(_work, "pipelines", "other_log.sql"),
+            "INSERT INTO {{ sink('lake', 'other_log', format: 'parquet', strategy: 'append', duplicates: 'accept') }}\n" +
+            "select * from {{ source('api', 'other') }}\n");
+
+        var (exit, stderr) = Invoke(verb);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        var line = Assert.Single(stderr.Split('\n'), l => l.Contains("base_url", StringComparison.Ordinal));
+        Assert.StartsWith("error PZ0301: connection 'api'", line);
+        Assert.DoesNotContain("dataset '", line);
+    }
+
+    // gcs reads only with hmac auth: a source on any other auth is refused by `pz validate`, as by `pz plan`.
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("plan")]
+    public void A_gcs_source_without_hmac_auth_is_refused_at_validate_and_plan(string verb)
+    {
+        Directory.CreateDirectory(Path.Combine(_work, "pipelines"));
+        File.WriteAllText(Path.Combine(_work, "project.yml"), "name: refusals\nversion: \"1.0\"\n");
+        File.WriteAllText(Path.Combine(_work, "connections.yml"),
+            "gcs:\n  connector: gcs\n  auth: adc\n  root: my-bucket\n  entities:\n    events:\n      read:\n" +
+            "        format: parquet\n        columns: { id: bigint }\n" +
+            "\nlake:\n  connector: localfiles\n  root: out\n");
+        File.WriteAllText(Path.Combine(_work, "pipelines", "events_copy.sql"),
+            "INSERT INTO {{ sink('lake', 'events_copy', format: 'parquet') }}\n" +
+            "select * from {{ source('gcs', 'events') }}\n");
+
+        var (exit, stderr) = Invoke(verb);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        var line = Assert.Single(stderr.Split('\n'), l => l.Contains("auth: hmac", StringComparison.Ordinal));
+        Assert.StartsWith("error PZ0301: connection 'gcs': gcs sources require 'auth: hmac'", line);
+    }
+
+    private void WriteProject(string itemsRead, string? otherRead = null, string baseUrl = "https://api.example.com")
     {
         Directory.CreateDirectory(Path.Combine(_work, "pipelines"));
         File.WriteAllText(Path.Combine(_work, "project.yml"), "name: refusals\nversion: \"1.0\"\n");
         var other = otherRead is null ? "" : "    other:\n      read:\n" + otherRead;
         File.WriteAllText(Path.Combine(_work, "connections.yml"),
-            "api:\n  connector: http\n  base_url: https://api.example.com\n  entities:\n" +
+            $"api:\n  connector: http\n  base_url: {baseUrl}\n  entities:\n" +
             "    items:\n      read:\n" + itemsRead + other +
             "\nlake:\n  connector: localfiles\n  root: out\n");
         File.WriteAllText(Path.Combine(_work, "pipelines", "items_log.sql"),
