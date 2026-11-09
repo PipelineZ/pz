@@ -7,7 +7,7 @@ namespace Pz.Connector.Http;
 /// row-array requests, merge = keyed per-row PUT/PATCH (exactly one key in v1); replace never
 /// reaches here (PZ0324). AbortSemantics.None is the honest declaration: you cannot un-POST —
 /// AbortAsync cleans up nothing, and the engine reports "delivery stopped" accordingly.</summary>
-internal sealed class HttpSink : ISink, IOperationGateAware
+internal sealed class HttpSink : ISink, IOperationGateAware, INoticeAware
 {
     private readonly HttpConnectionConfig _connection;
     private readonly TimeProvider _time;
@@ -74,6 +74,10 @@ internal sealed class HttpSink : ISink, IOperationGateAware
 
     /// <summary>Called exactly once per opened sink, before any write call.</summary>
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
+
+    /// <summary>Called at most once per open, before any write call; the sign-in reports through it (a refresh
+    /// token rotated under <c>auth.rotation: ignore</c>).</summary>
+    public void UseNotice(Action<string> notice) => HttpAuth.UseNotice(_connection.Authenticator, notice);
 
     public ValueTask DisposeAsync()
     {

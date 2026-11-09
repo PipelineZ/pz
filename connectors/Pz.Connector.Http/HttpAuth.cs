@@ -37,6 +37,15 @@ internal static class HttpAuth
         }
     }
 
+    /// <summary>Gives the sign-in a place for its notices; only a refresh-token sign-in has any.</summary>
+    internal static void UseNotice(IRequestAuthenticator? authenticator, Action<string> notice)
+    {
+        if (authenticator is OAuth2RefreshTokenAuthenticator refresh)
+        {
+            refresh.Notice = notice;
+        }
+    }
+
     internal sealed record Parsed(
         IRequestAuthenticator? Static,
         Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? Factory,

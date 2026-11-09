@@ -158,12 +158,110 @@ public sealed class HttpRefreshTokenTests : IAsyncLifetime
         var doc = JsonSerializer.Deserialize<JsonElement>("""
             {"base_url":"https://api.example.com","auth":{"type":"oauth2_refresh_token",
              "token_url":"https://login.example.com/token","client_id":"c","refresh_token":"r",
-             "client_auth":"body","scope":"x","params":{"audience":"a"}}}
+             "client_auth":"body","scope":"x","params":{"audience":"a"},"rotation":"ignore"}}
             """);
         Assert.True(JsonSchema.FromText(text).Evaluate(doc).IsValid);
 
         using var parsed = JsonDocument.Parse(text);
         var props = parsed.RootElement.GetProperty("properties").GetProperty("auth").GetProperty("properties");
         Assert.True(props.GetProperty("refresh_token").GetProperty("writeOnly").GetBoolean());
+    }
+
+    private static readonly Apache.Arrow.Schema SinkSchema = new(
+        [new Apache.Arrow.Field("id", Apache.Arrow.Types.Int64Type.Default, nullable: false)], null);
+
+    private HttpSink OpenSink(Dictionary<string, object?> auth)
+    {
+        var errors = new List<string>();
+        var connection = HttpConnectionConfig.Parse(Config(auth), errors);
+        Assert.Empty(errors);
+        return new HttpSink(connection!, _clock);
+    }
+
+    private static async Task WriteOneAsync(ISink sink)
+    {
+        var spec = new OutputSpec("api", "out", "append", "fail_on_change", new Dictionary<string, object?> { ["path"] = "/out" });
+        await using var session = await sink.BeginWriteAsync(spec, SinkSchema, CancellationToken.None);
+        var builder = new ArrowBatchBuilder(SinkSchema);
+        builder.AppendRow([1L]);
+        using var batch = builder.Flush()!;
+        await session.WriteBatchAsync(batch, CancellationToken.None).AsTask().WaitAsync(Bound);
+    }
+
+    [Fact]
+    public async Task Rotation_ignore_reads_and_writes_and_reports_a_notice_through_source_and_sink()
+    {
+        _server.Map("/token", _ => new StubResponse(200, """{"access_token":"acc","expires_in":3600,"refresh_token":"rotated-R2"}"""));
+        _server.Map("/items", _ => new StubResponse(200, """{"data":[{"id":1}]}"""));
+        _server.Map("/out", _ => new StubResponse(200, "{}"));
+        var auth = Auth();
+        auth["rotation"] = "ignore";
+
+        var notices = new List<string>();
+        await using (var source = (HttpSource)await new HttpConnector().OpenAsync(Config(auth), CancellationToken.None))
+        {
+            source.UseNotice(notices.Add);
+            Assert.Equal(1, await ReadAsync(source).WaitAsync(Bound));
+        }
+
+        await using (var sink = OpenSink(auth))
+        {
+            sink.UseNotice(notices.Add);
+            await WriteOneAsync(sink);
+        }
+
+        Assert.Equal("Bearer acc", _server.Requests.Single(r => r.Url.AbsolutePath == "/out").Headers["Authorization"]);
+        Assert.Equal(2, notices.Count);
+        Assert.Contains("auth.rotation is ignore", notices[0]);
+        Assert.All(_server.Requests.Where(r => r.Url.AbsolutePath == "/token"),
+            r => Assert.Equal(Refresh, System.Web.HttpUtility.ParseQueryString(r.Body)["refresh_token"]));
+    }
+
+    [Fact]
+    public async Task A_rotation_refused_on_one_node_is_not_replayed_by_the_next_node_or_the_sink()
+    {
+        _server.Map("/token", _ => new StubResponse(200, """{"access_token":"acc","refresh_token":"rotated-R2"}"""));
+        _server.Map("/out", _ => new StubResponse(200, "{}"));
+
+        await using (var source = OpenSource())
+        {
+            Assert.Contains("PZ0366", (await Assert.ThrowsAsync<PzConnectorException>(async () => await ReadAsync(source))).Message);
+        }
+
+        await using (var again = OpenSource())
+        {
+            var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await ReadAsync(again));
+            Assert.Contains("PZ0366", ex.Message);
+            Assert.Contains("pz did not try again", ex.Message);
+        }
+
+        await using (var sink = OpenSink(Auth()))
+        {
+            var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await WriteOneAsync(sink));
+            Assert.False(ex.IsTransient);
+            Assert.Contains("PZ0366", ex.Message);
+        }
+
+        Assert.Equal(1, TokenRequests);
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath is "/items" or "/out");
+    }
+
+    [Fact]
+    public async Task The_sink_signs_its_writes_with_the_refreshed_token_and_signs_in_again_after_a_401()
+    {
+        var issued = 0;
+        _server.Map("/token", _ => new StubResponse(200, $$"""{"access_token":"acc{{++issued}}","expires_in":3600}"""));
+        var posts = 0;
+        _server.Map("/out", _ => ++posts == 2 ? new StubResponse(401, "{}") : new StubResponse(200, "{}"));
+
+        await using var sink = OpenSink(Auth());
+        await WriteOneAsync(sink);
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await WriteOneAsync(sink));
+        Assert.True(ex.IsTransient);
+        await WriteOneAsync(sink);
+
+        Assert.Equal(2, TokenRequests);
+        Assert.Equal(["Bearer acc1", "Bearer acc1", "Bearer acc2"],
+            _server.Requests.Where(r => r.Url.AbsolutePath == "/out").Select(r => r.Headers["Authorization"]));
     }
 }

@@ -121,8 +121,13 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
 
     /// <summary>Called at most once per open, before any plan/read call; partitions planned afterward
     /// report a file-mode zip with no matching member (`if_missing: empty`), a for_each cap that stopped
-    /// the read, or for_each items skipped under `on_missing: skip` through it.</summary>
-    public void UseNotice(Action<string> notice) => _notice = notice;
+    /// the read, or for_each items skipped under `on_missing: skip` through it, and so does the sign-in (a
+    /// refresh token rotated under `auth.rotation: ignore`).</summary>
+    public void UseNotice(Action<string> notice)
+    {
+        _notice = notice;
+        HttpAuth.UseNotice(_connection.Authenticator, notice);
+    }
 
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
         HttpDatasetConfig.Parse(spec).IsSyncMode ? NaturalReadShape.Feed : NaturalReadShape.Full;

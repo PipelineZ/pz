@@ -48,6 +48,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "scope": { "type": "string" }, "authority_host": { "type": "string" },
                 "token_url": { "type": "string" },
                 "refresh_token": { "type": "string", "writeOnly": true },
+                "rotation": { "enum": ["refuse", "ignore"] },
                 "client_auth": { "enum": ["body", "basic"] },
                 "params": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
                 "login": { "type": "object", "properties": {
