@@ -10,7 +10,11 @@ namespace Pz.Connectors.Abstractions;
 /// <para>Use it to scope state a connector keeps beyond one open to the run that made it (a refused
 /// sign-in that no other node of the run should repeat), or to derive a key that a retried attempt of the
 /// same node must reproduce (an idempotency key). It promises nothing across runs: <c>pz retry</c> is a
-/// new run.</para></summary>
+/// new run.</para>
+///
+/// <para>An out-of-process (PCP) connector receives it too, but the host starts one connector process per open, so
+/// state the process keeps in memory under the run's scope still lives for one node only; a connector that must
+/// share a decision across the nodes of a run has to keep it outside its process.</para></summary>
 public sealed record ConnectorRunContext(string Run, string? Node)
 {
     /// <summary>When the run started, on the engine's clock; null when the host has no run start (a validation

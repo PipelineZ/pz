@@ -11,31 +11,36 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 - **http: `export.idempotency_key_header`.** Name the header an API reads an idempotency key from (for example
   `Idempotency-Key`), and the export start request carries one: a UUID-shaped key derived from the run id, the node
-  id, the partition, the `for_each` item and the start request itself, with no clock or randomness in it. Every
-  engine retry of the node in the same run sends the same key, so an API that honours it returns the job a start
-  answered `5xx` already queued, instead of leaving that job orphaned and starting another. Another run, node, item
-  or request gets another key. Only the start carries it; polls, downloads and cancels do not. The header must be a
+  id, the partition and the start request itself (a `for_each` item's values are part of it), with no clock or
+  randomness in it. Every engine retry of the node in the same run sends the same key, also after midnight, since
+  `{{ run_date }}` renders from the run's start, so an API that honours it returns the job a start answered `5xx`
+  already queued, instead of leaving that job orphaned and starting another. Another run, node, item or request gets
+  another key. Only the start carries it; polls, downloads and cancels do not. The header must be a
   valid request header name that pz or the HTTP stack does not set itself (not `Authorization`, `Content-Type`,
   ...). Without the option nothing changes.
-- **Connector ABI: `IRunContextAware` and `ConnectorRunContext(Run, Node)`** (additive). The engine hands an opened
-  source or sink the run id and its node id, once, after `OpenAsync` and before any plan, read or write call, like
-  `UseOperationGate` and `UseNotice`. A `pz validate --connect` pass gets a scope of its own with no node. Use it to
-  scope state kept past one open to the run, or to derive a key every retry of the node repeats. Out-of-process
-  connectors receive it too: the PCP requests that open a source or sink carry an optional `RunContextMsg`, and the
-  C# SDK hands it to the connector's `IRunContextAware` (an older host sends none, an older connector ignores it).
+- **Connector ABI: `IRunContextAware` and `ConnectorRunContext(Run, Node) { StartedAt }`** (additive). The engine
+  hands an opened source or sink the run id, its node id and the run's start time, once, after `OpenAsync` and before
+  any plan, read or write call, like `UseOperationGate` and `UseNotice`. A `pz validate --connect` pass gets a scope of
+  its own with no node. Use it to scope state kept past one open to the run, or to derive a value every retry of the
+  node repeats. Out-of-process connectors receive it too: the PCP requests that open a source or sink carry an optional
+  `RunContextMsg`, and the C# SDK hands it to the connector's `IRunContextAware` (an older host sends none, an older
+  connector ignores it). The host starts one connector process per open, so state a process keeps in memory (a
+  sign-in refusal) still lasts one node, not the run.
 - **Connector ABI: `IScopedConnectionCheck`** (additive). A connector may check its connection inside a run or
   validation pass: `pz validate --connect` calls it with the pass's `ConnectorRunContext`, the same one its schema
   probes get, so a refused credential is tried once per pass instead of once for the check and again for the probe.
   The http connector and the PCP host implement it; `CheckRequest` carries the context over PCP.
 - **Connector ABI: `ISkippedReadPartition`** (additive). A partition whose read a rule of the dataset's own config
-  skipped, in whole or in part (an http `on_status` rule with `action: skip`), reports `ReadSkipped` once its read is
-  done. For an incremental dataset the engine then captures no watermark candidate for the node (an empty window is
-  not advanced to its ceiling) and gives a notice, so the next run reads the same slice again. A read that found no
-  rows, or an http `on_missing: skip` 404, does not count as skipped. The http JSON, file and `for_each` partitions
-  implement it. In partition mode the skip is recorded in the staging ledger (`pz_meta.partitions_skipped`) with the
-  partition's done row, so a retried attempt or a `pz retry` that reuses the partition without reading it again
-  still holds the watermark; an http `for_each` checkpoint carries it too (an optional `rule_skipped` key). Over
-  PCP, `ReadStatsResponse.read_skipped` carries the report from an out-of-process partition.
+  skipped, in whole or in part (an http `on_status` rule with `action: skip`), names the rule in `SkippedBy`. On an
+  incremental dataset in any form (first run and `--full-refresh` included) the engine fails the node with the new
+  permanent error **PZ0540**, naming the rule, and commits nothing the read produced: the watermark does not move, no
+  sink receives the rows, and no partition is recorded as done. It asks when a partition's read ends and before it
+  stores each checkpoint, so a checkpoint past a skip is never stored; a checkpointing partition must report the skip
+  no later than the first checkpoint it offers after it. On any other dataset a skip is a success, as before. A read
+  that found no rows, or an http `on_missing: skip` 404, does not count as skipped. The http JSON, file and
+  `for_each` partitions implement it. Over PCP, `ReadStatsResponse.skipped_by` carries the report from an
+  out-of-process partition; a host that cannot read it (the call failed for any reason but `UNIMPLEMENTED`) fails the
+  read transiently instead of assuming nothing was skipped.
 - **Toolkit: `QueryString.WithSecret`** (additive): sets a secret query parameter after removing every pair whose
   decoded name matches in any letter case.
 - **Toolkit: `CachedTokenAuthenticator.RunScope`** (additive). A refused sign-in is remembered for authenticators
@@ -127,7 +132,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `body_contains` must name exact codes and none of 401, 403, 408 or 429. `skip` is refused with `export` and on
   datasets that are or could be incremental: a raw `cursor`, a `{{ watermark }}`/`{{ window_upper }}` reference, an
   `incremental:` block, or a `columns:` contract (its columns can be the cursor of a SQL-declared incremental, which the
-  connector cannot see on a first run or under `--full-refresh`). At run time a skip rule that matches a read the engine sent a watermark (a cursor, value or upper bound) fails the read instead of skipping. Where no watermark reaches the connector (the first run, or `--full-refresh`, of a raw-mode SQL-declared incremental with an inclusive SQL ceiling), the read reports the skip to the engine, which then does not advance the watermark for that node (see the `ISkippedReadPartition` entry). **A skipped read lands an empty table: an output in
+  connector cannot see on a first run or under `--full-refresh`). At run time a skip rule that matches a read the engine sent a watermark (a cursor, value or upper bound) fails the read instead of skipping. Where no watermark reaches the connector (the first run, or `--full-refresh`, of a raw-mode SQL-declared incremental), the read reports the skip and the engine fails the node with PZ0540 (see the `ISkippedReadPartition` entry). **A skipped read lands an empty table: an output in
   `replace` mode fed only by it is emptied for that run.** The dataset's rules cover its own (item) requests;
   `for_each.on_status` covers the list request. Built-in cases still come first: a proxy `407` (which a rule cannot
   name), a `401` (or, for `session`, any `reauth_status` code) handled by a token sign-in (`azure_ad`,
@@ -176,8 +181,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   planned, before any request.
   Checkpoints of a header-paged read use a new `v4:` token that stores the URL (without a session query token), the
   body and the page header only, never connection headers or credentials; every other read's tokens are unchanged.
-  An unknown `location` is an error that names `query`, `body` and `header`, on GET and POST reads alike (see
-  Changed).
+  An unknown `location` is an error that names `query`, `body` and `header`, on GET and POST reads alike, so a typo
+  never sends the position in the query string to an API that reads it elsewhere; `location: body` needs
+  `method: post`.
   A session sign-in whose `auth.inject.query` names a query parameter that pagination sets (`param` or `size_param`
   of `page`, `offset` or a query `cursor`, on the dataset or its `for_each` list; names compared decoded, in any case)
   is reported by `pz validate` and refused when the read is planned, before any request: each would overwrite the
@@ -190,8 +196,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   and waits at most 10 seconds (5 once the run is cancelled, by a node timeout or Ctrl-C, and never longer than
   `timeout_seconds`). Only its status is read. Its outcome is a notice, never an error: the read fails with its own
   error. A job whose start request failed has no id, so it cannot be cancelled (`export.idempotency_key_header`
-  keeps the retried start on that job instead). An empty job id is a permanent error
-  before any poll, and so is one refused under Changed (a `.` or `..` segment, `\`, a control character).
+  keeps the retried start on that job instead). An empty job id is a permanent error before any poll or cancel, and
+  so is an id with a `/`-separated segment that is exactly `.` or `..`, a `\` or a control character, which a server
+  or proxy decoding the escaped `/` would resolve to another resource.
   Slash-separated ids such as `projects/1/jobs/2`, and base64 ids with `//` or a leading or trailing `/`, still work,
   inserted escaped as one path segment as before. `download_pointer` may now resolve to a list of URLs: each file is downloaded and read in order, with the full single-file budgets
   (`max_download_mb`, the decompression cap, the idle timeout) and one scratch file on disk at a time. Every URL is
@@ -253,7 +260,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   it expires (half the lifetime for short-lived tokens). `timeout_seconds` bounds each sign-in request (the Azure CLI
   step of `credential_chain` has its own timeout), and retries are left to the engine. A `401` on a token the API had
   never accepted fails permanently with a hint to check `scope`; a `401` on a token it had accepted drops the token and
-  is retried by the engine, which signs in again. A sign-in failure is reported without the secret or token.
+  is retried by the engine, which signs in again. A sign-in failure is reported without the secret or token. A
+  refused client (`oauth2_client_credentials`: `invalid_client` or `unauthorized_client`; an `azure_ad` service
+  principal: those or AADSTS7000215, 7000222, 700016, 90002, 700027, 7000112, a wrong, expired or unknown secret,
+  certificate, application or tenant) is tried once per connection per run: the other nodes fail at once with the
+  same error and send nothing, and the next run, also in a long-lived `pz mcp` server, tries again. A clock-skewed
+  assertion (AADSTS700024) and throttling are not latched, and neither are `managed_identity` and `credential_chain`,
+  whose failures are about the machine and send no secret an identity provider could count against an account.
   `pz validate` warns when `certificate_path` points inside the project directory, where it is easily committed.
   `http` now joins the connectors anchored on the project directory.
 - **http: read files, zip archives and export jobs.** A dataset with a `file:` block reads the response as a file
@@ -283,7 +296,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **http: dated URLs.** `path` now expands bindings like `query` and `body`, each value escaped as one path segment
   (a null binding in `path` is an error that names the fix). The new `{{ run_date }}` binding is the day of the run
   shifted by whole days, configured by `run_date: { offset_days: -1, timezone: Europe/Bucharest, format: yyyy-MM-dd }`
-  (defaults 0, UTC, `yyyy-MM-dd`), and read once per partition so start, polls and download agree across midnight. For
+  (defaults 0, UTC, `yyyy-MM-dd`), and taken from the run's start, so start, polls, download and every retried
+  attempt of the run agree across midnight. For
   a file with a date column, a windowed dataset catches up a missed day per run: `sync: { mode: incremental, cursor:
   day, initial: "2026-10-01", max_window: 1d }` with `path: /exports/daily/{{ window_upper }}.zip`. The window's upper
   bound can reach today, whose file may not be published yet: that download fails (404) and nothing is lost, the
@@ -322,23 +336,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
-- **http: an unknown `pagination.location` is now an error on GET reads too** (it was silently ignored). A typo such as
-  `bdy` or `Body` on a GET read used to send the page position in the query string, with no message unless
-  `pz validate` ran its schema check (`pz run` does not), so an API that reads the position elsewhere answered page 1
-  on every request. It is now the same error a POST read already gave: "pagination 'location' must be 'query', 'body'
-  or 'header', got '…'", for the dataset and its `for_each` list. `location: body` on a GET read was already refused
-  ("requires 'method: post'") and still is. Migration: correct the value, or remove the key to page in the query.
 - **A JSON number in a contract `timestamp` column has a clearer error.** It used to be "value is not a valid
   timestamp". The http connector now says it is a JSON number and names `epoch_unit`; sftp's JSON reader says it
   "does not read epoch numbers as timestamps".
 - **JSON pointers follow RFC 6901 array indexes.** In http's `items`, `cursor_pointer`, pagination and `for_each`
   pointers, an array index with a leading zero, a sign or blanks (`/data/01`, `/data/+1`) no longer selects an
   element; it resolves to nothing, as the RFC says. `/data/0` and `/data/1` are unchanged.
-- **http: an export job id with a `.` or `..` segment, a `\` or a control character is refused.** A job id one of
-  whose `/`-separated segments is exactly `.` or `..` (such as `..`, `./x`, `x/..`) is now a permanent error before
-  any poll or cancel, because a server or proxy that decodes the escaped `/` would resolve those segments to another
-  resource; so is an id containing `\` or a control character. Such ids used to be sent escaped. Every other id,
-  empty segments and a leading or trailing `/` included, works as before.
 - **`column_pointers` is a reserved read option name, on every connector.** pz writes it itself from the contract
   columns' `pointer` entries, so an option of that name written by hand is now PZ0101, whichever connector the dataset
   uses: in `read:` when `connections.yml` loads, as a `source()` argument when the pipeline compiles. Rename such an
@@ -355,34 +358,29 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   parameter of the connection's auth (`api_key` with `param:`, a session `inject.query` token) is now removed from a
   URL before any checkpoint is encoded, matched by decoded name in any case (`API_KEY`, `%61pi_key`), and the current
   value is added back to the resumed request. Error messages mask such an echo the same way, where they used to
-  match the exact name only.
+  match the exact name right after `?` or `&` only: the name now matches in any case and encoding, and also when the
+  API echoes the URL HTML-escaped (`&amp;api_key=`), JSON-escaped (`\u0026api_key=`) or percent-encoded inside
+  another parameter (`next=...%3Fapi_key%3D...`).
 - **http: an `api_key` query parameter named like a pagination parameter is refused.** The key and the page position
   overwrote each other on every request. `pz validate` reports it and the plan refuses it, with the other pagination
   clashes.
-- **http: a refused `oauth2_client_credentials` secret is tried once per run, not once per node.** `invalid_client`
-  and `unauthorized_client` from the token endpoint are remembered like the refresh-token flow's refusals: the other
-  nodes on the connection fail at once with the same error and send nothing. A changed secret is tried again.
-- **http: a refused sign-in no longer outlives its run.** The refusal latch was process-wide, so in a long-lived
-  `pz mcp` server a refused login, refresh or client secret stayed refused until the server restarted, even after
-  the account was unlocked. It is now kept per run (two runs in one process each get one attempt); a
-  `pz validate --connect` pass is one scope for its check and schema probes.
-- **http: a refused `azure_ad` service principal is tried once per run, not once per node.** A wrong, expired or
-  unknown secret or certificate (`invalid_client`, `unauthorized_client`, AADSTS7000215, 7000222, 700016, 90002,
-  700027, 7000112) is remembered for the run like the other sign-ins. A clock-skewed assertion and throttling are not.
-  `managed_identity` and `credential_chain` are not latched: their failures are about the machine, and they send no
-  secret an identity provider could count against an account.
 - **http: an `api_key` (or session query token) echoed in another letter case is no longer sent twice.** A next link
   carrying `API_KEY=...` kept that pair beside the one the sign-in added; the echo is now replaced.
-- **mcp: the literal-credential guard (PZ0601) checks nested options.** It looked only at top-level strings, so a
-  literal secret under an http `auth:` block (`token`, `password`, `client_secret`, `refresh_token`, `key`, login
-  `body` fields), `proxy:`, `tls:` or `headers:` (`Authorization`, `Cookie`, `X-Api-Key`) was written to
-  `connections.yml`. It now walks nested maps and lists and names the dotted path (`auth.login.body.password`); a
-  session login `body` typed as one string with no `${...}` in it is refused too. Names ending in `_url`, `_uri`,
-  `_pointer`, `_path`, `_file` or `_fingerprint` say where something is and are no longer flagged (`token_url`,
-  `token_pointer`, `key_path`, `key_file`).
+- **mcp: the literal-credential guard (PZ0601) checks nested options and entity options.** It looked only at a
+  connection's top-level strings, so a literal secret under an http `auth:` block (`token`, `password`,
+  `client_secret`, `refresh_token`, `key`, login `body` fields), `proxy:`, `tls:` or `headers:` (`Authorization`,
+  `Cookie`, `X-Api-Key`) was written to `connections.yml`, and `pz_add_entity`/`pz_set_entity_options` checked
+  nothing (a `query: { api_key: ... }` went through). It now walks nested maps and lists, the strings in a list under
+  a credential-shaped key, a session login `body` written as one form or JSON string (field by field), and URLs (a
+  typed `user:password@` or a literal credential-shaped query parameter), names the dotted path
+  (`auth.login.body.password`, `entities.orders.read.query.api_key`), and runs for the entity tools too. A value made
+  only of `${...}` references, separators between them and one leading scheme word (`Bearer ${TOKEN}`) is accepted.
+  Names ending in `_url`, `_uri`, `_pointer`, `_path`, `_file` or `_fingerprint` say where something is and are no
+  longer flagged by name (`token_url`, `token_pointer`, `key_path`, `key_file`).
 - **A `${VAR}` inside a YAML flow map gets a quoting hint.** `auth: { token: ${X} }` failed with a bare PZ0101
-  "Malformed YAML" (the `{` of the reference opens another map). The hint now says to quote it, `token: "${X}"`, or
-  to use block style, also when the parser fails without a line number.
+  "Malformed YAML" (the `{` of the reference opens another map). When the failing lines hold a `${` written unquoted
+  inside a `{ }` or `[ ]` collection, the hint now says to quote it, `token: "${X}"`, or to use block style, also
+  when the parser fails without a line number.
 - **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
   rounded to the 100 ns tick, which could carry into the next second and skip that second's rows; the extra digits
   are now dropped.
