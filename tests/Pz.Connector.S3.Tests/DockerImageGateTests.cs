@@ -80,4 +80,32 @@ public sealed class DockerImageGateTests
         var skip = Assert.Throws<SkipException>(() => DockerFacts.SkipUnlessImage("pz-tests.invalid/no-such-image:0"));
         Assert.Contains("cannot provide image", skip.Message);
     }
+
+    [Fact]
+    public void The_resource_reaper_image_is_gated_with_the_suites_own_images()
+    {
+        // Testcontainers starts ryuk before any container, so a refused ryuk pull is the same as a refused image.
+        Assert.Equal(["minio:x", "ryuk:1"], DockerFacts.ImagesToGate(["minio:x"], reaperEnabled: true, "ryuk:1"));
+        Assert.Equal(["minio:x"], DockerFacts.ImagesToGate(["minio:x"], reaperEnabled: false, "ryuk:1"));
+        Assert.Equal(["ryuk:1"], DockerFacts.ImagesToGate(["ryuk:1"], reaperEnabled: true, "ryuk:1"));
+    }
+
+    [Fact]
+    public void The_gate_uses_the_reaper_testcontainers_itself_would_start()
+    {
+        // Nothing in this repository configures ryuk, so Testcontainers' default (or an override from the
+        // environment) is what a suite would start.
+        var gated = DockerFacts.ImagesToGate([]);
+
+        if (DotNet.Testcontainers.Configurations.TestcontainersSettings.ResourceReaperEnabled)
+        {
+            var expected = DotNet.Testcontainers.Configurations.TestcontainersSettings.ResourceReaperImage?.FullName;
+            Assert.Equal(expected ?? Assert.Single(gated), Assert.Single(gated));
+            Assert.Contains(expected is null ? "testcontainers/ryuk:" : expected, gated[0]);
+        }
+        else
+        {
+            Assert.Empty(gated);
+        }
+    }
 }

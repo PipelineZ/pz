@@ -113,13 +113,54 @@ public static class DockerFacts
     /// <summary>Non-throwing form of <see cref="SkipUnlessImage"/>, for a fixture that must no-op rather than throw
     /// (see <see cref="IsAvailable"/>). False only for a skip: under CI a failed pull answers true, so the fixture
     /// goes on to start its container and the suite fails loudly.</summary>
-    public static bool CanProvide(string image) => GateFor(image).Verdict != ImageVerdict.Skip;
+    public static bool CanProvide(string image) =>
+        ImagesToGate([image]).All(i => GateFor(i).Verdict != ImageVerdict.Skip);
 
-    /// <summary>Skips (locally) or fails (under CI) unless docker can provide every one of <paramref name="images"/>;
-    /// call it where <see cref="SkipUnlessDocker"/> is called, before any container is built.</summary>
+    /// <summary>The images a suite needs before its first container starts: its own, plus the resource reaper
+    /// (ryuk) Testcontainers starts first when it is enabled, so a refused ryuk pull skips or fails by the same rule
+    /// as any other image. Nothing in this repository configures ryuk, so Testcontainers' own settings (environment
+    /// or <c>~/.testcontainers.properties</c>) decide whether it runs and which image it is.</summary>
+    public static IReadOnlyList<string> ImagesToGate(IReadOnlyList<string> images, bool reaperEnabled, string reaperImage)
+        => reaperEnabled && !images.Contains(reaperImage, StringComparer.Ordinal) ? [.. images, reaperImage] : images;
+
+    /// <summary><see cref="ImagesToGate(IReadOnlyList{string}, bool, string)"/> with Testcontainers' own reaper
+    /// settings.</summary>
+    public static IReadOnlyList<string> ImagesToGate(IReadOnlyList<string> images)
+        => Reaper.Value is { } reaper ? ImagesToGate(images, reaper.Enabled, reaper.Image) : images;
+
+    /// <summary>Testcontainers' own reaper settings, read from the Testcontainers assembly the calling suite already
+    /// loads (this library does not reference it, so suites without containers do not pull it in); null when it is
+    /// not loadable, in which case no container, and so no reaper, can start either.</summary>
+    private static readonly Lazy<(bool Enabled, string Image)?> Reaper = new(() =>
+    {
+        var settings = Type.GetType("DotNet.Testcontainers.Configurations.TestcontainersSettings, Testcontainers");
+        if (settings?.GetProperty("ResourceReaperEnabled")?.GetValue(null) is not bool enabled)
+        {
+            return null;
+        }
+
+        // An override (TESTCONTAINERS_RYUK_CONTAINER_IMAGE, ~/.testcontainers.properties) wins; otherwise the default
+        // the ResourceReaper type itself holds.
+        var image = settings.GetProperty("ResourceReaperImage")?.GetValue(null) ?? DefaultReaperImage();
+        return image?.GetType().GetProperty("FullName")?.GetValue(image) is string fullName ? (enabled, fullName) : null;
+    });
+
+    private static object? DefaultReaperImage()
+    {
+        var reaper = Type.GetType("DotNet.Testcontainers.Containers.ResourceReaper, Testcontainers");
+        const System.Reflection.BindingFlags Static = System.Reflection.BindingFlags.Static
+            | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        return reaper?.GetFields(Static).Select(f => f.GetValue(null))
+            .Concat(reaper.GetProperties(Static).Where(p => p.GetIndexParameters().Length == 0).Select(p => p.GetValue(null)))
+            .FirstOrDefault(v => v?.GetType().GetInterface("IImage") is not null);
+    }
+
+    /// <summary>Skips (locally) or fails (under CI) unless docker can provide every one of <paramref name="images"/>
+    /// and the resource reaper (<see cref="ImagesToGate(IReadOnlyList{string})"/>); call it where
+    /// <see cref="SkipUnlessDocker"/> is called, before any container is built.</summary>
     public static void SkipUnlessImage(params string[] images)
     {
-        foreach (var image in images)
+        foreach (var image in ImagesToGate(images))
         {
             var gate = GateFor(image);
             switch (gate.Verdict)
