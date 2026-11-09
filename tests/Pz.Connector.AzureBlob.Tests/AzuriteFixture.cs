@@ -6,8 +6,8 @@ namespace Pz.Connector.AzureBlob.Tests;
 
 /// <summary>Shared Azurite container for the azure e2e suite (mirrors <c>MinioFixture</c>). The
 /// constructor calls <see cref="DockerFacts.SkipUnlessDocker"/> and <see cref="DockerFacts.SkipIfOffline"/>
-/// before any Testcontainers call, so a docker-less or explicitly-offline machine never attempts to start
-/// a container or pull an image. Pinned image tag. Azurite emulates the Blob endpoint faithfully (ADLS
+/// before any Testcontainers call: a docker-less machine skips, and an offline one too, because the suite
+/// loads DuckDB's azure extension from the network. Its image goes through the docker image gate. Pinned image tag. Azurite emulates the Blob endpoint faithfully (ADLS
 /// Gen2 `abfss://` is NOT covered -- that is the documented e2e gap; `abfss` is unit-tested only).</summary>
 public sealed class AzuriteFixture : IAsyncLifetime
 {
@@ -28,7 +28,8 @@ public sealed class AzuriteFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
-        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
         DockerFacts.SkipUnlessImage(ImageName);
     }
 

@@ -24,8 +24,8 @@ public sealed class FakeGcsFixture : IAsyncLifetime
     public FakeGcsFixture()
     {
         DockerFacts.SkipUnlessDocker();
-        DockerFacts.SkipIfOffline();
-        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
         DockerFacts.SkipUnlessImage(ImageName);
     }
 

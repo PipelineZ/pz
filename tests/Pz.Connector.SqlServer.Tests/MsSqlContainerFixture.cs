@@ -15,7 +15,8 @@ public sealed class MsSqlContainerFixture : IAsyncLifetime
     public MsSqlContainerFixture()
     {
         DockerFacts.SkipUnlessDocker();
-        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
         DockerFacts.SkipUnlessImage("mcr.microsoft.com/mssql/server:2022-latest");
     }
 
