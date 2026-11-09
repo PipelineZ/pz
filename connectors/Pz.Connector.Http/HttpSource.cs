@@ -165,6 +165,20 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
                 "('auth.inject.query'); each would overwrite the other on every page request (rename one of them, or " +
                 "send the session token in a header)");
         }
+
+        if (connection.Authenticator is { } auth and not SessionAuthenticator)
+        {
+            foreach (var keyParam in auth.SecretQueryParams)
+            {
+                if (request.QueryPagingParams.FirstOrDefault(p => string.Equals(HttpCheckpointToken.DecodedQueryName(keyParam),
+                        HttpCheckpointToken.DecodedQueryName(p), StringComparison.OrdinalIgnoreCase)) is { } keyClash)
+                {
+                    clashes.Add($"{prefix}pagination query parameter '{keyClash}' is also the api_key query parameter " +
+                        "('auth.param'); each would overwrite the other on every page request (rename one of them, or " +
+                        "send the key in a header with 'auth.header')");
+                }
+            }
+        }
     }
 
     /// <summary>An unknown `location` on a GET read is ignored, with a notice.</summary>
