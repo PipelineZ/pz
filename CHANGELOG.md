@@ -17,14 +17,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     a whole JSON body value is sent as a number. A `date` cursor takes only `date` or a date-only custom format;
     numeric and text cursors refuse the option. A unit of a day or longer (`date`, `yyyy-MM`, `yyyy`, ...) re-reads up
     to that whole unit on every run or window; into an append sink those rows land again, which `pz validate` reports
-    as a PZ0364 warning. Rounding past 9999-12-31 is a permanent error.
+    as a PZ0364 warning for an incremental http dataset whose cursor is not a date. Rounding past 9999-12-31 is a permanent error.
   - `watermark_time_zone` (an IANA id, default UTC) makes `date` and custom formats render, floor and round up in
-    local wall time. Across a DST change a bound that falls in a skipped or repeated hour moves up to 3 hours to the
-    safe side (earlier for the lower bound, later for the upper), so the window only grows. It is refused with
+    local wall time. Across a DST change a bound that falls in a skipped or repeated hour moves to the safe side in
+    3-hour steps (earlier for the lower bound, later for the upper), so the window only grows; a transition that no
+    step within 48 hours clears is a permanent error, never a narrower window. It is refused with
     `iso8601` and the epoch formats, with a format that writes `Z` or `UTC`, and on date cursors.
   - `epoch_unit: s | ms` reads JSON numbers in `timestamp` contract columns, raw `cursor_type: timestamp` cursors
     and `for_each` item fields as epoch time; strings are still parsed as text. Values that look like the other
-    unit are refused: under `ms`, anything before 1973-03-03 (below 1e11); under `s`, anything after 3000-01-01.
+    unit are refused: under `ms`, anything before 1973-03-03 (below 1e11) except exactly `0`, which is the epoch
+    itself; under `s`, anything after 3000-01-01.
     Without the option, an epoch number fails with a message naming `epoch_unit`.
   - A contract column's long form takes `pointer`, a JSON pointer into the record:
     `status: { type: varchar, pointer: /fields/status/name }`. It works for JSON pages and JSON files, with `redact`,
