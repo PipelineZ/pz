@@ -118,6 +118,16 @@ public class HttpForEachConfigTests
         Assert.Contains("query option 'after': '{{ item.id }}' is only valid in the for_each item request", message);
     }
 
+    [Theory]
+    [InlineData("/o/{{ item.id }}?x=1")]
+    [InlineData("/o/{{ item.id }}#frag")]
+    public void Item_path_refuses_query_and_fragment(string path)
+    {
+        var message = Message(Dataset(extra: new() { ["path"] = path }));
+
+        Assert.Contains("path cannot contain '?' or '#' in a for_each dataset; put query parameters in query:", message);
+    }
+
     [Fact]
     public void Item_refs_must_name_fields()
     {

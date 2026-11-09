@@ -168,11 +168,13 @@ internal sealed class BodyPagePaging(string param, long start, string? sizeParam
 
     public override JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned)
     {
-        if (recordsReturned == 0)
-        {
-            return null;
-        }
+        return recordsReturned == 0 ? null : Advance(currentBody);
+    }
 
+    /// <summary>The body asking for the page after <paramref name="currentBody"/>'s: depends on the
+    /// current request alone, which is what lets page read-ahead compute it before the response.</summary>
+    public JsonNode Advance(JsonNode currentBody)
+    {
         var page = ReadPosition(currentBody, param, start);
         return WriteSize(Write(currentBody, param, JsonValue.Create(page + 1)), sizeParam, size);
     }

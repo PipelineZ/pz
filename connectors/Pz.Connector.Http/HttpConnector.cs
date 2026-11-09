@@ -66,7 +66,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "param": { "type": "string" }, "start": { "type": "integer" },
                 "size_param": { "type": "string" }, "size": { "type": "integer" },
                 "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" },
-                "location": { "enum": ["query", "body"] } },
+                "location": { "enum": ["query", "body"] },
+                "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 } },
                 "required": ["strategy"], "additionalProperties": false },
             "items": { "type": "string" },
             "columns": { "type": "object", "minProperties": 1, "additionalProperties": {
@@ -122,14 +123,16 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                     "param": { "type": "string" }, "start": { "type": "integer" },
                     "size_param": { "type": "string" }, "size": { "type": "integer" },
                     "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" },
-                    "location": { "enum": ["query", "body"] } },
+                    "location": { "enum": ["query", "body"] },
+                "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 } },
                     "required": ["strategy"], "additionalProperties": false },
                 "error_pointer": { "type": "string" },
                 "max_pages": { "type": "integer", "minimum": 1 },
                 "fields": { "type": "object", "minProperties": 1,
                     "additionalProperties": { "type": "string" } },
                 "max_items": { "type": "integer", "minimum": 1 },
-                "on_missing": { "enum": ["error", "skip"] } },
+                "on_missing": { "enum": ["error", "skip"] },
+                "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 } },
                 "required": ["path", "fields"], "additionalProperties": false } },
           "additionalProperties": false }
         """;

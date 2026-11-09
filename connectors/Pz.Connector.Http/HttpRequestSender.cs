@@ -18,14 +18,18 @@ internal sealed record SentResponse(HttpResponseMessage Response, Uri SendUri, H
 
 /// <summary>The send path every HTTP read shares: gate routing, hand-walked redirects with an
 /// allowed-target check on every hop, 401 handling, transport-failure and non-2xx classification, and
-/// URL redaction for messages. Never retries, never sleeps.</summary>
+/// URL redaction for messages. Never retries; the only wait is the read's shared <c>Retry-After</c>
+/// pause.</summary>
 /// <param name="bareClient">Carries no connection <c>headers:</c> and no base address; used for the
 /// hops a send with <c>credentialsOnlyToOrigin</c> makes to a host other than the base URL's origin.</param>
 /// <param name="redactWholeQuery">Replace the whole query string of a URL in messages instead of masking
 /// the authenticator's secret params by name — for a URL whose query is itself a secret with a
 /// server-defined name (a sync token, a signed download link).</param>
+/// <param name="pause">The read's shared <c>Retry-After</c> pause: every hop waits it out, and a 429/503
+/// with a <c>Retry-After</c> moves it forward. Null means this sender neither waits nor notes.</param>
 internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
-    HttpBody? body, IOperationGate? gate, TimeProvider time, string label, bool redactWholeQuery = false)
+    HttpBody? body, IOperationGate? gate, TimeProvider time, string label, bool redactWholeQuery = false,
+    ThrottlePause? pause = null)
 {
     private const int MaxRedirects = 5;
 
@@ -67,6 +71,14 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
         var current = first;
         for (var hop = 0; ; hop++)
         {
+            // Every hop is a request the throttled API sees, so each one waits out the read's pause. This
+            // runs inside the gated op, whose pacing token is already spent: requests released together
+            // by a pause are shaped by the gate's bucket only from their next request on.
+            if (pause is not null)
+            {
+                await pause.WaitAsync(ct).ConfigureAwait(false);
+            }
+
             using var request = current.ToMessage(body);
             var bare = credentialsOnlyToOrigin && !IsBaseOrigin(current.Url);
             var authenticator = bare ? null : connection.Authenticator;
@@ -150,7 +162,8 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
     }
 
     /// <summary>The generic non-2xx classification: 408/429/5xx are transient (with the response's
-    /// <c>Retry-After</c>), everything else permanent with a redacted body snippet.</summary>
+    /// <c>Retry-After</c>, which on a 429/503 also moves the read's shared pause), everything else permanent with a
+    /// redacted body snippet.</summary>
     public PzConnectorException StatusError(SentResponse sent, string bodyText, string? stage = null)
     {
         var prefix = Prefix(stage);
@@ -162,6 +175,14 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
                     ? values.FirstOrDefault()
                     : null,
                 time.GetUtcNow());
+            // A throttle (429) or overload (503) hint is noted here, inside the gated operation and before
+            // the exception reaches the gate, so the gate's retry of this request and every sibling
+            // request of the read wait it out.
+            if (status is 429 or 503 && retryAfter is { } hint)
+            {
+                pause?.Note(hint);
+            }
+
             return new PzConnectorException($"{prefix}: HTTP {status} from {Target(sent)}",
                 isTransient: true, retryAfter);
         }

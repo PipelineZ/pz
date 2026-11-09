@@ -90,12 +90,21 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
+        // One Retry-After pause per read, shared by every request the partition makes (pages, the
+        // for_each list, items, downloads), and only for a read that can have requests in flight
+        // together: at concurrency 1 the gate's retry policy alone paces a throttled request, exactly as
+        // before (a pause would override retry.max_delay).
+        var pause = config.PageConcurrency > 1 || config.ForEach is { Concurrency: > 1 }
+            ? new ThrottlePause(_time)
+            : null;
         // for_each comes first: its items may themselves be file downloads.
         IDatasetPartition partition = config.IsForEach
-            ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
+            ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
+                { Notice = _notice }
             : config.IsFileMode
-                ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
-                : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate);
+                ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
+                    { Notice = _notice }
+                : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause);
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 

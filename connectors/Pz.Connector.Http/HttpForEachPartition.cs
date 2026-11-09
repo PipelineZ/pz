@@ -8,12 +8,16 @@ namespace Pz.Connector.Http;
 
 /// <summary>A for_each dataset read: crawl the list request page by page and, for each list record in
 /// order, read the item request built from that record's fields (its JSON pages to the last one, or in
-/// file mode its one download) before the next record starts. The clock is read once, so the list and
-/// every item share one {{ run_date }} and one <c>pz_fetched_at</c>. Checkpoints name the list page,
-/// the record index and the item crawl's position (see <see cref="HttpCheckpointToken"/>). Never retries,
-/// never sleeps.</summary>
-internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
-    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate)
+/// file mode its one download) before the next record starts; with <c>for_each.concurrency</c> above 1,
+/// up to that many of one list page's items at once, checkpointed only between list pages (see
+/// <c>ReadParallelAsync</c>). The clock is read once, so the list and every item share one
+/// {{ run_date }} and one <c>pz_fetched_at</c>. Checkpoints name the list page, the record index and
+/// the item crawl's position (see <see cref="HttpCheckpointToken"/>). Never retries,
+/// and never sleeps except to wait out the read's shared <c>Retry-After</c> pause when
+/// <c>for_each.concurrency</c> is above 1.</summary>
+internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
+    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
+    ThrottlePause? pause = null)
     : ICheckpointingPartition
 {
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
@@ -84,7 +88,9 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
         // The dataset's bindings serve both requests: the list formats the watermark by the dataset's
         // cursor type, and both render the same {{ run_date }}.
         var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
-        var list = new HttpPartition(client, bareClient, connection, forEach.List, spec, time, gate)
+        // The list crawl and every item share this read's Retry-After pause: a throttle on any of them
+        // holds back the others.
+        var list = new HttpPartition(client, bareClient, connection, forEach.List, spec, time, gate, pause)
         {
             Bindings = bindings,
         };
@@ -93,6 +99,16 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
         if (resume is not null && !list.TryResumeFrom(resume.List))
         {
             throw Unusable();
+        }
+
+        if (forEach.Concurrency > 1)
+        {
+            await foreach (var batch in ReadParallelAsync(list, bindings, now, resume, options, ct).ConfigureAwait(false))
+            {
+                yield return batch;
+            }
+
+            yield break;
         }
 
         // Items are counted per attempt, like max_pages. Skips carry over from the checkpoint, so a retry
@@ -124,7 +140,7 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
                 var values = ItemValues.From(page.Records[index], forEach.Fields);
                 var anchor = HttpCheckpointToken.Anchor(values);
                 var item = ItemRead(values, bindings, now,
-                    $"list page '{list.Redact(page.Request.Url)}', record {index}");
+                    $"list page '{list.Redact(page.Request.Url)}', record {index}", Notice);
                 if (index == start && resumeItem is not null && !item.Partition.TryResumeFrom(resumeItem))
                 {
                     throw Unusable();
@@ -139,36 +155,45 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
                 // last batch carried the crawl's checkpoint ends without an item-boundary one; a resume
                 // there re-requests the item's trailing page.
                 await using var batches = item.Partition.ReadAsync(options, ct).GetAsyncEnumerator(ct);
-                var more = await NextAsync(batches, values).ConfigureAwait(false);
-                while (more)
+                // The batch read but not yet handed to the engine: still this read's to release, whether the
+                // lookahead throws or the engine stops the read at a yield while a batch is read ahead.
+                RecordBatch? pending = null;
+                try
                 {
-                    var batch = batches.Current;
-                    if (item.Partition.TryGetCheckpoint(out var inner) && inner is not null)
+                    if (await NextAsync(batches, values).ConfigureAwait(false))
                     {
-                        _checkpointCandidate = HttpCheckpointToken.EncodeForEach(new(listToken, index, inner, anchor,
-                            skipped, firstSkipped));
+                        pending = batches.Current;
+                    }
+
+                    while (pending is { } batch)
+                    {
+                        if (item.Partition.TryGetCheckpoint(out var inner) && inner is not null)
+                        {
+                            _checkpointCandidate = HttpCheckpointToken.EncodeForEach(new(listToken, index, inner, anchor,
+                                skipped, firstSkipped));
+                            pending = null;
+                            yield return batch;
+                            if (await NextAsync(batches, values).ConfigureAwait(false))
+                            {
+                                pending = batches.Current;
+                            }
+
+                            continue;
+                        }
+
+                        var more = await NextAsync(batches, values).ConfigureAwait(false);
+                        pending = more ? batches.Current : null;
+                        // index + 1 may equal the page's record count; the token keeps this list page, and a
+                        // resume from it moves on to the next one.
+                        _checkpointCandidate = more
+                            ? null
+                            : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped));
                         yield return batch;
-                        more = await NextAsync(batches, values).ConfigureAwait(false);
-                        continue;
                     }
-
-                    try
-                    {
-                        more = await NextAsync(batches, values).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Not yet handed to the engine, so still this read's to release.
-                        batch.Dispose();
-                        throw;
-                    }
-
-                    // index + 1 may equal the page's record count; the token keeps this list page, and a
-                    // resume from it moves on to the next one.
-                    _checkpointCandidate = more
-                        ? null
-                        : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped));
-                    yield return batch;
+                }
+                finally
+                {
+                    pending?.Dispose();
                 }
 
                 if (item.Missing())
@@ -198,9 +223,17 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
             }
         }
 
+        EndNotices(capped, list, truncated, firstTruncated, skipped, firstSkipped);
+    }
+
+    /// <summary>The notices a read that ran to its end gives: the list's own <c>max_pages</c> (unless
+    /// <c>max_items</c> stopped it first), then items cut short by theirs, then skipped items.</summary>
+    private void EndNotices(bool capped, HttpPartition list, int truncated, string? firstTruncated, int skipped,
+        string? firstSkipped)
+    {
         if (!capped && list.TruncatedWithMore)
         {
-            Notice?.Invoke($"{Label}: stopped after for_each.max_pages ({forEach.List.MaxPages}) list pages; " +
+            Notice?.Invoke($"{Label}: stopped after for_each.max_pages ({config.ForEach!.List.MaxPages}) list pages; " +
                 "more list pages were available");
         }
 
@@ -240,25 +273,25 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
     /// true once the item's first request was answered 404/410 under `on_missing: skip`; Truncated, once
     /// the item's `max_pages` stopped it with a further page pending (never for a file).</summary>
     private (ICheckpointingPartition Partition, Func<bool> Missing, Func<bool> Truncated) ItemRead(ItemValues values,
-        IReadOnlyDictionary<string, BindingValue> bindings, DateTimeOffset now, string origin)
+        IReadOnlyDictionary<string, BindingValue> bindings, DateTimeOffset now, string origin, Action<string>? notice)
     {
         var skipMissing = config.ForEach!.OnMissingSkip;
         if (config.IsFileMode)
         {
-            var file = new HttpFilePartition(client, bareClient, connection, config, spec, time, gate)
+            var file = new HttpFilePartition(client, bareClient, connection, config, spec, time, gate, pause)
             {
                 Item = values,
                 Bindings = bindings,
                 FetchedAt = now,
                 SkipMissing = skipMissing,
                 ItemOrigin = origin,
-                Notice = Notice,
+                Notice = notice,
                 ScratchRoot = ScratchRoot,
             };
             return (file, () => file.Missing, () => false);
         }
 
-        var pages = new HttpPartition(client, bareClient, connection, config, spec, time, gate)
+        var pages = new HttpPartition(client, bareClient, connection, config, spec, time, gate, pause)
         {
             Item = values,
             Bindings = bindings,

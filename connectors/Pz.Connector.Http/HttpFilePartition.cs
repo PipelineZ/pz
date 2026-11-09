@@ -9,9 +9,11 @@ namespace Pz.Connector.Http;
 /// <summary>One file-mode dataset read: download the response body to a per-partition temp
 /// directory, open it as zip, gzip or plain, and parse each selected file with the dataset's format
 /// reader. The whole download is one gated, idempotent operation (`http.download`); a retry starts
-/// it over. Never retries, never sleeps. Emits no checkpoint: a file has no resumable position.</summary>
+/// it over. Never retries, and never sleeps except to wait out the read's shared <c>Retry-After</c>
+/// pause when it can run requests concurrently. Emits no checkpoint: a file has no resumable position.</summary>
 internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
-    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate)
+    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
+    ThrottlePause? pause = null)
     : ICheckpointingPartition
 {
     /// <summary>The most decompressed bytes one partition may read, as a multiple of
@@ -32,12 +34,12 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     // messages mask only the authenticator's secret params, as for JSON pages. A redirect off
     // base_url's origin is server-chosen and loses its whole query (SentResponse.ServerChosen).
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
-        $"http source '{spec.Source}.{spec.Dataset}'");
+        $"http source '{spec.Source}.{spec.Dataset}'", pause: pause);
 
     // An export's download URL is chosen by the API and its query can itself be a credential (a signed
     // link), so messages drop that query whole.
     private readonly HttpRequestSender _exportDownloadSender = new(client, bareClient, connection, config.Body,
-        gate, time, $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: true);
+        gate, time, $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: true, pause);
 
     /// <summary>Where a non-fatal notice goes (a zip with no member matching under
     /// `if_missing: empty`); null when the engine subscribed none.</summary>

@@ -13,11 +13,13 @@ using Pz.Connectors.Toolkit.Paging;
 namespace Pz.Connector.Http;
 
 /// <summary>One dataset's universal-tier read: request → classify → decode → project → yield,
-/// following pagination until exhausted. Never retries, never sleeps — classification is this
-/// class's whole resilience duty (the engine owns policy). Batches yielded become
+/// following pagination until exhausted. Never retries, and never sleeps except to wait out the
+/// read's shared <c>Retry-After</c> pause when it can run requests concurrently — classification is
+/// this class's whole resilience duty (the engine owns policy). Batches yielded become
 /// engine-owned; nothing here retains them.</summary>
-internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
-    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate = null)
+internal sealed partial class HttpPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
+    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate = null,
+    ThrottlePause? pause = null)
     : IDatasetPartition, ISyncStatePartition, ICheckpointingPartition
 {
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
@@ -57,7 +59,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     // In sync mode the query IS the sync token, whose param name is server-defined, so messages drop
     // the whole query rather than masking the authenticator's params by name.
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
-        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: config.IsSyncMode);
+        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: config.IsSyncMode, pause);
 
     // Set inside FetchPageCoreAsync when config.IsSyncMode: the delta pointer is resolved against
     // every page's body, and since only the terminal page of a Graph-style feed carries a
@@ -376,22 +378,29 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
         // with gaps too).
         var stopsOnEmptyPage = config.BodyPaging?.StopsOnEmptyPage ?? strategy?.StopsOnEmptyPage ?? true;
 
+        if (config.PageConcurrency > 1)
+        {
+            // Validation admits concurrency only for numbered pages on a plain dataset, where every
+            // next request follows from the current request alone.
+            await foreach (var ahead in ReadAheadPagesAsync(request, stopsOnEmptyPage, ct).ConfigureAwait(false))
+            {
+                yield return ahead;
+            }
+
+            yield break;
+        }
+
         while (request is not null)
         {
             ct.ThrowIfCancellationRequested();
             if (!_requested.Add(request.KeyDigest))
             {
-                throw new PzConnectorException(
-                    $"{Label}: pagination is not advancing — '{Redact(request.Url)}' was already requested" +
-                    $"{SameBody(request)} during this crawl; check the pagination options", isTransient: false);
+                throw AlreadyRequested(request);
             }
 
             if (config.MaxPages is null && page >= UnboundedPageCeiling)
             {
-                throw new PzConnectorException(
-                    $"{Label}: pagination did not terminate within {UnboundedPageCeiling} pages — the " +
-                    "feed keeps offering another page; set 'max_pages' if this feed really is this " +
-                    "large, or fix the pagination options", isTransient: false);
+                throw PageCeilingReached();
             }
 
             var firstOfCrawl = page == 0 && _resume is null;
@@ -437,6 +446,15 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
             request = next;
         }
     }
+
+    private PzConnectorException AlreadyRequested(HttpPageRequest request)
+        => new($"{Label}: pagination is not advancing — '{Redact(request.Url)}' was already requested" +
+            $"{SameBody(request)} during this crawl; check the pagination options", isTransient: false);
+
+    private PzConnectorException PageCeilingReached()
+        => new($"{Label}: pagination did not terminate within {UnboundedPageCeiling} pages — the " +
+            "feed keeps offering another page; set 'max_pages' if this feed really is this " +
+            "large, or fix the pagination options", isTransient: false);
 
     // Names the body without showing it: a repeated POST is identified by "same body", never by content.
     private static string SameBody(HttpPageRequest request)
@@ -528,13 +546,23 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     /// (including sync-mode delta-link replay) never advances the provider cursor — pz only advances
     /// its own watermark/sync-state after a post-commit persist. A POST on `read:` is a read the
     /// author asserts has no side effects, so it is replayed on the same terms.</summary>
-    private Task<(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next)> FetchPageAsync(
+    private async Task<(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next)> FetchPageAsync(
         IPageStrategy? strategy, HttpPageRequest request, bool firstOfCrawl, CancellationToken ct)
-        => _sender.RunAsync("http.get_page", idempotent: true,
-            innerCt => FetchPageCoreAsync(strategy, request, firstOfCrawl, innerCt), ct);
+    {
+        var fetched = await _sender.RunAsync("http.get_page", idempotent: true,
+            innerCt => FetchPageCoreAsync(strategy, request, firstOfCrawl, readAhead: false, innerCt), ct)
+            .ConfigureAwait(false);
+        return (fetched.Records, fetched.Next);
+    }
 
-    private async Task<(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next)> FetchPageCoreAsync(
-        IPageStrategy? strategy, HttpPageRequest request, bool firstOfCrawl, CancellationToken ct)
+    /// <summary>A page's records, and the request after it when the fetch computed one. A read-ahead
+    /// fetch computes no next request and leaves the rate-limit hint in <see cref="Budget"/>, for the
+    /// consumer to report only if the page is consumed.</summary>
+    private readonly record struct FetchedPage(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next,
+        (int Remaining, DateTimeOffset ResetAt)? Budget);
+
+    private async Task<FetchedPage> FetchPageCoreAsync(
+        IPageStrategy? strategy, HttpPageRequest request, bool firstOfCrawl, bool readAhead, CancellationToken ct)
     {
         var result = await _sender.SendAsync(request, streamBody: false, credentialsOnlyToOrigin: false, ct)
             .ConfigureAwait(false);
@@ -562,7 +590,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
                 if (SkipMissing && firstOfCrawl && status is 404 or 410)
                 {
                     Missing = true;
-                    return ([], null);
+                    return new FetchedPage([], null, null);
                 }
 
                 throw _sender.StatusError(result, text);
@@ -617,14 +645,21 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
 
             // Proactive throttle hint: parsed from the SUCCESS response's own
             // rate-limit headers, reported to the gate so the NEXT paced operation on this instance
-            // waits if the provider says the budget is exhausted. No-op without a gate.
+            // waits if the provider says the budget is exhausted. No-op without a gate. A page fetched
+            // ahead may yet be discarded, so its hint goes back to the consumer instead.
             if (gate is not null &&
                 RateLimitHeaders.TryParse(response, time.GetUtcNow(), out var remaining, out var resetAt))
             {
+                if (readAhead)
+                {
+                    return new FetchedPage(records, null, (remaining, resetAt));
+                }
+
                 gate.ReportBudget(remaining, resetAt);
             }
 
-            return (records, NextRequest(strategy, request, response, body, records.Count));
+            return new FetchedPage(records, readAhead ? null : NextRequest(strategy, request, response, body, records.Count),
+                null);
         }
     }
 

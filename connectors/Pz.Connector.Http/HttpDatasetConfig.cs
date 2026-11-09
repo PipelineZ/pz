@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Bindings;
@@ -45,6 +46,37 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     public HttpForEachConfig? ForEach { get; init; }
 
     public bool IsForEach => ForEach is not null;
+
+    /// <summary>`pagination.concurrency`: how many page requests may be in flight (1 is strictly
+    /// sequential); above 1 only for the plain `page` strategy.</summary>
+    public int PageConcurrency { get; init; } = 1;
+
+    /// <summary>`strategy: page` in the query string: what page read-ahead stamps on each request it
+    /// computes. Null for every other strategy and for body paging.</summary>
+    internal PageNumbering? PageNumbering { get; init; }
+
+    internal const int MaxConcurrency = 16;
+
+    /// <summary>Reads a `concurrency` value (an integer from 1 to <see cref="MaxConcurrency"/>, default 1);
+    /// a bad value is reported under <paramref name="label"/> and read as 1.</summary>
+    internal static int ParseConcurrency(IReadOnlyDictionary<string, object?> block, string label,
+        List<string> errors)
+    {
+        if (!block.TryGetValue("concurrency", out var raw) || raw is null)
+        {
+            return 1;
+        }
+
+        if (YamlScalarText.NonScalarKind(raw) is null && long.TryParse(YamlScalarText.Of(raw), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var n)
+            && n is >= 1 and <= MaxConcurrency)
+        {
+            return (int)n;
+        }
+
+        errors.Add($"{label} must be an integer from 1 to {MaxConcurrency}, got '{YamlScalarText.Of(raw)}'");
+        return 1;
+    }
 
     public static HttpDatasetConfig Parse(DatasetSpec spec)
     {
@@ -100,6 +132,13 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         else
         {
             ValidateBindingTemplate(path, "option 'path'", knownBindings, errors, itemFields: itemFields);
+
+            // Item values are substituted into the path; a literal '?' or '#' could leave an empty or dot
+            // segment after it that the URL builder no longer sees as a path segment.
+            if (forEach is not null && path.AsSpan().IndexOfAny('?', '#') >= 0)
+            {
+                errors.Add("path cannot contain '?' or '#' in a for_each dataset; put query parameters in query:");
+            }
         }
 
         var runDate = RunDateConfig.Parse(options.TryGetValue("run_date", out var rd) ? rd : null, errors);
@@ -125,7 +164,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var items = ValidatePointer(Get(options, "items") ?? "", "items", errors);
-        var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize);
+        var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize,
+            out var pageNumbering);
         BodyPaging? bodyPaging = null;
         if (method == HttpMethod.Post && options.TryGetValue("pagination", out var pg)
             && pg is IReadOnlyDictionary<string, object?> pgBlock)
@@ -134,6 +174,29 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             bodyPaging = BodyPaging.Parse(pgBlock,
                 pgBlock.TryGetValue("strategy", out var st) ? YamlScalarText.Of(st) ?? "" : "",
                 body?.Template, items, errors);
+        }
+
+        var pageConcurrency = 1;
+        if (options.TryGetValue("pagination", out var pgc) && pgc is IReadOnlyDictionary<string, object?> pgcBlock)
+        {
+            pageConcurrency = ParseConcurrency(pgcBlock, "pagination.concurrency", errors);
+            if (pageConcurrency > 1)
+            {
+                var strategy = pgcBlock.TryGetValue("strategy", out var stc) ? YamlScalarText.Of(stc) : null;
+                if (forEach is not null || listRequest)
+                {
+                    errors.Add("pagination.concurrency is not supported with for_each; use for_each.concurrency");
+                }
+                else if (strategy != "page")
+                {
+                    errors.Add("pagination.concurrency above 1 needs strategy: page");
+                }
+
+                if (Get(options, "delta_pointer") is not null)
+                {
+                    errors.Add("pagination.concurrency cannot be combined with delta_pointer");
+                }
+            }
         }
 
         var columns = options.TryGetValue("columns", out var c)
@@ -268,6 +331,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             File = file,
             Export = export,
             ForEach = forEach,
+            PageConcurrency = pageConcurrency,
+            PageNumbering = bodyPaging is null ? pageNumbering : null,
         };
     }
 
@@ -491,10 +556,11 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
     private static Func<IPageStrategy>? ParsePagination(
         IReadOnlyDictionary<string, object?> options, string itemsPointer, List<string> errors,
-        out bool stopOnShortPage, out int? pageSize)
+        out bool stopOnShortPage, out int? pageSize, out PageNumbering? pageNumbering)
     {
         stopOnShortPage = false;
         pageSize = null;
+        pageNumbering = null;
 
         if (!options.TryGetValue("pagination", out var p) || p is null)
         {
@@ -541,6 +607,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 var start = ParseStart(defaultStart: 1);
                 var size = pageSize = ParseSize();
                 var sizeParam = Get("size_param");
+                pageNumbering = new PageNumbering(param, (int)start, sizeParam, size);
                 return () => new PageParamsStrategy(param, (int)start, sizeParam, size);
             }
             case "offset":
@@ -611,3 +678,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
     }
 }
+
+/// <summary>Query-string page numbering (<c>strategy: page</c>): the page param, its first value, and the
+/// size param and size stamped beside it.</summary>
+internal sealed record PageNumbering(string Param, int Start, string? SizeParam, int? Size);

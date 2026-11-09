@@ -567,6 +567,34 @@ public sealed class HttpForEachReadTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Read_ahead_batch_is_disposed_when_the_read_stops_at_a_yield()
+    {
+        MapOrders("o1");
+        _server.MapPrefix("/orders/", _ => new StubResponse(200, """{"lines":[{"sku":"a"},{"sku":"b"},{"sku":"c"}]}"""));
+        var options = OrdersOptions(extra: Map(("columns", new Dictionary<string, string> { ["sku"] = "varchar" })));
+        options.Remove("pagination");
+        var allocator = new CountingAllocator();
+
+        await using var source = Source();
+        var partition = Assert.IsType<HttpForEachPartition>(
+            Assert.Single(await source.PlanReadAsync(Spec(options), ReadHints.None, CancellationToken.None)));
+        partition.Allocator = allocator;
+        var yielded = 0;
+        // One row per batch: batch "b" is read ahead while "a" is yielded; the consumer stops right there.
+        await foreach (var batch in partition.ReadAsync(new BatchOptions(TargetBatchBytes: 1, MaxRowsPerBatch: 1),
+                           CancellationToken.None))
+        {
+            yielded++;
+            batch.Dispose();
+            break;
+        }
+
+        Assert.Equal(1, yielded);
+        Assert.True(allocator.Allocated > 0);
+        Assert.Equal(0, allocator.Outstanding);
+    }
+
+    [Fact]
     public async Task Plain_datasets_unchanged()
     {
         await using var source = Source();
