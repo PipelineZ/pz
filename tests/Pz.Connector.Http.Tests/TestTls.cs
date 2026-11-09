@@ -260,10 +260,6 @@ internal sealed class TestTlsServer : IAsyncDisposable
             await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
             {
                 ServerCertificateContext = _context,
-                // Every handshake is a full one, so the client judges exactly the chain this server sends.
-                // The tests reuse one leaf across servers on 'localhost', and SChannel would otherwise
-                // resume an earlier server's session, whose remote certificate carries that server's chain.
-                AllowTlsResume = false,
                 ClientCertificateRequired = _requestClientCertificate,
                 EnabledSslProtocols = _protocols,
                 // The test inspects what was presented; refusing only a missing certificate when one is
