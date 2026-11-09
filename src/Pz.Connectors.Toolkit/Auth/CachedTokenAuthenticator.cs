@@ -27,9 +27,15 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
     private bool _accepted;
     private string? _discardedAccepted;
 
-    public IReadOnlyCollection<string> SecretQueryParams => [];
+    /// <summary>Query parameters that carry the token; none for the default bearer header. A subclass that
+    /// puts the token in the URL (<see cref="ApplyToken"/>) names the parameter here so messages redact it.</summary>
+    public virtual IReadOnlyCollection<string> SecretQueryParams => [];
 
     protected abstract ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct);
+
+    /// <summary>Puts <paramref name="token"/> on the request; by default as <c>Authorization: Bearer</c>.</summary>
+    protected virtual void ApplyToken(HttpRequestMessage request, string token)
+        => request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
     public void Apply(HttpRequestMessage request)
         => throw new InvalidOperationException("this authenticator fetches tokens asynchronously; use ApplyAsync");
@@ -72,7 +78,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
             (token, generation) = await flight.Task.WaitAsync(ct).ConfigureAwait(false);
         }
 
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        ApplyToken(request, token);
         request.Options.Set(GenerationKey, generation);
     }
 

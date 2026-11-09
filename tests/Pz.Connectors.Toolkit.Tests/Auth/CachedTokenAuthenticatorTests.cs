@@ -253,4 +253,28 @@ public class CachedTokenAuthenticatorTests
         Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(r1, 401));
         Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(r2, 401));
     }
+
+    private sealed class HeaderTokenAuthenticator(ManualClock clock) : CachedTokenAuthenticator(clock)
+    {
+        public override IReadOnlyCollection<string> SecretQueryParams => ["session"];
+
+        protected override ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
+            => ValueTask.FromResult(new FetchedToken("tok", null));
+
+        protected override void ApplyToken(HttpRequestMessage request, string token)
+            => request.Headers.TryAddWithoutValidation("X-Session", token);
+    }
+
+    [Fact]
+    public async Task A_subclass_chooses_where_the_token_goes_and_keeps_the_401_rule()
+    {
+        var auth = new HeaderTokenAuthenticator(new ManualClock());
+        var r = Req();
+        await auth.ApplyAsync(r, default);
+        Assert.Null(r.Headers.Authorization);
+        Assert.Equal("tok", Assert.Single(r.Headers.GetValues("X-Session")));
+        Assert.Equal(["session"], ((IRequestAuthenticator)auth).SecretQueryParams);
+        Assert.Equal(AuthResponseOutcome.Unchanged, auth.OnResponse(r, 200));
+        Assert.Equal(AuthResponseOutcome.TokenDiscarded, auth.OnResponse(r, 401));
+    }
 }
