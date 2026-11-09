@@ -31,6 +31,9 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     /// <summary>How much of a failed job's message is quoted.</summary>
     private const int MaxMessageChars = 200;
 
+    /// <summary>The most result files one job's ready response may list.</summary>
+    private const int MaxResultFiles = 1000;
+
     /// <summary>How much of a job id a message shows.</summary>
     private const int MaxJobIdChars = 100;
 
@@ -330,7 +333,19 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
                 return [];
             }
 
+            if (list.Count > MaxResultFiles)
+            {
+                throw new PzConnectorException(
+                    $"{PollLabel}: export job {Shown(jobId)}'s ready response lists {list.Count} result files at " +
+                    $"'{pointer}'; at most {MaxResultFiles} are read per job (narrow the export, e.g. a shorter " +
+                    "date range)", isTransient: false);
+            }
+
             var downloads = new List<HttpPageRequest>(list.Count);
+            // Compared after resolution, query included: a repeated URL is one file listed twice, and reading
+            // it twice would land every row twice. Different signatures make different URLs.
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var duplicates = 0;
             for (var i = 0; i < list.Count; i++)
             {
                 if (UrlText(list[i]) is not { } entry)
@@ -340,7 +355,21 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
                         $"job {Shown(jobId)}'s ready response", isTransient: false);
                 }
 
-                downloads.Add(Get(DownloadUrl(entry, $"download URL [{i}] at '{pointer}'", jobId)));
+                var url = DownloadUrl(entry, $"download URL [{i}] at '{pointer}'", jobId);
+                if (seen.Add(url.AbsoluteUri))
+                {
+                    downloads.Add(Get(url));
+                }
+                else
+                {
+                    duplicates++;
+                }
+            }
+
+            if (duplicates > 0)
+            {
+                notice?.Invoke($"{PollLabel}: export job {Shown(jobId)}'s ready response lists {duplicates} duplicate " +
+                    $"result file URLs at '{pointer}'; each file is read once");
             }
 
             return downloads;

@@ -1281,6 +1281,122 @@ public sealed class HttpExportJobTests : IAsyncLifetime
             "read as empty (if_missing: empty)"], Notices());
     }
 
+    [Fact]
+    public async Task Duplicate_urls_are_read_once_with_a_notice()
+    {
+        _server.Map("/files/a.csv", _ => File("id,name\n1,a\n"));
+        _server.Map("/files/b.csv", _ => File("id,name\n2,b\n"));
+        var absolute = new Uri(_server.BaseUrl, "/files/a.csv").ToString();
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", absolute, "/files/b.csv", "/files/a.csv"));
+
+        var (rows, _) = await Read(Spec(Export(Urls)));
+
+        Assert.Equal([[1, "a"], [2, "b"]], rows);
+        Assert.Single(_server.Requests, r => r.Url.AbsolutePath == "/files/a.csv");
+        Assert.Equal(["http source 'stub.traffic': export poll: export job j1's ready response lists 2 duplicate " +
+            "result file URLs at '/result/urls'; each file is read once"], Notices());
+    }
+
+    [Fact]
+    public async Task Urls_differing_only_in_query_are_distinct()
+    {
+        _files.Map("/bucket/a.csv", _ => File("id,name\n1,a\n"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles(FilesUrl("/bucket/a.csv?part=1"), FilesUrl("/bucket/a.csv?part=2")));
+
+        var (rows, _) = await Read(Spec(Export(Urls)));
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2, _files.Requests.Count);
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task More_than_1000_files_is_refused_before_any_download()
+    {
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles(Enumerable.Range(0, 1001).Select(i => $"/files/{i}.csv").ToArray()));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("export job j1's ready response lists 1001 result files at '/result/urls'; at most 1000 " +
+            "are read per job", ex.Message);
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath.StartsWith("/files/", StringComparison.Ordinal));
+    }
+
+    /// <summary>A partition built by hand with <c>SkipMissing</c> (set only by for_each, which export refuses
+    /// today), read while advancing the clock past each poll wait.</summary>
+    private async Task<List<object?[]>> ReadSkippingMissing(DatasetSpec spec, Func<HttpFilePartition, Task>? after = null)
+    {
+        var errors = new List<string>();
+        var connection = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = _server.BaseUrl.ToString(),
+            ["timeout_seconds"] = IdleTimeout.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        }), errors);
+        Assert.Empty(errors);
+        using var client = HttpSource.CreateClient(connection!);
+        using var bare = HttpSource.CreateBareClient(connection!);
+        var partition = new HttpFilePartition(client, bare, connection!, HttpDatasetConfig.Parse(spec), spec, _clock,
+            gate: null) { SkipMissing = true, Notice = _notices.Add };
+        var work = Collect(partition);
+        while (true)
+        {
+            var next = _nextTimer ??= _clock.NextTimerAsync();
+            if (await Task.WhenAny(work, next).WaitAsync(TimeSpan.FromSeconds(30)) == work)
+            {
+                var rows = await work;
+                if (after is not null)
+                {
+                    await after(partition);
+                }
+
+                return rows;
+            }
+
+            _nextTimer = null;
+            _clock.Advance(await next);
+        }
+    }
+
+    [Fact]
+    public async Task Missing_later_file_is_always_an_error()
+    {
+        _server.Map("/files/a.csv", _ => File(Csv));
+        _server.Map("/files/b.csv", _ => new StubResponse(404, "gone"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadSkippingMissing(Spec(Export(Urls))));
+
+        Assert.Contains("download: HTTP 404", ex.Message);
+        Assert.Contains("/files/b.csv", ex.Message);
+    }
+
+    [Fact]
+    public async Task Missing_first_of_several_files_is_an_error_too()
+    {
+        _server.Map("/files/a.csv", _ => new StubResponse(410, "gone"));
+        _server.Map("/files/b.csv", _ => File(Csv));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadSkippingMissing(Spec(Export(Urls))));
+
+        Assert.Contains("download: HTTP 410", ex.Message);
+    }
+
+    [Fact]
+    public async Task Missing_single_file_still_skips()
+    {
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv"));
+
+        var rows = await ReadSkippingMissing(Spec(Export(Urls)), p =>
+        {
+            Assert.True(p.Missing);
+            return Task.CompletedTask;
+        });
+
+        Assert.Empty(rows);
+    }
+
     private static StubResponse ZipFile(params (string Name, string Text)[] entries)
     {
         using var buffer = new MemoryStream();
