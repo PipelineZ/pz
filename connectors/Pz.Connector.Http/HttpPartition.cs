@@ -199,7 +199,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         // stored, so it is no more trustworthy on the way back in than it was on the way out: it must
         // still name a host this connection is allowed to talk to, and have this dataset's shape.
         if (!HttpCheckpointToken.TryDecode(checkpoint, config.IsPost, config.Method ?? HttpMethod.Get,
-                HttpCheckpointToken.KindOf(config.Body), out var resume)
+                HttpCheckpointToken.KindOf(config.Body), out var resume, config.HeaderPaging?.Header)
             || !connection.IsAllowedTarget(resume!.Url))
         {
             return false;
@@ -365,6 +365,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     /// short page, and targets off the allowed hosts. Rows, batches and checkpoints are the caller's.</summary>
     internal async IAsyncEnumerable<HttpPage> PagesAsync([EnumeratorCancellation] CancellationToken ct)
     {
+        EnsurePageHeaderIsOurs();
         var strategy = config.PageStrategyFactory?.Invoke();
         // Read once: every request this partition builds renders the same {{ run_date }}, even
         // across midnight. Bindings handed in already carry it.
@@ -382,7 +383,8 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         // error and, on an incremental read, advances the watermark past rows never fetched. Body
         // paging replaces the URL strategy, so its own rule applies (a body cursor feed is a feed
         // with gaps too).
-        var stopsOnEmptyPage = config.BodyPaging?.StopsOnEmptyPage ?? strategy?.StopsOnEmptyPage ?? true;
+        var stopsOnEmptyPage = config.HeaderPaging is null
+            && (config.BodyPaging?.StopsOnEmptyPage ?? strategy?.StopsOnEmptyPage ?? true);
 
         if (config.PageConcurrency > 1)
         {
@@ -462,9 +464,32 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
             "feed keeps offering another page; set 'max_pages' if this feed really is this " +
             "large, or fix the pagination options", isTransient: false);
 
-    // Names the body without showing it: a repeated POST is identified by "same body", never by content.
+    // Names the body and the page token header without showing them: a repeated request is identified by
+    // "same body"/"same page token header", never by content.
     private static string SameBody(HttpPageRequest request)
-        => request.JsonBody is not null || request.TextBody is not null ? " with the same body" : "";
+    {
+        var body = request.JsonBody is not null || request.TextBody is not null;
+        return (body, request.PageHeader) switch
+        {
+            (true, { } h) => $" with the same body and the same page token header '{h.Name}'",
+            (false, { } h) => $" with the same page token header '{h.Name}'",
+            (true, null) => " with the same body",
+            _ => "",
+        };
+    }
+
+    /// <summary>A page token header must be the request's own: one the connection's <c>headers:</c> also set
+    /// would be sent twice, with the API picking either value. Checked before the first request.</summary>
+    private void EnsurePageHeaderIsOurs()
+    {
+        if (config.HeaderPaging is { } paging
+            && connection.Headers.Keys.Any(k => string.Equals(k, paging.Header, StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new PzConnectorException(
+                $"{Label}: pagination header '{paging.Header}' is also set in the connection's 'headers:'; the " +
+                "page token header must be sent by pagination alone (remove it from 'headers:')", isTransient: false);
+        }
+    }
 
     private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy, string? runDate)
     {
@@ -696,9 +721,14 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     {
         if (config.BodyPaging is { } paging)
         {
-            return request.JsonBody is { } current && paging.Next(current, body, recordsReturned) is { } nextBody
+            return request.JsonBody is { } current && paging.Next(current, body, recordsReturned, response) is { } nextBody
                 ? request with { JsonBody = nextBody }
                 : null;
+        }
+
+        if (config.HeaderPaging is { } headerPaging)
+        {
+            return headerPaging.Next(request, response, body, Label);
         }
 
         return strategy?.NextRequestUri(request.Url, response, body) is { } nextUrl

@@ -64,7 +64,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// request of <paramref name="request"/>'s method and body kind.</summary>
     private bool Fits(string token, HttpDatasetConfig request)
         => HttpCheckpointToken.TryDecode(token, request.IsPost, request.Method ?? HttpMethod.Get,
-               HttpCheckpointToken.KindOf(request.Body), out var decoded)
+               HttpCheckpointToken.KindOf(request.Body), out var decoded, request.HeaderPaging?.Header)
            && connection.IsAllowedTarget(decoded!.Url);
 
     public bool TryGetCheckpoint(out string? checkpoint)

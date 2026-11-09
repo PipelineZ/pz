@@ -79,6 +79,9 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// computes. Null for every other strategy and for body paging.</summary>
     internal PageNumbering? PageNumbering { get; init; }
 
+    /// <summary>`pagination.location: header`: the cursor token goes in a request header. Null otherwise.</summary>
+    internal HeaderTokenPaging? HeaderPaging { get; init; }
+
     internal const int MaxConcurrency = 16;
 
     /// <summary>Reads a `concurrency` value (an integer from 1 to <see cref="MaxConcurrency"/>, default 1);
@@ -246,6 +249,17 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             bodyPaging = BodyPaging.Parse(pgBlock,
                 pgBlock.TryGetValue("strategy", out var st) ? YamlScalarText.Of(st) ?? "" : "",
                 body?.Template, items, errors);
+        }
+
+        HeaderTokenPaging? headerPaging = null;
+        if (options.TryGetValue("pagination", out var hp) && hp is IReadOnlyDictionary<string, object?> hpBlock
+            && YamlScalarText.Of(hpBlock.GetValueOrDefault("location")) == "header"
+            && YamlScalarText.Of(hpBlock.GetValueOrDefault("strategy")) == "cursor"
+            && YamlScalarText.Of(hpBlock.GetValueOrDefault("param")) is { } tokenHeader)
+        {
+            headerPaging = new HeaderTokenPaging(tokenHeader, new PageTokenSource(
+                YamlScalarText.Of(hpBlock.GetValueOrDefault("pointer")),
+                YamlScalarText.Of(hpBlock.GetValueOrDefault("header"))));
         }
 
         var pageConcurrency = 1;
@@ -424,6 +438,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             PageConcurrency = pageConcurrency,
             PageNumbering = bodyPaging is null ? pageNumbering : null,
             OnStatus = onStatus is { Count: > 0 } ? onStatus : null,
+            HeaderPaging = headerPaging,
         };
     }
 
@@ -857,6 +872,45 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var stopsOnShort = stopOnShortPage;
+        var location = Get("location");
+        if (location is not (null or "query" or "body" or "header"))
+        {
+            errors.Add($"pagination 'location' must be 'query', 'body' or 'header', got '{location}'");
+        }
+
+        if (location == "header")
+        {
+            if (strategy != "cursor")
+            {
+                errors.Add("pagination 'location: header' is only valid with strategy 'cursor' (got strategy " +
+                    $"'{strategy}')");
+            }
+            else if (Get("param") is { } headerParam)
+            {
+                if (!HeaderTokenPaging.IsHeaderName(headerParam))
+                {
+                    errors.Add($"pagination 'param' '{headerParam}' is not a valid HTTP header name");
+                }
+                else if (HeaderTokenPaging.ReservedHeaders.Contains(headerParam))
+                {
+                    errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (pz or the HTTP " +
+                        "stack sets that header); name the header the API reads the token from");
+                }
+            }
+        }
+
+        if (Get("header") is { } responseHeader)
+        {
+            if (strategy != "cursor")
+            {
+                errors.Add($"pagination 'header' is only valid with strategy 'cursor' (got strategy '{strategy}')");
+            }
+            else if (!HeaderTokenPaging.IsHeaderName(responseHeader))
+            {
+                errors.Add($"pagination 'header' '{responseHeader}' is not a valid HTTP header name");
+            }
+        }
+
         switch (strategy)
         {
             case "link_header":
@@ -880,12 +934,38 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 var sizeParam = Get("size_param") ?? "limit";
                 return () => new OffsetStrategy(param, start, sizeParam, size, itemsPointer);
             }
-            case "cursor" when Get("pointer") is { } pointer && Get("param") is { } cursorParam:
-                ValidatePointer(pointer, "pagination.pointer", errors);
-                return () => new CursorTokenStrategy(pointer, cursorParam);
             case "cursor":
-                errors.Add("pagination strategy 'cursor' requires 'pointer' and 'param'");
-                return null;
+            {
+                var pointer = Get("pointer");
+                var header = Get("header");
+                var cursorParam = Get("param");
+                if ((pointer is null) == (header is null))
+                {
+                    errors.Add("pagination strategy 'cursor' needs exactly one of 'pointer' or 'header' (where " +
+                        "the next-page token is read: a JSON pointer into the body, or a response header name)");
+                }
+
+                if (cursorParam is null)
+                {
+                    errors.Add("pagination strategy 'cursor' requires 'param' (the query parameter, body pointer " +
+                        "or request header the token is sent in)");
+                }
+
+                if (pointer is not null)
+                {
+                    ValidatePointer(pointer, "pagination.pointer", errors);
+                }
+
+                // A header-sent token is HeaderTokenPaging's, not a URL strategy's.
+                if (cursorParam is null || (pointer is null) == (header is null) || location == "header")
+                {
+                    return null;
+                }
+
+                return pointer is not null
+                    ? () => new CursorTokenStrategy(pointer, cursorParam)
+                    : () => new ResponseHeaderCursorStrategy(header!, cursorParam);
+            }
             case "next_url" when Get("pointer") is { } linkPointer:
                 ValidatePointer(linkPointer, "pagination.pointer", errors);
                 return () => new NextUrlStrategy(linkPointer);

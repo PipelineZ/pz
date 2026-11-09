@@ -95,6 +95,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   at 600 seconds (a stated wait above a day adds a note to check `kind`), also applies to sink requests, and moves the
   shared pause of a concurrent read. A value that is not a number, or a wait that is already over (zero, or an epoch in
   the past), is ignored with a note, and the next source of a wait applies. Without these keys, behaviour is unchanged.
+- **http: cursor tokens in headers.** `strategy: cursor` can read its next-page token from a response header with
+  `header: <name>` instead of `pointer:` (exactly one of the two), and send it in a request header with
+  `location: header`, where `param` is the request header name. Both combine with each other, with `location: body`
+  on POST reads, and with the `for_each` list request. A missing or empty header ends the crawl; a header sent more
+  than once is a permanent error. A token sent in a header must be visible ASCII, otherwise the read fails without
+  showing it. The page header counts in the repeated-request guard, is kept across redirects, and cannot be one
+  pz owns (`Authorization`, `Cookie`, `Host`, `Content-*`, ...) or one the connection's `headers:` or `api_key` auth
+  also set. Checkpoints of a header-paged read use a new `v4:` token that stores the URL, the body and the page
+  header only, never connection headers or credentials; every other read's tokens are unchanged. `location` is now
+  also checked on GET reads (an unknown value used to be ignored there).
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

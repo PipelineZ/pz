@@ -100,6 +100,15 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
                 await authenticator.ApplyAsync(request, ct).ConfigureAwait(false);
             }
 
+            // The page token header is set before auth, so a second value there is the authenticator's.
+            if (current.PageHeader is { } pageHeader && request.Headers.TryGetValues(pageHeader.Name, out var sentValues)
+                && sentValues.Skip(1).Any())
+            {
+                throw new PzConnectorException(
+                    $"{prefix}: pagination header '{pageHeader.Name}' is also set by the connection's auth; the page " +
+                    "token header must be sent by pagination alone (use another 'auth.header')", isTransient: false);
+            }
+
             // Redact the POST-auth URI: an api_key-in-query authenticator just added the secret to
             // request.RequestUri, and that is the URL any error message must never echo unredacted.
             var sendUri = request.RequestUri ?? current.Url;
