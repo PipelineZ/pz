@@ -48,8 +48,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     Microsoft Entra and Google. If the provider does revoke the old token, the next refresh fails with `invalid_grant`,
     which is permanent.
 
-  An `invalid_grant` answer says to authorize again and update `auth.refresh_token`. A `PZ0366` refusal or an
-  `invalid_grant` answer is remembered for the rest of the run (the rest of the process): later reads, writes and nodes
+  An `invalid_grant` answer says to authorize again and update `auth.refresh_token`. A `PZ0366` refusal, or an
+  `invalid_grant`, `invalid_client` or `unauthorized_client` answer, is remembered for the rest of the run (the rest of the process): later reads, writes and nodes
   using the same token fail at once without sending it again, so a provider's reuse detection never sees a replay. Any
   `refresh_token` or `client_secret` that the provider echoes in its error text is replaced with `***`.
 - **http: sign in with a login request.** `auth.type: session` sends `login` (`path` relative to `base_url`, or
@@ -68,9 +68,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     runs still try again, once each.
   - `408`, `429` and `5xx` on the login are transient.
   - A `401` from the API on a session that worked before is transient, and the engine's retry logs in again.
-    `reauth_status` (default `[401]`, any 4xx except `407` and `429`) lists the statuses that mean the session expired,
-    for example `[401, 419, 440]`. Any other status, `403` included, is not treated as an expired session unless it is
-    listed.
+    `reauth_status` (any 4xx except `407` and `429`) lists more statuses that mean the session expired, for example
+    `[419, 440]`. `401` always counts: a list adds to it and never replaces it. Any other status, `403` included, is
+    not treated as an expired session unless it is listed.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

@@ -742,7 +742,10 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
         Assert.Contains("auth.reauth_status entries must be 4xx statuses other than 407 and 429, got '407'", errors);
         Assert.Contains("auth.reauth_status entries must be 4xx statuses other than 407 and 429, got '429'", errors);
         Assert.Contains("auth.reauth_status entries must be 4xx statuses other than 407 and 429, got 'x'", errors);
-        Assert.Contains("auth.reauth_status must name at least one status", errors);
+        Assert.Equal(4, errors.Count);
+
+        // 401 is always in the list: a custom list adds to it.
+        Assert.Equal(new HashSet<int> { 401, 419 }, Options(Session(a => a["reauth_status"] = new List<object?> { 419L })).ReauthStatus);
         Assert.Equal(["auth.reauth_status must be a list of HTTP statuses, e.g. [401, 419, 440]"],
             Errors(Session(a => a["reauth_status"] = 419L)));
     }
@@ -765,6 +768,20 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
 
         Assert.Equal(2, Logins);
         Assert.Equal("Bearer sess2", Api.Headers["Authorization"]);
+    }
+
+    [Fact]
+    public async Task A_custom_reauth_status_list_keeps_401()
+    {
+        MapLogin();
+        var calls = 0;
+        _server.Map("/items", _ => ++calls == 2 ? new StubResponse(401, "{}") : new StubResponse(200, """{"data":[{"id":1}]}"""));
+
+        await using var source = Open(Session(a => a["reauth_status"] = new List<object?> { 403L }));
+        await ReadAsync(source).WaitAsync(Bound);
+        Assert.True((await FailsAsync(source)).IsTransient);
+        await ReadAsync(source).WaitAsync(Bound);
+        Assert.Equal(2, Logins);
     }
 
     [Fact]
@@ -852,14 +869,20 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
         // The list page succeeded with sess1, so the item's 401 is on a session that had worked: transient.
         var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await ReadAsync(source, spec).WaitAsync(Bound));
         Assert.True(ex.IsTransient);
-        Assert.Equal(1, Logins);
+        // One login served all four items; a sibling still running when the 401 dropped the session may already
+        // have started the next login, which the retry then reuses.
+        Assert.InRange(Logins, 1, 2);
 
         Assert.Equal(4, await ReadAsync(source, spec).WaitAsync(Bound));
         Assert.Equal(2, Logins);
     }
 
-    [Fact]
-    public async Task A_query_session_token_is_never_stored_in_a_checkpoint_and_is_added_back_on_resume()
+    [Theory]
+    [InlineData("sid")]
+    [InlineData("SID")]
+    [InlineData("%73id")]
+    [InlineData("%53Id")]
+    public async Task A_query_session_token_is_never_stored_in_a_checkpoint_and_is_added_back_on_resume(string echoedName)
     {
         MapLogin();
         // The API echoes the session id into its next links, as such APIs do.
@@ -870,7 +893,7 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
                 ? new StubResponse(200, """{"data":[{"id":3}]}""")
                 : new StubResponse(200, """{"data":[{"id":1},{"id":2}]}""", new Dictionary<string, string>
                 {
-                    ["Link"] = $"<{new Uri(_server.BaseUrl, $"items?sid={sid}&page=2")}>; rel=\"next\"",
+                    ["Link"] = $"<{new Uri(_server.BaseUrl, $"items?{echoedName}={sid}&page=2")}>; rel=\"next\"",
                 });
         });
         var auth = Session(a => a["inject"] = new Dictionary<string, object?> { ["query"] = "sid" });
@@ -894,7 +917,8 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
 
         Assert.NotNull(token);
         Assert.DoesNotContain("sess1", token);
-        Assert.DoesNotContain("sid", token);
+        Assert.DoesNotContain("sid", token, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(echoedName, token, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("page=2", token);
 
         // A later run resumes from the token with its own session.

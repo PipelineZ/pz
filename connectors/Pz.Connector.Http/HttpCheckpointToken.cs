@@ -55,10 +55,24 @@ internal static class HttpCheckpointToken
             return url;
         }
 
-        var escaped = names.Select(Uri.EscapeDataString).ToList();
+        // A server may spell the name in another case or percent-encode it (%73id); every pair whose decoded name
+        // matches, in any case, goes.
         var kept = url.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Where(pair => !escaped.Any(name => pair == name || pair.StartsWith(name + "=", StringComparison.Ordinal)));
+            .Where(pair => !names.Contains(DecodedName(pair), StringComparer.OrdinalIgnoreCase));
         return new UriBuilder(url) { Query = string.Join('&', kept) }.Uri;
+    }
+
+    private static string DecodedName(string pair)
+    {
+        var name = pair.Split('=', 2)[0].Replace('+', ' ');
+        try
+        {
+            return Uri.UnescapeDataString(name);
+        }
+        catch (UriFormatException)
+        {
+            return name;
+        }
     }
 
     public static bool TryDecode(string token, bool isPost, HttpMethod method, BodyKind expected,

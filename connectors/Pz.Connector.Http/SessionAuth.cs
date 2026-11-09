@@ -139,7 +139,8 @@ internal sealed record SessionOptions(
             return DefaultReauthStatus;
         }
 
-        var statuses = new HashSet<int>();
+        // 401 always means the session was refused; a custom list adds statuses to it.
+        var statuses = new HashSet<int> { 401 };
         foreach (var entry in (System.Collections.IEnumerable)raw)
         {
             if (int.TryParse(YamlScalarText.Of(entry), NumberStyles.None, CultureInfo.InvariantCulture, out var status)
@@ -151,11 +152,6 @@ internal sealed record SessionOptions(
             {
                 errors.Add($"auth.reauth_status entries must be 4xx statuses other than 407 and 429, got '{YamlScalarText.Of(entry)}'");
             }
-        }
-
-        if (statuses.Count == 0)
-        {
-            errors.Add("auth.reauth_status must name at least one status");
         }
 
         return statuses;
