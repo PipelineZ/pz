@@ -20,13 +20,21 @@ internal static class ProjectPhases
 {
     /// <summary>Phases load→compile exactly as the CLI verbs compose them (ProjectLoader.Load →
     /// DagCompiler.Compile with the DuckDB AST reader). Throws PzValidationException with the
-    /// aggregate error list — callers turn that into an error envelope.</summary>
+    /// aggregate error list — callers turn that into an error envelope. With <paramref name="anchor"/> the
+    /// project is anchored to <paramref name="projectDir"/> before it compiles, as `pz plan` does: the DAG's nodes
+    /// carry their connection's config, so a handler that opens connectors from them needs the anchor in the DAG,
+    /// not only in the returned project.</summary>
     internal static (PzProject Project, CompiledDag Dag, IReadOnlyList<string> Notices) LoadAndCompile(
-        string projectDir)
+        string projectDir, bool anchor = false)
     {
         var env = SnapshotEnvironment();
         var project = LoadWithMcpHints(projectDir, env);
         ThrowOnPathEscapes(project, projectDir);
+        if (anchor)
+        {
+            project = InjectProjectDirectoryAnchor(project, projectDir);
+        }
+
         var ctx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
         var notices = new List<string>();
         using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();

@@ -156,13 +156,47 @@ public sealed class HttpDatasetRefusalTests : IDisposable
             ExitCodes.ForPlanFailure(new Pz.Core.Validation.PzValidationException([error]) { IsFatal = true }));
     }
 
-    private void WriteProject(string itemsRead, string? otherRead = null, string baseUrl = "https://api.example.com")
+    // A relative path in the connection resolves against the project, not the shell's directory: `pz validate`
+    // run from elsewhere must agree with `pz plan` run from the same place.
+    [Fact]
+    public void Validate_from_another_directory_resolves_relative_paths_against_the_project_like_plan()
+    {
+        WriteProject("        path: /items\n", tls: "  tls: { ca_file: certs/ca.pem }\n");
+        Directory.CreateDirectory(Path.Combine(_work, "certs"));
+        using (var key = System.Security.Cryptography.RSA.Create(2048))
+        {
+            var request = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=pz-test-ca", key,
+                System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+            using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            File.WriteAllText(Path.Combine(_work, "certs", "ca.pem"), cert.ExportCertificatePem());
+        }
+
+        var elsewhere = Directory.CreateTempSubdirectory("pz-elsewhere-").FullName;
+        var original = Directory.GetCurrentDirectory();
+        try
+        {
+            Directory.SetCurrentDirectory(elsewhere);
+            var (validateExit, validateErr) = Invoke("validate");
+            var (planExit, planErr) = Invoke("plan");
+
+            Assert.Equal(ExitCodes.Ok, planExit);
+            Assert.True(validateExit == ExitCodes.Ok, validateErr);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(original);
+            Directory.Delete(elsewhere, recursive: true);
+        }
+    }
+
+    private void WriteProject(string itemsRead, string? otherRead = null, string baseUrl = "https://api.example.com",
+        string tls = "")
     {
         Directory.CreateDirectory(Path.Combine(_work, "pipelines"));
         File.WriteAllText(Path.Combine(_work, "project.yml"), "name: refusals\nversion: \"1.0\"\n");
         var other = otherRead is null ? "" : "    other:\n      read:\n" + otherRead;
         File.WriteAllText(Path.Combine(_work, "connections.yml"),
-            $"api:\n  connector: http\n  base_url: {baseUrl}\n  entities:\n" +
+            $"api:\n  connector: http\n  base_url: {baseUrl}\n{tls}  entities:\n" +
             "    items:\n      read:\n" + itemsRead + other +
             "\nlake:\n  connector: localfiles\n  root: out\n");
         File.WriteAllText(Path.Combine(_work, "pipelines", "items_log.sql"),

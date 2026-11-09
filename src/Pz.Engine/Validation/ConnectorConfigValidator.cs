@@ -58,10 +58,21 @@ public static class ConnectorConfigValidator
     /// <paramref name="warnings"/> is optional (additive parameter, default null) and, when given,
     /// collects every connector's own non-blocking <see cref="ValidationResult.Warnings"/> -- a caller
     /// that does not pass it simply does not see them, unchanged from before this parameter
-    /// existed.</summary>
+    /// existed. <paramref name="anchored"/> is the same project with its connections anchored to the project
+    /// directory (`base_dir`), as the plan opens them: the offline probes open connectors with it, so a relative
+    /// path resolves against the project wherever pz runs. Without it the probes use the as-written config.</summary>
     public static async Task<IReadOnlyList<PzError>> ValidateAsync(
-        PzProject project, ConnectorRegistry registry, CancellationToken ct, List<PzWarning>? warnings = null)
+        PzProject project, ConnectorRegistry registry, CancellationToken ct, List<PzWarning>? warnings = null,
+        PzProject? anchored = null)
     {
+        var probeConnections = (anchored ?? project).Connections
+            .GroupBy(c => c.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        ConnectionDef ForProbe(ConnectionDef connection) =>
+            probeConnections.TryGetValue(connection.Name, out var anchoredConnection)
+                ? anchoredConnection with { Datasets = connection.Datasets, Outputs = connection.Outputs }
+                : connection;
+
         var errors = new List<PzError>();
         RefuseReservedProperties(project, registry, errors);
         RefuseUnknownConnectors(project, registry, errors);
@@ -138,7 +149,7 @@ public static class ConnectorConfigValidator
 
             if (connectionErrors == 0 && !registry.IsHosted(source.Connector))
             {
-                await ProbeAsync(registry, source, connector, sinkConnector, datasetsWithFindings, outputsWithFindings,
+                await ProbeAsync(registry, ForProbe(source), connector, sinkConnector, datasetsWithFindings, outputsWithFindings,
                         project.Engine.ForceUniversal, errors, ct)
                     .ConfigureAwait(false);
             }
@@ -184,7 +195,7 @@ public static class ConnectorConfigValidator
             // Output-schema findings are about the outputs, not the connection, so they do not stop the probe.
             if (connectionErrors == 0 && !registry.IsHosted(sink.Connector))
             {
-                await ProbeAsync(registry, sink, null, connector, [], outputsWithFindings, project.Engine.ForceUniversal,
+                await ProbeAsync(registry, ForProbe(sink), null, connector, [], outputsWithFindings, project.Engine.ForceUniversal,
                     errors, ct).ConfigureAwait(false);
             }
         }
