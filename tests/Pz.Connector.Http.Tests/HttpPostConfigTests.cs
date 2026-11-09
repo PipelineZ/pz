@@ -271,17 +271,34 @@ public class HttpPostConfigTests
     [Theory]
     [InlineData("bdy")]
     [InlineData("Body")]
-    public void Get_with_an_unknown_pagination_location_parses_and_is_ignored(string location)
+    [InlineData("cookie")]
+    public void Get_with_an_unknown_pagination_location_is_refused(string location)
     {
-        // GET reads ignored the key before header paging existed; configs that ran then keep running, with a notice.
-        var config = HttpDatasetConfig.Parse(Spec(new Dictionary<string, object?>
+        // Ignoring it sent the position in the query string to an API that may read it elsewhere, which then
+        // answers page 1 forever; `pz run` skips the schema check that would have caught the typo.
+        var failures = Failures(new Dictionary<string, object?>
         {
             ["path"] = "/x",
             ["pagination"] = new Dictionary<string, object?> { ["strategy"] = "page", ["location"] = location },
-        }));
+        });
 
-        Assert.Equal(location, config.IgnoredLocation);
-        Assert.Null(config.BodyPaging);
+        Assert.Single(failures, f => f.Contains($"pagination 'location' must be 'query', 'body' or 'header', got '{location}'"));
+    }
+
+    [Fact]
+    public void An_unknown_for_each_list_location_is_refused_by_its_path()
+    {
+        var failures = Failures(new Dictionary<string, object?>
+        {
+            ["path"] = "/orders/{{ item.id }}",
+            ["for_each"] = new Dictionary<string, object?>
+            {
+                ["path"] = "/orders", ["fields"] = new Dictionary<string, object?> { ["id"] = "/id" },
+                ["pagination"] = new Dictionary<string, object?> { ["strategy"] = "page", ["location"] = "qurey" },
+            },
+        });
+
+        Assert.Contains(failures, f => f.Contains("pagination 'location' must be 'query', 'body' or 'header', got 'qurey'"));
     }
 
     [Fact]

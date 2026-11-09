@@ -105,12 +105,6 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
             throw new PzConnectorException($"{label}: {string.Join("; ", clashes)}", isTransient: false);
         }
 
-        NoticeIgnoredLocation(config, label, "");
-        if (config.ForEach?.List is { } listRequest)
-        {
-            NoticeIgnoredLocation(listRequest, label, "for_each.");
-        }
-
         // One Retry-After pause per read, shared by every request the partition makes (pages, the
         // for_each list, items, downloads), and only for a read that can have requests in flight
         // together: at concurrency 1 the gate's retry policy alone paces a throttled request, exactly as
@@ -178,16 +172,6 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
                         "send the key in a header with 'auth.header')");
                 }
             }
-        }
-    }
-
-    /// <summary>An unknown `location` on a GET read is ignored, with a notice.</summary>
-    private void NoticeIgnoredLocation(HttpDatasetConfig request, string label, string prefix)
-    {
-        if (request.IgnoredLocation is { } location)
-        {
-            _notice?.Invoke($"{label}: {prefix}pagination 'location' '{location}' is not one of query, body, header; " +
-                "it is ignored and the token goes in the query string (fix it: `pz validate` reports it)");
         }
     }
 

@@ -83,10 +83,6 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// record at or below the watermark, and those records are dropped (<see cref="HttpPartition"/>).</summary>
     public bool StopAtWatermark { get; init; }
 
-    /// <summary>A `pagination.location` that is none of query, body, header: ignored, as GET reads always did,
-    /// with a notice at plan time. Null when the location is known or absent.</summary>
-    internal string? IgnoredLocation { get; init; }
-
     /// <summary>The query parameter names pagination sets on page requests (page/offset/cursor `param` and
     /// `size_param`); empty when pagination writes the body or a header, or there is none.</summary>
     internal IReadOnlyList<string> QueryPagingParams { get; init; } = [];
@@ -241,6 +237,16 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
         var method = ParseMethod(options, errors);
         var body = ParseBody(options, method, knownBindings, itemFields, errors);
+        // An unknown location is an error whatever the method: ignoring a typo sends the position in the query
+        // string to an API that may read it only from the body or a header, and it answers page 1 forever. `pz
+        // run` skips the schema check that would report it. A POST read reports it in BodyPaging.Parse.
+        if (method != HttpMethod.Post && options.TryGetValue("pagination", out var lp)
+            && lp is IReadOnlyDictionary<string, object?> lpBlock
+            && YamlScalarText.Of(lpBlock.GetValueOrDefault("location")) is { } loc
+            && loc is not ("query" or "body" or "header"))
+        {
+            errors.Add($"pagination 'location' must be 'query', 'body' or 'header', got '{loc}'");
+        }
         var errorPointer = Get(options, "error_pointer");
         if (errorPointer is not null)
         {
@@ -279,13 +285,6 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }).OfType<string>());
         }
 
-        string? ignoredLocation = null;
-        if (options.TryGetValue("pagination", out var lp) && lp is IReadOnlyDictionary<string, object?> lpBlock
-            && YamlScalarText.Of(lpBlock.GetValueOrDefault("location")) is { } loc
-            && loc is not ("query" or "body" or "header"))
-        {
-            ignoredLocation = loc;
-        }
 
         HeaderTokenPaging? headerPaging = null;
         if (options.TryGetValue("pagination", out var hp) && hp is IReadOnlyDictionary<string, object?> hpBlock
@@ -529,7 +528,6 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             PageNumbering = bodyPaging is null ? pageNumbering : null,
             OnStatus = onStatus is { Count: > 0 } ? onStatus : null,
             HeaderPaging = headerPaging,
-            IgnoredLocation = ignoredLocation,
             QueryPagingParams = queryPagingParams,
             StopAtWatermark = stopAtWatermark,
         };
@@ -965,9 +963,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var stopsOnShort = stopOnShortPage;
-        // An unknown location is not an error here: GET reads ignored the key before header paging existed, and
-        // configs that ran then must keep running. The dataset schema reports it at `pz validate`, and the read
-        // gives a notice (IgnoredLocation). POST reads refuse it in BodyPaging.Parse.
+        // An unknown location is refused by the caller (BodyPaging.Parse on a POST read, ParseCore otherwise).
         var location = Get("location");
 
         if (location == "header")
