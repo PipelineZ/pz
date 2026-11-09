@@ -857,4 +857,61 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
         Assert.Equal(4, await ReadAsync(source, spec).WaitAsync(Bound));
         Assert.Equal(2, Logins);
     }
+
+    [Fact]
+    public async Task A_query_session_token_is_never_stored_in_a_checkpoint_and_is_added_back_on_resume()
+    {
+        MapLogin();
+        // The API echoes the session id into its next links, as such APIs do.
+        _server.Map("/items", req =>
+        {
+            var sid = System.Web.HttpUtility.ParseQueryString(req.Url.Query)["sid"];
+            return req.Url.Query.Contains("page=2", StringComparison.Ordinal)
+                ? new StubResponse(200, """{"data":[{"id":3}]}""")
+                : new StubResponse(200, """{"data":[{"id":1},{"id":2}]}""", new Dictionary<string, string>
+                {
+                    ["Link"] = $"<{new Uri(_server.BaseUrl, $"items?sid={sid}&page=2")}>; rel=\"next\"",
+                });
+        });
+        var auth = Session(a => a["inject"] = new Dictionary<string, object?> { ["query"] = "sid" });
+        var spec = Items(new() { ["pagination"] = new Dictionary<string, object?> { ["strategy"] = "link_header" } });
+
+        string? token = null;
+        await using (var source = Open(auth))
+        {
+            var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(
+                (await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None))[0]);
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(MaxRowsPerBatch: 2), CancellationToken.None))
+            {
+                batch.Dispose();
+                if (partition.TryGetCheckpoint(out var offered) && offered is not null)
+                {
+                    token = offered;
+                    break;
+                }
+            }
+        }
+
+        Assert.NotNull(token);
+        Assert.DoesNotContain("sess1", token);
+        Assert.DoesNotContain("sid", token);
+        Assert.Contains("page=2", token);
+
+        // A later run resumes from the token with its own session.
+        await using var resumed = Open(auth);
+        var resume = Assert.IsAssignableFrom<ICheckpointingPartition>(
+            (await resumed.PlanReadAsync(spec, ReadHints.None, CancellationToken.None))[0]);
+        Assert.True(resume.TryResumeFrom(token!));
+        long rows = 0;
+        await foreach (var batch in resume.ReadAsync(BatchOptions.Default, CancellationToken.None))
+        {
+            rows += batch.Length;
+            batch.Dispose();
+        }
+
+        Assert.Equal(1, rows);
+        Assert.Equal(2, Logins);
+        Assert.Contains("sid=sess2", Api.Url.Query, StringComparison.Ordinal);
+        Assert.Contains("page=2", Api.Url.Query, StringComparison.Ordinal);
+    }
 }

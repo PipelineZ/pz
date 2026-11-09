@@ -104,7 +104,8 @@ internal sealed partial class HttpForEachPartition
                         // that yielded nothing sets none: any batch after it belongs to a later page, past
                         // that position, and the later page's own barrier carries these skip counts.
                         _checkpointCandidate = page.Next is { } nextPage && !capped
-                            ? HttpCheckpointToken.EncodeForEach(new(HttpCheckpointToken.Encode(nextPage, forEach.List.IsPost),
+                            ? HttpCheckpointToken.EncodeForEach(new(HttpCheckpointToken.Encode(nextPage, forEach.List.IsPost,
+                                connection.CheckpointStrippedParams),
                                 0, null, null, skipped, firstSkipped))
                             : null;
                         yield return last;

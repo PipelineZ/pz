@@ -123,7 +123,8 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
 
         await foreach (var page in list.PagesAsync(ct).ConfigureAwait(false))
         {
-            var listToken = HttpCheckpointToken.Encode(page.Request, forEach.List.IsPost);
+            var listToken = HttpCheckpointToken.Encode(page.Request, forEach.List.IsPost,
+                connection.CheckpointStrippedParams);
             var (start, resumeItem) = firstPage && resume is not null ? ResumeAt(resume, page) : (0, null);
             firstPage = false;
 

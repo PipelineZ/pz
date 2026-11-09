@@ -90,6 +90,12 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         return false;
     }
 
+    /// <summary>Query parameters taken out of every URL a checkpoint stores: a session token sent as a query
+    /// parameter (the sign-in adds the current one back to the resumed request). An api_key query parameter is not
+    /// in this list.</summary>
+    public IReadOnlyCollection<string> CheckpointStrippedParams
+        => Authenticator is SessionAuthenticator session ? session.SecretQueryParams : [];
+
     /// <summary>True when the connection sends credentials: an authenticator (built or still to be
     /// built by <see cref="AuthFactory"/>) or an Authorization header.</summary>
     public bool HasCredentials => Authenticator is not null || AuthFactory is not null
