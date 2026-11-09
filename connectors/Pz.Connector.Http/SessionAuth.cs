@@ -581,6 +581,9 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
     public override IReadOnlyCollection<string> SecretQueryParams
         => _options.Inject.Query is { } query ? [query] : [];
 
+    /// <summary>The request header the token is sent in (`auth.inject.header`); null for bearer and query.</summary>
+    public string? InjectedHeader => _options.Inject.Header;
+
     public override void Dispose()
     {
         base.Dispose();

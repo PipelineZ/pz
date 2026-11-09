@@ -71,8 +71,15 @@ internal sealed record HeaderTokenPaging(string Header, PageTokenSource Source)
             return "the connection's 'headers:'";
         }
 
-        return string.Equals(connection.AuthHeader, Header, StringComparison.OrdinalIgnoreCase)
-            ? "the connection's api_key auth ('auth.header')"
+        if (string.Equals(connection.AuthHeader, Header, StringComparison.OrdinalIgnoreCase))
+        {
+            return "the connection's api_key auth ('auth.header')";
+        }
+
+        // The session sign-in replaces its header on every request, so the page token would be dropped unseen.
+        return connection.Authenticator is SessionAuthenticator { InjectedHeader: { } injected }
+            && string.Equals(injected, Header, StringComparison.OrdinalIgnoreCase)
+            ? "the connection's session sign-in ('auth.inject.header')"
             : null;
     }
 

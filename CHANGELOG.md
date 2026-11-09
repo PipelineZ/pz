@@ -128,11 +128,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   otherwise the read fails without showing it. The page header counts in the repeated-request guard and is kept
   across redirects. Its name cannot be one pz or the HTTP stack owns (`Authorization`, `Proxy-Authorization`,
   `Cookie`, `Host`, `Connection`, `Transfer-Encoding`, `Expect`, `TE`, `Upgrade`), a header .NET treats as a content
-  header (`Content-*`, `Expires`, `Last-Modified`, `Allow`), or one the connection's `headers:` or `api_key` auth also
-  set; the last is refused when the read is planned, before any request. Checkpoints of a header-paged read use a
-  new `v4:` token that stores the URL, the body and the page header only, never connection headers or credentials;
-  every other read's tokens are unchanged. An unknown `location` on a GET read is still ignored, as before, now with
-  a notice; `pz validate` reports it through the dataset schema.
+  header (`Content-*`, `Expires`, `Last-Modified`, `Allow`), or one the connection's `headers:`, `api_key` auth or
+  session `auth.inject.header` also set; the last is refused when the read is planned, before any request.
+  Checkpoints of a header-paged read use a new `v4:` token that stores the URL (without a session query token), the
+  body and the page header only, never connection headers or credentials; every other read's tokens are unchanged.
+  An unknown `location` on a GET read is still ignored, as before, now with a notice; `pz validate` reports it
+  through the dataset schema.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is
