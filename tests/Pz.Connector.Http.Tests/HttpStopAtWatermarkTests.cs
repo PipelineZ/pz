@@ -377,4 +377,25 @@ public sealed class HttpStopAtWatermarkTests : IAsyncLifetime
         Assert.False(schema.Evaluate(JsonSerializer.Deserialize<JsonElement>(
             """{"path":"/e","stop_at_watermark":"yes"}""")).IsValid);
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task An_engine_cursor_other_than_the_cursor_option_fails_before_any_request(bool resumed)
+    {
+        MapFeed(Ts(10, 9), Ts(8));
+        var options = Map(("path", "/events"), ("items", "/data"), ("cursor_order", "desc"), ("stop_at_watermark", true),
+            ("cursor", "ts"), ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("param", "cursor"))),
+            ("columns", new Dictionary<string, string> { ["ts"] = "bigint", ["id"] = "bigint" }));
+        var spec = new DatasetSpec("s", "d", options) { WatermarkCursor = "id", WatermarkValue = "5" };
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(spec,
+            resumeFrom: resumed ? new Uri(_server.BaseUrl, "/events?cursor=2").ToString() : null));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("'id'", ex.Message);
+        Assert.Contains("'ts'", ex.Message);
+        Assert.Contains("stop_at_watermark", ex.Message);
+        Assert.Empty(_server.Requests);
+    }
 }

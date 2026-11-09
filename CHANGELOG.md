@@ -101,7 +101,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   dropped count. Records with a null cursor land on the pages read up to the stop page; null-cursor records on later
   pages are not read, and the stop notice says so with the count of those that landed. Without a watermark (first
   run, `--full-refresh`) the feed is read to the end. The option requires `cursor` (with `cursor_type` in raw mode,
-  a `columns` name in contract mode). The feed must really be newest-first: within one attempt, a cursor value
+  a `columns` name in contract mode), and it must name the incremental cursor: a different one fails before the
+  first request, also on a resumed attempt. The feed must really be newest-first: within one attempt, a cursor value
   greater than the one before it fails the read; a retry that resumes mid-crawl checks from its resume page on. The
   option is refused with `for_each`, `file`, `delta_pointer`, `max_pages` and `pagination.concurrency` above 1, so
   the crawl always ends at the watermark or at the natural end of the feed. Checkpoints still resume the crawl page
@@ -111,7 +112,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   must have the same keys; values are strings, numbers, booleans or null), and the item request, escaping, `pz_item`,
   `on_missing` and `concurrency` work as with a list request. Checkpoints fall after every item at concurrency 1; with
   `for_each.concurrency` N above 1 the values are read in pages of 4×N with a checkpoint at each page's barrier, so a
-  retry re-reads at most one such page. The list-request keys (`path`, `query`, `fields`, `pagination`, `max_items`,
+  retry re-reads at most one such page. Those checkpoints carry a hash of the whole `values` list; if the list was
+  edited before the retry, the read starts again from the first value, with a notice. The list-request keys (`path`, `query`, `fields`, `pagination`, `max_items`,
   ...) are refused next to it. `for_each.dedupe: true` skips a list record whose fields tuple an earlier record of the
   same read already had (first occurrence wins; fields compare as JSON values, so `"1"` and `1` differ, and a missing
   field equals a null one), and reports the count and the first duplicate in a notice. Duplicates do not count toward

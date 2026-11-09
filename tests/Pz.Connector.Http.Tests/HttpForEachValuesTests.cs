@@ -332,11 +332,58 @@ public sealed class HttpForEachValuesTests : IAsyncLifetime
     {
         MapSales();
 
-        var (rows, _) = await Read(RegionOptions(null, "eu", "us", "apac"),
-            resumeFrom: HttpCheckpointToken.EncodeForEach("values@1", 1, null));
+        var options = RegionOptions(null, "eu", "us", "apac");
+        var anchor = HttpDatasetConfig.Parse(new DatasetSpec("s", "d", options)).ForEach!.ValuesAnchor;
+
+        var (rows, _) = await Read(options,
+            resumeFrom: HttpCheckpointToken.EncodeForEach(new("values@1", 1, null, anchor)));
 
         Assert.Equal(["/regions/apac/sales"], Paths());
         Assert.Single(rows);
+        Assert.Empty(_notices);
+    }
+
+    [Fact]
+    public async Task A_values_offset_token_from_an_edited_list_restarts_at_the_first_value_with_a_notice()
+    {
+        MapSales();
+        // The checkpoint was taken while the list was eu, us, apac, latam; "eu" has since been removed, so
+        // offset 2 would now skip "latam".
+        var before = HttpDatasetConfig.Parse(new DatasetSpec("s", "d",
+            RegionOptions(Map(("concurrency", 2L)), "eu", "us", "apac", "latam"))).ForEach!.ValuesAnchor;
+        var token = HttpCheckpointToken.EncodeForEach(new("values@2", 0, null, before));
+
+        var (rows, _) = await Read(RegionOptions(Map(("concurrency", 2L)), "us", "apac", "latam"), resumeFrom: token);
+
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(["/regions/apac/sales", "/regions/latam/sales", "/regions/us/sales"], Paths().Order());
+        var notice = Assert.Single(_notices);
+        Assert.Contains("for_each.values changed since the checkpoint", notice);
+        Assert.Contains("from the first value", notice);
+    }
+
+    [Fact]
+    public async Task A_values_offset_token_without_an_anchor_restarts_too()
+    {
+        MapSales();
+
+        var (rows, _) = await Read(RegionOptions(null, "eu", "us"),
+            resumeFrom: HttpCheckpointToken.EncodeForEach("values@1", 0, null));
+
+        Assert.Equal(2, rows.Count);
+        Assert.Single(_notices);
+    }
+
+    [Fact]
+    public async Task Parallel_values_barrier_tokens_carry_the_list_anchor()
+    {
+        MapSales();
+        var options = RegionOptions(Map(("concurrency", 1L * 2)), [.. Enumerable.Range(1, 9).Select(i => $"r{i}")]);
+
+        var (_, tokens) = await Read(options);
+
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(Assert.Single(tokens), out var position));
+        Assert.Equal(HttpDatasetConfig.Parse(new DatasetSpec("s", "d", options)).ForEach!.ValuesAnchor, position.Anchor);
     }
 
     /// <summary>/orders lists o1, o2, o1, o3 on one page; items have one line each.</summary>

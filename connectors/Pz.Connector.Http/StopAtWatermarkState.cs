@@ -37,6 +37,17 @@ internal sealed class StopAtWatermarkState
             return null;
         }
 
+        // The engine's watermark belongs to its cursor; compared with another column it could stop the crawl
+        // before rows the watermark does not cover. Names match exactly, as everywhere in this connector. Checked
+        // here because a resumed attempt never builds a first request, where the bindings check the same pair.
+        if (spec.WatermarkCursor is { } engineCursor && engineCursor != cursor)
+        {
+            throw new PzConnectorException(
+                $"{label}: stop_at_watermark compares the watermark of incremental cursor '{engineCursor}' but the " +
+                $"'cursor' option names '{cursor}'; align the two (the option must name the incremental cursor)",
+                isTransient: false);
+        }
+
         // A stop_at_watermark dataset has no for_each, so a raw row's cursor is in slot 3.
         var ordinal = config.IsContractMode ? config.Columns!.Keys.ToList().IndexOf(cursor) : 3;
         var type = config.IsContractMode ? config.Columns![cursor] : config.CursorType!;

@@ -110,6 +110,16 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
             throw Unusable();
         }
 
+        // A values@N position counts from a list that may have been edited since: the anchor proves it is the
+        // same list, and without that proof the read starts over (items read twice, none skipped).
+        if (resume is not null && list is null && forEach.TryValuesOffset(resume.List, out var offset) && offset > 0
+            && resume.Anchor != forEach.ValuesAnchor)
+        {
+            Notice?.Invoke($"{Label}: for_each.values changed since the checkpoint was taken; reading the values " +
+                "again from the first value (items read before the retry are read again)");
+            resume = resume with { List = HttpForEachConfig.ValuesToken, Index = 0, Item = null, Anchor = null };
+        }
+
         if (forEach.Concurrency > 1)
         {
             await foreach (var batch in ReadParallelAsync(list, bindings, now, resume, options, ct).ConfigureAwait(false))
@@ -369,7 +379,9 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// the record count, its anchor matching, starts nothing here: the read continues with the next page.</summary>
     private (int Start, string? Item) ResumeAt(HttpCheckpointToken.ForEachToken resume, ListPage page)
     {
-        if (resume.Anchor is null)
+        // A values@N position starts its own page; its anchor names the whole list, already checked in ReadAsync.
+        if (resume.Anchor is null
+            || (config.ForEach!.List is null && resume.List != HttpForEachConfig.ValuesToken))
         {
             return (resume.Index, resume.Item);
         }

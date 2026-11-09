@@ -30,6 +30,15 @@ internal sealed partial record HttpForEachConfig(HttpDatasetConfig? List,
     /// larger page waits less often on its slowest item; a smaller one loses less work to a retry.</summary>
     internal int ValuesPageSize => Concurrency > 1 ? Concurrency * 4 : int.MaxValue;
 
+    /// <summary>The anchor a <c>values@N</c> checkpoint carries: base64url SHA-256 of the whole values list (each
+    /// record's JSON, in order). A resume whose anchor differs read the list as it was when the checkpoint was
+    /// taken, so its offset may now name another value.</summary>
+    internal string ValuesAnchor => _valuesAnchor ??= System.Buffers.Text.Base64Url.EncodeToString(
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            "[" + string.Join(",", Values!.Select(v => v.ToJsonString())) + "]")));
+
+    private string? _valuesAnchor;
+
     /// <summary>The list token of the values page starting at <paramref name="offset"/>.</summary>
     internal static string ValuesTokenAt(int offset)
         => offset == 0 ? ValuesToken : $"{ValuesToken}@{offset.ToString(CultureInfo.InvariantCulture)}";
