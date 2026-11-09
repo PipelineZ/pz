@@ -51,8 +51,9 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     /// skipped by an <c>on_status</c> skip rule.</summary>
     internal bool Missing { get; private set; }
 
-    /// <summary>Where the notice for a read skipped by an <c>on_status</c> rule goes. Only a read that is
-    /// not a for_each item reports through it: item skips are counted by the for_each read.</summary>
+    /// <summary>Where a non-fatal notice goes: a read skipped by an <c>on_status</c> rule, records
+    /// `stop_at_watermark` dropped. Only a read that is not a for_each item reports through it: item skips are
+    /// counted by the for_each read.</summary>
     internal Action<string>? Notice { get; init; }
 
     /// <summary>Where batch buffers come from; null means the shared native pool. Tests count with it.</summary>
@@ -248,8 +249,9 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
             options.TargetBatchBytes, Allocator, maxRowsPerBatch: options.MaxRowsPerBatch);
         _itemCells = ItemCells.For(config, Item, Label);
         var page = 0;
+        var stop = StopAtWatermarkState.For(config, spec, _cursorOrdinal, Label);
 
-        await foreach (var (_, records, next) in PagesAsync(ct).ConfigureAwait(false))
+        await foreach (var (_, records, pageNext) in PagesAsync(ct).ConfigureAwait(false))
         {
             // pz_fetched_at is the request-time UTC when the PAGE was fetched — one
             // timestamp shared by every row landed from this page, not stamped per row.
@@ -257,21 +259,37 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
             var currentPage = page;
             page++;
 
+            // stop_at_watermark decides on the page's projected cursors before anything is enqueued: a page
+            // holding a covered record is the last one, so it gets no boundary, and its kept rows are what
+            // the page lands.
+            var next = pageNext;
+            IEnumerable<object?[]> rows = records.Select(record => ProjectRow(record, currentPage, fetchedAt));
+            var rowCount = records.Count;
+            if (stop is not null)
+            {
+                var kept = stop.Filter(rows, page);
+                rows = kept;
+                rowCount = kept.Count;
+                if (stop.Reached)
+                {
+                    next = null;
+                }
+            }
+
             var boundaryEnqueued = false;
             if (next is not null)
             {
-                // Enqueue NOW, using records.Count (known immediately, before any of this page's
+                // Enqueue NOW, using the page's row count (known immediately, before any of this page's
                 // rows are appended) rather than waiting for this page's own foreach to exit --
                 // see property 1 in the _pageBoundaries comment above. A page with no next request
                 // (the loop is about to stop or throw) has nothing beyond what's already appended for
                 // this attempt, so no later position exists to gate a checkpoint behind.
-                _pageBoundaries.Enqueue((_rowsAppended + records.Count, next));
+                _pageBoundaries.Enqueue((_rowsAppended + rowCount, next));
                 boundaryEnqueued = true;
             }
 
-            foreach (var record in records)
+            foreach (var row in rows)
             {
-                var row = ProjectRow(record, currentPage, fetchedAt);
                 if (_cursorOrdinal >= 0)
                 {
                     TrackCursorOrder(row[_cursorOrdinal]);
@@ -294,7 +312,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
                 }
             }
 
-            _rowsAppended += records.Count;
+            _rowsAppended += rowCount;
 
             // Checkpoint cadence is once per page: flush the builder at every enqueued page boundary
             // so rows-yielded lands EXACTLY on the boundary's threshold and DrainBoundaries
@@ -311,6 +329,16 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
                 yield return pageTail;
                 ct.ThrowIfCancellationRequested();
             }
+
+            if (stop is { Reached: true })
+            {
+                break;
+            }
+        }
+
+        if (stop is not null)
+        {
+            stop.Finish(_truncatedWithMore, Notice);
         }
 
         // A truncated incremental crawl may only advance the watermark if the landed rows provably
@@ -318,7 +346,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         // monotone non-decreasing with at least one strictly-increasing pair. Any decrease, or no
         // increase at all (all-equal values, single-row crawls), means advancement would skip rows
         // and NOT advancing would re-fetch the same head forever: fail loudly instead.
-        if (_truncatedWithMore && _cursorOrdinal >= 0)
+        if (_truncatedWithMore && _cursorOrdinal >= 0 && stop is not { Reached: true })
         {
             // A resumed attempt (TryResumeFrom set _resume) never saw the prior attempt's
             // prefix -- _sawIncrease/_sawDecrease only reflect THIS

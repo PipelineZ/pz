@@ -125,8 +125,9 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
 
     /// <summary>Called at most once per open, before any plan/read call; partitions planned afterward
     /// report a file-mode zip with no matching member (`if_missing: empty`), a for_each cap that stopped
-    /// the read, for_each items skipped under `on_missing: skip`, or a read skipped by an `on_status`
-    /// rule through it, and so does the sign-in (a refresh token rotated under `auth.rotation: ignore`).</summary>
+    /// the read, for_each items skipped under `on_missing: skip` or by `dedupe`, a read skipped by an `on_status`
+    /// rule, or records `stop_at_watermark` dropped through it, and so does the sign-in (a refresh token rotated
+    /// under `auth.rotation: ignore`).</summary>
     public void UseNotice(Action<string> notice)
     {
         _notice = notice;

@@ -95,6 +95,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   at 600 seconds (a stated wait above a day adds a note to check `kind`), also applies to sink requests, and moves the
   shared pause of a concurrent read. A value that is not a number, or a wait that is already over (zero, or an epoch in
   the past), is ignored with a note, and the next source of a wait applies. Without these keys, behaviour is unchanged.
+- **http: `stop_at_watermark` for newest-first feeds.** A dataset with `cursor_order: desc` and
+  `stop_at_watermark: true` stops crawling at the first page that holds a record at or below the stored watermark;
+  those records are dropped in the connector, the newer ones on that page land, and a notice gives the page and the
+  dropped count. Records with a null cursor land. Without a watermark (first run, `--full-refresh`) the feed is read
+  to the end. The feed must really be newest-first: a cursor value greater than the one before it fails the read,
+  on every run. The option is refused with `for_each`, `file`, `delta_pointer`, `max_pages` and
+  `pagination.concurrency` above 1, so the crawl always ends at the watermark or at the natural end of the feed.
+  Checkpoints still resume the crawl page by page.
 - **http: `for_each.values` and `for_each.dedupe`.** `for_each.values` is a literal list of maps used instead of a list
   request, for "the same endpoint per region / account / metric": each map's keys are the item fields (every entry
   must have the same keys; values are strings, numbers, booleans or null), and the item request, escaping, `pz_item`,

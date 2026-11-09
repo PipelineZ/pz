@@ -79,6 +79,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// computes. Null for every other strategy and for body paging.</summary>
     internal PageNumbering? PageNumbering { get; init; }
 
+    /// <summary>`stop_at_watermark`: a newest-first feed (`cursor_order: desc`) stops at the first page holding a
+    /// record at or below the watermark, and those records are dropped (<see cref="HttpPartition"/>).</summary>
+    public bool StopAtWatermark { get; init; }
+
     /// <summary>`pagination.location: header`: the cursor token goes in a request header. Null otherwise.</summary>
     internal HeaderTokenPaging? HeaderPaging { get; init; }
 
@@ -377,6 +381,44 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
 
+        var stopAtWatermark = false;
+        if (options.TryGetValue("stop_at_watermark", out var rawStop) && rawStop is not null)
+        {
+            if (rawStop is bool stop)
+            {
+                stopAtWatermark = stop;
+            }
+            else
+            {
+                errors.Add($"'stop_at_watermark' must be a boolean, got '{YamlScalarText.Of(rawStop)}'");
+            }
+        }
+
+        if (stopAtWatermark)
+        {
+            if (cursorOrder != "desc")
+            {
+                errors.Add("'stop_at_watermark' requires 'cursor_order: desc' (it stops a newest-first crawl at the " +
+                    "first record the watermark already covers)");
+            }
+
+            // Each of these ends or splits a crawl some other way, so "stopped on data" could not be proven.
+            foreach (var (present, other) in new[]
+            {
+                (options.GetValueOrDefault("for_each") is not null, "for_each"),
+                (options.GetValueOrDefault("file") is not null, "file"),
+                (deltaPointer is not null, "delta_pointer"),
+                (options.GetValueOrDefault("max_pages") is not null, "max_pages"),
+                (pageConcurrency > 1, "pagination.concurrency above 1"),
+            })
+            {
+                if (present)
+                {
+                    errors.Add($"'stop_at_watermark' cannot be combined with {other}");
+                }
+            }
+        }
+
         options.TryGetValue("file", out var rawFile);
         options.TryGetValue("export", out var rawExport);
         var file = HttpFileConfig.Parse(rawFile, errors);
@@ -439,6 +481,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             PageNumbering = bodyPaging is null ? pageNumbering : null,
             OnStatus = onStatus is { Count: > 0 } ? onStatus : null,
             HeaderPaging = headerPaging,
+            StopAtWatermark = stopAtWatermark,
         };
     }
 
