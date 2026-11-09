@@ -46,6 +46,32 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
     public bool IsForEach => ForEach is not null;
 
+    /// <summary>`pagination.concurrency`: how many page requests may be in flight (1 is strictly
+    /// sequential); above 1 only for the plain `page` strategy.</summary>
+    public int PageConcurrency { get; init; } = 1;
+
+    internal const int MaxConcurrency = 16;
+
+    /// <summary>Reads a `concurrency` value (an integer from 1 to <see cref="MaxConcurrency"/>, default 1);
+    /// a bad value is reported under <paramref name="label"/> and read as 1.</summary>
+    internal static int ParseConcurrency(IReadOnlyDictionary<string, object?> block, string label,
+        List<string> errors)
+    {
+        if (!block.TryGetValue("concurrency", out var raw) || raw is null)
+        {
+            return 1;
+        }
+
+        if (YamlScalarText.NonScalarKind(raw) is null && long.TryParse(YamlScalarText.Of(raw), out var n)
+            && n is >= 1 and <= MaxConcurrency)
+        {
+            return (int)n;
+        }
+
+        errors.Add($"{label} must be an integer from 1 to {MaxConcurrency}, got '{YamlScalarText.Of(raw)}'");
+        return 1;
+    }
+
     public static HttpDatasetConfig Parse(DatasetSpec spec)
     {
         var errors = new List<string>();
@@ -141,6 +167,29 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             bodyPaging = BodyPaging.Parse(pgBlock,
                 pgBlock.TryGetValue("strategy", out var st) ? YamlScalarText.Of(st) ?? "" : "",
                 body?.Template, items, errors);
+        }
+
+        var pageConcurrency = 1;
+        if (options.TryGetValue("pagination", out var pgc) && pgc is IReadOnlyDictionary<string, object?> pgcBlock)
+        {
+            pageConcurrency = ParseConcurrency(pgcBlock, "pagination.concurrency", errors);
+            if (pageConcurrency > 1)
+            {
+                var strategy = pgcBlock.TryGetValue("strategy", out var stc) ? YamlScalarText.Of(stc) : null;
+                if (forEach is not null || listRequest)
+                {
+                    errors.Add("pagination.concurrency is not supported with for_each; use for_each.concurrency");
+                }
+                else if (strategy != "page")
+                {
+                    errors.Add("pagination.concurrency above 1 needs strategy: page");
+                }
+
+                if (Get(options, "delta_pointer") is not null)
+                {
+                    errors.Add("pagination.concurrency cannot be combined with delta_pointer");
+                }
+            }
         }
 
         var columns = options.TryGetValue("columns", out var c)
@@ -275,6 +324,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             File = file,
             Export = export,
             ForEach = forEach,
+            PageConcurrency = pageConcurrency,
         };
     }
 

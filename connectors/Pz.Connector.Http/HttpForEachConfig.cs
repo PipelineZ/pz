@@ -8,7 +8,7 @@ namespace Pz.Connector.Http;
 /// keys a list request cannot have refused; <see cref="Fields"/> are the values picked from each list
 /// record, in declaration order, for `{{ item.&lt;name&gt; }}` references.</summary>
 internal sealed partial record HttpForEachConfig(HttpDatasetConfig List,
-    IReadOnlyList<(string Name, string Pointer)> Fields, int? MaxItems, bool OnMissingSkip)
+    IReadOnlyList<(string Name, string Pointer)> Fields, int? MaxItems, bool OnMissingSkip, int Concurrency = 1)
 {
     /// <summary>Keys that describe the item request or the dataset as a whole, never the list request.</summary>
     internal static readonly string[] ItemOnlyKeys =
@@ -59,6 +59,8 @@ internal sealed partial record HttpForEachConfig(HttpDatasetConfig List,
             }
         }
 
+        var concurrency = HttpDatasetConfig.ParseConcurrency(block, "for_each.concurrency", errors);
+
         var onMissing = block.TryGetValue("on_missing", out var om) ? YamlScalarText.Of(om) : null;
         if (onMissing is not (null or "error" or "skip"))
         {
@@ -70,7 +72,7 @@ internal sealed partial record HttpForEachConfig(HttpDatasetConfig List,
             return null;
         }
 
-        return new HttpForEachConfig(list, fields, maxItems, onMissing == "skip");
+        return new HttpForEachConfig(list, fields, maxItems, onMissing == "skip", concurrency);
     }
 
     private static List<(string Name, string Pointer)> ParseFields(IReadOnlyDictionary<string, object?> block,
