@@ -6,8 +6,8 @@
 # span end to end.
 #
 # SKIPs cleanly (exit 0) when either toolchain this needs is missing, matching every other
-# docker/toolchain-gated script in this directory: `cargo` (builds the example) and `dotnet` (runs the
-# conformance verb and the telemetry test). Any conformance vector failing, the verb's own exit code
+# docker/toolchain-gated script in this directory: `cargo` (builds the example) and a `dotnet` that runs the
+# SDK global.json requires (runs the conformance verb and the telemetry test); under CI a missing SDK fails. Any conformance vector failing, the verb's own exit code
 # 2 for a setup/config problem, or a failing RustPcp test fails this script.
 set -euo pipefail
 
@@ -18,10 +18,36 @@ if ! command -v cargo >/dev/null; then
   exit 0
 fi
 
-if ! command -v dotnet >/dev/null; then
-  echo "SKIP: dotnet not available"
+# The first `dotnet` on PATH may be a runtime-only or older install that cannot run the SDK global.json asks
+# for: try every `dotnet` on PATH, then $DOTNET_ROOT and ~/.dotnet, and use the first whose `dotnet --version`
+# succeeds from the repo root. None: SKIP locally, but fail under CI, which must never quietly skip this check.
+find_dotnet() {
+  local candidate dir
+  local -a candidates=()
+  if [[ -n "${DOTNET_ROOT:-}" ]]; then candidates+=("${DOTNET_ROOT}/dotnet"); fi
+  IFS=: read -r -a dirs <<<"${PATH}"
+  for dir in "${dirs[@]}"; do candidates+=("${dir}/dotnet"); done
+  candidates+=("${HOME}/.dotnet/dotnet")
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "${candidate}" ]] && (cd "${ROOT_DIR}" && DOTNET_ROOT="$(dirname "${candidate}")" "${candidate}" --version >/dev/null 2>&1); then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if ! DOTNET="$(find_dotnet)"; then
+  message="no dotnet that can run the .NET SDK global.json requires was found (tried every dotnet on PATH, \$DOTNET_ROOT and ~/.dotnet)"
+  if [[ -n "${CI:-}" ]]; then
+    echo "error: ${message}" >&2
+    exit 1
+  fi
+  echo "SKIP: ${message}"
   exit 0
 fi
+export DOTNET_ROOT="$(dirname "${DOTNET}")"
+dotnet() { "${DOTNET}" "$@"; }
 
 echo "building the memory_sink example..."
 cargo build --example memory_sink --manifest-path "${ROOT_DIR}/rust/pz-connector/Cargo.toml"
