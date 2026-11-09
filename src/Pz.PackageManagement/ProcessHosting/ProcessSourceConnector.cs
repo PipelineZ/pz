@@ -13,7 +13,7 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// already-connected, already-Configure()'d client (<c>PcpClient.ConnectAndConfigureAsync</c>)
 /// -- <see cref="OpenAsync"/> makes no RPC of its own, since PCP has no separate "open" call: the
 /// wrapped connector opens lazily, connector-side, on its first source-specific RPC.</summary>
-public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess process) : ISourceConnector
+public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess process) : ISourceConnector, IScopedConnectionCheck
 {
     private readonly ProcessConnectorCore _core = new(client, process);
 
@@ -31,6 +31,9 @@ public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess pr
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
         _core.CheckConnectionAsync(config, ct);
 
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext context,
+        CancellationToken ct) => _core.CheckConnectionAsync(config, ct, context);
+
     // `config` is the same connection config the client was already Configure()'d with (the engine
     // calls OpenAsync with `def.Source.Connection` every time, exactly what built the ConnectorConfig
     // ConnectAndConfigureAsync sent) -- there is nothing left to send here.
@@ -39,8 +42,17 @@ public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess pr
 }
 
 internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
-    : ISource, IOperationGateAware, IGatedShim, INaturalReadShapeSource
+    : ISource, IOperationGateAware, IGatedShim, INaturalReadShapeSource, IRunContextAware
 {
+    /// <summary>The run and node the engine opened this shim for; sent on every request that may open the
+    /// connector's source, so the connector process gets it before its own open (null until handed over).</summary>
+    private RunContextMsg? _runContext;
+
+    public void UseRunContext(ConnectorRunContext context) =>
+        Volatile.Write(ref _runContext, MessageMapping.ToRunContextMsg(context));
+
+    private RunContextMsg? RunContext => Volatile.Read(ref _runContext);
+
     /// <summary>Holds whatever gate the engine hands this instance -- see
     /// <see cref="IOperationGateAware"/>'s own contract (called once, after <c>OpenAsync</c> returns,
     /// before any plan/read call). Nothing in this shim wraps its OWN RPC calls in it: the gated
@@ -58,7 +70,7 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var opId = NewOpId();
-        var request = new GetSchemaRequest { OpId = opId, Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        var request = new GetSchemaRequest { OpId = opId, Spec = MessageMapping.ToDatasetSpecMsg(spec), RunContext = RunContext };
         using var ladder = client.AttachCancelLadder(opId, ct);
         try
         {
@@ -92,7 +104,7 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
         // No cancel ladder: this call carries no caller token to escalate on, and its own deadline
         // firing already surfaces as a transient PzConnectorException. Condemning the whole instance
         // because a planner probe was slow would be a far bigger hammer than that failure warrants.
-        var request = new NativeScanRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        var request = new NativeScanRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec), RunContext = RunContext };
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         NativeScanResponse response;
         try
@@ -134,7 +146,10 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
     {
         // Synchronous in the ABI and called once per dataset at plan time, off the hot path -- the
         // same brief block under an internal deadline TryGetNativeScan accepts, for the same reason.
-        var request = new NaturalReadShapeRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        var request = new NaturalReadShapeRequest
+        {
+            OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec), RunContext = RunContext,
+        };
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         NaturalReadShapeResponse response;
         try
@@ -177,6 +192,7 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
             OpId = opId,
             Spec = MessageMapping.ToDatasetSpecMsg(spec),
             Hints = MessageMapping.ToReadHintsMsg(hints),
+            RunContext = RunContext,
         };
 
         // Every partition implements IIdentifiedPartition, or none do -- StablePartitionIds is a
@@ -452,12 +468,19 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
         }
     }
 
-    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
+    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct,
+        ConnectorRunContext? context = null)
     {
         try
         {
+            var request = new CheckRequest { Config = MessageMapping.ToStruct(config.Values) };
+            if (context is not null)
+            {
+                request.RunContext = MessageMapping.ToRunContextMsg(context);
+            }
+
             var response = await client.Grpc
-                .CheckConnectionAsync(new CheckRequest { Config = MessageMapping.ToStruct(config.Values) }, cancellationToken: ct)
+                .CheckConnectionAsync(request, cancellationToken: ct)
                 .ConfigureAwait(false);
             return MessageMapping.ToConnectionCheck(response);
         }

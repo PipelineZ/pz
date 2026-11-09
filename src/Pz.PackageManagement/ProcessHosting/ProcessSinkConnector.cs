@@ -9,7 +9,8 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// <summary>The <see cref="ISinkConnector"/> shim over one PCP connector instance -- the write-side
 /// twin of <see cref="ProcessSourceConnector"/>; see its doc for the shared construction/ownership
 /// discipline (already-connected client, no RPC of its own in <see cref="OpenAsync"/>).</summary>
-public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess process) : ISinkConnector, IOutputConfigSchema
+public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess process)
+    : ISinkConnector, IOutputConfigSchema, IScopedConnectionCheck
 {
     private readonly ProcessConnectorCore _core = new(client, process);
 
@@ -33,12 +34,25 @@ public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess proc
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
         _core.CheckConnectionAsync(config, ct);
 
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext context,
+        CancellationToken ct) => _core.CheckConnectionAsync(config, ct, context);
+
     public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
         ValueTask.FromResult<ISink>(new ProcessSink(client, process));
 }
 
-internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : ISink, IOperationGateAware, IGatedShim
+internal sealed class ProcessSink(PcpClient client, ConnectorProcess process)
+    : ISink, IOperationGateAware, IGatedShim, IRunContextAware
 {
+    /// <summary>See <see cref="ProcessSource"/>'s run context: sent on every request that may open the connector's
+    /// sink.</summary>
+    private RunContextMsg? _runContext;
+
+    public void UseRunContext(ConnectorRunContext context) =>
+        Volatile.Write(ref _runContext, MessageMapping.ToRunContextMsg(context));
+
+    private RunContextMsg? RunContext => Volatile.Read(ref _runContext);
+
     /// <summary>See <see cref="ProcessSource.Gate"/>'s identical doc: held for whoever constructs this
     /// shim's <see cref="HostChannelPump"/> to read, not used to wrap any RPC this shim itself makes.</summary>
     // See ProcessSource._gate: engine thread writes, pump loop reads.
@@ -61,7 +75,10 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
     public bool TryGetNativeCopy(
         OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
-        var request = new NativeCopyRequest { OpId = ProcessSource.NewOpId(), Spec = MessageMapping.ToOutputSpecMsg(spec) };
+        var request = new NativeCopyRequest
+        {
+            OpId = ProcessSource.NewOpId(), Spec = MessageMapping.ToOutputSpecMsg(spec), RunContext = RunContext,
+        };
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         NativeCopyResponse response;
         try
@@ -104,6 +121,7 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process) : 
             OpId = opId,
             Spec = MessageMapping.ToOutputSpecMsg(spec),
             ArrowSchemaIpc = await MessageMapping.SerializeSchemaAsync(schema, ct).ConfigureAwait(false),
+            RunContext = RunContext,
         };
 
         WriteSessionTicket ticket;

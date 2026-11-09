@@ -96,7 +96,10 @@ internal static class Program
 /// <c>--emit-stats</c> reports remote stats through <see cref="Pz.Connectors.Abstractions.ConnectorStats"/>:
 /// per partition batch one request, 100 wire bytes, 0.25 "ru" and a <c>fake.batches</c> extra; per sink
 /// session one request per batch written and one on commit. It also declines native copy on the sink,
-/// so writes take the batch path that reports.</para></summary>
+/// so writes take the batch path that reports.</para>
+/// <para><c>--report-run-context</c> answers with the run context it was handed (<c>run/node</c>, or
+/// <c>none</c>): a connection check as its message, a schema fetch and a write's start as a permanent error
+/// whose message names it.</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -119,7 +122,8 @@ internal sealed record FixtureOptions(
     bool ReportUnknownCapabilityBit,
     bool ThrowUnhandled,
     bool NativeOnly,
-    bool EmitStats)
+    bool EmitStats,
+    bool ReportRunContext = false)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -140,6 +144,7 @@ internal sealed record FixtureOptions(
         bool throwUnhandled = false;
         bool nativeOnly = false;
         bool emitStats = false;
+        bool reportRunContext = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -233,6 +238,9 @@ internal sealed record FixtureOptions(
                 case "--emit-stats":
                     emitStats = true;
                     break;
+                case "--report-run-context":
+                    reportRunContext = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -248,7 +256,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly, emitStats),
+            nativeOnly, emitStats, reportRunContext),
             passthrough.ToArray());
     }
 }

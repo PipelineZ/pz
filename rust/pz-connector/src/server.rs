@@ -1978,6 +1978,7 @@ mod tests {
                 op_id: "op1".to_string(),
                 spec: Some(pb::OutputSpecMsg::default()),
                 arrow_schema_ipc: encode_schema_ipc(&schema),
+                run_context: None,
             }))
             .await
             .expect("BeginWrite must succeed against the fixture sink")
@@ -1999,7 +2000,10 @@ mod tests {
         });
 
         let response = service
-            .check_connection(Request::new(pb::CheckRequest { config: None }))
+            .check_connection(Request::new(pb::CheckRequest {
+                config: None,
+                run_context: None,
+            }))
             .await
             .expect("a connector-reported check failure must not cross as an RpcException")
             .into_inner();
@@ -2016,7 +2020,10 @@ mod tests {
         let service = test_service(FixtureConnector::default());
 
         let response = service
-            .check_connection(Request::new(pb::CheckRequest { config: None }))
+            .check_connection(Request::new(pb::CheckRequest {
+                config: None,
+                run_context: None,
+            }))
             .await
             .unwrap()
             .into_inner();
@@ -2171,6 +2178,7 @@ mod tests {
                 op_id: "op1".to_string(),
                 spec: Some(pb::OutputSpecMsg::default()),
                 arrow_schema_ipc: encode_schema_ipc(&schema),
+                run_context: None,
             }))
             .await
             .expect("BeginWrite must succeed against the fixture sink")
@@ -2229,6 +2237,7 @@ mod tests {
                 op_id: "op1".to_string(),
                 spec: Some(pb::OutputSpecMsg::default()),
                 arrow_schema_ipc: encode_schema_ipc(&schema),
+                run_context: None,
             }))
             .await
             .unwrap()

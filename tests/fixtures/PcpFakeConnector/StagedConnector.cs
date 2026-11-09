@@ -11,8 +11,19 @@ namespace PcpFakeConnector;
 /// honestly from what it implements, which is exactly what makes each switch reach the wire the way
 /// a real misbehaving connector would.</summary>
 internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext context)
-    : ISourceConnector, ISinkConnector
+    : ISourceConnector, ISinkConnector, IScopedConnectionCheck
 {
+    /// <summary>What <c>--report-run-context</c> says about a context: <c>run/node</c>, or <c>none</c>.</summary>
+    internal static string Describe(ConnectorRunContext? context) =>
+        context is null ? "none" : $"{context.Run}/{context.Node ?? "-"}";
+
+    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext runContext,
+        CancellationToken ct)
+    {
+        var check = await CheckConnectionAsync(config, ct).ConfigureAwait(false);
+        return options.ReportRunContext ? new ConnectionCheck(check.Ok, $"run context {Describe(runContext)}") : check;
+    }
+
     /// <summary>The one instrument this fixture records on, so a host-side test can prove that a
     /// connector's own metrics reach the collector the host named -- the meter half of the telemetry
     /// contract, which the span assertions alone leave unproven. A static, connector-authored name;
@@ -149,7 +160,15 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
             throw new InvalidOperationException("fixture: deliberate unhandled exception");
         }
 
-        return _inner.CheckConnectionAsync(config, ct);
+        return options.ReportRunContext
+            ? ReportNoContextAsync(config, ct)
+            : _inner.CheckConnectionAsync(config, ct);
+    }
+
+    private async ValueTask<ConnectionCheck> ReportNoContextAsync(ConnectorConfig config, CancellationToken ct)
+    {
+        var check = await _inner.CheckConnectionAsync(config, ct).ConfigureAwait(false);
+        return new ConnectionCheck(check.Ok, $"run context {Describe(null)}");
     }
 
     async ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct)
@@ -170,8 +189,12 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
 /// <summary>The source side with the read-path switches applied at plan time. Wrapped at plan time,
 /// not at read time: the SDK computes the partition's <c>stable_id</c>/<c>sync_state</c> flags from
 /// the planned object and later resolves reads and GetReadState against that SAME object.</summary>
-internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IOperationGateAware
+internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IOperationGateAware, IRunContextAware
 {
+    private ConnectorRunContext? _runContext;
+
+    public void UseRunContext(ConnectorRunContext context) => _runContext = context;
+
     /// <summary>Static, connector-authored op label for every <c>--use-gate</c> partition read -- never
     /// a value derived from the dataset spec.</summary>
     private const string GateOpLabel = "localfiles-pcp.read_partition";
@@ -181,7 +204,10 @@ internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IO
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
 
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
-        inner.GetSchemaAsync(spec, ct);
+        options.ReportRunContext
+            ? throw new PzConnectorException(
+                $"fixture: source run context {StagedConnector.Describe(_runContext)}", isTransient: false)
+            : inner.GetSchemaAsync(spec, ct);
 
     public bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
     {
@@ -273,8 +299,12 @@ internal sealed class StagedFeedSource(ISource inner, FixtureOptions options)
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) => NaturalReadShape.Feed;
 }
 
-internal sealed class StagedSink(ISink inner, FixtureOptions options) : ISink
+internal sealed class StagedSink(ISink inner, FixtureOptions options) : ISink, IRunContextAware
 {
+    private ConnectorRunContext? _runContext;
+
+    public void UseRunContext(ConnectorRunContext context) => _runContext = context;
+
     // --emit-stats reports through the Arrow write session, so it declines native copy: a native copy
     // never opens a session and would leave nothing to report from.
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
@@ -290,6 +320,12 @@ internal sealed class StagedSink(ISink inner, FixtureOptions options) : ISink
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
+        if (options.ReportRunContext)
+        {
+            throw new PzConnectorException(
+                $"fixture: sink run context {StagedConnector.Describe(_runContext)}", isTransient: false);
+        }
+
         var session = await inner.BeginWriteAsync(spec, schema, ct).ConfigureAwait(false);
         if (options.EmitStats)
         {
