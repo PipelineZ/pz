@@ -499,7 +499,8 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 
         Assert.Equal(0, rows);
         Assert.Single(_server.Requests);
-        Assert.Contains("matched for_each.on_status[0] (skip); 0 rows landed", Assert.Single(_notices));
+        Assert.Equal($"http source 's.d': skipped the read: HTTP 400 from {_server.BaseUrl}orders matched " +
+            "for_each.on_status[0] (skip); 0 rows landed", Assert.Single(_notices));
     }
 
     [Fact]
@@ -660,5 +661,158 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         {
             ["on_status"] = Rules(Map(("status", 400), ("body_contains", "quota"), ("action", "transient"))),
         }));
+    }
+
+    // --- coverage the review asked for ---
+
+    [Fact]
+    public async Task Token_authenticator_401_wins_over_a_matching_rule()
+    {
+        _server.Map("/token", _ => Status(200, """{"access_token":"t1","token_type":"Bearer","expires_in":3600}"""));
+        _server.Map("/r", _ => Status(401, "invalid token"));
+
+        var ex = await Fails(Paged(Rules(Map(("status", 401), ("action", "transient")))), null,
+            ("auth", Map(("type", "oauth2_client_credentials"), ("token_url", new Uri(_server.BaseUrl, "token").ToString()),
+                ("client_id", "c"), ("client_secret", "s3cret"))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("rejected a freshly issued token (HTTP 401)", ex.Message);
+        Assert.DoesNotContain("on_status", ex.Message);
+    }
+
+    [Fact]
+    public async Task Class_rule_never_reaches_a_proxy_407()
+    {
+        _server.Map("/r", _ => Status(407, "proxy auth required"));
+
+        var ex = await Fails(Paged(Rules(Map(("status", "4xx"), ("action", "transient")))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("the proxy refused authentication (HTTP 407)", ex.Message);
+        Assert.DoesNotContain("on_status", ex.Message);
+    }
+
+    [Fact]
+    public async Task Class_rule_whose_body_does_not_match_leaves_a_503_transient()
+    {
+        _server.Map("/r", _ => Status(503, "busy"));
+
+        var ex = await Fails(Paged(Rules(Map(("status", "5xx"), ("body_contains", "suspended"), ("action", "permanent")))));
+
+        Assert.True(ex.IsTransient);
+        Assert.DoesNotContain("on_status", ex.Message);
+    }
+
+    [Fact]
+    public async Task Non_matching_rule_on_an_item_404_falls_back_to_on_missing()
+    {
+        MapOrderList();
+        _server.MapPrefix("/orders/", req => req.Url.AbsolutePath == "/orders/b/lines"
+            ? Status(404, "not found")
+            : Status(200, """[{"sku":"x"}]"""));
+
+        var rows = await Read(Orders(Map(("on_missing", "skip")),
+            ("on_status", Rules(Map(("status", 404), ("body_contains", "quota"), ("action", "transient"))))));
+
+        Assert.Equal(2, rows);
+        Assert.Equal("http source 's.d': skipped 1 items that returned 404/410 (first: item id=b)", Assert.Single(_notices));
+    }
+
+    [Fact]
+    public async Task Non_matching_rule_on_a_file_item_404_falls_back_to_on_missing()
+    {
+        MapOrderList();
+        _server.MapPrefix("/orders/", req => req.Url.AbsolutePath == "/orders/b/lines"
+            ? Status(404, "not found")
+            : Status(200, "sku\nx\n", ("Content-Type", "text/csv")));
+
+        var rows = await Read(Orders(Map(("on_missing", "skip")), ("file", Map(("format", "csv"))),
+            ("on_status", Rules(Map(("status", 404), ("body_contains", "quota"), ("action", "transient"))))));
+
+        Assert.Equal(2, rows);
+        Assert.Equal("http source 's.d': skipped 1 items that returned 404/410 (first: item id=b)", Assert.Single(_notices));
+    }
+
+    [Fact]
+    public async Task Skip_rule_matching_a_read_ahead_page_after_the_first_fails()
+    {
+        _server.Map("/r", req => req.Url.Query.Contains("page=1")
+            ? Status(200, """[{"id":1}]""")
+            : Status(400, "no data for period"));
+        var options = Paged(Rules(Map(("status", 400), ("action", "skip"))));
+        options["pagination"] = Map(("strategy", "page"), ("concurrency", 3));
+
+        var ex = await Fails(options);
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("matched on_status[0] (skip), but skip applies only to the first request", ex.Message);
+        Assert.Empty(_notices);
+    }
+
+    [Fact]
+    public async Task Body_contains_matches_a_gzip_encoded_error_body()
+    {
+        using var buffer = new MemoryStream();
+        using (var gzip = new System.IO.Compression.GZipStream(buffer, System.IO.Compression.CompressionLevel.Fastest, true))
+        {
+            gzip.Write("""{"message":"secondary rate limit"}"""u8);
+        }
+
+        _server.Map("/r", _ => new StubResponse(403, "", new Dictionary<string, string> { ["Content-Encoding"] = "gzip" })
+        {
+            RawBody = buffer.ToArray(),
+        });
+
+        var ex = await Fails(Paged(Rules(Map(("status", 403), ("body_contains", "rate limit"), ("action", "transient")))));
+
+        Assert.True(ex.IsTransient);
+        Assert.EndsWith("(on_status[0]: transient)", ex.Message);
+    }
+
+    private async Task<PzConnectorException> SinkFails(StubResponse response)
+    {
+        _server.Map("/ingest", _ => response);
+        ISinkConnector connector = new HttpConnector();
+        await using var sink = await connector.OpenAsync(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = _server.BaseUrl.ToString(),
+            ["retry_after"] = Map(("header", "X-Wait"), ("kind", "seconds")),
+        }), CancellationToken.None);
+        var schema = new Apache.Arrow.Schema.Builder()
+            .Field(f => f.Name("id").DataType(Apache.Arrow.Types.Int64Type.Default)).Build();
+        await using var session = await sink.BeginWriteAsync(
+            new OutputSpec("api", "out", "append", "fail_on_change", Map(("path", "/ingest"))), schema,
+            CancellationToken.None);
+        using var batch = new Apache.Arrow.RecordBatch(schema,
+            [new Apache.Arrow.Int64Array.Builder().Append(1).Build()], 1);
+        return await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await session.WriteBatchAsync(batch, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Configured_header_supplies_the_wait_of_a_sink_503()
+    {
+        var ex = await SinkFails(Status(503, "{}", ("X-Wait", "4")));
+
+        Assert.True(ex.IsTransient);
+        Assert.Equal(TimeSpan.FromSeconds(4), ex.RetryAfter);
+    }
+
+    [Fact]
+    public async Task Configured_header_does_not_apply_to_a_sink_500()
+    {
+        var ex = await SinkFails(Status(500, "{}", ("X-Wait", "4")));
+
+        Assert.True(ex.IsTransient);
+        Assert.Null(ex.RetryAfter);
+    }
+
+    [Fact]
+    public async Task Unreadable_configured_header_is_named_on_a_sink_429()
+    {
+        var ex = await SinkFails(Status(429, "{}", ("X-Wait", "later")));
+
+        Assert.Null(ex.RetryAfter);
+        Assert.EndsWith("(retry_after header 'X-Wait' value is not a non-negative number; ignored)", ex.Message);
     }
 }
