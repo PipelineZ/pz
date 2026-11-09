@@ -35,6 +35,25 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     `pz validate` and when `pz run` opens the source (a connector opts in by listing `column_pointers` in its dataset
     schema; an external connector with no schema is refused). pz writes that `column_pointers` option itself:
     writing it by hand, in `read:` or as a `source()` argument, is PZ0101.
+- **http: sign in with a refresh token.** `auth.type: oauth2_refresh_token` takes `token_url`, `client_id`,
+  `refresh_token`, and optionally `client_secret` (omit it for a public client), `client_auth` (`body` or `basic`;
+  `basic` needs a secret), `scope` and `params`. It exchanges the refresh token for access tokens with
+  `grant_type=refresh_token` and otherwise behaves like `oauth2_client_credentials`: the same token cache, 401
+  handling, `token_url` rules and `proxy`/`tls`. Only non-rotating refresh tokens are supported. If the token
+  response returns a different `refresh_token`, the read fails with the permanent error `PZ0366` and the new access
+  token is not used: pz cannot store the new refresh token, and the provider may already have revoked the old one.
+  Microsoft Entra returns a new refresh token on every refresh, so it always gets `PZ0366`. An `invalid_grant`
+  answer says to authorize again and update `auth.refresh_token`.
+- **http: sign in with a login request.** `auth.type: session` sends `login` (`path` relative to `base_url`, or
+  `url`; `method` `post` or `get`; a literal `body` sent as JSON, as a form with `body_format: form`, or as a string with
+  `content_type`; and `headers`), reads the token at `token_pointer` in the JSON response, and sends it on every API
+  request as set by `inject`: `bearer` (the default), `{ header: <name>, prefix: <text> }`, or `{ query: <name> }`
+  (the value is redacted from messages). Set exactly one of `ttl` (for example `30m`) or `expires_in_pointer` (seconds
+  in the login response). The login must go to `base_url`'s origin or an `allow_hosts` host, and it uses the
+  connection's `proxy` and `tls`. It never follows a redirect. Connection `headers:` are not sent on the login. A
+  login answered `401` or `403` is a permanent error and is not retried, so repeated attempts cannot lock the account.
+  `408`, `429` and `5xx` are transient. A `401` from the API on a session that worked before is transient, and the
+  engine's retry logs in again.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is
