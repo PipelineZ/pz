@@ -331,6 +331,56 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sequential_mid_item_token_resumes_at_concurrency_4()
+    {
+        _server.Map("/orders", _ => OrdersPage("o1", "o2", "o3", "o4"));
+        MapLines();
+
+        var first = await Run(Spec(OrdersOptions(paged: true)), stopAfter: keys => keys.Contains("o3-1"));
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(first.LastToken!, out var token));
+        Assert.Equal(2, token!.Index);
+        Assert.Equal($"{_server.BaseUrl}orders/o3/lines?page=2", token.Item);
+
+        // The parallel path continues o3 from its stored page and reads the rest of the page once.
+        var resumed = await Run(Spec(OrdersOptions(paged: true, Map(("concurrency", 4L)))), first.LastToken);
+
+        Assert.Equal(["o3-2", "o4-1", "o4-2"], resumed.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(["o1-1", "o1-2", "o2-1", "o2-2", "o3-1", "o3-2", "o4-1", "o4-2"],
+            first.Keys.Concat(resumed.Keys).Order(StringComparer.Ordinal));
+        Assert.All(resumed.Labels, l => Assert.StartsWith(l.OrderId + "-", l.Sku));
+    }
+
+    [Fact]
+    public async Task Barrier_token_resumes_at_concurrency_1()
+    {
+        _server.Map("/orders", r => Query(r, "page") switch
+        {
+            "1" => OrdersPage("o1", "o2"),
+            "2" => OrdersPage("o3", "o4"),
+            _ => OrdersPage(),
+        });
+        MapLines(pages: 1);
+        var batches = 0;
+
+        // Page 1's two items are one batch each; the second carries the barrier token.
+        var first = await Run(Spec(OrdersOptions(paged: false, Map(("concurrency", 4L)), pagedList: true)),
+            stopAfter: _ => ++batches == 2);
+        Assert.Null(first.Batches[0].Token);
+        Assert.NotNull(first.Batches[1].Token);
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(first.LastToken!, out var token));
+        Assert.Equal($"{_server.BaseUrl}orders?page=2", token!.List);
+        Assert.Equal((0, null, null), (token.Index, token.Item, token.Anchor));
+
+        var mark = _server.Requests.Count;
+        var resumed = await Run(Spec(OrdersOptions(paged: false, pagedList: true)), first.LastToken);
+
+        Assert.Equal(["o3-1", "o4-1"], resumed.Keys);
+        Assert.Equal(["o1-1", "o2-1"], first.Keys.Order(StringComparer.Ordinal));
+        Assert.Equal(["/orders?page=2", "/orders/o3/lines", "/orders/o4/lines", "/orders?page=3"], RequestsSince(mark));
+        Assert.All(first.Labels.Concat(resumed.Labels), l => Assert.StartsWith(l.OrderId + "-", l.Sku));
+    }
+
+    [Fact]
     public async Task Post_list_and_get_item_tokens_each_keep_their_shape()
     {
         var (source, partition) = await Open(Spec(OrdersOptions(paged: true, Map(
