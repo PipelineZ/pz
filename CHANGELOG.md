@@ -20,14 +20,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **Connector ABI: `IRunContextAware` and `ConnectorRunContext(Run, Node)`** (additive). The engine hands an opened
   source or sink the run id and its node id, once, after `OpenAsync` and before any plan, read or write call, like
   `UseOperationGate` and `UseNotice`. A `pz validate --connect` pass gets a scope of its own with no node. Use it to
-  scope state kept past one open to the run, or to derive a key every retry of the node repeats. External (PCP)
-  connectors do not receive it yet.
+  scope state kept past one open to the run, or to derive a key every retry of the node repeats. Out-of-process
+  connectors receive it too: the PCP requests that open a source or sink carry an optional `RunContextMsg`, and the
+  C# SDK hands it to the connector's `IRunContextAware` (an older host sends none, an older connector ignores it).
+- **Connector ABI: `IScopedConnectionCheck`** (additive). A connector may check its connection inside a run or
+  validation pass: `pz validate --connect` calls it with the pass's `ConnectorRunContext`, the same one its schema
+  probes get, so a refused credential is tried once per pass instead of once for the check and again for the probe.
+  The http connector and the PCP host implement it; `CheckRequest` carries the context over PCP.
 - **Connector ABI: `ISkippedReadPartition`** (additive). A partition whose read a rule of the dataset's own config
   skipped, in whole or in part (an http `on_status` rule with `action: skip`), reports `ReadSkipped` once its read is
   done. For an incremental dataset the engine then captures no watermark candidate for the node (an empty window is
   not advanced to its ceiling) and gives a notice, so the next run reads the same slice again. A read that found no
   rows, or an http `on_missing: skip` 404, does not count as skipped. The http JSON, file and `for_each` partitions
-  implement it.
+  implement it. In partition mode the skip is recorded in the staging ledger (`pz_meta.partitions_skipped`) with the
+  partition's done row, so a retried attempt or a `pz retry` that reuses the partition without reading it again
+  still holds the watermark; an http `for_each` checkpoint carries it too (an optional `rule_skipped` key). Over
+  PCP, `ReadStatsResponse.read_skipped` carries the report from an out-of-process partition.
+- **Toolkit: `QueryString.WithSecret`** (additive): sets a secret query parameter after removing every pair whose
+  decoded name matches in any letter case.
 - **Toolkit: `CachedTokenAuthenticator.RunScope`** (additive). A refused sign-in is remembered for authenticators
   with the same credential and the same run scope; null shares one scope for the process, as before.
 - **Connector ABI: `IDatasetConfigValidator`.** An optional source capability that checks one dataset against its
@@ -92,7 +102,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   - A form field that is empty (null, for example an unset variable) is a validation error.
   - A login answered `401` or `403` is a permanent error. pz makes one refused login per connection per run: later
     reads, writes and nodes in the same run fail at once without logging in again. The next run tries again, once,
-    also inside a long-lived `pz mcp` server; so does each connection check and each `pz validate --connect` pass.
+    also inside a long-lived `pz mcp` server; so does each `pz validate --connect` pass (its check and its schema
+    probes share one attempt) and each connection check made on its own.
   - `408`, `429` and `5xx` on the login are transient, with the login's `Retry-After` as the wait; on a `429` or
     `503` without one, the connection's `retry_after` header supplies it.
   - A `401` from the API on a session that worked before is transient, and the engine's retry logs in again.
@@ -353,8 +364,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   nodes on the connection fail at once with the same error and send nothing. A changed secret is tried again.
 - **http: a refused sign-in no longer outlives its run.** The refusal latch was process-wide, so in a long-lived
   `pz mcp` server a refused login, refresh or client secret stayed refused until the server restarted, even after
-  the account was unlocked. It is now kept per run (two runs in one process each get one attempt), and a connection
-  check is a scope of its own.
+  the account was unlocked. It is now kept per run (two runs in one process each get one attempt); a
+  `pz validate --connect` pass is one scope for its check and schema probes.
+- **http: a refused `azure_ad` service principal is tried once per run, not once per node.** A wrong, expired or
+  unknown secret or certificate (`invalid_client`, `unauthorized_client`, AADSTS7000215, 7000222, 700016, 90002,
+  700027, 7000112) is remembered for the run like the other sign-ins. A clock-skewed assertion and throttling are not.
+  `managed_identity` and `credential_chain` are not latched: their failures are about the machine, and they send no
+  secret an identity provider could count against an account.
+- **http: an `api_key` (or session query token) echoed in another letter case is no longer sent twice.** A next link
+  carrying `API_KEY=...` kept that pair beside the one the sign-in added; the echo is now replaced.
 - **mcp: the literal-credential guard (PZ0601) checks nested options.** It looked only at top-level strings, so a
   literal secret under an http `auth:` block (`token`, `password`, `client_secret`, `refresh_token`, `key`, login
   `body` fields), `proxy:`, `tls:` or `headers:` (`Authorization`, `Cookie`, `X-Api-Key`) was written to
@@ -364,7 +382,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `token_pointer`, `key_path`, `key_file`).
 - **A `${VAR}` inside a YAML flow map gets a quoting hint.** `auth: { token: ${X} }` failed with a bare PZ0101
   "Malformed YAML" (the `{` of the reference opens another map). The hint now says to quote it, `token: "${X}"`, or
-  to use block style.
+  to use block style, also when the parser fails without a line number.
 - **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
   rounded to the 100 ns tick, which could carry into the next second and skip that second's rows; the extra digits
   are now dropped.
