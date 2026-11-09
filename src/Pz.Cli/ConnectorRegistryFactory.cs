@@ -36,6 +36,12 @@ internal static class ConnectorRegistryFactory
     /// event bus exists -- registry construction itself spawns nothing (see
     /// <see cref="ProcessConnectorHost.LoadFromDirectory"/>'s own doc), so nothing this delegate reports
     /// can fire before the caller is ready for it.</para></summary>
+    /// <summary>A connector host's failure thrown from a connector call (a process that would not spawn or
+    /// handshake, one that died), with the host's own code and hint -- the same error a failure while the
+    /// registry is built becomes.</summary>
+    internal static ConnectorHostFailure? DescribeHostFailure(Exception ex) =>
+        ex is ConnectorHostException host ? new ConnectorHostFailure(host.Code, host.Message, host.Hint) : null;
+
     public static async Task<(ConnectorRegistry Registry, ConnectorHosts? Hosts)> CreateAsync(
         PzProject project, string projectDir, bool noLockCheck, CancellationToken ct, string? runId = null,
         OtelOptions? otel = null, Action<string, string, string>? connectorLog = null)
@@ -43,6 +49,7 @@ internal static class ConnectorRegistryFactory
         ct.ThrowIfCancellationRequested();
 
         var registry = BuiltinConnectors.CreateRegistry();
+        registry.DescribeHostFailure = DescribeHostFailure;
         var nonBuiltin = project.Connectors
             .Where(c => !BuiltinConnectors.PackageIds.Contains(c.Package))
             .ToArray();

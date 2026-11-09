@@ -22,6 +22,15 @@ public sealed class ConnectorRegistry
     private readonly Dictionary<string, ISinkConnector> _sinks = [];
     private readonly HashSet<string> _hosted = new(StringComparer.Ordinal);
 
+    /// <summary>Recognises a connector host's own failure (spawn, handshake, a dead process) thrown from a
+    /// connector call, describing it with the host's code and hint; null for anything else. Set by whoever builds
+    /// the registry with a host, since the engine cannot reference the host's exception type. Unset, a host
+    /// failure is not recognised and propagates.</summary>
+    public Func<Exception, ConnectorHostFailure?>? DescribeHostFailure { get; set; }
+
+    /// <summary>Whether <paramref name="name"/> is served by an out-of-process host.</summary>
+    public bool IsHosted(string name) => _hosted.Contains(name);
+
     /// <summary>Registers a source connector under <paramref name="name"/>. Throws
     /// <see cref="InvalidOperationException"/> if a source connector is already registered under that
     /// name — a security invariant: names must never be silently hijacked (e.g. a

@@ -470,19 +470,35 @@ internal sealed class StubRefusingNativeSink : ISinkConnector, ISink
     public ValueTask DisposeAsync() => default;
 }
 
-/// <summary>Source connector that refuses the dataset's config when the planner resolves its read shape -- the
-/// shape of an http dataset whose cross-field rules fail to parse (e.g. on_status skip on an incremental
-/// dataset). Transient only when asked, to prove the planner does not classify a transient failure as config.</summary>
-internal sealed class StubConfigRefusingSource(bool transient = false) : ISourceConnector, ISource, INaturalReadShapeSource
+/// <summary>Source and sink connector whose planning-time calls throw what the test sets: <see cref="OpenThrows"/>
+/// from both OpenAsync calls, <see cref="ShapeThrows"/> from GetNaturalReadShape, <see cref="NativeScanThrows"/> from
+/// TryGetNativeScan. Counts opens, to prove a refused connection is not reported once per dataset.</summary>
+internal sealed class StubThrowingConnector : ISourceConnector, ISinkConnector, ISource, ISink, INaturalReadShapeSource
 {
+    public Func<Exception>? OpenThrows { get; init; }
+    public Func<DatasetSpec, Exception?>? ShapeThrows { get; init; }
+    public Func<Exception>? NativeScanThrows { get; init; }
+    public int Opens { get; private set; }
+
     public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
-    public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.ReplaceWrites;
     public string ConnectionConfigSchema => "{}";
     public string DatasetConfigSchema => "{}";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
-    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct)
+    {
+        Opens++;
+        return OpenThrows is { } open ? throw open() : new(this);
+    }
+
+    ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct)
+    {
+        Opens++;
+        return OpenThrows is { } open ? throw open() : new(this);
+    }
 
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
         throw new InvalidOperationException("planner must never call GetSchemaAsync");
@@ -490,14 +506,23 @@ internal sealed class StubConfigRefusingSource(bool transient = false) : ISource
     public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
     {
         scan = null;
-        return false;
+        return NativeScanThrows is { } refuse ? throw refuse() : false;
     }
 
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
         throw new InvalidOperationException("planner must never call PlanReadAsync");
 
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
-        throw new PzConnectorException($"dataset '{spec.Dataset}': option 'x' clashes with option 'y'", transient);
+        ShapeThrows?.Invoke(spec) is { } refusal ? throw refusal : NaturalReadShape.Full;
+
+    public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
+    {
+        copy = null;
+        return false;
+    }
+
+    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call BeginWriteAsync");
 
     public ValueTask DisposeAsync() => default;
 }
