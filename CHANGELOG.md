@@ -86,7 +86,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `body_contains` must name exact codes and none of 401, 403, 408 or 429. `skip` is refused with `export` and on
   datasets that are or could be incremental: a raw `cursor`, a `{{ watermark }}`/`{{ window_upper }}` reference, an
   `incremental:` block, or a `columns:` contract (its columns can be the cursor of a SQL-declared incremental, which the
-  connector cannot see on a first run or under `--full-refresh`). **A skipped read lands an empty table: an output in
+  connector cannot see on a first run or under `--full-refresh`). At run time a skip rule that matches a read the engine sent a watermark (a cursor, value or upper bound) fails the read instead of skipping. One case stays open: on the first run, or under `--full-refresh`, of a raw-mode SQL-declared incremental with an inclusive SQL ceiling, no watermark is sent, so a skip there lands 0 rows and the engine advances the watermark to the ceiling. **A skipped read lands an empty table: an output in
   `replace` mode fed only by it is emptied for that run.** The dataset's rules cover its own (item) requests;
   `for_each.on_status` covers the list request. Built-in cases still come first: a proxy `407` (which a rule cannot
   name), a `401` handled by an OAuth2 or Azure AD token, and a `410` on a replayed delta link; rules then come before

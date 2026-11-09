@@ -598,6 +598,11 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
                 var rule = _sender.MatchRule(result, text);
                 if (rule is { Action: StatusAction.Skip } && firstOfCrawl)
                 {
+                    if (HttpRequestSender.CarriesWatermark(spec))
+                    {
+                        throw _sender.SkipOnIncremental(result, text, stage: null, rule);
+                    }
+
                     Missing = true;
                     if (Item is null)
                     {

@@ -815,4 +815,74 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         Assert.Null(ex.RetryAfter);
         Assert.EndsWith("(retry_after header 'X-Wait' value is not a non-negative number; ignored)", ex.Message);
     }
+
+    // --- run-time guard: a skip never applies to a read that carries a watermark ---
+
+    private async Task<PzConnectorException> SkipWithWatermark(Dictionary<string, object?> options,
+        Func<DatasetSpec, DatasetSpec> stamp)
+    {
+        var errors = new List<string>();
+        var connection = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
+            { ["base_url"] = _server.BaseUrl.ToString() }), errors)!;
+        Assert.Empty(errors);
+        // Options that validate as not incremental (a raw-mode SQL-declared incremental looks like this), read
+        // with a spec that carries the engine's watermark.
+        var config = HttpDatasetConfig.Parse(new DatasetSpec("s", "d", options));
+        var spec = stamp(new DatasetSpec("s", "d", options));
+        using var client = HttpSource.CreateClient(connection);
+        IDatasetPartition partition = config.IsFileMode
+            ? new HttpFilePartition(client, client, connection, config, spec, TimeProvider.System, null)
+                { Notice = _notices.Add, ScratchRoot = _scratchRoot }
+            : new HttpPartition(client, client, connection, config, spec, TimeProvider.System) { Notice = _notices.Add };
+        return await Assert.ThrowsAsync<PzConnectorException>(async () =>
+        {
+            await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+            {
+                batch.Dispose();
+            }
+        });
+    }
+
+    [Fact]
+    public async Task Skip_on_a_read_with_a_watermark_cursor_fails()
+    {
+        _server.Map("/r", _ => Status(400, "no data for period"));
+
+        var ex = await SkipWithWatermark(Paged(Rules(Map(("status", 400), ("action", "skip")))),
+            spec => spec with { WatermarkCursor = "pz_fetched_at", WatermarkValue = "2026-11-08T00:00:00.000000" });
+
+        // A raw-mode read handed a watermark cursor fails before its first request (it has no cursor option to
+        // filter on), so the skip never gets the chance to drop the read.
+        Assert.False(ex.IsTransient);
+        Assert.Contains("incremental dataset needs the raw-mode 'cursor'", ex.Message);
+        Assert.Empty(_notices);
+        Assert.Empty(_server.Requests);
+    }
+
+    [Fact]
+    public async Task Skip_on_a_read_with_only_an_upper_bound_fails()
+    {
+        _server.Map("/r", _ => Status(400, "no data for period"));
+
+        var ex = await SkipWithWatermark(Paged(Rules(Map(("status", 400), ("action", "skip")))),
+            spec => spec with { WatermarkUpperBound = "2026-11-09T00:00:00.000000" });
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("matched on_status[0] (skip), but skip is refused on incremental reads", ex.Message);
+        Assert.Empty(_notices);
+    }
+
+    [Fact]
+    public async Task Skip_on_a_file_download_with_a_watermark_fails()
+    {
+        _server.Map("/export.csv", _ => Status(400, "no data for period"));
+
+        var ex = await SkipWithWatermark(Map(("path", "/export.csv"), ("file", Map(("format", "csv"))),
+                ("on_status", Rules(Map(("status", 400), ("action", "skip"))))),
+            spec => spec with { WatermarkUpperBound = "2026-11-09T00:00:00.000000" });
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("matched on_status[0] (skip), but skip is refused on incremental reads", ex.Message);
+        Assert.Empty(_notices);
+    }
 }

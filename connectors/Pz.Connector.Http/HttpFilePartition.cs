@@ -209,6 +209,11 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
             // with export, so this is defence in depth).
             if (rule is { Action: StatusAction.Skip } && config.Export is null)
             {
+                if (HttpRequestSender.CarriesWatermark(spec))
+                {
+                    throw sender.SkipOnIncremental(sent, HttpRequestSender.StripUrlQueries(head), DownloadStage, rule);
+                }
+
                 _skipNotice = $"{DownloadLabel}: skipped the read: HTTP {status} from {target} matched " +
                     $"{rule.Label} (skip); 0 rows landed";
                 return (null, "");

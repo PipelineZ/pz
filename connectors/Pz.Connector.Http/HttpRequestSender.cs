@@ -263,6 +263,19 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
         }
     }
 
+    /// <summary>A <c>skip</c> rule that matched the first request of a read carrying a watermark (a cursor,
+    /// a value or an upper bound): validation could not see the incremental (a raw-mode SQL-declared one),
+    /// but the read is one, and a skipped incremental read can let the watermark move past rows never read.</summary>
+    public PzConnectorException SkipOnIncremental(SentResponse sent, string bodyText, string? stage, HttpStatusRule rule)
+        => new($"{Prefix(stage)}: HTTP {(int)sent.Response.StatusCode} from {Target(sent)}: " +
+            $"{RedactSnippet(bodyText, sent.ServerChosen)} matched {rule.Label} (skip), but skip is refused on " +
+            "incremental reads, and this read carries a watermark: a skipped incremental read can let the watermark " +
+            "move past rows never read; use action: permanent (fail) or transient (retry)", isTransient: false);
+
+    /// <summary>True when the read carries any watermark the engine stamped.</summary>
+    public static bool CarriesWatermark(DatasetSpec spec)
+        => spec.WatermarkCursor is not null || spec.WatermarkValue is not null || spec.WatermarkUpperBound is not null;
+
     /// <summary>The response's <c>Retry-After</c>; when it has none usable and
     /// <paramref name="configuredFallback"/>, the wait the connection's <c>retry_after</c> header states.
     /// <paramref name="note"/> says when that header was present but unreadable.</summary>
