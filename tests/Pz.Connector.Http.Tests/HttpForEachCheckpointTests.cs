@@ -696,6 +696,7 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
         // The resumed item request has no key of its own any more; the authenticator adds the current one.
         Assert.Equal("TOPSECRET", Query(_server.Requests.Skip(mark).First(r => r.Url.AbsolutePath.EndsWith("/lines")
             && r.Url.Query.Contains("page=2")), "api_key"));
-        Assert.All(_server.Requests.Skip(mark), r => Assert.Contains("TOPSECRET", Query(r, "api_key")));
+        // Every request carries the key once, whatever spelling the API echoed into its links.
+        Assert.All(_server.Requests.Skip(mark), r => Assert.Equal("TOPSECRET", Query(r, "api_key")));
     }
 }

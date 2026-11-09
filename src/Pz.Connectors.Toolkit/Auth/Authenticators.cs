@@ -70,7 +70,7 @@ public static class Authenticators
     private sealed class QueryAuthenticator(string param, string key) : IRequestAuthenticator
     {
         public void Apply(HttpRequestMessage request)
-            => request.RequestUri = QueryString.With(request.RequestUri!, param, key);
+            => request.RequestUri = QueryString.WithSecret(request.RequestUri!, param, key);
 
         public IReadOnlyCollection<string> SecretQueryParams { get; } = [param];
     }

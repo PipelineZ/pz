@@ -559,7 +559,7 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
         var inject = _options.Inject;
         if (inject.Query is { } query)
         {
-            request.RequestUri = QueryString.With(request.RequestUri!, query, token);
+            request.RequestUri = QueryString.WithSecret(request.RequestUri!, query, token);
         }
         else if (inject.Header is { } header)
         {
