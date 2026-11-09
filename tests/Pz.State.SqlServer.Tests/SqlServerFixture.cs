@@ -16,12 +16,14 @@ public sealed class SqlServerFixture : IAsyncLifetime
 {
     public const string CollectionName = "sqlserver-state";
 
+    private const string Image = "mcr.microsoft.com/mssql/server:2022-latest";
+
     private MsSqlContainer? _container;
     private string _masterConnectionString = "";
 
     public async Task InitializeAsync()
     {
-        if (!DockerFacts.IsAvailable)
+        if (!DockerFacts.IsAvailable || !DockerFacts.CanProvide(Image))
         {
             return;
         }
@@ -29,7 +31,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
         // MSSQL_AGENT_ENABLED: CdcRemoteSyncStateTests's drop test runs sp_cdc_enable_table, whose
         // capture-job creation needs the agent (same rationale as
         // Pz.Connector.SqlServer.Tests.MsSqlContainerFixture) -- harmless to every other suite here.
-        _container = new MsSqlBuilder("mcr.microsoft.com/mssql/server:2022-latest")
+        _container = new MsSqlBuilder(Image)
             .WithEnvironment("MSSQL_AGENT_ENABLED", "true")
             .Build();
         await _container.StartAsync().ConfigureAwait(false);
@@ -59,6 +61,7 @@ public sealed class SqlServerFixture : IAsyncLifetime
     /// <see cref="SqlStateConnection"/> directly.</summary>
     public string NewRawConnectionString()
     {
+        DockerFacts.SkipUnlessImage(Image);
         var builder = new SqlConnectionStringBuilder(_masterConnectionString) { InitialCatalog = CreateDatabase() };
         return builder.ConnectionString;
     }

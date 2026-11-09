@@ -24,6 +24,8 @@ public sealed class MinioFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        DockerFacts.SkipUnlessImage(ImageName);
     }
 
     public string Host { get; private set; } = "";

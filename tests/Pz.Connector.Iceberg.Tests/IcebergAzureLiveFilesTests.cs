@@ -68,6 +68,7 @@ public sealed class IcebergAzureLiveFilesTests(IcebergRestCatalogFixture catalog
         LiveAzure.SkipUnlessConfigured();
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        DockerFacts.SkipUnlessImage(IcebergAzuriteFixture.ImageName);
         await using var duck = DuckSession.Open(Path.Combine(dir, "scratch.duckdb"));
 
         await using (var sink = await ((ISinkConnector)new IcebergConnector()).OpenAsync(RestConfig(), CancellationToken.None))

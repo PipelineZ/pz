@@ -25,6 +25,8 @@ public sealed class FakeGcsFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        DockerFacts.SkipUnlessImage(ImageName);
     }
 
     public string BaseUrl { get; private set; } = "";

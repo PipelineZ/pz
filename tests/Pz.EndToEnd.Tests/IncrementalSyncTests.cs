@@ -48,6 +48,7 @@ public sealed class IncrementalSyncTests : IClassFixture<IncrementalSyncTests.Po
     public IncrementalSyncTests(PostgresFixture fixture)
     {
         DockerFacts.SkipUnlessDocker();
+        DockerFacts.SkipUnlessImage("postgres:16-alpine");
         _fx = fixture;
     }
 
@@ -489,7 +490,7 @@ public sealed class IncrementalSyncTests : IClassFixture<IncrementalSyncTests.Po
 
         public async Task InitializeAsync()
         {
-            if (!DockerFacts.IsAvailable)
+            if (!DockerFacts.IsAvailable || !DockerFacts.CanProvide("postgres:16-alpine"))
             {
                 return;
             }

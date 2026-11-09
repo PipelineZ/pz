@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace Pz.TestSupport;
@@ -55,6 +56,96 @@ public static class DockerFacts
     public static bool IsOffline => Environment.GetEnvironmentVariable("PZ_TESTS_OFFLINE") == "1";
 
     public static void SkipUnlessDocker() => Skip.IfNot(DockerAvailable.Value, "docker is not available");
+
+    /// <summary>How long one image pull may take before the suite counts the image as unavailable.</summary>
+    private static readonly TimeSpan PullTimeout = TimeSpan.FromMinutes(10);
+
+    private static readonly ConcurrentDictionary<string, Lazy<string?>> ImageProblems = new(StringComparer.Ordinal);
+
+    /// <summary>Why docker cannot provide <paramref name="image"/> to this machine (no docker, offline with the
+    /// image absent, or a pull docker refused: "pull access denied", a rate limit, an unreachable registry); null
+    /// when the image is present or was pulled. An image docker cannot provide makes its suite as unrunnable as no
+    /// docker at all, so it must skip the same way, not fail in a fixture. Asked once per image per process.</summary>
+    public static string? ImageProblem(string image) =>
+        ImageProblems.GetOrAdd(image, i => new Lazy<string?>(() => ProbeImage(i))).Value;
+
+    /// <summary>Non-throwing form of <see cref="SkipUnlessImage"/>, for a fixture that must no-op rather than throw
+    /// (see <see cref="IsAvailable"/>).</summary>
+    public static bool CanProvide(string image) => ImageProblem(image) is null;
+
+    /// <summary>Skips unless docker can provide every one of <paramref name="images"/>; call it where
+    /// <see cref="SkipUnlessDocker"/> is called, before any container is built.</summary>
+    public static void SkipUnlessImage(params string[] images)
+    {
+        foreach (var image in images)
+        {
+            if (ImageProblem(image) is { } problem)
+            {
+                throw new SkipException($"docker cannot provide image '{image}': {problem}");
+            }
+        }
+    }
+
+    private static string? ProbeImage(string image)
+    {
+        if (!DockerAvailable.Value)
+        {
+            return "docker is not available";
+        }
+
+        if (RunDocker(TimeSpan.FromSeconds(30), "image", "inspect", "--format", "{{.Id}}", image).ExitCode == 0)
+        {
+            return null;
+        }
+
+        if (IsOffline)
+        {
+            return $"{image} is not present locally and PZ_TESTS_OFFLINE=1 forbids pulling it";
+        }
+
+        var pull = RunDocker(PullTimeout, "pull", image);
+        if (pull.ExitCode == 0)
+        {
+            return null;
+        }
+
+        var reason = pull.Error.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault() ?? (pull.ExitCode < 0 ? "the pull timed out" : $"docker pull exited {pull.ExitCode}");
+        return $"docker pull {image} failed: {(reason.Length > 300 ? reason[..300] : reason)}";
+    }
+
+    private static (int ExitCode, string Error) RunDocker(TimeSpan timeout, params string[] args)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("docker") { RedirectStandardOutput = true, RedirectStandardError = true };
+            foreach (var arg in args)
+            {
+                psi.ArgumentList.Add(arg);
+            }
+
+            using var process = Process.Start(psi);
+            if (process is null)
+            {
+                return (-1, "docker could not be started");
+            }
+
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(timeout))
+            {
+                process.Kill(entireProcessTree: true);
+                return (-1, "");
+            }
+
+            stdout.Wait(1000);
+            return (process.ExitCode, stderr.Wait(1000) ? stderr.Result : "");
+        }
+        catch (Exception ex)
+        {
+            return (-1, ex.Message);
+        }
+    }
 
     public static void SkipIfOffline() => Skip.If(IsOffline, "PZ_TESTS_OFFLINE=1");
 }

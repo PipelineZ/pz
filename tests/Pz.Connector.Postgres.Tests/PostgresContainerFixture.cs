@@ -23,6 +23,8 @@ public sealed class PostgresContainerFixture : IAsyncLifetime
     public PostgresContainerFixture()
     {
         DockerFacts.SkipUnlessDocker();
+        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        DockerFacts.SkipUnlessImage("postgres:16-alpine");
     }
 
     public string Host { get; private set; } = "";

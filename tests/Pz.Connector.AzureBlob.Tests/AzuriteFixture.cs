@@ -28,6 +28,8 @@ public sealed class AzuriteFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        DockerFacts.SkipUnlessImage(ImageName);
     }
 
     /// <summary>Azurite well-known dev account connection string -- the shape DuckDB's <c>azure</c>

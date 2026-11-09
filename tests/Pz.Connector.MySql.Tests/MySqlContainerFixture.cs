@@ -47,6 +47,7 @@ public sealed class MySqlContainerFixture : IAsyncLifetime
 
     public async Task EnsureStartedAsync()
     {
+        DockerFacts.SkipUnlessImage("mysql:8.4");
         if (_container is not null)
         {
             return;

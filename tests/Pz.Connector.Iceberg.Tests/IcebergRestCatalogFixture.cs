@@ -33,6 +33,8 @@ public sealed class IcebergRestCatalogFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        // An image docker cannot pull makes the suite as unrunnable as no docker: skip, never fail.
+        DockerFacts.SkipUnlessImage(MinioImage, RestImage);
     }
 
     /// <summary>The catalog's REST endpoint as the host sees it.</summary>
