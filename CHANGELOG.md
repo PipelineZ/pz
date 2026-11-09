@@ -9,6 +9,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **Connector ABI: `IDatasetConfigValidator`.** An optional source capability that checks one dataset against its
+  connection, offline. `pz validate` calls it once per dataset after the connection's own check and reports every
+  error with the dataset named. A connector that does not implement it is validated as before; process-hosted
+  connectors do not offer it yet. The http connector uses it for pagination that clashes with the connection's
+  headers or sign-in.
 - **http: watermark formats, epoch timestamps and nested contract columns.** Four dataset `read:` options.
   - `watermark_format` sets how a timestamp cursor renders in `{{ watermark }}` and `{{ window_upper }}`: `iso8601`
     (the default, unchanged), `epoch_s`, `epoch_ms`, `date`, or a custom format of the letters `y M d H m s f` (for
@@ -131,14 +136,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   across redirects. Its name cannot be one pz or the HTTP stack owns (`Authorization`, `Proxy-Authorization`,
   `Cookie`, `Host`, `Connection`, `Transfer-Encoding`, `Expect`, `TE`, `Upgrade`), a header .NET treats as a content
   header (`Content-*`, `Expires`, `Last-Modified`, `Allow`), or one the connection's `headers:`, `api_key` auth or
-  session `auth.inject.header` also set; the last is refused when the read is planned, before any request.
+  session `auth.inject.header` also sets; each of those three is reported by `pz validate` and refused when the read is
+  planned, before any request.
   Checkpoints of a header-paged read use a new `v4:` token that stores the URL (without a session query token), the
   body and the page header only, never connection headers or credentials; every other read's tokens are unchanged.
   An unknown `location` on a GET read is still ignored, as before, now with a notice; `pz validate` reports it
   through the dataset schema.
   A session sign-in whose `auth.inject.query` names a query parameter that pagination sets (`param` or `size_param`
   of `page`, `offset` or a query `cursor`, on the dataset or its `for_each` list; names compared decoded, in any case)
-  is refused when the read is planned, before any request: each would overwrite the other on every page.
+  is reported by `pz validate` and refused when the read is planned, before any request: each would overwrite the
+  other on every page. Every such clash of a dataset and its list is reported at once.
 - **http: export job clean-up and multi-file results.** `export.cancel_path` (with `{job_id}` exactly once, and the
   engine bindings) and `export.cancel_method` (`delete` by default, or `post`, `put`, `patch` in any case; no body)
   cancel a job that never became ready: one that timed out, reported a `failed` status, failed a poll, or whose run was

@@ -51,7 +51,8 @@ internal static class HttpAuth
         Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? Factory,
         string? CertificatePath,
         IReadOnlyList<string>? Warnings = null,
-        Uri? LoginUrl = null);
+        Uri? LoginUrl = null,
+        SessionInject? Inject = null);
 
     /// <param name="baseUrl">The connection's base URL (null when it is invalid): a session login path resolves against it.</param>
     internal static Parsed Parse(IReadOnlyDictionary<string, object?>? auth, string? baseDir, TimeSpan timeout, List<string> errors,
@@ -83,7 +84,7 @@ internal static class HttpAuth
             case Session:
                 return SessionOptions.TryParse(auth, baseUrl, errors) is { } session
                     ? new Parsed(null, (time, handlers) => new SessionAuthenticator(session, timeout, time,
-                        handlers?.Invoke(session.LoginUrl)), null, LoginUrl: session.LoginUrl)
+                        handlers?.Invoke(session.LoginUrl)), null, LoginUrl: session.LoginUrl, Inject: session.Inject)
                     : none;
             case "api_key" or "bearer" or "basic":
                 if (!Authenticators.TryCreate(auth, out var authenticator, out var error))

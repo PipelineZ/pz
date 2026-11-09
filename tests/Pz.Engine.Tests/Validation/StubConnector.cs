@@ -53,3 +53,34 @@ internal sealed class StubOutputSchemaConnector : ISourceConnector, ISinkConnect
     ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
         throw new NotSupportedException("StubOutputSchemaConnector never opens a sink in tier-3 validator tests");
 }
+
+/// <summary>The same double, also offering <see cref="IDatasetConfigValidator"/>: a separate type for the same
+/// reason as <see cref="StubOutputSchemaConnector"/>.</summary>
+internal sealed class StubDatasetValidatorConnector : ISourceConnector, IDatasetConfigValidator
+{
+    public string ConnectionConfigSchema { get; init; } = """{"type":"object"}""";
+    public string DatasetConfigSchema { get; init; } = """{"type":"object"}""";
+    public Func<ConnectorConfig, DatasetSpec, ValidationResult> ValidateDatasetFunc { get; init; } =
+        (_, _) => ValidationResult.Success;
+
+    public List<DatasetSpec> Seen { get; } = [];
+
+    public ConnectorInfo Info => new("stub-dataset-validator", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+        new(ValidationResult.Success);
+
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+        new(new ConnectionCheck(true));
+
+    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+        throw new NotSupportedException("never opened in tier-3 validator tests");
+
+    public ValueTask<ValidationResult> ValidateDatasetAsync(ConnectorConfig connection, DatasetSpec dataset,
+        CancellationToken ct)
+    {
+        Seen.Add(dataset);
+        return new(ValidateDatasetFunc(connection, dataset));
+    }
+}

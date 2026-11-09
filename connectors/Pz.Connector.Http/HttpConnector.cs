@@ -21,7 +21,7 @@ namespace Pz.Connector.Http;
 /// resume prefix so a retried delivery picks up strictly after the last acknowledged row. The sink
 /// side is an explicit interface implementation because <c>ISourceConnector.OpenAsync</c> and
 /// <c>ISinkConnector.OpenAsync</c> differ only by return type.</summary>
-public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema
+public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema, IDatasetConfigValidator
 {
     public ConnectorInfo Info { get; } = new("http", "0.1.0", ProtocolVersion.Major);
 
@@ -222,6 +222,31 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         {
             Warnings = connection?.Warnings() ?? [],
         });
+    }
+
+    /// <summary>The pagination clashes the plan refuses (<see cref="HttpSource.PaginationClashes"/>), reported at
+    /// `pz validate`. A connection or dataset that does not parse is left to the connection check and the dataset
+    /// schema, which report it.</summary>
+    public ValueTask<ValidationResult> ValidateDatasetAsync(ConnectorConfig connection, DatasetSpec dataset,
+        CancellationToken ct)
+    {
+        var connectionErrors = new List<string>();
+        if (HttpConnectionConfig.Parse(connection, connectionErrors) is not { } parsed || connectionErrors.Count > 0)
+        {
+            return ValueTask.FromResult(ValidationResult.Success);
+        }
+
+        HttpDatasetConfig config;
+        try
+        {
+            config = HttpDatasetConfig.Parse(dataset);
+        }
+        catch (PzConnectorException)
+        {
+            return ValueTask.FromResult(ValidationResult.Success);
+        }
+
+        return ValueTask.FromResult(new ValidationResult(HttpSource.PaginationClashes(parsed, config)));
     }
 
     // Mirrors HttpPartition.MaxRedirects: the client itself never auto-follows (AllowAutoRedirect is

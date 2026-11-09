@@ -620,6 +620,39 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Empty(warnings);
     }
 
+    // A clash between a connection and one dataset is invisible to the connection's ValidateAsync and to the
+    // dataset schema; a connector offering IDatasetConfigValidator reports it per dataset, every one at once.
+    [Fact]
+    public async Task Dataset_cross_field_errors_are_reported_per_dataset_and_aggregated()
+    {
+        var registry = new ConnectorRegistry();
+        var connector = new StubDatasetValidatorConnector
+        {
+            ValidateDatasetFunc = (connection, dataset) => dataset.Dataset == "ok"
+                ? ValidationResult.Success
+                : ValidationResult.Failed($"clash one with {connection.GetString("host")}", "clash two"),
+        };
+        registry.AddSource("stub-ds", connector);
+
+        var source = new ConnectionDef("api", "stub-ds", new Dictionary<string, object?> { ["host"] = "h" },
+            [
+                new DatasetDef("ok", new Dictionary<string, object?> { ["path"] = "/a" }, null),
+                new DatasetDef("orders", new Dictionary<string, object?> { ["path"] = "/o" },
+                    new Dictionary<string, string> { ["id"] = "bigint" }),
+            ], "connections.yml");
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default);
+
+        Assert.Equal(["connection 'api' dataset 'orders': clash one with h", "connection 'api' dataset 'orders': clash two"],
+            errors.Select(e => e.Message));
+        Assert.All(errors, e => Assert.Equal(PzErrorCode.ConnectorConfigInvalid, e.Code));
+        Assert.All(errors, e => Assert.Equal("connections.yml", e.File));
+        var orders = Assert.Single(connector.Seen, d => d.Dataset == "orders");
+        Assert.Equal("api", orders.Source);
+        Assert.Equal("/o", orders.Options["path"]);
+        Assert.NotNull(orders.Options["columns"]);
+    }
+
     // A sink's write: options were never schema-validated at all before IOutputConfigSchema: a typo'd
     // option reached the connector unchecked and was silently ignored. These pin both halves of the
     // fix -- a connector that offers the capability gets its outputs checked, one that does not is

@@ -105,6 +105,12 @@ public static class ConnectorConfigValidator
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(source), "connection", source.Name, source.FilePath,
                 errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
 
+            if (connector is IDatasetConfigValidator datasetValidator)
+            {
+                await ValidateDatasetsAsync(datasetValidator, registry.ConfigFor(source), source, errors, ct)
+                    .ConfigureAwait(false);
+            }
+
             foreach (var dataset in source.Datasets)
             {
                 if (ColumnPointerSupport.Refusal(dataset.Options, connector.DatasetConfigSchema, source.Connector,
@@ -661,6 +667,31 @@ public static class ConnectorConfigValidator
 
             errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
                 $"{kind} '{name}' connection: {message}", filePath, null, Hint));
+        }
+    }
+
+    /// <summary>The connector's own checks of each dataset against its connection
+    /// (<see cref="IDatasetConfigValidator"/>, optional), one error per finding, naming the dataset. The options
+    /// are shaped as a real read's <see cref="DatasetSpec"/> (<see cref="SpecBuilder.ForSourceLoad(SourceDatasetDef)"/>:
+    /// the dataset's options plus its contract columns), so the check sees what the plan will.</summary>
+    private static async Task ValidateDatasetsAsync(IDatasetConfigValidator validator, ConnectorConfig config,
+        ConnectionDef source, List<PzError> errors, CancellationToken ct)
+    {
+        foreach (var dataset in source.Datasets)
+        {
+            var options = new Dictionary<string, object?>(dataset.Options);
+            if (dataset.Columns is not null)
+            {
+                options["columns"] = dataset.Columns;
+            }
+
+            var result = await validator.ValidateDatasetAsync(config, new DatasetSpec(source.Name, dataset.Name, options), ct)
+                .ConfigureAwait(false);
+            foreach (var message in result.Errors)
+            {
+                errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
+                    $"connection '{source.Name}' dataset '{dataset.Name}': {message}", source.FilePath, null, Hint));
+            }
         }
     }
 
