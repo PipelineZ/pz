@@ -289,3 +289,32 @@ internal sealed class FailingMidstreamWriteSession(ISinkWriteSession inner) : IS
 
     public ValueTask DisposeAsync() => inner.DisposeAsync();
 }
+
+/// <summary><c>--skip-reads</c>: reads nothing and reports, once its stream ends, that a rule skipped the read.</summary>
+internal sealed class SkippedReadPartition(IDatasetPartition inner) : ISkippedReadPartition
+{
+    public bool ReadSkipped { get; private set; }
+
+    public async IAsyncEnumerable<RecordBatch> ReadAsync(
+        BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
+    {
+        _ = inner;
+        await Task.Yield();
+        ReadSkipped = true;
+        yield break;
+    }
+}
+
+/// <summary><c>--skip-reads</c> with <c>--stable-ids</c>.</summary>
+internal sealed class SkippedIdentifiedReadPartition(IDatasetPartition inner, string partitionId)
+    : IIdentifiedPartition, ISkippedReadPartition
+{
+    private readonly SkippedReadPartition _inner = new(inner);
+
+    public string PartitionId => partitionId;
+
+    public bool ReadSkipped => _inner.ReadSkipped;
+
+    public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
+        _inner.ReadAsync(options, ct);
+}

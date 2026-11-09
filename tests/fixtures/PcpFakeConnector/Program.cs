@@ -99,7 +99,9 @@ internal static class Program
 /// so writes take the batch path that reports.</para>
 /// <para><c>--report-run-context</c> answers with the run context it was handed (<c>run/node</c>, or
 /// <c>none</c>): a connection check as its message, a schema fetch and a write's start as a permanent error
-/// whose message names it.</para></summary>
+/// whose message names it.</para>
+/// <para><c>--skip-reads</c> makes every partition report, once its stream ends, that a rule skipped its read
+/// (<see cref="Pz.Connectors.Abstractions.ISkippedReadPartition"/>).</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -123,7 +125,8 @@ internal sealed record FixtureOptions(
     bool ThrowUnhandled,
     bool NativeOnly,
     bool EmitStats,
-    bool ReportRunContext = false)
+    bool ReportRunContext = false,
+    bool SkipReads = false)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -145,6 +148,7 @@ internal sealed record FixtureOptions(
         bool nativeOnly = false;
         bool emitStats = false;
         bool reportRunContext = false;
+        bool skipReads = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -241,6 +245,9 @@ internal sealed record FixtureOptions(
                 case "--report-run-context":
                     reportRunContext = true;
                     break;
+                case "--skip-reads":
+                    skipReads = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -256,7 +263,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly, emitStats, reportRunContext),
+            nativeOnly, emitStats, reportRunContext, skipReads),
             passthrough.ToArray());
     }
 }

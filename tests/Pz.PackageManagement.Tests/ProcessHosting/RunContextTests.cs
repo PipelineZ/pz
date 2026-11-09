@@ -109,6 +109,33 @@ public sealed class RunContextTests : IDisposable
         Assert.Equal("run context none", response.Message);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_partition_reports_a_skipped_read_across_the_process_boundary(bool skip)
+    {
+        var dataDir = NewTempDir();
+        File.WriteAllText(Path.Combine(dataDir, "x.csv"), "id\n1\n");
+        string[] args = skip ? ["--skip-reads"] : [];
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", args);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+        await using var source = await new ProcessSourceConnector(client, process).OpenAsync(config, CancellationToken.None);
+
+        var spec = new DatasetSpec("files", "orders", new Dictionary<string, object?>
+        {
+            ["path"] = "x.csv", ["format"] = "csv", ["columns"] = new Dictionary<string, object?> { ["id"] = "bigint" },
+        });
+        var partition = Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
+        await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+        {
+            batch.Dispose();
+        }
+
+        Assert.Equal(skip, Assert.IsAssignableFrom<ISkippedReadPartition>(partition).ReadSkipped);
+    }
+
     private static ConnectorManifest LocalFilesManifest() => new(
         Name: "localfiles-pcp",
         ProtocolMajorMin: ProtocolVersion.Major,

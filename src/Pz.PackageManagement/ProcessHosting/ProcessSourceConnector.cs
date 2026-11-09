@@ -241,8 +241,12 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
 /// was made under (the connector resolves <c>OpenReadStream</c>'s partition id against that same op's
 /// plan, per the fixture's <c>PlannedRead</c> lookup).</summary>
 internal sealed class ProcessPartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IDatasetPartition
+    : ISkippedReadPartition
 {
+    /// <summary>What the connector's partition reported when its stream ended (<c>ReadStatsResponse.read_skipped</c>);
+    /// false from a connector that predates the field, or when the poll failed.</summary>
+    public bool ReadSkipped { get; private set; }
+
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         ReadCoreAsync(options, ct);
 
@@ -292,6 +296,7 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
                 .GetReadStatsAsync(new ReadStateRequest { OpId = opId, PartitionId = partitionId }, cancellationToken: cts.Token)
                 .ConfigureAwait(false);
             HostStats.Merge(response.Stats);
+            ReadSkipped = response.ReadSkipped;
         }
         catch (Exception ex) when (ex is RpcException or ObjectDisposedException or OperationCanceledException)
         {
@@ -378,9 +383,11 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
 /// connector declared <see cref="ConnectorCapabilities.StablePartitionIds"/>, per
 /// <see cref="IIdentifiedPartition"/>'s contract.</summary>
 internal sealed class ProcessIdentifiedPartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IIdentifiedPartition
+    : IIdentifiedPartition, ISkippedReadPartition
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public bool ReadSkipped => _inner.ReadSkipped;
 
     public string PartitionId => partitionId;
 
@@ -408,9 +415,11 @@ internal static class ProcessPartitions
 /// <summary>Composition over <see cref="ProcessPartition"/> for a partition whose plan entry declared
 /// <c>sync_state</c>; see <see cref="ProcessPartitions"/>.</summary>
 internal sealed class ProcessSyncStatePartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IDatasetPartition, ISyncStatePartition
+    : ISkippedReadPartition, ISyncStatePartition
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public bool ReadSkipped => _inner.ReadSkipped;
 
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         _inner.ReadAsync(options, ct);
@@ -422,9 +431,11 @@ internal sealed class ProcessSyncStatePartition(PcpClient client, ConnectorProce
 /// <see cref="ISyncStatePartition"/> (plan entry declared <c>sync_state</c>); see
 /// <see cref="ProcessPartitions"/>.</summary>
 internal sealed class ProcessIdentifiedSyncStatePartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IIdentifiedPartition, ISyncStatePartition
+    : IIdentifiedPartition, ISyncStatePartition, ISkippedReadPartition
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public bool ReadSkipped => _inner.ReadSkipped;
 
     public string PartitionId => partitionId;
 

@@ -283,6 +283,13 @@ internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IO
             return options.StableIds ? new IdentifiedSyncStateReadPartition(sync, stableId) : sync;
         }
 
+        if (options.SkipReads)
+        {
+            return options.StableIds
+                ? new SkippedIdentifiedReadPartition(partition, stableId)
+                : new SkippedReadPartition(partition);
+        }
+
         return options.StableIds ? new IdentifiedReadPartition(partition, stableId) : partition;
     }
 

@@ -334,6 +334,9 @@ internal sealed class PcpConnectorService(
                 plan.Stats.TryGetValue(request.PartitionId, out var stats))
             {
                 response.Stats = ConnectorStatsMapping.ToProto(stats);
+                // Asked once the stream has ended, which is when ISkippedReadPartition answers.
+                response.ReadSkipped = ResolvePartition(plan, request.PartitionId)
+                    is ISkippedReadPartition { ReadSkipped: true };
             }
 
             return Task.FromResult(response);
