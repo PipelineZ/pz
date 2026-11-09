@@ -362,22 +362,6 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         Assert.Contains("(on_status[0]: transient)", ex.Message);
     }
 
-    [Fact]
-    public async Task Export_start_response_is_classified_by_the_rules()
-    {
-        _server.Map("/exports", _ => Status(403, "export quota: try later"));
-        var options = Map(("path", "/exports"), ("method", "post"), ("body", Map(("kind", "all"))),
-            ("file", Map(("format", "csv"))),
-            ("export", Map(("job_id", "/id"), ("status_path", "/exports/{job_id}"), ("status_pointer", "/state"),
-                ("ready", new List<object?> { "done" }), ("download_pointer", "/url"))),
-            ("on_status", Rules(Map(("status", 403), ("body_contains", "try later"), ("action", "transient")))));
-
-        var ex = await Fails(options);
-
-        Assert.True(ex.IsTransient);
-        Assert.Contains("(on_status[0]: transient)", ex.Message);
-    }
-
     // --- precedence ---
 
     [Fact]

@@ -172,7 +172,21 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         var text = await sent.Response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
         if (!sent.Response.IsSuccessStatusCode)
         {
-            throw sender.StatusError(sent, text, stage);
+            var rule = sender.MatchRule(sent, text);
+            if (stage == StartStage && rule is { Action: StatusAction.Transient })
+            {
+                // A transient failure is retried by the node loop, which re-runs the read and POSTs the start
+                // again: if the vendor queued a job before refusing, every attempt would leave one more. A
+                // rule must not widen that to statuses the built-in classification treats as final.
+                throw new PzConnectorException(
+                    $"{label}: {stage}: HTTP {(int)sent.Response.StatusCode} from {sender.Target(sent)}: " +
+                    $"{sender.RedactSnippet(text, sent.ServerChosen)} matched {rule.Label} (transient), but the " +
+                    "export start is never retried by a rule: a retry sends the start again and can create a " +
+                    "second export job; re-run once the API accepts exports again (the rule still applies to " +
+                    "the polls and the download)", isTransient: false);
+            }
+
+            throw sender.StatusError(sent, text, stage, rule);
         }
 
         var target = sender.Target(sent);

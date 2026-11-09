@@ -542,4 +542,82 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         Assert.All(_server.Requests.Where(r => r.Url.AbsolutePath != "/token"),
             r => Assert.Equal("Bearer t1", r.Headers["Authorization"]));
     }
+
+    // --- on_status rules on the export stages ---
+
+    private static Action<Dictionary<string, object?>> OnStatus(params Dictionary<string, object?>[] rules)
+        => options => options["on_status"] = rules.Cast<object?>().ToList();
+
+    private static Dictionary<string, object?> Rule(params (string Key, object? Value)[] entries)
+        => entries.ToDictionary(e => e.Key, e => e.Value);
+
+    [Fact]
+    public async Task Transient_rule_on_the_start_is_permanent_so_no_second_job_is_created()
+    {
+        _server.Map("/reports", _ => Json("""{"error":"export quota reached, try later"}""", 403));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(),
+            OnStatus(Rule(("status", 403), ("body_contains", "try later"), ("action", "transient"),
+                ("retry_after", "30s"))))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Null(ex.RetryAfter);
+        Assert.Contains("export start: HTTP 403 from", ex.Message);
+        Assert.Contains("matched on_status[0] (transient), but the export start is never retried by a rule", ex.Message);
+        Assert.Single(_server.Requests, r => r.Url.AbsolutePath == "/reports");
+    }
+
+    [Fact]
+    public async Task Built_in_503_on_the_start_is_unchanged()
+    {
+        _server.Map("/reports", _ => Json("{}", 503));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(),
+            OnStatus(Rule(("status", 400), ("action", "permanent"))))));
+
+        Assert.True(ex.IsTransient);
+        Assert.EndsWith("export start: HTTP 503 from " + _server.BaseUrl + "reports", ex.Message.Replace("POST ", ""));
+    }
+
+    [Fact]
+    public async Task Permanent_rule_on_the_start_names_the_rule()
+    {
+        _server.Map("/reports", _ => Json("""{"error":"unknown metric"}""", 422));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(),
+            OnStatus(Rule(("status", 422), ("action", "permanent"))))));
+
+        Assert.False(ex.IsTransient);
+        Assert.EndsWith("(on_status[0]: permanent)", ex.Message);
+    }
+
+    [Fact]
+    public async Task Transient_rule_on_a_poll_is_transient()
+    {
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json("""{"error":"poll limit, try later"}""", 403));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(),
+            OnStatus(Rule(("status", 403), ("body_contains", "try later"), ("action", "transient"),
+                ("retry_after", "20s"))))));
+
+        Assert.True(ex.IsTransient);
+        Assert.Equal(TimeSpan.FromSeconds(20), ex.RetryAfter);
+        Assert.Contains("export poll: HTTP 403 from", ex.Message);
+        Assert.EndsWith("(on_status[0]: transient)", ex.Message);
+    }
+
+    [Fact]
+    public async Task Permanent_rule_on_the_download_names_the_rule()
+    {
+        _files.Map("/files/abc.csv", _ => Json("""{"error":"link revoked"}""", 410));
+        MapJob("/reports/j1", "\"j1\"", Ready(FilesUrl("files/abc.csv")));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(),
+            OnStatus(Rule(("status", 410), ("body_contains", "revoked"), ("action", "permanent"))))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("download: HTTP 410 from", ex.Message);
+        Assert.EndsWith("(on_status[0]: permanent)", ex.Message);
+    }
 }
