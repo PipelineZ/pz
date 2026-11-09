@@ -13,6 +13,7 @@ internal sealed class StopAtWatermarkState
     private object? _previous;
     private int _stopPage;
     private int _dropped;
+    private int _nulls;
 
     private StopAtWatermarkState(int ordinal, object? watermark, string label)
     {
@@ -24,22 +25,25 @@ internal sealed class StopAtWatermarkState
     /// <summary>True once a page held a record at or below the watermark: the crawl ends with that page.</summary>
     public bool Reached => _stopPage > 0;
 
-    /// <summary>The state for a read with `stop_at_watermark`, or null when it does not apply: the option is
-    /// off, or the read has no cursor column (a SQL-declared incremental on its first run has none, and no
-    /// watermark either). The stored watermark is parsed the way a text cursor value is, so it compares with
-    /// the projected cursors.</summary>
-    public static StopAtWatermarkState? For(HttpDatasetConfig config, DatasetSpec spec, int cursorOrdinal, string label)
+    /// <summary>The state for a read with `stop_at_watermark`, or null when the option is off. Validation
+    /// requires the `cursor` option with it, so the cursor's place in a row and its type are known on every
+    /// crawl, also when the engine passes no watermark (a first run, `--full-refresh`, a SQL-declared
+    /// incremental before its first watermark): the order check then still runs, and nothing is dropped. The
+    /// watermark is parsed the way a text cursor value is, so it compares with the projected cursors.</summary>
+    public static StopAtWatermarkState? For(HttpDatasetConfig config, DatasetSpec spec, string label)
     {
-        if (!config.StopAtWatermark || cursorOrdinal < 0)
+        if (!config.StopAtWatermark || config.Cursor is not { } cursor)
         {
             return null;
         }
 
-        var type = config.IsContractMode ? config.Columns![spec.WatermarkCursor!] : config.CursorType!;
+        // A stop_at_watermark dataset has no for_each, so a raw row's cursor is in slot 3.
+        var ordinal = config.IsContractMode ? config.Columns!.Keys.ToList().IndexOf(cursor) : 3;
+        var type = config.IsContractMode ? config.Columns![cursor] : config.CursorType!;
         var watermark = spec.WatermarkValue is { } stored
             ? TextValueParser.Parse(stored, type, $"{label}: the stored watermark")
             : null;
-        return new StopAtWatermarkState(cursorOrdinal, watermark, label);
+        return new StopAtWatermarkState(ordinal, watermark, label);
     }
 
     /// <summary>The rows of page <paramref name="page"/> (1-based) to land, in order: all but those at or below
@@ -50,7 +54,11 @@ internal sealed class StopAtWatermarkState
         foreach (var row in rows)
         {
             var value = row[_ordinal];
-            if (value is not null)
+            if (value is null)
+            {
+                _nulls++;
+            }
+            else
             {
                 if (_previous is not null && Compare(value, _previous) > 0)
                 {
@@ -90,8 +98,11 @@ internal sealed class StopAtWatermarkState
 
         if (Reached)
         {
+            // Nulls cannot be ordered, so where a feed puts them is unknown; any past the stop page are never fetched.
             notice?.Invoke($"{_label}: stop_at_watermark stopped the crawl at page {_stopPage} of this attempt, the " +
-                $"first holding records at or below the watermark; dropped {_dropped} records at or below the watermark");
+                $"first holding records at or below the watermark; dropped {_dropped} records at or below the watermark; " +
+                $"{_nulls} records with a null cursor landed up to page {_stopPage}, and records with a null cursor on " +
+                "later pages were not read");
         }
     }
 

@@ -98,11 +98,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **http: `stop_at_watermark` for newest-first feeds.** A dataset with `cursor_order: desc` and
   `stop_at_watermark: true` stops crawling at the first page that holds a record at or below the stored watermark;
   those records are dropped in the connector, the newer ones on that page land, and a notice gives the page and the
-  dropped count. Records with a null cursor land. Without a watermark (first run, `--full-refresh`) the feed is read
-  to the end. The feed must really be newest-first: a cursor value greater than the one before it fails the read,
-  on every run. The option is refused with `for_each`, `file`, `delta_pointer`, `max_pages` and
-  `pagination.concurrency` above 1, so the crawl always ends at the watermark or at the natural end of the feed.
-  Checkpoints still resume the crawl page by page.
+  dropped count. Records with a null cursor land on the pages read up to the stop page; null-cursor records on later
+  pages are not read, and the stop notice says so with the count of those that landed. Without a watermark (first
+  run, `--full-refresh`) the feed is read to the end. The option requires `cursor` (with `cursor_type` in raw mode,
+  a `columns` name in contract mode). The feed must really be newest-first: within one attempt, a cursor value
+  greater than the one before it fails the read; a retry that resumes mid-crawl checks from its resume page on. The
+  option is refused with `for_each`, `file`, `delta_pointer`, `max_pages` and `pagination.concurrency` above 1, so
+  the crawl always ends at the watermark or at the natural end of the feed. Checkpoints still resume the crawl page
+  by page.
 - **http: `for_each.values` and `for_each.dedupe`.** `for_each.values` is a literal list of maps used instead of a list
   request, for "the same endpoint per region / account / metric": each map's keys are the item fields (every entry
   must have the same keys; values are strings, numbers, booleans or null), and the item request, escaping, `pz_item`,

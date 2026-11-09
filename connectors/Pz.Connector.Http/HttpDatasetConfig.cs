@@ -318,7 +318,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
             if (cursor is not null && !columns.ContainsKey(cursor))
             {
-                errors.Add($"'cursor' names '{cursor}', which is not declared in 'columns'");
+                // Column names are matched exactly; a near miss in case is named, since it reads as declared.
+                var nearMiss = columns.Keys.FirstOrDefault(k => string.Equals(k, cursor, StringComparison.OrdinalIgnoreCase));
+                errors.Add($"'cursor' names '{cursor}', which is not declared in 'columns'" +
+                    (nearMiss is null ? "" : $" (column '{nearMiss}' differs only in case; names are case-sensitive)"));
             }
         }
         else
@@ -412,6 +415,14 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             {
                 errors.Add("'stop_at_watermark' requires 'cursor_order: desc' (it stops a newest-first crawl at the " +
                     "first record the watermark already covers)");
+            }
+
+            // The cursor must be known statically: the order check runs on every crawl, including a SQL-declared
+            // incremental's first run, which has no watermark cursor yet.
+            if (cursor is null)
+            {
+                errors.Add("'stop_at_watermark' requires 'cursor' (the incremental cursor: a JSON field with " +
+                    "'cursor_type' in raw mode, a 'columns' name in contract mode)");
             }
 
             // Each of these ends or splits a crawl some other way, so "stopped on data" could not be proven.

@@ -154,6 +154,78 @@ public sealed class HttpStopAtWatermarkTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Null_cursors_after_the_stop_page_are_not_read_and_the_notice_says_so()
+    {
+        MapFeed(Ts(10, null), Ts(9, 6), Ts(null, 5));
+
+        var (rows, _) = await Read(Spec(FeedOptions(), watermark: "6"));
+
+        Assert.Equal([10, null, 9], Cursors(rows));
+        Assert.Equal(2, _server.Requests.Count);
+        var notice = Assert.Single(_notices);
+        Assert.Contains("1 records with a null cursor landed up to page 2", notice);
+        Assert.Contains("records with a null cursor on later pages were not read", notice);
+    }
+
+    [Fact]
+    public async Task The_stop_is_at_the_spec_watermark_so_a_lowered_sql_floor_reads_further()
+    {
+        // A SQL-declared lookback (`> watermark() - interval ...`) arrives as a lower WatermarkValue than the
+        // stored watermark; the connector stops at what it is given.
+        MapFeed(Ts(10, 9), Ts(8, 7), Ts(6, 5), Ts(4));
+
+        var (rows, _) = await Read(Spec(FeedOptions(), watermark: "5"));
+
+        Assert.Equal([10, 9, 8, 7, 6], Cursors(rows));
+        Assert.Equal(3, _server.Requests.Count);
+    }
+
+    [Fact]
+    public async Task A_windowed_read_stops_at_the_lower_bound_and_leaves_the_upper_bound_to_the_engine()
+    {
+        MapFeed(Ts(10, 9), Ts(8, 7), Ts(6));
+        var spec = Spec(FeedOptions(), watermark: "7") with { WatermarkUpperBound = "9" };
+
+        var (rows, _) = await Read(spec);
+
+        // Rows above the window's upper bound land too (the engine trims them and caps advancement).
+        Assert.Equal([10, 9, 8], Cursors(rows));
+        Assert.Equal(2, _server.Requests.Count);
+    }
+
+    [Fact]
+    public async Task The_order_check_runs_on_a_sql_declared_first_run_with_no_watermark_cursor()
+    {
+        MapFeed(Ts(10, 9), Ts(11));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => Read(new DatasetSpec("s", "d", FeedOptions())));
+
+        Assert.Contains("newest-first", ex.Message);
+    }
+
+    [Fact]
+    public void Stop_at_watermark_needs_a_declared_cursor()
+    {
+        var message = Assert.Throws<PzConnectorException>(() => HttpDatasetConfig.Parse(new DatasetSpec("s", "d", Map(
+            ("path", "/e"), ("cursor_order", "desc"), ("stop_at_watermark", true),
+            ("columns", new Dictionary<string, string> { ["ts"] = "bigint" }))))).Message;
+
+        Assert.Contains("'stop_at_watermark' requires 'cursor'", message);
+    }
+
+    [Fact]
+    public void A_cursor_that_differs_from_a_column_only_in_case_is_named()
+    {
+        var message = Assert.Throws<PzConnectorException>(() => HttpDatasetConfig.Parse(new DatasetSpec("s", "d", Map(
+            ("path", "/e"), ("cursor", "at"), ("cursor_order", "desc"), ("stop_at_watermark", true),
+            ("columns", new Dictionary<string, string> { ["At"] = "timestamp" }))))).Message;
+
+        Assert.Contains("'cursor' names 'at', which is not declared in 'columns'", message);
+        Assert.Contains("column 'At' differs only in case", message);
+    }
+
+    [Fact]
     public async Task Null_cursors_land_and_do_not_stop_the_crawl()
     {
         MapFeed(Ts(10, null), Ts(null, 6), Ts(5));
@@ -194,7 +266,7 @@ public sealed class HttpStopAtWatermarkTests : IAsyncLifetime
                      {"id":1,"at":"2026-01-01T00:00:00Z"}]}
             """));
         var options = Map(("path", "/events"), ("items", "/data"), ("cursor_order", "desc"), ("stop_at_watermark", true),
-            ("columns", new Dictionary<string, string> { ["id"] = "int", ["at"] = "timestamp" }));
+            ("cursor", "at"), ("columns", new Dictionary<string, string> { ["id"] = "int", ["at"] = "timestamp" }));
 
         var (rows, _) = await Read(new DatasetSpec("s", "d", options)
         {

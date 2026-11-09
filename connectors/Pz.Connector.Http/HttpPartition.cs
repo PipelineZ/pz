@@ -249,7 +249,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
             options.TargetBatchBytes, Allocator, maxRowsPerBatch: options.MaxRowsPerBatch);
         _itemCells = ItemCells.For(config, Item, Label);
         var page = 0;
-        var stop = StopAtWatermarkState.For(config, spec, _cursorOrdinal, Label);
+        var stop = StopAtWatermarkState.For(config, spec, Label);
 
         await foreach (var (_, records, pageNext) in PagesAsync(ct).ConfigureAwait(false))
         {
