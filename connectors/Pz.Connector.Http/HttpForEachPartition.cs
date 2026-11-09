@@ -93,6 +93,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         var list = new HttpPartition(client, bareClient, connection, forEach.List, spec, time, gate, pause)
         {
             Bindings = bindings,
+            Notice = Notice,
         };
 
         var resume = _resume;
@@ -245,7 +246,13 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
 
         if (skipped > 0)
         {
-            Notice?.Invoke($"{Label}: skipped {skipped} items that returned 404/410 (first: {firstSkipped})");
+            // Without an item skip rule the wording stays exactly what on_missing has always reported.
+            var why = !config.HasSkipRule
+                ? "that returned 404/410"
+                : config.ForEach!.OnMissingSkip
+                    ? "whose first request returned 404/410 or matched an on_status skip rule"
+                    : "whose first request matched an on_status skip rule";
+            Notice?.Invoke($"{Label}: skipped {skipped} items {why} (first: {firstSkipped})");
         }
     }
 

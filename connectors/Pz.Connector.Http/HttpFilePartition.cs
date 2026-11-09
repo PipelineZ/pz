@@ -23,6 +23,13 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     /// <summary>How much of a refused response body is quoted (before redaction and trimming).</summary>
     private const int SnippetBytes = 512;
 
+    /// <summary>How much of a refused response body an <c>on_status</c> <c>body_contains</c> is matched
+    /// against.</summary>
+    private const int RuleMatchBytes = 64 * 1024;
+
+    // The notice for a download skipped by an on_status rule; set inside the gated download.
+    private string? _skipNotice;
+
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
     private const string DownloadStage = "download";
@@ -34,12 +41,12 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     // messages mask only the authenticator's secret params, as for JSON pages. A redirect off
     // base_url's origin is server-chosen and loses its whole query (SentResponse.ServerChosen).
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
-        $"http source '{spec.Source}.{spec.Dataset}'", pause: pause);
+        $"http source '{spec.Source}.{spec.Dataset}'", pause: pause, rules: config.OnStatus);
 
     // An export's download URL is chosen by the API and its query can itself be a credential (a signed
     // link), so messages drop that query whole.
     private readonly HttpRequestSender _exportDownloadSender = new(client, bareClient, connection, config.Body,
-        gate, time, $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: true, pause);
+        gate, time, $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: true, pause, config.OnStatus);
 
     /// <summary>Where a non-fatal notice goes (a zip with no member matching under
     /// `if_missing: empty`); null when the engine subscribed none.</summary>
@@ -107,10 +114,15 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         using var scratch = new DownloadScratch(ScratchRoot);
         var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
             token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
-        // DownloadAsync returns a null path only for a 404/410 under SkipMissing.
+        // DownloadAsync returns a null path only for a 404/410 under SkipMissing or an on_status skip.
         if (path is null)
         {
             Missing = true;
+            if (Item is null && _skipNotice is not null)
+            {
+                Notice?.Invoke(_skipNotice);
+            }
+
             yield break;
         }
 
@@ -175,13 +187,26 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
             () => $"{DownloadLabel}: download from {target} {IdleRead.Tail(connection.Timeout)}");
         if (!sent.Response.IsSuccessStatusCode)
         {
-            if (SkipMissing && (int)sent.Response.StatusCode is 404 or 410)
+            var status = (int)sent.Response.StatusCode;
+            // Rules match the raw head; only the message text has URL queries stripped.
+            var head = await HeadAsync(content, idle, sender.RulesReadBody ? RuleMatchBytes : SnippetBytes, ct)
+                .ConfigureAwait(false);
+            var rule = sender.MatchRule(sent, head);
+            // The direct download is the read's only request; an export's download is not (skip is refused
+            // with export, so this is defence in depth).
+            if (rule is { Action: StatusAction.Skip } && config.Export is null)
+            {
+                _skipNotice = $"{DownloadLabel}: skipped the read: HTTP {status} from {target} matched " +
+                    $"{rule.Label} (skip); no rows";
+                return (null, "");
+            }
+
+            if (rule is null && SkipMissing && status is 404 or 410)
             {
                 return (null, "");
             }
 
-            throw sender.StatusError(sent, await BodyHeadAsync(content, idle, ct).ConfigureAwait(false),
-                DownloadStage);
+            throw sender.StatusError(sent, HttpRequestSender.StripUrlQueries(head), DownloadStage, rule);
         }
 
         var mediaType = content.Headers.ContentType?.MediaType?.ToLowerInvariant();
@@ -237,14 +262,14 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     /// <summary>The head of a refused body with the whole query of every URL in it dropped: an error
     /// page or a storage error can echo a signed link, whose query is the credential.</summary>
     private static async Task<string> BodyHeadAsync(HttpContent content, IdleRead idle, CancellationToken ct)
-        => HttpRequestSender.StripUrlQueries(await HeadAsync(content, idle, ct).ConfigureAwait(false));
+        => HttpRequestSender.StripUrlQueries(await HeadAsync(content, idle, SnippetBytes, ct).ConfigureAwait(false));
 
-    /// <summary>At most the first <see cref="SnippetBytes"/> bytes of the body, as UTF-8 text, each
-    /// read bounded by <paramref name="idle"/>.</summary>
-    private static async Task<string> HeadAsync(HttpContent content, IdleRead idle, CancellationToken ct)
+    /// <summary>At most the first <paramref name="limit"/> bytes of the body, as UTF-8 text, each read
+    /// bounded by <paramref name="idle"/>.</summary>
+    private static async Task<string> HeadAsync(HttpContent content, IdleRead idle, int limit, CancellationToken ct)
     {
         await using var stream = await content.ReadAsStreamAsync(ct).ConfigureAwait(false);
-        var buffer = new byte[SnippetBytes];
+        var buffer = new byte[limit];
         var n = 0;
         int read;
         while (n < buffer.Length

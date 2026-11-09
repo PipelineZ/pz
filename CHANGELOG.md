@@ -71,6 +71,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     `reauth_status` (any 4xx except `407` and `429`) lists more statuses that mean the session expired, for example
     `[419, 440]`. `401` always counts: a list adds to it and never replaces it. Any other status, `403` included, is
     not treated as an expired session unless it is listed.
+- **http: status rules and a configurable Retry-After header.** `on_status` on a dataset is a list of rules
+  `{status, body_contains, action, retry_after}` that classify non-2xx responses before the built-in rules (408/429/5xx
+  transient, the rest permanent). `status` is a code from 400 to 599, `4xx`/`5xx`, or a list of those; `body_contains` is
+  a plain substring matched without regard to case (a file download matches the first 64 KiB of the error body). The
+  first matching rule wins. `action: transient` makes the response retryable, for example GitHub's `403` secondary rate
+  limit; its wait is the response's `Retry-After`, else the connection's `retry_after` header, else the rule's
+  `retry_after` (a duration up to `600s`), else the engine's backoff. `action: permanent` fails the read with the rule
+  named. `action: skip` ends the read with no rows and a notice, and only on the read's first request (the first page, a
+  `for_each` item's first page, or a direct file download); a skip rule that matches a later request, or the first
+  request of a resumed attempt, fails the read. Skipped `for_each` items are counted in the read's end notice together
+  with `on_missing` skips. `skip` is refused on incremental datasets (a skipped window would advance the watermark past
+  rows never read) and with `export`. The dataset's rules cover its own (item) requests; `for_each.on_status` covers the
+  list request. Built-in cases still come first: a proxy `407` (which a rule cannot name), a `401` handled by an OAuth2
+  or Azure AD token, and a `410` on a replayed delta link; rules then come before `for_each.on_missing`. The connection
+  key `retry_after: {header, kind}` (`kind`: `seconds`, `ms` or `epoch`) supplies the wait when a `429` or `503`, or a
+  response a rule classifies as transient, has no usable `Retry-After`. It is capped at 600 seconds, also applies to sink
+  requests, and moves the shared pause of a concurrent read. A header value that is not a number is ignored, and the
+  error message says so. Without these keys, behaviour is unchanged.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

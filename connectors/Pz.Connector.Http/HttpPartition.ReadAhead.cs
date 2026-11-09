@@ -65,7 +65,9 @@ internal sealed partial class HttpPartition
 
                 // The sequential crawl's stop decision and truncation detection, unchanged.
                 var (request, records, next) = (current.Request, fetched.Records, current.Next);
-                var stopsAfterThisPage = (records.Count == 0 && (stopsOnEmptyPage || next is null))
+                // A skipped first request ends the crawl whatever the strategy says about empty pages.
+                var stopsAfterThisPage = Missing
+                    || (records.Count == 0 && (stopsOnEmptyPage || next is null))
                     || (config.MaxPages is { } cap && page >= cap)
                     || (config.StopOnShortPage && config.PageSize is { } size && records.Count < size);
 
@@ -78,7 +80,7 @@ internal sealed partial class HttpPartition
                 yield return new HttpPage(request, records,
                     !stopsAfterThisPage && next is not null && !next.SameAs(request) ? next : null);
 
-                if (stopsAfterThisPage || next is null)
+                if (stopsAfterThisPage || next is null || Missing)
                 {
                     yield break;
                 }
