@@ -150,13 +150,19 @@ public sealed class PcpClient : IAsyncDisposable
         _ => null,
     };
 
+    /// <summary>The handshake budget of the overloads that take none (and so of every host spawn):
+    /// <see cref="ProtocolConstants.HandshakeTimeout"/>. Only a test assembly changes it, from a module initializer
+    /// before any spawn, so a test that is not about the timeout does not race a cold fixture start on a loaded
+    /// machine.</summary>
+    internal static TimeSpan DefaultHandshakeTimeout { get; set; } = ProtocolConstants.HandshakeTimeout;
+
     /// <summary>Dials <paramref name="process"/>'s control socket, performs the Handshake/Configure
     /// sequence under <see cref="ProtocolConstants.HandshakeTimeout"/>, and returns a ready client.
     /// See the <see cref="TimeSpan"/> overload for the full discipline.</summary>
     public static Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
         ConnectorConfig config, CancellationToken ct) =>
-        ConnectAndConfigureAsync(process, manifest, instanceId, config, HostTelemetry.None, ProtocolConstants.HandshakeTimeout, ct);
+        ConnectAndConfigureAsync(process, manifest, instanceId, config, HostTelemetry.None, DefaultHandshakeTimeout, ct);
 
     public static Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
@@ -170,7 +176,7 @@ public sealed class PcpClient : IAsyncDisposable
     public static Task<PcpClient> ConnectAndConfigureAsync(
         ConnectorProcess process, ConnectorManifest? manifest, string instanceId,
         ConnectorConfig config, HostTelemetry telemetry, CancellationToken ct, Action<string>? warn = null) =>
-        ConnectAndConfigureAsync(process, manifest, instanceId, config, telemetry, ProtocolConstants.HandshakeTimeout, ct, warn);
+        ConnectAndConfigureAsync(process, manifest, instanceId, config, telemetry, DefaultHandshakeTimeout, ct, warn);
 
     /// <summary>Same as the five-argument overload, with an injectable handshake timeout — the only
     /// reason this overload exists is so a test can force a short one instead of waiting out the real

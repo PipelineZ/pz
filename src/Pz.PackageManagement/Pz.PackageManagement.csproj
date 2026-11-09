@@ -20,6 +20,8 @@
          too (alongside Pz.Connectors.Sdk's and Pz.DuckDb's own copies); nothing here receives
          InternalsVisibleTo from either of those, so there is no ambiguity to guard against. -->
     <InternalsVisibleTo Include="Pz.PackageManagement.Tests" />
+    <!-- PcpClient.DefaultHandshakeTimeout only: the end-to-end suite spawns real connector processes too. -->
+    <InternalsVisibleTo Include="Pz.EndToEnd.Tests" />
   </ItemGroup>
 
   <ItemGroup>
