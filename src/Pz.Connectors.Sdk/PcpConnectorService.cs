@@ -774,7 +774,8 @@ internal sealed class PcpConnectorService(
     /// a connector defect. Routing it through <see cref="ToRpcException"/> gives it the trailer that
     /// makes the host reconstruct a real, non-transient <see cref="PzConnectorException"/> instead.</summary>
     private static RpcException ToUnhandledRpcException(Exception ex) =>
-        ToRpcException(new PzConnectorException($"unhandled {ex.GetType().Name}: {ex.Message}", isTransient: false));
+        ToRpcException(new PzConnectorException($"unhandled {ex.GetType().Name}: {ex.Message}", isTransient: false,
+            code: PzConnectorErrorCodes.Unhandled));
 
     // ---- lifetime -----------------------------------------------------------------------------
 

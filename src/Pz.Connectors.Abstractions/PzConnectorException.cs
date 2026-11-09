@@ -28,7 +28,9 @@ public sealed class PzConnectorException(string message, bool isTransient, TimeS
 
     /// <summary>A connector-assigned error code, when it has one; null otherwise. Additive -- every
     /// exception thrown before this property existed reads null here, exactly as one that simply never
-    /// names a code does.</summary>
+    /// names a code does. <see cref="PzConnectorErrorCodes"/> lists the values the engine acts on: set
+    /// <see cref="PzConnectorErrorCodes.Config"/> on a refusal of the config, so the engine reports it as a
+    /// config error (PZ0301) rather than as a connector failure.</summary>
     public string? Code { get; } = code;
 
     /// <summary>A next step for whoever sees <see cref="Exception.Message"/>, when the connector has

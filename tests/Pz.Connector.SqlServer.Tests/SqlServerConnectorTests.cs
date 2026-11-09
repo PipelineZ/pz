@@ -133,4 +133,16 @@ public class SqlServerConnectorTests
             ConnectorCapabilities.TextLengthStats;
         Assert.Equal(expected, c.Capabilities);
     }
+
+    [Fact]
+    public void Config_refusals_are_coded_config()
+    {
+        var noDatabase = Assert.Throws<PzConnectorException>(() => SqlServerConnector.BuildConnectionString(
+            new ConnectorConfig(new Dictionary<string, object?> { ["host"] = "h" })));
+        Assert.Equal(PzConnectorErrorCodes.Config, noDatabase.Code);
+
+        var badAuth = Assert.Throws<PzConnectorException>(() => SqlServerConnector.BuildConnectionString(
+            new ConnectorConfig(new Dictionary<string, object?> { ["host"] = "h", ["database"] = "d", ["authentication"] = "nope" })));
+        Assert.Equal(PzConnectorErrorCodes.Config, badAuth.Code);
+    }
 }

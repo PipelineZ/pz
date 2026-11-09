@@ -115,4 +115,13 @@ public sealed class HttpPaginationClashTests
         Assert.Contains("; for_each.pagination query parameter 'page' is also the session sign-in's query token",
             ex.Message);
     }
+
+    [Fact]
+    public async Task A_connection_that_does_not_parse_is_refused_at_open_coded_config()
+    {
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await new HttpConnector().OpenAsync(
+            new ConnectorConfig(new Dictionary<string, object?> { ["base_url"] = "not-a-url" }), CancellationToken.None));
+        Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
+        Assert.False(ex.IsTransient);
+    }
 }

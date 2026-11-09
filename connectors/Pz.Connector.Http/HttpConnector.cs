@@ -267,9 +267,9 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
     /// <summary>Everything the plan refuses about the dataset, reported at `pz validate`: every refusal of the
     /// dataset's own parse (the cross-field rules its schema cannot state, such as `on_status` `skip` on an
     /// incremental dataset), then the pagination clashes with the connection
-    /// (<see cref="HttpSource.PaginationClashes"/>). The engine asks only about a dataset its schema accepted, so
-    /// a parse refusal here is never a repeat of a schema finding. A connection that does not parse is left to
-    /// the connection check, which reports it; the dataset's own refusals do not depend on it.</summary>
+    /// (<see cref="HttpSource.PaginationClashes"/>). Each message names its option, which is how the engine drops
+    /// one the dataset schema already reported. A connection that does not parse is left to the connection check,
+    /// which reports it; the dataset's own refusals do not depend on it.</summary>
     public ValueTask<ValidationResult> ValidateDatasetAsync(ConnectorConfig connection, DatasetSpec dataset,
         CancellationToken ct)
     {
@@ -426,7 +426,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         if (connection is null || errors.Count > 0)
         {
             throw new PzConnectorException(
-                $"http source: invalid connection config: {string.Join("; ", errors)}", isTransient: false);
+                $"http source: invalid connection config: {string.Join("; ", errors)}", isTransient: false,
+                code: PzConnectorErrorCodes.Config);
         }
 
         return ValueTask.FromResult<ISource>(new HttpSource(connection));
@@ -439,7 +440,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         if (connection is null || errors.Count > 0)
         {
             throw new PzConnectorException(
-                $"http sink: invalid connection config: {string.Join("; ", errors)}", isTransient: false);
+                $"http sink: invalid connection config: {string.Join("; ", errors)}", isTransient: false,
+                code: PzConnectorErrorCodes.Config);
         }
 
         return ValueTask.FromResult<ISink>(new HttpSink(connection));
