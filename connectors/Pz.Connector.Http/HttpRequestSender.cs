@@ -289,15 +289,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
     /// <paramref name="configuredFallback"/>, the wait the connection's <c>retry_after</c> header states.
     /// <paramref name="note"/> says when that header was present but unreadable.</summary>
     private TimeSpan? RetryAfter(HttpResponseMessage response, bool configuredFallback, out string note)
-    {
-        note = "";
-        var now = time.GetUtcNow();
-        var standard = TransientClassifier.ParseRetryAfter(
-            response.Headers.TryGetValues("Retry-After", out var values) ? values.FirstOrDefault() : null, now);
-        return standard is null && configuredFallback && connection.RetryAfter is { } configured
-            ? configured.Read(response, now, out note)
-            : standard;
-    }
+        => HttpRetryAfterHeader.Resolve(response, connection.RetryAfter, configuredFallback, time.GetUtcNow(), out note);
 
     private bool IsBaseOrigin(Uri uri)
         => string.Equals(uri.Scheme, connection.BaseUrl.Scheme, StringComparison.OrdinalIgnoreCase)

@@ -71,7 +71,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   - A login answered `401` or `403` is a permanent error. pz makes one refused login per connection per run: later
     reads, writes and nodes in the same run (the same process) fail at once without logging in again. Scheduled
     runs still try again, once each.
-  - `408`, `429` and `5xx` on the login are transient.
+  - `408`, `429` and `5xx` on the login are transient, with the login's `Retry-After` as the wait; on a `429` or
+    `503` without one, the connection's `retry_after` header supplies it.
   - A `401` from the API on a session that worked before is transient, and the engine's retry logs in again.
     `reauth_status` (any 4xx except `407` and `429`) lists more statuses that mean the session expired, for example
     `[419, 440]`. `401` always counts: a list adds to it and never replaces it. Any other status, `403` included, is
@@ -99,8 +100,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   name), a `401` handled by an OAuth2 or Azure AD token, and a `410` on a replayed delta link; rules then come before
   `for_each.on_missing`. The connection key `retry_after: {header, kind}` (`kind`: `seconds`, `ms` or `epoch`) supplies
   the wait when a `429` or `503`, or a response a rule classifies as transient, has no usable `Retry-After`. It is capped
-  at 600 seconds (a stated wait above a day adds a note to check `kind`), also applies to sink requests, and moves the
-  shared pause of a concurrent read. A value that is not a number, or a wait that is already over (zero, or an epoch in
+  at 600 seconds (a stated wait above a day adds a note to check `kind`), also applies to sink requests and to a
+  `session` login answered `429` or `503`, and moves the shared pause of a concurrent read. A value that is not a number, or a wait that is already over (zero, or an epoch in
   the past), is ignored with a note, and the next source of a wait applies. Without these keys, behaviour is unchanged.
 - **http: `stop_at_watermark` for newest-first feeds.** A dataset with `cursor_order: desc` and
   `stop_at_watermark: true` stops crawling at the first page that holds a record at or below the stored watermark;

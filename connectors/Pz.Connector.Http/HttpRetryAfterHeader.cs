@@ -1,4 +1,5 @@
 using System.Globalization;
+using Pz.Connectors.Toolkit.Http;
 
 namespace Pz.Connector.Http;
 
@@ -75,6 +76,21 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
         }
 
         return MaxWait;
+    }
+
+    /// <summary>The wait a non-2xx response states: its own <c>Retry-After</c>; when that is missing or unusable
+    /// and <paramref name="useConfigured"/>, the wait <paramref name="configured"/> (the connection's
+    /// <c>retry_after</c> header) states. Every request the connector sends, the session login included, resolves
+    /// its wait here. <paramref name="note"/> says when the configured header was present but unusable.</summary>
+    public static TimeSpan? Resolve(HttpResponseMessage response, HttpRetryAfterHeader? configured, bool useConfigured,
+        DateTimeOffset now, out string note)
+    {
+        note = "";
+        var standard = TransientClassifier.ParseRetryAfter(
+            response.Headers.TryGetValues("Retry-After", out var values) ? values.FirstOrDefault() : null, now);
+        return standard is null && useConfigured && configured is not null
+            ? configured.Read(response, now, out note)
+            : standard;
     }
 
     /// <summary>Parses the <c>retry_after</c> map; null when absent. Problems go to <paramref name="errors"/>.</summary>

@@ -218,6 +218,10 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         var transport = HttpTransportOptions.Parse(config.Values, baseDir, errors);
         var hasTransport = !transport.IsDefault;
 
+        // Parsed before auth (a throttled session login uses it), but reported in its usual place below.
+        var retryAfterErrors = new List<string>();
+        var retryAfter = HttpRetryAfterHeader.Parse(config.Values.GetValueOrDefault("retry_after"), retryAfterErrors);
+
         HttpAuth.Parsed auth = new(null, null, null);
         var authBlock = config.Values.TryGetValue("auth", out var a)
             ? a as IReadOnlyDictionary<string, object?>
@@ -228,7 +232,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         }
         else
         {
-            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport, baseUri);
+            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport, baseUri, retryAfter);
         }
 
         var maxResponseBytes = DefaultMaxResponseBytes;
@@ -289,7 +293,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             }
         }
 
-        var retryAfter = HttpRetryAfterHeader.Parse(config.Values.GetValueOrDefault("retry_after"), errors);
+        errors.AddRange(retryAfterErrors);
 
         if (baseUri is null)
         {

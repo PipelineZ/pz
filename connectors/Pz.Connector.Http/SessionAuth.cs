@@ -546,13 +546,18 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
     private readonly HttpClient _http;
     private readonly string _endpoint;
     private readonly string _signInKey;
+    private readonly HttpRetryAfterHeader? _retryAfter;
 
     /// <param name="handler">The login transport (the connection's proxy and TLS); owned here. It must not
     /// follow redirects. Null builds the default handler, which follows none.</param>
-    public SessionAuthenticator(SessionOptions options, TimeSpan timeout, TimeProvider time, HttpMessageHandler? handler)
+    /// <param name="retryAfter">The connection's <c>retry_after</c> header, the wait of a throttled login without
+    /// a usable <c>Retry-After</c>.</param>
+    public SessionAuthenticator(SessionOptions options, TimeSpan timeout, TimeProvider time, HttpMessageHandler? handler,
+        HttpRetryAfterHeader? retryAfter = null)
         : base(time)
     {
         _options = options;
+        _retryAfter = retryAfter;
         _time = time;
         _endpoint = options.LoginUrl.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped);
         _http = new HttpClient(handler ?? new HttpClientHandler
@@ -672,10 +677,9 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
 
         if (status is 408 or 429 or (>= 500 and <= 599))
         {
-            TimeSpan? retryAfter = response.Headers.TryGetValues("Retry-After", out var values)
-                ? TransientClassifier.ParseRetryAfter(values.FirstOrDefault(), _time.GetUtcNow())
-                : null;
-            return new PzConnectorException($"{Label} failed temporarily (HTTP {status}); it will be retried",
+            var retryAfter = HttpRetryAfterHeader.Resolve(response, _retryAfter, useConfigured: status is 429 or 503,
+                _time.GetUtcNow(), out var note);
+            return new PzConnectorException($"{Label} failed temporarily (HTTP {status}); it will be retried{note}",
                 isTransient: true, retryAfter);
         }
 
