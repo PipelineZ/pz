@@ -55,8 +55,8 @@ public class HttpForEachConfigTests
 
         Assert.True(config.IsForEach);
         var forEach = config.ForEach!;
-        Assert.Equal("/orders", forEach.List.Path);
-        Assert.Equal("/data", forEach.List.ItemsPointer);
+        Assert.Equal("/orders", forEach.List!.Path);
+        Assert.Equal("/data", forEach.List!.ItemsPointer);
         Assert.Equal([("id", "/id")], forEach.Fields);
         Assert.Null(forEach.MaxItems);
         Assert.False(forEach.OnMissingSkip);
@@ -228,7 +228,7 @@ public class HttpForEachConfigTests
             new() { ["max_pages"] = 3L })));
 
         Assert.Equal(10, config.ForEach!.MaxItems);
-        Assert.Equal(2, config.ForEach.List.MaxPages);
+        Assert.Equal(2, config.ForEach.List!.MaxPages);
         Assert.Equal(3, config.MaxPages);
     }
 

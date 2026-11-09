@@ -188,8 +188,12 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                     "additionalProperties": { "type": "string" } },
                 "max_items": { "type": "integer", "minimum": 1 },
                 "on_missing": { "enum": ["error", "skip"] },
-                "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 } },
-                "required": ["path", "fields"], "additionalProperties": false } },
+                "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 },
+                "values": { "type": "array", "minItems": 1, "items": { "type": "object", "minProperties": 1,
+                    "additionalProperties": { "type": ["string", "number", "boolean", "null"] } } },
+                "dedupe": { "type": "boolean" } },
+                "anyOf": [ { "required": ["path", "fields"] }, { "required": ["values"] } ],
+                "additionalProperties": false } },
           "additionalProperties": false }
         """;
 

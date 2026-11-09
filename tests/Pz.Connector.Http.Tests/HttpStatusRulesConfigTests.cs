@@ -218,7 +218,7 @@ public class HttpStatusRulesConfigTests
         });
 
         Assert.Equal("on_status[0]", Assert.Single(config.OnStatus!).Label);
-        var listRule = Assert.Single(config.ForEach!.List.OnStatus!);
+        var listRule = Assert.Single(config.ForEach!.List!.OnStatus!);
         Assert.Equal("for_each.on_status[0]", listRule.Label);
         Assert.Equal(StatusAction.Transient, listRule.Action);
     }

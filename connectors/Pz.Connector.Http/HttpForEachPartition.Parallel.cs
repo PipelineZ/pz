@@ -16,7 +16,7 @@ namespace Pz.Connector.Http;
 /// have finished, and the token naming the next list page at record 0 is set before it is yielded.</summary>
 internal sealed partial class HttpForEachPartition
 {
-    private async IAsyncEnumerable<RecordBatch> ReadParallelAsync(HttpPartition list,
+    private async IAsyncEnumerable<RecordBatch> ReadParallelAsync(HttpPartition? list,
         IReadOnlyDictionary<string, BindingValue> bindings, DateTimeOffset now, HttpCheckpointToken.ForEachToken? resume,
         BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -27,6 +27,9 @@ internal sealed partial class HttpForEachPartition
         var firstSkipped = resume?.FirstSkipped;
         var truncated = 0;
         string? firstTruncated = null;
+        var duplicates = 0;
+        string? firstDuplicate = null;
+        var seen = forEach.Dedupe ? new SeenItems() : null;
         var capped = false;
         var firstPage = true;
         // A file item reports its own notices (a zip with no matching member) from whichever worker runs it;
@@ -42,16 +45,41 @@ internal sealed partial class HttpForEachPartition
             }
             : null;
 
-        await foreach (var page in list.PagesAsync(ct).ConfigureAwait(false))
+        await foreach (var page in ListPagesAsync(list, ct).ConfigureAwait(false))
         {
             var (start, resumeItem) = firstPage && resume is not null ? ResumeAt(resume, page) : (0, null);
-            firstPage = false;
-            // max_items hands out the page's first records only, in record order.
-            var available = Math.Max(0, page.Records.Count - start);
-            var count = forEach.MaxItems is { } max ? Math.Min(available, max - items) : available;
-            items += count;
+            if (firstPage)
+            {
+                seen?.Seed(page, start, forEach.Fields);
+            }
 
-            await using (var run = new PageRun(this, forEach, page, start, count, resumeItem, bindings, now, list, notice,
+            firstPage = false;
+            // The records handed out, in record order: duplicates `dedupe` skips are not, and max_items hands
+            // out the page's first records only.
+            var indices = new List<int>();
+            var cut = false;
+            for (var index = start; index < page.Records.Count; index++)
+            {
+                var values = ItemValues.From(page.Records[index], forEach.Fields);
+                if (seen is not null && !seen.Add(values))
+                {
+                    duplicates++;
+                    firstDuplicate ??= values.Identity();
+                    continue;
+                }
+
+                if (forEach.MaxItems is { } max && items + indices.Count >= max)
+                {
+                    cut = true;
+                    break;
+                }
+
+                indices.Add(index);
+            }
+
+            items += indices.Count;
+
+            await using (var run = new PageRun(this, forEach, page, start, indices, resumeItem, bindings, now, notice,
                              options, ct))
             {
                 RecordBatch? held = null;
@@ -83,12 +111,12 @@ internal sealed partial class HttpForEachPartition
                     truncated += run.Truncations.Count;
                     firstTruncated ??= run.Truncations.First;
 
-                    if (count < available)
+                    if (cut)
                     {
                         Notice?.Invoke($"{Label}: stopped after max_items ({forEach.MaxItems}) items; more list records were available");
                         capped = true;
                     }
-                    else if (forEach.MaxItems is { } cap && items >= cap && page.Next is not null)
+                    else if (forEach.MaxItems is { } cap && items >= cap && page.NextToken is not null)
                     {
                         // The cap reached on the page's last record: stop here rather than fetch a list
                         // page whose records would not be read.
@@ -103,10 +131,8 @@ internal sealed partial class HttpForEachPartition
                         // its first record is exactly what remains. None when the read ends here. A page
                         // that yielded nothing sets none: any batch after it belongs to a later page, past
                         // that position, and the later page's own barrier carries these skip counts.
-                        _checkpointCandidate = page.Next is { } nextPage && !capped
-                            ? HttpCheckpointToken.EncodeForEach(new(HttpCheckpointToken.Encode(nextPage, forEach.List.IsPost,
-                                connection.CheckpointStrippedParams),
-                                0, null, null, skipped, firstSkipped))
+                        _checkpointCandidate = page.NextToken is { } nextPage && !capped
+                            ? HttpCheckpointToken.EncodeForEach(new(nextPage, 0, null, null, skipped, firstSkipped))
                             : null;
                         yield return last;
                     }
@@ -124,7 +150,7 @@ internal sealed partial class HttpForEachPartition
             }
         }
 
-        EndNotices(capped, list, truncated, firstTruncated, skipped, firstSkipped);
+        EndNotices(capped, list, truncated, firstTruncated, skipped, firstSkipped, duplicates, firstDuplicate);
     }
 
     /// <summary>Items of one list page counted by an outcome (skipped, or cut short by <c>max_pages</c>),
@@ -160,13 +186,12 @@ internal sealed partial class HttpForEachPartition
     {
         private readonly HttpForEachPartition _owner;
         private readonly HttpForEachConfig _forEach;
-        private readonly HttpPartition.HttpPage _page;
+        private readonly ListPage _page;
         private readonly int _start;
-        private readonly int _count;
+        private readonly IReadOnlyList<int> _indices;
         private readonly string? _resumeItem;
         private readonly IReadOnlyDictionary<string, BindingValue> _bindings;
         private readonly DateTimeOffset _now;
-        private readonly HttpPartition _list;
         private readonly Action<string>? _notice;
         private readonly BatchOptions _options;
         private readonly Channel<RecordBatch> _channel;
@@ -177,19 +202,18 @@ internal sealed partial class HttpForEachPartition
         private (int Index, Exception Error)? _failure;
         private int _handedOut;
 
-        public PageRun(HttpForEachPartition owner, HttpForEachConfig forEach, HttpPartition.HttpPage page, int start, int count, string? resumeItem,
-            IReadOnlyDictionary<string, BindingValue> bindings, DateTimeOffset now, HttpPartition list,
-            Action<string>? notice, BatchOptions options, CancellationToken ct)
+        public PageRun(HttpForEachPartition owner, HttpForEachConfig forEach, ListPage page, int start,
+            IReadOnlyList<int> indices, string? resumeItem, IReadOnlyDictionary<string, BindingValue> bindings,
+            DateTimeOffset now, Action<string>? notice, BatchOptions options, CancellationToken ct)
         {
             _owner = owner;
             _forEach = forEach;
             _page = page;
             _start = start;
-            _count = count;
+            _indices = indices;
             _resumeItem = resumeItem;
             _bindings = bindings;
             _now = now;
-            _list = list;
             _notice = notice;
             _options = options;
             var concurrency = forEach.Concurrency;
@@ -200,7 +224,7 @@ internal sealed partial class HttpForEachPartition
             });
             _stop = CancellationTokenSource.CreateLinkedTokenSource(ct);
             // Fewer records than workers (or none at all) start fewer workers.
-            _workers = RunAsync(Math.Min(concurrency, count));
+            _workers = RunAsync(Math.Min(concurrency, indices.Count));
         }
 
         public ChannelReader<RecordBatch> Batches => _channel.Reader;
@@ -239,12 +263,12 @@ internal sealed partial class HttpForEachPartition
             while (!_stop.IsCancellationRequested)
             {
                 var offset = Interlocked.Increment(ref _handedOut) - 1;
-                if (offset >= _count)
+                if (offset >= _indices.Count)
                 {
                     return;
                 }
 
-                var index = _start + offset;
+                var index = _indices[offset];
                 try
                 {
                     await ReadItemAsync(index, _stop.Token).ConfigureAwait(false);
@@ -267,8 +291,7 @@ internal sealed partial class HttpForEachPartition
         private async Task ReadItemAsync(int index, CancellationToken ct)
         {
             var values = ItemValues.From(_page.Records[index], _forEach.Fields);
-            var item = _owner.ItemRead(values, _bindings, _now,
-                $"list page '{_list.Redact(_page.Request.Url)}', record {index}", _notice);
+            var item = _owner.ItemRead(values, _bindings, _now, $"{_page.Where}, record {index}", _notice);
             if (index == _start && _resumeItem is not null && !item.Partition.TryResumeFrom(_resumeItem))
             {
                 throw _owner.Unusable();
