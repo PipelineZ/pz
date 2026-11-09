@@ -22,8 +22,23 @@ namespace Pz.Connector.Http;
 internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
     ThrottlePause? pause = null)
-    : ICheckpointingPartition
+    : ICheckpointingPartition, ISkippedReadPartition
 {
+    private int _ruleSkipped;
+
+    /// <summary>True once an `on_status` skip rule skipped an item in this attempt (an `on_missing` 404 does not
+    /// count). Items skipped before a checkpoint an earlier attempt stored are not seen again.</summary>
+    public bool ReadSkipped => Volatile.Read(ref _ruleSkipped) != 0;
+
+    /// <summary>Notes an item partition whose read an `on_status` skip rule ended.</summary>
+    private void NoteRuleSkip(IDatasetPartition item)
+    {
+        if (item is ISkippedReadPartition { ReadSkipped: true })
+        {
+            Interlocked.Exchange(ref _ruleSkipped, 1);
+        }
+    }
+
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
     /// <summary>Where a non-fatal notice goes (a cap that stopped the read, items skipped under
@@ -232,6 +247,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                     pending?.Dispose();
                 }
 
+                NoteRuleSkip(item.Partition);
                 if (item.Missing())
                 {
                     skipped++;

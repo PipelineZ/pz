@@ -317,6 +317,7 @@ internal sealed partial class HttpForEachPartition
                 }
             }
 
+            _owner.NoteRuleSkip(item.Partition);
             if (item.Missing())
             {
                 Skips.Add(index, values.Identity());

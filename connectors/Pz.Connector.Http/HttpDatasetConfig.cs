@@ -712,7 +712,9 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// WatermarkCursor on its first run and under --full-refresh, so a `columns:` contract, whose columns
     /// can be that cursor, counts as possibly incremental. Skip rules are found in the raw maps, so a rule
     /// with other errors still has this refusal reported in the same pass; the for_each list's rules are
-    /// covered too.</summary>
+    /// covered too. The case no refusal here can see (raw mode, a SQL-declared ceiling, a first run or
+    /// --full-refresh, where no watermark reaches the connector) is closed by the engine: a skipped read reports
+    /// <see cref="ISkippedReadPartition.ReadSkipped"/>, and the engine then captures no watermark for it.</summary>
     private static void ValidateSkipRules(IReadOnlyDictionary<string, object?> options, DatasetSpec spec,
         bool hasExport, List<string> errors)
     {

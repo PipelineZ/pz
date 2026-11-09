@@ -10,6 +10,10 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 {
     private readonly StubHttpServer _server = new();
     private readonly List<string> _notices = [];
+
+    /// <summary>What the last <see cref="Read"/>'s partition reported to the engine (<see cref="ISkippedReadPartition"/>);
+    /// null when it does not implement the interface.</summary>
+    private bool? _readSkipped;
     private readonly string _scratchRoot = Directory.CreateTempSubdirectory("pz-status-rules-").FullName;
 
     public Task InitializeAsync() => Task.CompletedTask;
@@ -68,6 +72,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
             batch.Dispose();
         }
 
+        _readSkipped = (partition as ISkippedReadPartition)?.ReadSkipped;
         return rows;
     }
 
@@ -285,6 +290,48 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         Assert.Single(_server.Requests);
         Assert.Equal($"http source 's.d': skipped the read: HTTP 400 from {_server.BaseUrl}r?page=1 matched " +
             "on_status[0] (skip); 0 rows landed", Assert.Single(_notices));
+    }
+
+    [Fact]
+    public async Task A_skip_is_reported_to_the_engine_and_a_plain_404_or_an_empty_read_is_not()
+    {
+        // The engine keeps the watermark of a skipped read where it was; it must not do that for a read that
+        // merely found nothing.
+        _server.Map("/r", _ => Status(400, "no data for period"));
+        await Read(Paged(Rules(Map(("status", 400), ("action", "skip")))));
+        Assert.True(_readSkipped);
+
+        _server.Map("/export.csv", _ => Status(400, "no data for period"));
+        await Read(Map(("path", "/export.csv"), ("file", Map(("format", "csv"))),
+            ("on_status", Rules(Map(("status", 400), ("action", "skip"))))));
+        Assert.True(_readSkipped);
+
+        _server.Map("/empty", _ => Status(200, "[]"));
+        await Read(Map(("path", "/empty")));
+        Assert.False(_readSkipped);
+
+        // Prefix routes match in registration order, so one route answers by phase.
+        var phase = 0;
+        _server.Map("/orders", _ => Status(200, """{"data":[{"id":"a"},{"id":"b"}]}"""));
+        _server.MapPrefix("/o/", r => (phase, r.Url.AbsolutePath) switch
+        {
+            (0, "/o/a") => Status(404, "no such order"),
+            (0, _) => Status(200, """{"lines":[{"sku":"x"}]}"""),
+            (_, "/o/a") => Status(200, """{"lines":[{"sku":"x"}]}"""),
+            _ => Status(400, "no data for period"),
+        });
+        var options = Map(("path", "/o/{{ item.id }}"), ("items", "/lines"),
+            ("for_each", Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("id", "/id"))),
+                ("on_missing", "skip"))));
+
+        // on_missing: skip (a 404 item) is not a rule skip.
+        Assert.Equal(1, await Read(options));
+        Assert.False(_readSkipped);
+
+        phase = 1;
+        options["on_status"] = Rules(Map(("status", 400), ("action", "skip")));
+        Assert.Equal(1, await Read(options));
+        Assert.True(_readSkipped);
     }
 
     [Fact]

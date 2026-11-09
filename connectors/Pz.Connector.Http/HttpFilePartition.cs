@@ -15,8 +15,12 @@ namespace Pz.Connector.Http;
 internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
     ThrottlePause? pause = null)
-    : ICheckpointingPartition
+    : ICheckpointingPartition, ISkippedReadPartition
 {
+    /// <summary>True once an `on_status` skip rule answered the download (not an `on_missing` 404): see
+    /// <see cref="ISkippedReadPartition"/>.</summary>
+    public bool ReadSkipped => _skipNotice is not null;
+
     /// <summary>The most decompressed bytes one downloaded file (each result file of an export) may yield,
     /// as a multiple of `max_download_mb`.</summary>
     private const int DecompressionFactor = 20;

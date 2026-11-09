@@ -20,8 +20,12 @@ namespace Pz.Connector.Http;
 internal sealed partial class HttpPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate = null,
     ThrottlePause? pause = null)
-    : IDatasetPartition, ISyncStatePartition, ICheckpointingPartition
+    : IDatasetPartition, ISyncStatePartition, ICheckpointingPartition, ISkippedReadPartition
 {
+    /// <summary>True once an `on_status` skip rule ended the read (not an `on_missing` 404): the engine then keeps
+    /// an incremental dataset's watermark where it was instead of treating the read as an empty window.</summary>
+    public bool ReadSkipped { get; private set; }
+
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
     /// <summary>The for_each item this read fetches for: its fields expand into the request and land on
@@ -644,6 +648,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
                     }
 
                     Missing = true;
+                    ReadSkipped = true;
                     if (Item is null)
                     {
                         Notice?.Invoke($"{Label}: skipped the read: HTTP {status} from {Target(sent, sendUri)} " +
