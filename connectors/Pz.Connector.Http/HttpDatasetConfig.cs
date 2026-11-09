@@ -50,6 +50,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// sequential); above 1 only for the plain `page` strategy.</summary>
     public int PageConcurrency { get; init; } = 1;
 
+    /// <summary>`strategy: page` in the query string: what page read-ahead stamps on each request it
+    /// computes. Null for every other strategy and for body paging.</summary>
+    internal PageNumbering? PageNumbering { get; init; }
+
     internal const int MaxConcurrency = 16;
 
     /// <summary>Reads a `concurrency` value (an integer from 1 to <see cref="MaxConcurrency"/>, default 1);
@@ -158,7 +162,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var items = ValidatePointer(Get(options, "items") ?? "", "items", errors);
-        var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize);
+        var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize,
+            out var pageNumbering);
         BodyPaging? bodyPaging = null;
         if (method == HttpMethod.Post && options.TryGetValue("pagination", out var pg)
             && pg is IReadOnlyDictionary<string, object?> pgBlock)
@@ -325,6 +330,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             Export = export,
             ForEach = forEach,
             PageConcurrency = pageConcurrency,
+            PageNumbering = bodyPaging is null ? pageNumbering : null,
         };
     }
 
@@ -548,10 +554,11 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
     private static Func<IPageStrategy>? ParsePagination(
         IReadOnlyDictionary<string, object?> options, string itemsPointer, List<string> errors,
-        out bool stopOnShortPage, out int? pageSize)
+        out bool stopOnShortPage, out int? pageSize, out PageNumbering? pageNumbering)
     {
         stopOnShortPage = false;
         pageSize = null;
+        pageNumbering = null;
 
         if (!options.TryGetValue("pagination", out var p) || p is null)
         {
@@ -598,6 +605,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 var start = ParseStart(defaultStart: 1);
                 var size = pageSize = ParseSize();
                 var sizeParam = Get("size_param");
+                pageNumbering = new PageNumbering(param, (int)start, sizeParam, size);
                 return () => new PageParamsStrategy(param, (int)start, sizeParam, size);
             }
             case "offset":
