@@ -369,17 +369,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   clashes.
 - **http: an `api_key` (or session query token) echoed in another letter case is no longer sent twice.** A next link
   carrying `API_KEY=...` kept that pair beside the one the sign-in added; the echo is now replaced.
-- **mcp: the literal-credential guard (PZ0601) checks nested options and entity options.** It looked only at a
-  connection's top-level strings, so a literal secret under an http `auth:` block (`token`, `password`,
-  `client_secret`, `refresh_token`, `key`, login `body` fields), `proxy:`, `tls:` or `headers:` (`Authorization`,
-  `Cookie`, `X-Api-Key`) was written to `connections.yml`, and `pz_add_entity`/`pz_set_entity_options` checked
-  nothing (a `query: { api_key: ... }` went through). It now walks nested maps and lists, the strings in a list under
-  a credential-shaped key, a session login `body` written as one form or JSON string (field by field), and URLs (a
-  typed `user:password@` or a literal credential-shaped query parameter), names the dotted path
-  (`auth.login.body.password`, `entities.orders.read.query.api_key`), and runs for the entity tools too. A value made
-  only of `${...}` references, separators between them and one leading scheme word (`Bearer ${TOKEN}`) is accepted.
-  Names ending in `_url`, `_uri`, `_pointer`, `_path`, `_file` or `_fingerprint` say where something is and are no
-  longer flagged by name (`token_url`, `token_pointer`, `key_path`, `key_file`).
+- **mcp: the literal-credential guard (PZ0601) checks nested options and entity options, by whole name segments.** It
+  looked only at a connection's top-level strings, by substring, so a literal secret under an http `auth:` block,
+  `proxy:`, `tls:` or `headers:` was written to `connections.yml`, `pz_add_entity`/`pz_set_entity_options` checked
+  nothing, and names that merely contained "key" or "pass" were flagged. A key is now split into segments (`_`, `-`,
+  `.`, camelCase) and is secret-bearing when a segment is a secret word (password, pass, pwd, secret, token,
+  credential, authorization, cookie, apikey, sig, connection string) or a `key` that is not a column (`primary_key`,
+  merge `keys` are not), unless its last segment says where or what a thing is (`_url`, `_pointer`, `_path`, `_file`,
+  `_header`, `_type`, ...): proxy `bypass` and `idempotency_key_header` pass. Inside `headers:`, auth and session
+  headers (`X-Auth`) count. Under a secret-bearing key a number is refused, and a string is refused when it holds a
+  literal: `${...}` references with structure around them (`Bearer ${TOKEN}`, `session=${S}`, `${USER}:${PASSWORD}`)
+  are accepted. Request `body` strings (login or dataset, form or JSON) are read field by field, and any URL-shaped
+  value is checked for a typed `user:password@` or a literal secret query parameter (`path: /r?api_key=...`, an
+  Azure SAS `sig=`). Errors name the dotted path (`auth.login.body.password`, `entities.orders.read.query.api_key`).
 - **A `${VAR}` inside a YAML flow map gets a quoting hint.** `auth: { token: ${X} }` failed with a bare PZ0101
   "Malformed YAML" (the `{` of the reference opens another map). When the failing lines hold a `${` written unquoted
   inside a `{ }` or `[ ]` collection, the hint now says to quote it, `token: "${X}"`, or to use block style, also
