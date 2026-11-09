@@ -208,4 +208,46 @@ public sealed class HttpPagingIntegrationTests : IAsyncLifetime
         Assert.Contains(_notices, n => n.Contains("skipped 1 items whose first request matched an on_status skip rule (first: item region=b)"));
         Assert.Contains(_notices, n => n.Contains("for_each.dedupe skipped 2 duplicate list records (first: item region=a)"));
     }
+
+    public static TheoryData<string, Dictionary<string, object?>> QueryPagingClashes() => new()
+    {
+        { "page", Map(("path", "/items"), ("pagination", Map(("strategy", "page")))) },
+        { "Per_Page", Map(("path", "/items"), ("pagination", Map(("strategy", "page"), ("size_param", "per_page"), ("size", 10L)))) },
+        { "LIMIT", Map(("path", "/items"), ("pagination", Map(("strategy", "offset")))) },
+        { "c%75rsor", Map(("path", "/items"), ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("param", "cursor")))) },
+        { "after", Map(("path", "/orders/{{ item.id }}"), ("for_each", Map(("path", "/orders"), ("fields", Map(("id", "/id"))),
+            ("pagination", Map(("strategy", "cursor"), ("header", "X-Next"), ("param", "after")))))) },
+    };
+
+    [Theory]
+    [MemberData(nameof(QueryPagingClashes))]
+    public async Task A_session_query_token_named_like_a_query_paging_param_is_refused_at_plan(string inject,
+        Dictionary<string, object?> options)
+    {
+        MapLogin();
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(new DatasetSpec("s", "d", options),
+            new() { ["auth"] = Session(Map(("query", inject))) }));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("auth.inject.query", ex.Message);
+        Assert.Empty(_server.Requests);
+    }
+
+    [Fact]
+    public async Task Paging_keys_that_are_not_in_the_query_do_not_clash_with_a_session_query_token()
+    {
+        MapLogin();
+        // One row on the first page (body page 1 / no page header), then the end.
+        _server.Map("/items", r => r.Body.Contains("\"page\":2") || Header(r, "page") is not null
+            ? new StubResponse(200, """{"data":[]}""")
+            : new StubResponse(200, """{"data":[{"id":1}],"next":"n2"}"""));
+        var body = Map(("path", "/items"), ("method", "post"), ("body", Map(("page", 0L))), ("items", "/data"),
+            ("pagination", Map(("strategy", "page"), ("location", "body"), ("param", "/page"))));
+        var header = Map(("path", "/items"), ("items", "/data"),
+            ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("location", "header"), ("param", "page"))));
+
+        Assert.Single((await Read(new DatasetSpec("s", "d", body), new() { ["auth"] = Session(Map(("query", "page"))) })).Rows);
+        Assert.Single((await Read(new DatasetSpec("s", "d", header), new() { ["auth"] = Session(Map(("query", "page"))) })).Rows);
+    }
 }

@@ -134,6 +134,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   body and the page header only, never connection headers or credentials; every other read's tokens are unchanged.
   An unknown `location` on a GET read is still ignored, as before, now with a notice; `pz validate` reports it
   through the dataset schema.
+  A session sign-in whose `auth.inject.query` names a query parameter that pagination sets (`param` or `size_param`
+  of `page`, `offset` or a query `cursor`, on the dataset or its `for_each` list; names compared decoded, in any case)
+  is refused when the read is planned, before any request: each would overwrite the other on every page.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

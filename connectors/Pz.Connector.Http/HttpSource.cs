@@ -137,10 +137,33 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
                 "header must be sent by pagination alone (rename one of them)", isTransient: false);
         }
 
+        // Compared as the query string compares them: decoded, in any case.
+        if (_connection.Authenticator is SessionAuthenticator { SecretQueryParams: { Count: > 0 } secret }
+            && request.QueryPagingParams.FirstOrDefault(p => secret.Any(q => string.Equals(Decoded(q), Decoded(p),
+                StringComparison.OrdinalIgnoreCase))) is { } clash)
+        {
+            throw new PzConnectorException(
+                $"{label}: {prefix}pagination query parameter '{clash}' is also the session sign-in's query token " +
+                "('auth.inject.query'); each would overwrite the other on every page request (rename one of them, or " +
+                "send the session token in a header)", isTransient: false);
+        }
+
         if (request.IgnoredLocation is { } location)
         {
             _notice?.Invoke($"{label}: {prefix}pagination 'location' '{location}' is not one of query, body, header; " +
                 "it is ignored and the token goes in the query string (fix it: `pz validate` reports it)");
+        }
+    }
+
+    private static string Decoded(string name)
+    {
+        try
+        {
+            return Uri.UnescapeDataString(name.Replace('+', ' '));
+        }
+        catch (UriFormatException)
+        {
+            return name;
         }
     }
 

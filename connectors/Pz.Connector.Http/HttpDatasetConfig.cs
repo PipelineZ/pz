@@ -87,6 +87,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// with a notice at plan time. Null when the location is known or absent.</summary>
     internal string? IgnoredLocation { get; init; }
 
+    /// <summary>The query parameter names pagination sets on page requests (page/offset/cursor `param` and
+    /// `size_param`); empty when pagination writes the body or a header, or there is none.</summary>
+    internal IReadOnlyList<string> QueryPagingParams { get; init; } = [];
+
     /// <summary>`pagination.location: header`: the cursor token goes in a request header. Null otherwise.</summary>
     internal HeaderTokenPaging? HeaderPaging { get; init; }
 
@@ -257,6 +261,22 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             bodyPaging = BodyPaging.Parse(pgBlock,
                 pgBlock.TryGetValue("strategy", out var st) ? YamlScalarText.Of(st) ?? "" : "",
                 body?.Template, items, errors);
+        }
+
+        // The query parameters pagination writes on every page request: a sign-in that puts its own token in
+        // a parameter of the same name would overwrite the page position (or be overwritten), so the plan refuses it.
+        var queryPagingParams = new List<string>();
+        if (bodyPaging is null && options.TryGetValue("pagination", out var qp) && qp is IReadOnlyDictionary<string, object?> qpBlock
+            && YamlScalarText.Of(qpBlock.GetValueOrDefault("location")) is not ("body" or "header"))
+        {
+            string? Key(string key) => YamlScalarText.Of(qpBlock.GetValueOrDefault(key));
+            queryPagingParams.AddRange((YamlScalarText.Of(qpBlock.GetValueOrDefault("strategy")) switch
+            {
+                "page" => new[] { Key("param") ?? "page", Key("size_param") },
+                "offset" => [Key("param") ?? "offset", Key("size_param") ?? "limit"],
+                "cursor" => [Key("param")],
+                _ => [],
+            }).OfType<string>());
         }
 
         string? ignoredLocation = null;
@@ -505,6 +525,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             OnStatus = onStatus is { Count: > 0 } ? onStatus : null,
             HeaderPaging = headerPaging,
             IgnoredLocation = ignoredLocation,
+            QueryPagingParams = queryPagingParams,
             StopAtWatermark = stopAtWatermark,
         };
     }
