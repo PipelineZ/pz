@@ -328,6 +328,16 @@ internal sealed class PcpConnectorService(
     public override Task<ReadStatsResponse> GetReadStats(ReadStateRequest request, ServerCallContext context) =>
         Guarded(() =>
         {
+            if (hooks.ExitOnReadStats)
+            {
+                Environment.Exit(3);
+            }
+
+            if (hooks.UnimplementedReadStats)
+            {
+                throw new RpcException(new Status(StatusCode.Unimplemented, "no read stats here"));
+            }
+
             if (hooks.FailReadStats)
             {
                 throw new RpcException(new Status(StatusCode.Internal, "read stats refused on purpose"));

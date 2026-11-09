@@ -27,4 +27,11 @@ internal sealed class PcpServerHooks
     /// <summary>GetReadStats answers with an INTERNAL error, so a test can prove the host fails closed when it
     /// cannot learn whether a read was skipped.</summary>
     public bool FailReadStats { get; init; }
+
+    /// <summary>GetReadStats answers UNIMPLEMENTED, as a connector built before the call existed would.</summary>
+    public bool UnimplementedReadStats { get; init; }
+
+    /// <summary>The process exits inside GetReadStats, so a test can prove the host reports the exit, not the
+    /// failed call.</summary>
+    public bool ExitOnReadStats { get; init; }
 }

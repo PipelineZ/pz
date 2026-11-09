@@ -377,6 +377,13 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
         // complete. Transient, so the engine reads the partition again.
         if (!await PollReadStatsAsync().ConfigureAwait(false))
         {
+            // A connector that died under the call is reported as what it is (exit code, stderr), not as the call.
+            if (await process.ExitedWithinAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false))
+            {
+                throw ProcessFailureMapping.ToPzConnectorException(
+                    client, process, "connector process exited after completing a partition read");
+            }
+
             throw new PzConnectorException(
                 "the out-of-process connector finished a partition read, but whether a rule skipped part of it could " +
                 "not be read (its read stats call failed); the read is retried rather than committed as complete",

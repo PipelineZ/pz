@@ -193,6 +193,45 @@ public sealed class RunContextTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task A_connector_without_the_read_stats_call_reads_as_not_skipped()
+    {
+        var (partition, read, owned) = await PlanOneAsync("--skip-reads", "--unimplemented-read-stats");
+        try
+        {
+            await read();
+
+            Assert.Null(Assert.IsAssignableFrom<ISkippedReadPartition>(partition).SkippedBy);
+        }
+        finally
+        {
+            foreach (var o in owned)
+            {
+                await o.DisposeAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_connector_that_exits_during_the_stats_poll_reports_its_exit_not_the_poll()
+    {
+        var (_, read, owned) = await PlanOneAsync("--exit-on-read-stats");
+        try
+        {
+            var ex = await Assert.ThrowsAsync<PzConnectorException>(read);
+
+            Assert.Contains("connector process exited after completing a partition read", ex.Message);
+            Assert.DoesNotContain("whether a rule skipped part of it could not be read", ex.Message);
+        }
+        finally
+        {
+            foreach (var o in owned)
+            {
+                await o.DisposeAsync();
+            }
+        }
+    }
+
     private static ConnectorManifest LocalFilesManifest() => new(
         Name: "localfiles-pcp",
         ProtocolMajorMin: ProtocolVersion.Major,
