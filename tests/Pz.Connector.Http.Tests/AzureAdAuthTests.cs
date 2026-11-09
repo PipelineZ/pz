@@ -391,6 +391,69 @@ public class AzureAdAuthTests
         Assert.Equal(2, cred.Calls);
     }
 
+    [Theory]
+    [InlineData("ClientSecretCredential authentication failed: AADSTS7000215: Invalid client secret provided.")]
+    [InlineData("ClientSecretCredential authentication failed: AADSTS7000222: The provided client secret keys are expired.")]
+    [InlineData("ClientSecretCredential authentication failed: AADSTS700016: Application not found in the directory.")]
+    [InlineData("ClientSecretCredential authentication failed: AADSTS90002: Tenant not found.")]
+    public async Task A_refused_service_principal_is_tried_once_per_run(string refusal)
+    {
+        // Every node opens its own authenticator; a wrong secret must not be sent once per node.
+        string?[] key = ["azure_ad", "service_principal", Guid.NewGuid().ToString("N")];
+        var first = new FakeCredential(() => throw new AuthenticationFailedException(refusal));
+        var second = new FakeCredential(() => throw new AuthenticationFailedException(refusal));
+        var nextRun = new FakeCredential(() => throw new AuthenticationFailedException(refusal));
+        using var a = new AzureAdAuthenticator(first, Scope, "service_principal", new Clock(), signInKey: key) { RunScope = "r1" };
+        using var b = new AzureAdAuthenticator(second, Scope, "service_principal", new Clock(), signInKey: key) { RunScope = "r1" };
+        using var c = new AzureAdAuthenticator(nextRun, Scope, "service_principal", new Clock(), signInKey: key) { RunScope = "r2" };
+
+        foreach (var auth in new[] { a, b, c })
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+            await Assert.ThrowsAsync<PzConnectorException>(
+                async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
+        }
+
+        Assert.Equal([1, 0, 1], new[] { first.Calls, second.Calls, nextRun.Calls });
+    }
+
+    [Fact]
+    public async Task A_transient_or_unclassified_service_principal_failure_is_not_latched()
+    {
+        string?[] key = ["azure_ad", "service_principal", Guid.NewGuid().ToString("N")];
+        foreach (var failure in new Func<Exception>[]
+        {
+            () => new AuthenticationFailedException("failed", new RequestFailedException(503, "busy")),
+            () => new AuthenticationFailedException("AADSTS700024: Client assertion is not within its valid time range."),
+        })
+        {
+            var one = new FakeCredential(() => throw failure());
+            var two = new FakeCredential(() => throw failure());
+            using var a = new AzureAdAuthenticator(one, Scope, "service_principal", new Clock(), signInKey: key) { RunScope = "r" };
+            using var b = new AzureAdAuthenticator(two, Scope, "service_principal", new Clock(), signInKey: key) { RunScope = "r" };
+            foreach (var auth in new[] { a, b })
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example/x");
+                await Assert.ThrowsAsync<PzConnectorException>(
+                    async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
+            }
+
+            Assert.Equal(1, two.Calls);
+        }
+    }
+
+    [Fact]
+    public void Only_a_service_principal_gets_a_sign_in_key()
+    {
+        var principal = AzureAdOptions.TryParse(Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"),
+            ("client_id", "c"), ("client_secret", "s")), null, []);
+        var identity = AzureAdOptions.TryParse(Auth(("method", "managed_identity"), ("scope", Scope)), null, []);
+
+        Assert.NotNull(principal!.SignInKeyParts);
+        Assert.Contains("s", principal.SignInKeyParts!);
+        Assert.Null(identity!.SignInKeyParts);
+    }
+
     [Fact]
     public async Task A_failing_credential_surfaces_as_a_classified_connector_exception()
     {
