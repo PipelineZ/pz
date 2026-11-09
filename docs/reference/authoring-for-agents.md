@@ -94,7 +94,8 @@ my-project/
   do not follow a column into a pipeline's output; mark it again in that pipeline's sidecar.
   On connectors that read JSON records (`http`), the long form also takes `pointer`, a JSON pointer
   into the record: `status: { type: varchar, pointer: /fields/status/name }` lands a nested value
-  (a missing step is NULL). Other connectors refuse `pointer` (PZ0301).
+  (a missing step is NULL). Other connectors refuse `pointer` (PZ0301), in `pz validate` and again
+  when `pz run` opens the source. Never write `column_pointers` yourself: pz derives it (PZ0101).
 
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a
