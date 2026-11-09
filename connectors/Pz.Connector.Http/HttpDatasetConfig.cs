@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Bindings;
@@ -66,7 +67,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             return 1;
         }
 
-        if (YamlScalarText.NonScalarKind(raw) is null && long.TryParse(YamlScalarText.Of(raw), out var n)
+        if (YamlScalarText.NonScalarKind(raw) is null && long.TryParse(YamlScalarText.Of(raw), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out var n)
             && n is >= 1 and <= MaxConcurrency)
         {
             return (int)n;

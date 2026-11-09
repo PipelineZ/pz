@@ -106,6 +106,26 @@ public class HttpConcurrencyConfigTests
             Message(ForEachDataset(value)));
     }
 
+    [Fact]
+    public void Concurrency_parses_with_the_invariant_culture()
+    {
+        // A culture whose positive sign is not "+": the value must read the same on every machine.
+        var culture = (System.Globalization.CultureInfo)System.Globalization.CultureInfo.InvariantCulture.Clone();
+        culture.NumberFormat.PositiveSign = "plus";
+        var saved = System.Globalization.CultureInfo.CurrentCulture;
+        System.Globalization.CultureInfo.CurrentCulture = culture;
+        try
+        {
+            Assert.Equal(4, Parse(Plain(Pagination("page", "+4"))).PageConcurrency);
+            Assert.Equal(4, Parse(ForEachDataset("+4")).ForEach!.Concurrency);
+            Assert.Contains("for_each.concurrency must be an integer from 1 to 16", Message(ForEachDataset("plus4")));
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = saved;
+        }
+    }
+
     [Theory]
     [InlineData("offset")]
     [InlineData("cursor")]
