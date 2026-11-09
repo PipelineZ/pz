@@ -12,31 +12,51 @@ namespace Pz.Mcp.Handlers;
 /// (the returned <see cref="PzError.Message"/> names the offending KEY only, never the value).
 ///
 /// Credential shape is two signals: (a) the floor — a key at ANY depth (nested maps such as an http
-/// <c>auth:</c>, <c>proxy:</c>, <c>tls:</c> or <c>headers:</c>, and maps inside lists) whose name
-/// (case-insensitive) CONTAINS "pass", "pwd", "secret", "token", "key", "credential", "connection_string",
-/// "authorization" or "cookie", unless it ends in <c>_url</c>, <c>_uri</c>, <c>_pointer</c>, <c>_path</c>,
-/// <c>_file</c> or <c>_fingerprint</c> (where a thing is, not the thing); strings in a list under such a key; a
-/// session <c>login.body</c> written as one form or JSON string, read field by field; and a URL-valued key
-/// (<c>url</c>, <c>_url</c>, <c>_uri</c>) checked for a typed password or secret query parameter — and (b) a property the connector's own
+/// <c>auth:</c>, <c>proxy:</c>, <c>tls:</c> or <c>headers:</c>, maps and strings inside lists) whose name, split into
+/// whole segments (<c>client_secret</c>, <c>X-Api-Key</c>, <c>clientSecret</c>), holds a secret word (password,
+/// pass, pwd, secret, token, credential, authorization, cookie, apikey, sig, connection string) or a <c>key</c> that
+/// is not a column (<c>primary_key</c>, merge <c>keys</c> are not), unless its last segment says where or what a thing
+/// is (<c>_url</c>, <c>_pointer</c>, <c>_path</c>, <c>_file</c>, <c>_header</c>, <c>_type</c>, ...); a request
+/// <c>body</c> written as one form or JSON string, read field by field; and any URL-shaped value, checked for a
+/// typed userinfo password or a literal secret query parameter — and (b) a property the connector's own
 /// <c>ConnectionConfigSchema</c> flags <c>writeOnly</c>/<c>format: password</c>, offered by the
 /// <c>connectionSchemaJson</c> overload for forward compatibility. **Only (a) runs in the shipped
 /// surface**: <see cref="AuthoringTools"/> calls the name-heuristic overload and nothing calls the other
-/// one, which is why the docs (mcp-contract.md's PZ0601 row, use-with-an-ai-agent.md's Secrets section)
-/// describe the name heuristic alone. Signal (b) is also vacuous against the first-party connectors:
-/// neither <c>Pz.Connector.Postgres</c> nor <c>Pz.Connector.LocalFiles</c>
-/// marks a connection property <c>writeOnly</c> or <c>format: password</c> (plain
-/// <c>{"type":"string"}</c> for <c>password</c> either way). Either signal is only consulted for a
-/// *string* value holding a literal: a value made only of <c>${VAR}</c> references, separators between them and
-/// one leading scheme word (<c>Bearer ${TOKEN}</c>) is always accepted, matching the point of the guard. The
-/// same guard runs over an entity's <c>read:</c>/<c>write:</c> options.</summary>
+/// one. Under a secret key a number is refused, and a string is refused when it holds a literal: a value made of
+/// <c>${VAR}</c> references with structure around them (<c>Bearer ${TOKEN}</c>, <c>session=${S}</c>,
+/// <c>${USER}:${PASSWORD}</c>) is accepted. The same guard runs over an entity's <c>read:</c>/<c>write:</c>
+/// options.</summary>
 public static class CredentialGuard
 {
-    private static readonly Regex CredentialShapedKeyName =
-        new("pass|pwd|secret|token|key|credential|connection_string|authorization|cookie",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    /// <summary>Name segments that make a key secret-bearing wherever they appear (<c>client_secret</c>,
+    /// <c>refresh_token</c>, <c>x-api-token</c>, <c>sig</c> of an Azure SAS).</summary>
+    private static readonly HashSet<string> SecretWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "password", "passwd", "pwd", "pass", "passphrase", "secret", "secrets", "token", "tokens", "credential",
+        "credentials", "authorization", "cookie", "apikey", "sig", "signature", "connectionstring",
+    };
 
-    private static readonly Regex NotASecret =
-        new("(_|^)(url|uri|pointer|path|file|fingerprint)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    /// <summary>A last segment that says the value is where or what a thing is, never the secret itself
+    /// (<c>token_url</c>, <c>token_pointer</c>, <c>key_path</c>, <c>idempotency_key_header</c>,
+    /// <c>host_key_fingerprint</c>, <c>auth_type</c>).</summary>
+    private static readonly HashSet<string> NotASecretSuffixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "url", "uri", "pointer", "path", "file", "fingerprint", "header", "param", "name", "type", "ttl", "status",
+        "method", "id", "prefix", "format", "location", "kind", "mode", "scope", "rotation", "inject",
+    };
+
+    /// <summary>What a <c>key</c> segment means when one of these comes right before it: a column, not a
+    /// credential (<c>primary_key</c>, <c>merge_key</c>, <c>partition_key</c>).</summary>
+    private static readonly HashSet<string> NonSecretKeyQualifiers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "primary", "partition", "sort", "merge", "foreign", "unique", "join", "natural", "cluster", "clustering",
+        "dedupe", "cursor", "idempotency", "cache", "lookup", "row", "shard", "hash", "group", "order",
+        "distribution", "surrogate", "business", "composite", "item", "list", "map", "object", "s3",
+    };
+
+    /// <summary>Header-name segments that carry a credential in a <c>headers:</c> map (<c>X-Auth</c>,
+    /// <c>X-Session</c>), on top of <see cref="SecretWords"/>.</summary>
+    private static readonly HashSet<string> SecretHeaderWords = new(StringComparer.OrdinalIgnoreCase) { "auth", "session", "key" };
 
     private static readonly Regex EnvRef = new(@"\$\{[^}]+\}", RegexOptions.Compiled);
 
@@ -75,23 +95,113 @@ public static class CredentialGuard
         return errors;
     }
 
-    /// <summary>True when <paramref name="text"/> holds a literal beside its <c>${...}</c> references. A value made
-    /// only of references, separators between them (<c>${USER}:${PASSWORD}</c>) and one leading scheme word
-    /// (<c>Bearer ${TOKEN}</c>) is not: the secret lives in the environment.</summary>
+    /// <summary>True when <paramref name="text"/>, a value under a secret-bearing key, holds a literal secret. With
+    /// no <c>${...}</c> reference, any letter or digit is one. With references, the value may be structure around
+    /// them: <c>name=${VAR}</c> pairs separated by <c>&amp;</c> or <c>;</c> (<c>session=${S}</c>), separators between
+    /// references (<c>${USER}:${PASSWORD}</c>) and one leading scheme word (<c>Bearer ${TOKEN}</c>); a literal value
+    /// anywhere in it (<c>session=abc</c>, <c>Bearer ${X} abc</c>, <c>${P}hunter2</c>) is a literal secret.</summary>
     internal static bool HasLiteral(string text)
     {
-        var rest = EnvRef.Replace(text, " ").Trim();
+        if (!EnvRef.IsMatch(text))
+        {
+            return text.Any(char.IsLetterOrDigit);
+        }
+
+        foreach (var part in text.Split(['&', ';'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = part.IndexOf('=');
+            var value = eq < 0 ? StripSchemeWord(EnvRef.Replace(part, " ").Trim()) : EnvRef.Replace(part[(eq + 1)..], " ");
+            if (value.Any(char.IsLetterOrDigit))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string StripSchemeWord(string rest)
+    {
         foreach (var word in SchemeWords)
         {
             if (rest.StartsWith(word, StringComparison.OrdinalIgnoreCase)
                 && (rest.Length == word.Length || !char.IsLetterOrDigit(rest[word.Length])))
             {
-                rest = rest[word.Length..];
-                break;
+                return rest[word.Length..];
             }
         }
 
-        return rest.Any(char.IsLetterOrDigit);
+        return rest;
+    }
+
+    /// <summary>A key name split into lowercase segments at <c>_</c>, <c>-</c>, <c>.</c>, spaces and camelCase
+    /// boundaries (<c>clientSecret</c> → client, secret).</summary>
+    private static List<string> Segments(string key)
+    {
+        var parts = new List<string>();
+        var current = new System.Text.StringBuilder();
+        for (var i = 0; i < key.Length; i++)
+        {
+            var c = key[i];
+            if (c is '_' or '-' or '.' or ' ' || (char.IsUpper(c) && i > 0 && char.IsLower(key[i - 1])))
+            {
+                if (current.Length > 0)
+                {
+                    parts.Add(current.ToString().ToLowerInvariant());
+                    current.Clear();
+                }
+
+                if (c is '_' or '-' or '.' or ' ')
+                {
+                    continue;
+                }
+            }
+
+            current.Append(c);
+        }
+
+        if (current.Length > 0)
+        {
+            parts.Add(current.ToString().ToLowerInvariant());
+        }
+
+        return parts;
+    }
+
+    /// <summary>Whether a key names a secret, by whole name segments rather than substrings: <c>password</c>,
+    /// <c>client_secret</c>, <c>api_key</c>, <c>key</c>, <c>X-Api-Key</c>, <c>sig</c> do; merge <c>keys</c>,
+    /// <c>primary_key</c>, proxy <c>bypass</c>, <c>token_url</c>, <c>idempotency_key_header</c> do not. Inside a
+    /// <c>headers:</c> map, auth and session headers (<c>X-Auth</c>, <c>X-Session</c>) count too.</summary>
+    internal static bool IsSecretKey(string key, string? parentKey = null)
+    {
+        var segments = Segments(key);
+        if (segments.Count == 0 || NotASecretSuffixes.Contains(segments[^1]))
+        {
+            return false;
+        }
+
+        var inHeaders = string.Equals(parentKey, "headers", StringComparison.OrdinalIgnoreCase);
+        for (var i = 0; i < segments.Count; i++)
+        {
+            var segment = segments[i];
+            if (SecretWords.Contains(segment) || (inHeaders && SecretHeaderWords.Contains(segment)))
+            {
+                return true;
+            }
+
+            // key, api_key, key_json, api_keys: a credential, unless a column qualifier precedes it (primary_key,
+            // merge_key) or it is the bare plural (merge keys).
+            if (segment is "key" or "keys")
+            {
+                var qualifier = i > 0 ? segments[i - 1] : null;
+                if (qualifier is null ? segment == "key" : !NonSecretKeyQualifiers.Contains(qualifier))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return string.Concat(segments).Contains("connectionstring", StringComparison.Ordinal);
     }
 
     /// <summary>Checks every string at any depth: nested maps (<c>auth:</c>, <c>proxy:</c>, <c>tls:</c>,
@@ -105,25 +215,30 @@ public static class CredentialGuard
             foreach (var (key, value) in map)
             {
                 var path = prefix.Length == 0 ? key : $"{prefix}.{key}";
+                var secret = IsSecretKey(key, parentKey) || (root && schemaFlagged.Contains(key));
                 switch (value)
                 {
                     case Dictionary<string, object?> nested:
                         Map(nested, path, key, root: false);
                         break;
                     case List<object?> list:
-                        List(list, path, key);
+                        List(list, path, key, secret);
                         break;
-                    case string text when key == "body" && parentKey == "login":
-                        LoginBody(text, path);
+                    case string text when key == "body" && !secret:
+                        Body(text, path);
                         break;
                     case string text:
-                        Scalar(text, path, key, flagged: IsCredentialShaped(key) || (root && schemaFlagged.Contains(key)));
+                        Scalar(text, path, key, secret);
+                        break;
+                    case long or int or double or decimal or float when secret:
+                        // A number typed under a secret key (password: 123456) is as literal as a string.
+                        errors.Add(Refusal(label, path, key));
                         break;
                 }
             }
         }
 
-        private void List(List<object?> list, string path, string key)
+        private void List(List<object?> list, string path, string key, bool secret)
         {
             for (var i = 0; i < list.Count; i++)
             {
@@ -133,26 +248,30 @@ public static class CredentialGuard
                         Map(nested, $"{path}[{i}]", key, root: false);
                         break;
                     case List<object?> inner:
-                        List(inner, $"{path}[{i}]", key);
+                        List(inner, $"{path}[{i}]", key, secret);
                         break;
                     case string text:
-                        Scalar(text, $"{path}[{i}]", key, flagged: IsCredentialShaped(key));
+                        Scalar(text, $"{path}[{i}]", key, secret);
+                        break;
+                    case long or int or double or decimal or float when secret:
+                        errors.Add(Refusal(label, $"{path}[{i}]", key));
                         break;
                 }
             }
         }
 
-        private void Scalar(string text, string path, string key, bool flagged)
+        private void Scalar(string text, string path, string key, bool secret)
         {
-            if (flagged ? HasLiteral(text) : IsUrlKey(key) && UrlCarriesLiteralSecret(text))
+            if (secret ? HasLiteral(text) : CarriesLiteralSecret(text))
             {
                 errors.Add(Refusal(label, path, key));
             }
         }
 
-        /// <summary>A session login body written as one string: JSON text is walked like a map, anything else
-        /// is read as a form (<c>user=me&amp;password=...</c>), each field under its own decoded name.</summary>
-        private void LoginBody(string text, string path)
+        /// <summary>A request body written as one string (a session login's or a dataset's): JSON text is walked
+        /// like a map, form text (<c>user=me&amp;password=...</c>) field by field under its decoded names; any other
+        /// text (a GraphQL query) is only checked for a URL carrying a secret.</summary>
+        private void Body(string text, string path)
         {
             var trimmed = text.TrimStart();
             if (trimmed.StartsWith('{') && TryParseJsonObject(trimmed, out var json))
@@ -161,52 +280,55 @@ public static class CredentialGuard
                 return;
             }
 
+            if (!FormText.IsMatch(text))
+            {
+                Scalar(text, path, "body", secret: false);
+                return;
+            }
+
             foreach (var pair in text.Split('&', StringSplitOptions.RemoveEmptyEntries))
             {
                 var parts = pair.Split('=', 2);
                 var name = Decode(parts[0]);
-                Scalar(parts.Length > 1 ? Decode(parts[1]) : "", $"{path}.{name}", name,
-                    flagged: IsCredentialShaped(name));
+                var value = parts.Length > 1 ? Decode(parts[1]) : "";
+                Scalar(value, $"{path}.{name}", name, IsSecretKey(name));
             }
         }
     }
 
-    private static bool IsUrlKey(string key)
-        => key.Equals("url", StringComparison.OrdinalIgnoreCase) || key.Equals("uri", StringComparison.OrdinalIgnoreCase)
-            || key.EndsWith("_url", StringComparison.OrdinalIgnoreCase) || key.EndsWith("_uri", StringComparison.OrdinalIgnoreCase);
+    private static readonly Regex FormText = new(@"^[^=&\s{}]+=[^&]*(&[^=&\s{}]+=[^&]*)*$", RegexOptions.Compiled);
 
-    /// <summary>A URL typed with a literal password in its userinfo (<c>https://user:pass@host</c>) or a literal
-    /// value in a credential-shaped query parameter (<c>?client_secret=abc</c>). Read from the raw text, so a
+    /// <summary>A literal secret typed into a URL-shaped value under any key: a password in its userinfo
+    /// (<c>https://user:pass@host</c>), or a literal value in a secret-bearing query parameter (<c>?api_key=abc</c>,
+    /// an Azure SAS <c>sig=</c>), also in a relative <c>path</c> (<c>/r?api_key=abc</c>). Read from the raw text, so a
     /// <c>${...}</c> part is seen as written.</summary>
-    private static bool UrlCarriesLiteralSecret(string url)
+    private static bool CarriesLiteralSecret(string text)
     {
-        var scheme = url.IndexOf("://", StringComparison.Ordinal);
-        if (scheme < 0)
+        var scheme = text.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0)
         {
-            return false;
+            var authorityStart = scheme + 3;
+            var authorityEnd = text.IndexOfAny(['/', '?', '#'], authorityStart);
+            var authority = authorityEnd < 0 ? text[authorityStart..] : text[authorityStart..authorityEnd];
+            var at = authority.LastIndexOf('@');
+            if (at > 0 && authority[..at].Split(':', 2) is [_, var password] && HasLiteral(Decode(password)))
+            {
+                return true;
+            }
         }
 
-        var authorityStart = scheme + 3;
-        var authorityEnd = url.IndexOfAny(['/', '?', '#'], authorityStart);
-        var authority = authorityEnd < 0 ? url[authorityStart..] : url[authorityStart..authorityEnd];
-        var at = authority.LastIndexOf('@');
-        if (at > 0 && authority[..at].Split(':', 2) is [_, var password] && HasLiteral(Decode(password)))
-        {
-            return true;
-        }
-
-        var query = url.IndexOf('?');
+        var query = text.IndexOf('?');
         if (query < 0)
         {
             return false;
         }
 
-        var fragment = url.IndexOf('#', query);
-        var text = fragment < 0 ? url[(query + 1)..] : url[(query + 1)..fragment];
-        foreach (var pair in text.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        var fragment = text.IndexOf('#', query);
+        var queryText = fragment < 0 ? text[(query + 1)..] : text[(query + 1)..fragment];
+        foreach (var pair in queryText.Split('&', StringSplitOptions.RemoveEmptyEntries))
         {
             var parts = pair.Split('=', 2);
-            if (IsCredentialShaped(Decode(parts[0])) && parts.Length > 1 && HasLiteral(Decode(parts[1])))
+            if (parts.Length > 1 && IsSecretKey(Decode(parts[0])) && HasLiteral(Decode(parts[1])))
             {
                 return true;
             }
@@ -252,14 +374,9 @@ public static class CredentialGuard
         JsonValueKind.Object => element.EnumerateObject().ToDictionary(p => p.Name, p => FromJson(p.Value)),
         JsonValueKind.Array => element.EnumerateArray().Select(FromJson).ToList(),
         JsonValueKind.String => element.GetString(),
+        JsonValueKind.Number => element.TryGetInt64(out var l) ? l : element.GetDouble(),
         _ => null,
     };
-
-    // A path, URL, JSON pointer or fingerprint names where a thing is, never the secret itself, even when its
-    // name says key or token (tls key_path, auth token_url, token_pointer, sftp host_key_fingerprint). A URL is
-    // still checked for a password or a secret query parameter typed into it.
-    private static bool IsCredentialShaped(string key)
-        => CredentialShapedKeyName.IsMatch(key) && !NotASecret.IsMatch(key);
 
     private static PzError Refusal(string label, string path, string key) => new(PzErrorCode.McpLiteralCredential,
         $"{label} '{path}' looks like a literal credential typed directly into YAML.",
