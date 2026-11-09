@@ -676,3 +676,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
     }
 }
+
+/// <summary>Query-string page numbering (<c>strategy: page</c>): the page param, its first value, and the
+/// size param and size stamped beside it.</summary>
+internal sealed record PageNumbering(string Param, int Start, string? SizeParam, int? Size);

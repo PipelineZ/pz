@@ -37,6 +37,8 @@ public sealed class HttpReadAheadTests
 
         public int MaxInFlight => Volatile.Read(ref _maxInFlight);
 
+        public int InFlight => Volatile.Read(ref _inFlight);
+
         /// <summary>Every 200 carries a rate-limit budget hint.</summary>
         public bool BudgetHeaders { get; init; }
 
@@ -295,7 +297,15 @@ public sealed class HttpReadAheadTests
         async Task<ReadLog> Run(int? concurrency)
         {
             var handler = new PagedHandler(p => p <= 5 ? Full(p) : Empty);
-            var partition = Partition(Options(concurrency, b => b["size"] = 2), handler, out var client);
+            var options = Options(concurrency, b =>
+            {
+                b["size"] = 2;
+                b["size_param"] = "per_page";
+            });
+            // A static param needing escaping, ahead of the paging params: the rebuilt query must be the
+            // same string the page strategy produces.
+            options["query"] = new Dictionary<string, object?> { ["filter"] = "a b/c&d" };
+            var partition = Partition(options, handler, out var client);
             using var _ = client;
             var read = ReadAsync(partition);
             await InFlight(handler, concurrency ?? 1);
@@ -306,6 +316,7 @@ public sealed class HttpReadAheadTests
         var readAhead = await Run(3);
 
         Assert.Equal(5, sequential.Checkpoints.Count);
+        Assert.All(sequential.Checkpoints, t => Assert.Contains("per_page", t));
         Assert.Equal(sequential.Checkpoints, readAhead.Checkpoints);
         Assert.Equal(sequential.Ids, readAhead.Ids);
     }
@@ -452,5 +463,60 @@ public sealed class HttpReadAheadTests
 
         Assert.Equal(Ids(1, 2, 3, 4, 5), log.Ids);
         Assert.Equal(6, gate.Reported);
+    }
+
+    [Fact]
+    public async Task Cancelled_read_ends_every_issued_request()
+    {
+        // Earlier tests' garbage (other classes' stub listeners) is finalized first, and only this read's
+        // own failure kinds count, so the hook sees nothing but what this read could leave behind.
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        var unobserved = new ConcurrentQueue<Exception>();
+        EventHandler<UnobservedTaskExceptionEventArgs> hook = (_, e) =>
+        {
+            if (e.Exception.InnerExceptions.Any(x => x is PzConnectorException or OperationCanceledException
+                    or HttpRequestException))
+            {
+                unobserved.Enqueue(e.Exception);
+            }
+        };
+        TaskScheduler.UnobservedTaskException += hook;
+        try
+        {
+            var handler = new PagedHandler(Full);
+            var partition = Partition(Options(3), handler, out var client);
+            using var _ = client;
+            using var cts = new CancellationTokenSource();
+            var pages = partition.PagesAsync(cts.Token).GetAsyncEnumerator();
+            try
+            {
+                var firstPage = pages.MoveNextAsync().AsTask();
+                await Task.WhenAll(handler.Arrived(1), handler.Arrived(2), handler.Arrived(3));
+                handler.Release(1);
+                Assert.True(await firstPage.WaitAsync(Bound));
+
+                // Pages 2 and 3 are still blocked in the stub when the read is cancelled.
+                await cts.CancelAsync();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                    () => pages.MoveNextAsync().AsTask().WaitAsync(Bound));
+            }
+            finally
+            {
+                await pages.DisposeAsync();
+            }
+
+            // Every issued fetch has ended, and nothing was issued on the cancelled token.
+            Assert.Equal(0, handler.InFlight);
+            Assert.Equal([1, 2, 3], handler.Pages.Order());
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.Empty(unobserved);
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= hook;
+        }
     }
 }

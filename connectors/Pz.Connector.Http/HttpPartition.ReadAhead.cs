@@ -32,6 +32,8 @@ internal sealed partial class HttpPartition
         {
             while (true)
             {
+                // Before issuing: a cancelled read starts no fetch it would only have to abandon.
+                ct.ThrowIfCancellationRequested();
                 while (toIssue is not null && slots.Count < config.PageConcurrency
                        && !(config.MaxPages is { } issueCap && issued >= issueCap))
                 {
@@ -41,18 +43,20 @@ internal sealed partial class HttpPartition
                     toIssue = slot.Held is null ? slot.Next : null;
                 }
 
-                if (!slots.TryDequeue(out var current))
+                // The slot stays queued until its fetch has been awaited, so a failure or cancellation
+                // while awaiting it still leaves it to the drain below.
+                if (!slots.TryPeek(out var current))
                 {
                     yield break;
                 }
 
-                ct.ThrowIfCancellationRequested();
                 if (current.Held is not null)
                 {
                     throw current.Held;
                 }
 
                 var fetched = await current.Fetch!.ConfigureAwait(false);
+                slots.Dequeue();
                 page++;
                 if (gate is not null && fetched.Budget is { } budget)
                 {
@@ -93,8 +97,9 @@ internal sealed partial class HttpPartition
                     }
                     catch (Exception)
                     {
-                        // A page past the crawl's end (or behind its failure): its outcome is observed so
-                        // it never surfaces as an unobserved task exception, and discarded.
+                        // A page past the crawl's end, behind its failure or cancelled with it (or the
+                        // failed page itself, already surfaced): its outcome is observed so it never
+                        // surfaces as an unobserved task exception, and discarded.
                     }
                 }
             }
@@ -205,7 +210,3 @@ internal sealed partial class HttpPartition
         return false;
     }
 }
-
-/// <summary>Query-string page numbering (<c>strategy: page</c>): the page param, its first value, and the
-/// size param and size stamped beside it.</summary>
-internal sealed record PageNumbering(string Param, int Start, string? SizeParam, int? Size);
