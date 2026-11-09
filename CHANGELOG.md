@@ -95,6 +95,48 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   at 600 seconds (a stated wait above a day adds a note to check `kind`), also applies to sink requests, and moves the
   shared pause of a concurrent read. A value that is not a number, or a wait that is already over (zero, or an epoch in
   the past), is ignored with a note, and the next source of a wait applies. Without these keys, behaviour is unchanged.
+- **http: `stop_at_watermark` for newest-first feeds.** A dataset with `cursor_order: desc` and
+  `stop_at_watermark: true` stops crawling at the first page that holds a record at or below the stored watermark;
+  those records are dropped in the connector, the newer ones on that page land, and a notice gives the page and the
+  dropped count. Records with a null cursor land on the pages read up to the stop page; null-cursor records on later
+  pages are not read, and the stop notice says so with the count of those that landed. Without a watermark (first
+  run, `--full-refresh`) the feed is read to the end. The option requires `cursor` (with `cursor_type` in raw mode,
+  a `columns` name in contract mode), and it must name the incremental cursor: a different one fails before the
+  first request, also on a resumed attempt. The feed must really be newest-first: within one attempt, a cursor value
+  greater than the one before it fails the read; a retry that resumes mid-crawl checks from its resume page on. The
+  option is refused with `for_each`, `file`, `delta_pointer`, `max_pages` and `pagination.concurrency` above 1, so
+  the crawl always ends at the watermark or at the natural end of the feed. Checkpoints still resume the crawl page
+  by page.
+- **http: `for_each.values` and `for_each.dedupe`.** `for_each.values` is a literal list of maps used instead of a list
+  request, for "the same endpoint per region / account / metric": each map's keys are the item fields (every entry
+  must have the same keys; values are strings, numbers, booleans or null), and the item request, escaping, `pz_item`,
+  `on_missing` and `concurrency` work as with a list request. Checkpoints fall after every item at concurrency 1; with
+  `for_each.concurrency` N above 1 the values are read in pages of 4×N with a checkpoint at each page's barrier, so a
+  retry re-reads at most one such page. Those checkpoints carry a hash of the whole `values` list; if the list was
+  edited before the retry, the read starts again from the first value, with a notice. The list-request keys (`path`, `query`, `fields`, `pagination`, `max_items`,
+  ...) are refused next to it. `for_each.dedupe: true` skips a list record whose fields tuple an earlier record of the
+  same read already had (first occurrence wins; fields compare as JSON values, so `"1"` and `1` differ, and a missing
+  field equals a null one), and reports the count and the first duplicate in a notice. Duplicates do not count toward
+  `max_items`. Dedupe is per attempt: a retry resumed mid-list remembers only the records before its position on the
+  resumed list page, so it may read again an item first seen on an earlier page. The set of seen items costs roughly
+  30–60 bytes per distinct item and has no cap.
+- **http: cursor tokens in headers.** `strategy: cursor` can read its next-page token from a response header with
+  `header: <name>` instead of `pointer:` (exactly one of the two), and send it in a request header with
+  `location: header`, where `param` is the request header name. Both combine with each other, with `location: body`
+  on POST reads, and with the `for_each` list request. A missing or empty header ends the crawl; a header sent more
+  than once is a permanent error. A token sent in a header must be visible ASCII with no whitespace at either end,
+  otherwise the read fails without showing it. The page header counts in the repeated-request guard and is kept
+  across redirects. Its name cannot be one pz or the HTTP stack owns (`Authorization`, `Proxy-Authorization`,
+  `Cookie`, `Host`, `Connection`, `Transfer-Encoding`, `Expect`, `TE`, `Upgrade`), a header .NET treats as a content
+  header (`Content-*`, `Expires`, `Last-Modified`, `Allow`), or one the connection's `headers:`, `api_key` auth or
+  session `auth.inject.header` also set; the last is refused when the read is planned, before any request.
+  Checkpoints of a header-paged read use a new `v4:` token that stores the URL (without a session query token), the
+  body and the page header only, never connection headers or credentials; every other read's tokens are unchanged.
+  An unknown `location` on a GET read is still ignored, as before, now with a notice; `pz validate` reports it
+  through the dataset schema.
+  A session sign-in whose `auth.inject.query` names a query parameter that pagination sets (`param` or `size_param`
+  of `page`, `offset` or a query `cursor`, on the dataset or its `for_each` list; names compared decoded, in any case)
+  is refused when the read is planned, before any request: each would overwrite the other on every page.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

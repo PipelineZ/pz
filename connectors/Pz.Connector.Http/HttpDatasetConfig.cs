@@ -79,6 +79,21 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// computes. Null for every other strategy and for body paging.</summary>
     internal PageNumbering? PageNumbering { get; init; }
 
+    /// <summary>`stop_at_watermark`: a newest-first feed (`cursor_order: desc`) stops at the first page holding a
+    /// record at or below the watermark, and those records are dropped (<see cref="HttpPartition"/>).</summary>
+    public bool StopAtWatermark { get; init; }
+
+    /// <summary>A `pagination.location` that is none of query, body, header: ignored, as GET reads always did,
+    /// with a notice at plan time. Null when the location is known or absent.</summary>
+    internal string? IgnoredLocation { get; init; }
+
+    /// <summary>The query parameter names pagination sets on page requests (page/offset/cursor `param` and
+    /// `size_param`); empty when pagination writes the body or a header, or there is none.</summary>
+    internal IReadOnlyList<string> QueryPagingParams { get; init; } = [];
+
+    /// <summary>`pagination.location: header`: the cursor token goes in a request header. Null otherwise.</summary>
+    internal HeaderTokenPaging? HeaderPaging { get; init; }
+
     internal const int MaxConcurrency = 16;
 
     /// <summary>Reads a `concurrency` value (an integer from 1 to <see cref="MaxConcurrency"/>, default 1);
@@ -248,6 +263,41 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 body?.Template, items, errors);
         }
 
+        // The query parameters pagination writes on every page request: a sign-in that puts its own token in
+        // a parameter of the same name would overwrite the page position (or be overwritten), so the plan refuses it.
+        var queryPagingParams = new List<string>();
+        if (bodyPaging is null && options.TryGetValue("pagination", out var qp) && qp is IReadOnlyDictionary<string, object?> qpBlock
+            && YamlScalarText.Of(qpBlock.GetValueOrDefault("location")) is not ("body" or "header"))
+        {
+            string? Key(string key) => YamlScalarText.Of(qpBlock.GetValueOrDefault(key));
+            queryPagingParams.AddRange((YamlScalarText.Of(qpBlock.GetValueOrDefault("strategy")) switch
+            {
+                "page" => new[] { Key("param") ?? "page", Key("size_param") },
+                "offset" => [Key("param") ?? "offset", Key("size_param") ?? "limit"],
+                "cursor" => [Key("param")],
+                _ => [],
+            }).OfType<string>());
+        }
+
+        string? ignoredLocation = null;
+        if (options.TryGetValue("pagination", out var lp) && lp is IReadOnlyDictionary<string, object?> lpBlock
+            && YamlScalarText.Of(lpBlock.GetValueOrDefault("location")) is { } loc
+            && loc is not ("query" or "body" or "header"))
+        {
+            ignoredLocation = loc;
+        }
+
+        HeaderTokenPaging? headerPaging = null;
+        if (options.TryGetValue("pagination", out var hp) && hp is IReadOnlyDictionary<string, object?> hpBlock
+            && YamlScalarText.Of(hpBlock.GetValueOrDefault("location")) == "header"
+            && YamlScalarText.Of(hpBlock.GetValueOrDefault("strategy")) == "cursor"
+            && YamlScalarText.Of(hpBlock.GetValueOrDefault("param")) is { } tokenHeader)
+        {
+            headerPaging = new HeaderTokenPaging(tokenHeader, new PageTokenSource(
+                YamlScalarText.Of(hpBlock.GetValueOrDefault("pointer")),
+                YamlScalarText.Of(hpBlock.GetValueOrDefault("header"))));
+        }
+
         var pageConcurrency = 1;
         if (options.TryGetValue("pagination", out var pgc) && pgc is IReadOnlyDictionary<string, object?> pgcBlock)
         {
@@ -288,7 +338,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
             if (cursor is not null && !columns.ContainsKey(cursor))
             {
-                errors.Add($"'cursor' names '{cursor}', which is not declared in 'columns'");
+                // Column names are matched exactly; a near miss in case is named, since it reads as declared.
+                var nearMiss = columns.Keys.FirstOrDefault(k => string.Equals(k, cursor, StringComparison.OrdinalIgnoreCase));
+                errors.Add($"'cursor' names '{cursor}', which is not declared in 'columns'" +
+                    (nearMiss is null ? "" : $" (column '{nearMiss}' differs only in case; names are case-sensitive)"));
             }
         }
         else
@@ -363,6 +416,52 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
 
+        var stopAtWatermark = false;
+        if (options.TryGetValue("stop_at_watermark", out var rawStop) && rawStop is not null)
+        {
+            if (rawStop is bool stop)
+            {
+                stopAtWatermark = stop;
+            }
+            else
+            {
+                errors.Add($"'stop_at_watermark' must be a boolean, got '{YamlScalarText.Of(rawStop)}'");
+            }
+        }
+
+        if (stopAtWatermark)
+        {
+            if (cursorOrder != "desc")
+            {
+                errors.Add("'stop_at_watermark' requires 'cursor_order: desc' (it stops a newest-first crawl at the " +
+                    "first record the watermark already covers)");
+            }
+
+            // The cursor must be known statically: the order check runs on every crawl, including a SQL-declared
+            // incremental's first run, which has no watermark cursor yet.
+            if (cursor is null)
+            {
+                errors.Add("'stop_at_watermark' requires 'cursor' (the incremental cursor: a JSON field with " +
+                    "'cursor_type' in raw mode, a 'columns' name in contract mode)");
+            }
+
+            // Each of these ends or splits a crawl some other way, so "stopped on data" could not be proven.
+            foreach (var (present, other) in new[]
+            {
+                (options.GetValueOrDefault("for_each") is not null, "for_each"),
+                (options.GetValueOrDefault("file") is not null, "file"),
+                (deltaPointer is not null, "delta_pointer"),
+                (options.GetValueOrDefault("max_pages") is not null, "max_pages"),
+                (pageConcurrency > 1, "pagination.concurrency above 1"),
+            })
+            {
+                if (present)
+                {
+                    errors.Add($"'stop_at_watermark' cannot be combined with {other}");
+                }
+            }
+        }
+
         options.TryGetValue("file", out var rawFile);
         options.TryGetValue("export", out var rawExport);
         var file = HttpFileConfig.Parse(rawFile, errors);
@@ -424,6 +523,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             PageConcurrency = pageConcurrency,
             PageNumbering = bodyPaging is null ? pageNumbering : null,
             OnStatus = onStatus is { Count: > 0 } ? onStatus : null,
+            HeaderPaging = headerPaging,
+            IgnoredLocation = ignoredLocation,
+            QueryPagingParams = queryPagingParams,
+            StopAtWatermark = stopAtWatermark,
         };
     }
 
@@ -857,6 +960,50 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var stopsOnShort = stopOnShortPage;
+        // An unknown location is not an error here: GET reads ignored the key before header paging existed, and
+        // configs that ran then must keep running. The dataset schema reports it at `pz validate`, and the read
+        // gives a notice (IgnoredLocation).
+        var location = Get("location");
+
+        if (location == "header")
+        {
+            if (strategy != "cursor")
+            {
+                errors.Add("pagination 'location: header' is only valid with strategy 'cursor' (got strategy " +
+                    $"'{strategy}')");
+            }
+            else if (Get("param") is { } headerParam)
+            {
+                if (!HeaderTokenPaging.IsHeaderName(headerParam))
+                {
+                    errors.Add($"pagination 'param' '{headerParam}' is not a valid HTTP header name");
+                }
+                else if (HeaderTokenPaging.ReservedHeaders.Contains(headerParam))
+                {
+                    errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (pz or the HTTP " +
+                        "stack sets that header); name the header the API reads the token from");
+                }
+                else if (!HeaderTokenPaging.IsRequestHeader(headerParam))
+                {
+                    errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (HTTP treats it as a " +
+                        "content header, which a request without a body never sends); name the header the API reads " +
+                        "the token from");
+                }
+            }
+        }
+
+        if (Get("header") is { } responseHeader)
+        {
+            if (strategy != "cursor")
+            {
+                errors.Add($"pagination 'header' is only valid with strategy 'cursor' (got strategy '{strategy}')");
+            }
+            else if (!HeaderTokenPaging.IsHeaderName(responseHeader))
+            {
+                errors.Add($"pagination 'header' '{responseHeader}' is not a valid HTTP header name");
+            }
+        }
+
         switch (strategy)
         {
             case "link_header":
@@ -880,12 +1027,38 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 var sizeParam = Get("size_param") ?? "limit";
                 return () => new OffsetStrategy(param, start, sizeParam, size, itemsPointer);
             }
-            case "cursor" when Get("pointer") is { } pointer && Get("param") is { } cursorParam:
-                ValidatePointer(pointer, "pagination.pointer", errors);
-                return () => new CursorTokenStrategy(pointer, cursorParam);
             case "cursor":
-                errors.Add("pagination strategy 'cursor' requires 'pointer' and 'param'");
-                return null;
+            {
+                var pointer = Get("pointer");
+                var header = Get("header");
+                var cursorParam = Get("param");
+                if ((pointer is null) == (header is null))
+                {
+                    errors.Add("pagination strategy 'cursor' needs exactly one of 'pointer' or 'header' (where " +
+                        "the next-page token is read: a JSON pointer into the body, or a response header name)");
+                }
+
+                if (cursorParam is null)
+                {
+                    errors.Add("pagination strategy 'cursor' requires 'param' (the query parameter, body pointer " +
+                        "or request header the token is sent in)");
+                }
+
+                if (pointer is not null)
+                {
+                    ValidatePointer(pointer, "pagination.pointer", errors);
+                }
+
+                // A header-sent token is HeaderTokenPaging's, not a URL strategy's.
+                if (cursorParam is null || (pointer is null) == (header is null) || location == "header")
+                {
+                    return null;
+                }
+
+                return pointer is not null
+                    ? () => new CursorTokenStrategy(pointer, cursorParam)
+                    : () => new ResponseHeaderCursorStrategy(header!, cursorParam);
+            }
             case "next_url" when Get("pointer") is { } linkPointer:
                 ValidatePointer(linkPointer, "pagination.pointer", errors);
                 return () => new NextUrlStrategy(linkPointer);

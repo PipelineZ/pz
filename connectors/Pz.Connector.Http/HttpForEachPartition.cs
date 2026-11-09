@@ -1,4 +1,8 @@
+using System.Buffers.Binary;
 using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json.Nodes;
 using Apache.Arrow;
 using Apache.Arrow.Memory;
 using Pz.Connectors.Abstractions;
@@ -50,7 +54,9 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         // Every embedded token is a position an endpoint chose: it must still have its request's shape and
         // name a host this connection may reach. File items have no position inside them.
         if (!HttpCheckpointToken.TryDecodeForEach(checkpoint, out var position)
-            || !Fits(position.List, config.ForEach!.List)
+            || (config.ForEach!.List is { } listRequest
+                ? !Fits(position.List, listRequest)
+                : !config.ForEach.TryValuesOffset(position.List, out _))
             || (position.Item is not null && (config.IsFileMode || !Fits(position.Item, config))))
         {
             return false;
@@ -64,7 +70,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// request of <paramref name="request"/>'s method and body kind.</summary>
     private bool Fits(string token, HttpDatasetConfig request)
         => HttpCheckpointToken.TryDecode(token, request.IsPost, request.Method ?? HttpMethod.Get,
-               HttpCheckpointToken.KindOf(request.Body), out var decoded)
+               HttpCheckpointToken.KindOf(request.Body), out var decoded, request.HeaderPaging?.Header)
            && connection.IsAllowedTarget(decoded!.Url);
 
     public bool TryGetCheckpoint(out string? checkpoint)
@@ -90,16 +96,28 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
         // The list crawl and every item share this read's Retry-After pause: a throttle on any of them
         // holds back the others.
-        var list = new HttpPartition(client, bareClient, connection, forEach.List, spec, time, gate, pause)
-        {
-            Bindings = bindings,
-            Notice = Notice,
-        };
+        var list = forEach.List is { } listRequest
+            ? new HttpPartition(client, bareClient, connection, listRequest, spec, time, gate, pause)
+            {
+                Bindings = bindings,
+                Notice = Notice,
+            }
+            : null;
 
         var resume = _resume;
-        if (resume is not null && !list.TryResumeFrom(resume.List))
+        if (resume is not null && list is not null && !list.TryResumeFrom(resume.List))
         {
             throw Unusable();
+        }
+
+        // A values@N position counts from a list that may have been edited since: the anchor proves it is the
+        // same list, and without that proof the read starts over (items read twice, none skipped).
+        if (resume is not null && list is null && forEach.TryValuesOffset(resume.List, out var offset) && offset > 0
+            && resume.Anchor != forEach.ValuesAnchor)
+        {
+            Notice?.Invoke($"{Label}: for_each.values changed since the checkpoint was taken; reading the values " +
+                "again from the first value (items read before the retry are read again)");
+            resume = resume with { List = HttpForEachConfig.ValuesToken, Index = 0, Item = null, Anchor = null };
         }
 
         if (forEach.Concurrency > 1)
@@ -119,18 +137,33 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         var firstSkipped = resume?.FirstSkipped;
         var truncated = 0;
         string? firstTruncated = null;
+        var duplicates = 0;
+        string? firstDuplicate = null;
+        var seen = forEach.Dedupe ? new SeenItems() : null;
         var capped = false;
         var firstPage = true;
 
-        await foreach (var page in list.PagesAsync(ct).ConfigureAwait(false))
+        await foreach (var page in ListPagesAsync(list, resume, ct).ConfigureAwait(false))
         {
-            var listToken = HttpCheckpointToken.Encode(page.Request, forEach.List.IsPost,
-                connection.CheckpointStrippedParams);
+            var listToken = page.Token;
             var (start, resumeItem) = firstPage && resume is not null ? ResumeAt(resume, page) : (0, null);
+            if (firstPage)
+            {
+                seen?.Seed(page, start, forEach.Fields);
+            }
+
             firstPage = false;
 
             for (var index = start; index < page.Records.Count; index++)
             {
+                var values = ItemValues.From(page.Records[index], forEach.Fields);
+                if (seen is not null && !seen.Add(values))
+                {
+                    duplicates++;
+                    firstDuplicate ??= values.Identity();
+                    continue;
+                }
+
                 if (forEach.MaxItems is { } max && items >= max)
                 {
                     Notice?.Invoke($"{Label}: stopped after max_items ({max}) items; more list records were available");
@@ -139,10 +172,8 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                 }
 
                 items++;
-                var values = ItemValues.From(page.Records[index], forEach.Fields);
                 var anchor = HttpCheckpointToken.Anchor(values);
-                var item = ItemRead(values, bindings, now,
-                    $"list page '{list.Redact(page.Request.Url)}', record {index}", Notice);
+                var item = ItemRead(values, bindings, now, $"{page.Where}, record {index}", Notice);
                 if (index == start && resumeItem is not null && !item.Partition.TryResumeFrom(resumeItem))
                 {
                     throw Unusable();
@@ -213,7 +244,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
 
             // The cap reached on a page's last record: stop here rather than fetch a list page whose
             // records would not be read.
-            if (!capped && forEach.MaxItems is { } cap && items >= cap && page.Next is not null)
+            if (!capped && forEach.MaxItems is { } cap && items >= cap && page.NextToken is not null)
             {
                 Notice?.Invoke($"{Label}: stopped after max_items ({cap}) items; more list records may be available");
                 capped = true;
@@ -225,17 +256,95 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
             }
         }
 
-        EndNotices(capped, list, truncated, firstTruncated, skipped, firstSkipped);
+        EndNotices(capped, list, truncated, firstTruncated, skipped, firstSkipped, duplicates, firstDuplicate);
+    }
+
+    /// <summary>One page of items: a list page's records, or the whole of `for_each.values`. <see cref="Token"/>
+    /// is the list position a checkpoint stores for it, <see cref="Where"/> names it in messages, and
+    /// <see cref="NextToken"/> is the next list page's position (null on the last page).</summary>
+    private sealed record ListPage(IReadOnlyList<JsonNode?> Records, string Token, string Where, string? NextToken);
+
+    /// <summary>The list crawl's pages, or the literal values cut into pages of
+    /// <see cref="HttpForEachConfig.ValuesPageSize"/>, from the resume position's page on.</summary>
+    private async IAsyncEnumerable<ListPage> ListPagesAsync(HttpPartition? list,
+        HttpCheckpointToken.ForEachToken? resume, [EnumeratorCancellation] CancellationToken ct)
+    {
+        var forEach = config.ForEach!;
+        if (list is null)
+        {
+            var values = forEach.Values!;
+            var offset = 0;
+            if (resume is not null)
+            {
+                forEach.TryValuesOffset(resume.List, out offset);
+            }
+
+            // An offset at the end (a token naming the page after the last) has nothing left to read.
+            var size = forEach.ValuesPageSize;
+            while (offset < values.Count)
+            {
+                var take = Math.Min(size, values.Count - offset);
+                var next = offset + take;
+                yield return new ListPage([.. values.Skip(offset).Take(take)], HttpForEachConfig.ValuesTokenAt(offset),
+                    offset == 0 ? "for_each.values" : $"for_each.values from {offset}",
+                    next < values.Count ? HttpForEachConfig.ValuesTokenAt(next) : null);
+                offset = next;
+            }
+
+            yield break;
+        }
+
+        var isPost = forEach.List!.IsPost;
+        await foreach (var page in list.PagesAsync(ct).ConfigureAwait(false))
+        {
+            // A query token the sign-in adds is never stored; a resumed read adds the current one.
+            var strip = connection.CheckpointStrippedParams;
+            yield return new ListPage(page.Records, HttpCheckpointToken.Encode(page.Request, isPost, strip),
+                $"list page '{list.Redact(page.Request.Url)}'",
+                page.Next is { } next ? HttpCheckpointToken.Encode(next, isPost, strip) : null);
+        }
+    }
+
+    /// <summary>The fields tuples (<see cref="ItemValues.ToJsonString"/>) already read in this attempt, kept as
+    /// 128-bit prefixes of their SHA-256. A HashSet entry is about 24 bytes plus its bucket, and the set grows by
+    /// doubling, so a list costs roughly 30 to 60 bytes per distinct item (about 0.5 GB for ten million). There
+    /// is no cap: every distinct item is also a request, which bounds a real list long before memory does.</summary>
+    private sealed class SeenItems
+    {
+        private readonly HashSet<UInt128> _seen = [];
+        private readonly Lock _lock = new();
+
+        /// <summary>True the first time a tuple is added.</summary>
+        public bool Add(ItemValues values)
+        {
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(values.ToJsonString()));
+            var key = new UInt128(BinaryPrimitives.ReadUInt64LittleEndian(hash), BinaryPrimitives.ReadUInt64LittleEndian(hash.AsSpan(8)));
+            lock (_lock)
+            {
+                return _seen.Add(key);
+            }
+        }
+
+        /// <summary>A resumed attempt's first list page: the records before the resume position were read by
+        /// an earlier attempt, so a later duplicate of one of them is still a duplicate.</summary>
+        public void Seed(ListPage page, int start, IReadOnlyList<(string Name, string Pointer)> fields)
+        {
+            for (var i = 0; i < Math.Min(start, page.Records.Count); i++)
+            {
+                Add(ItemValues.From(page.Records[i], fields));
+            }
+        }
     }
 
     /// <summary>The notices a read that ran to its end gives: the list's own <c>max_pages</c> (unless
-    /// <c>max_items</c> stopped it first), then items cut short by theirs, then skipped items.</summary>
-    private void EndNotices(bool capped, HttpPartition list, int truncated, string? firstTruncated, int skipped,
-        string? firstSkipped)
+    /// <c>max_items</c> stopped it first), then items cut short by theirs, then skipped items, then duplicate
+    /// records `dedupe` skipped.</summary>
+    private void EndNotices(bool capped, HttpPartition? list, int truncated, string? firstTruncated, int skipped,
+        string? firstSkipped, int duplicates, string? firstDuplicate)
     {
-        if (!capped && list.TruncatedWithMore)
+        if (!capped && list is { TruncatedWithMore: true })
         {
-            Notice?.Invoke($"{Label}: stopped after for_each.max_pages ({config.ForEach!.List.MaxPages}) list pages; " +
+            Notice?.Invoke($"{Label}: stopped after for_each.max_pages ({config.ForEach!.List!.MaxPages}) list pages; " +
                 "more list pages were available");
         }
 
@@ -254,6 +363,12 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                     : "whose first request matched an on_status skip rule";
             Notice?.Invoke($"{Label}: skipped {skipped} items {why} (first: {firstSkipped})");
         }
+
+        if (duplicates > 0)
+        {
+            Notice?.Invoke($"{Label}: for_each.dedupe skipped {duplicates} duplicate list records " +
+                $"(first: {firstDuplicate})");
+        }
     }
 
     /// <summary>Where a resumed attempt starts on its first list page: the stored index and item token
@@ -262,9 +377,11 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// index may now name another record. Restarting re-reads items (duplicates a merge sink removes)
     /// rather than reading an item token as another record's or skipping a record. An index at or past
     /// the record count, its anchor matching, starts nothing here: the read continues with the next page.</summary>
-    private (int Start, string? Item) ResumeAt(HttpCheckpointToken.ForEachToken resume, HttpPartition.HttpPage page)
+    private (int Start, string? Item) ResumeAt(HttpCheckpointToken.ForEachToken resume, ListPage page)
     {
-        if (resume.Anchor is null)
+        // A values@N position starts its own page; its anchor names the whole list, already checked in ReadAsync.
+        if (resume.Anchor is null
+            || (config.ForEach!.List is null && resume.List != HttpForEachConfig.ValuesToken))
         {
             return (resume.Index, resume.Item);
         }

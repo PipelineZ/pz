@@ -137,6 +137,9 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// nor 'tls' is set.</summary>
     public BoundTransport? Bound { get; init; }
 
+    /// <summary>The request header an <c>api_key</c> auth sets (<c>auth.header</c>); null for every other auth.</summary>
+    public string? AuthHeader { get; init; }
+
     /// <summary>Non-blocking validation diagnostics. Credentials (an 'auth:' block or an
     /// Authorization header) sent to a cleartext http base URL travel unencrypted; that is legal —
     /// some internal APIs are http-only — but never silent. Loopback is exempt: it never leaves the
@@ -295,6 +298,9 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             MaxDownloadBytes = maxDownloadBytes,
             Transport = transport,
             RetryAfter = retryAfter,
+            AuthHeader = authBlock is not null && YamlScalarText.Of(authBlock.GetValueOrDefault("type")) == "api_key"
+                ? YamlScalarText.Of(authBlock.GetValueOrDefault("header"))
+                : null,
         };
 
         // The login carries the credentials, so it follows the rule every credentialed request follows.

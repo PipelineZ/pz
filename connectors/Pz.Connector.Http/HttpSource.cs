@@ -99,6 +99,12 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
+        CheckPagination(config, spec, "");
+        if (config.ForEach?.List is { } listRequest)
+        {
+            CheckPagination(listRequest, spec, "for_each.");
+        }
+
         // One Retry-After pause per read, shared by every request the partition makes (pages, the
         // for_each list, items, downloads), and only for a read that can have requests in flight
         // together: at concurrency 1 the gate's retry policy alone paces a throttled request, exactly as
@@ -118,6 +124,49 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 
+    /// <summary>Plan-time checks of one request's pagination against this connection: a page token header the
+    /// connection also sets would be sent twice (refused), and an unknown `location` is ignored with a
+    /// notice.</summary>
+    private void CheckPagination(HttpDatasetConfig request, DatasetSpec spec, string prefix)
+    {
+        var label = $"http source '{spec.Source}.{spec.Dataset}'";
+        if (request.HeaderPaging is { } paging && paging.CollisionWith(_connection) is { } owner)
+        {
+            throw new PzConnectorException(
+                $"{label}: {prefix}pagination header '{paging.Header}' is also set by {owner}; the page token " +
+                "header must be sent by pagination alone (rename one of them)", isTransient: false);
+        }
+
+        // Compared as the query string compares them: decoded, in any case.
+        if (_connection.Authenticator is SessionAuthenticator { SecretQueryParams: { Count: > 0 } secret }
+            && request.QueryPagingParams.FirstOrDefault(p => secret.Any(q => string.Equals(Decoded(q), Decoded(p),
+                StringComparison.OrdinalIgnoreCase))) is { } clash)
+        {
+            throw new PzConnectorException(
+                $"{label}: {prefix}pagination query parameter '{clash}' is also the session sign-in's query token " +
+                "('auth.inject.query'); each would overwrite the other on every page request (rename one of them, or " +
+                "send the session token in a header)", isTransient: false);
+        }
+
+        if (request.IgnoredLocation is { } location)
+        {
+            _notice?.Invoke($"{label}: {prefix}pagination 'location' '{location}' is not one of query, body, header; " +
+                "it is ignored and the token goes in the query string (fix it: `pz validate` reports it)");
+        }
+    }
+
+    private static string Decoded(string name)
+    {
+        try
+        {
+            return Uri.UnescapeDataString(name.Replace('+', ' '));
+        }
+        catch (UriFormatException)
+        {
+            return name;
+        }
+    }
+
     /// <summary>The engine calls this exactly once per opened source, after OpenAsync returns and
     /// before any plan/read call — every <see cref="HttpPartition"/> this source hands out afterward
     /// routes its page fetches through the gate.</summary>
@@ -125,8 +174,9 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
 
     /// <summary>Called at most once per open, before any plan/read call; partitions planned afterward
     /// report a file-mode zip with no matching member (`if_missing: empty`), a for_each cap that stopped
-    /// the read, for_each items skipped under `on_missing: skip`, or a read skipped by an `on_status`
-    /// rule through it, and so does the sign-in (a refresh token rotated under `auth.rotation: ignore`).</summary>
+    /// the read, for_each items skipped under `on_missing: skip` or by `dedupe`, a read skipped by an `on_status`
+    /// rule, or records `stop_at_watermark` dropped through it, and so does the sign-in (a refresh token rotated
+    /// under `auth.rotation: ignore`).</summary>
     public void UseNotice(Action<string> notice)
     {
         _notice = notice;

@@ -16,8 +16,10 @@ internal abstract class BodyPaging
     /// <summary>The body for the first request.</summary>
     public abstract JsonNode First(JsonNode body);
 
-    /// <summary>The body for the next request, or null when the crawl is over.</summary>
-    public abstract JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned);
+    /// <summary>The body for the next request, or null when the crawl is over. <paramref name="response"/>
+    /// is read only by a cursor whose token comes from a response header.</summary>
+    public abstract JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned,
+        HttpResponseMessage? response = null);
 
     /// <summary>Builds the strategy for `pagination.location: body`; null when the location is the query
     /// string or the strategy is URL-driven (`link_header`, `next_url`). Problems are appended to
@@ -27,13 +29,8 @@ internal abstract class BodyPaging
     {
         string? Get(string key) => pagination.TryGetValue(key, out var v) ? YamlScalarText.Of(v) : null;
 
+        // An unknown location is reported with the URL-side options.
         var location = Get("location");
-        if (location is not (null or "query" or "body"))
-        {
-            errors.Add($"pagination 'location' must be 'query' or 'body', got '{location}'");
-            return null;
-        }
-
         if (location != "body" || strategy is "link_header" or "next_url")
         {
             return null;
@@ -74,11 +71,11 @@ internal abstract class BodyPaging
                     : new BodyOffsetPaging(param, StartOf(0), sizeParam, SizeOf(), itemsPointer);
             }
             default:
-                // The response pointer and the presence of 'pointer'/'param' are validated with the
-                // URL-side options; only the body target is checked here.
-                return param is null || Get("pointer") is not { } pointer
+                // The token source ('pointer' or 'header') and the presence of 'param' are validated with
+                // the URL-side options; only the body target is checked here.
+                return param is null || (Get("pointer") is null) == (Get("header") is null)
                     ? null
-                    : new BodyCursorPaging(param, pointer);
+                    : new BodyCursorPaging(param, new PageTokenSource(Get("pointer"), Get("header")));
         }
 
         string? PointerOption(string key, bool required)
@@ -166,7 +163,8 @@ internal sealed class BodyPagePaging(string param, long start, string? sizeParam
     public override JsonNode First(JsonNode body)
         => WriteSize(Write(body, param, JsonValue.Create(start)), sizeParam, size);
 
-    public override JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned)
+    public override JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned,
+        HttpResponseMessage? response = null)
     {
         return recordsReturned == 0 ? null : Advance(currentBody);
     }
@@ -188,7 +186,8 @@ internal sealed class BodyOffsetPaging(string param, long start, string? sizePar
     public override JsonNode First(JsonNode body)
         => WriteSize(Write(body, param, JsonValue.Create(start)), sizeParam, size);
 
-    public override JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned)
+    public override JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned,
+        HttpResponseMessage? response = null)
     {
         // Advance by the rows the page actually returned, not the requested size; a clamped limit
         // would otherwise skip rows. Items are counted from the response when it is available.
@@ -206,18 +205,17 @@ internal sealed class BodyOffsetPaging(string param, long start, string? sizePar
     }
 }
 
-internal sealed class BodyCursorPaging(string param, string responsePointer) : BodyPaging
+internal sealed class BodyCursorPaging(string param, PageTokenSource source) : BodyPaging
 {
     public override bool StopsOnEmptyPage => false;
 
     public override JsonNode First(JsonNode body) => body.DeepClone();
 
-    public override JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned)
+    public override JsonNode? Next(JsonNode currentBody, JsonNode? responseBody, int recordsReturned,
+        HttpResponseMessage? response = null)
     {
-        if (responseBody is null || !JsonPointer.TryResolve(responseBody, responsePointer, out var token)
-            || token is null
-            || (token is JsonValue v && v.TryGetValue(out string? text) && string.IsNullOrEmpty(text))
-            || (token is JsonArray { Count: 0 }) || (token is JsonObject { Count: 0 }))
+        var token = source.Read(response, responseBody);
+        if (token is null || token is JsonArray { Count: 0 } || token is JsonObject { Count: 0 })
         {
             return null;
         }

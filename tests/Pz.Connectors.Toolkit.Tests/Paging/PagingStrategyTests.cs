@@ -238,4 +238,52 @@ public class PagingStrategyTests
             JsonNode.Parse("""{ "data": [] }""")));
         Assert.True(((IPageStrategy)strategy).StopsOnEmptyPage);
     }
+
+    [Fact]
+    public void Response_header_cursor_copies_the_header_into_the_query()
+    {
+        var strategy = new ResponseHeaderCursorStrategy("X-Next-Cursor", "cursor");
+        var response = Response();
+        response.Headers.TryAddWithoutValidation("X-Next-Cursor", "abc xyz");
+
+        var next = strategy.NextRequestUri(new Uri("https://api.example.com/items?q=1"), response, body: null);
+
+        Assert.Equal("https://api.example.com/items?q=1&cursor=abc%20xyz", next!.AbsoluteUri);
+        Assert.False(((IPageStrategy)strategy).StopsOnEmptyPage);
+    }
+
+    [Fact]
+    public void Response_header_cursor_ends_on_a_missing_or_empty_header()
+    {
+        var strategy = new ResponseHeaderCursorStrategy("X-Next-Cursor", "cursor");
+        var empty = Response();
+        empty.Headers.TryAddWithoutValidation("X-Next-Cursor", "");
+
+        Assert.Null(strategy.NextRequestUri(new Uri("https://api.example.com/items"), Response(), null));
+        Assert.Null(strategy.NextRequestUri(new Uri("https://api.example.com/items"), empty, null));
+    }
+
+    [Fact]
+    public void Response_header_cursor_matches_the_header_name_case_insensitively()
+    {
+        var response = Response();
+        response.Headers.TryAddWithoutValidation("x-next-cursor", "t1");
+
+        Assert.Equal("t1", ResponseHeaderCursorStrategy.ReadToken(response, "X-Next-Cursor"));
+    }
+
+    [Fact]
+    public void Response_header_cursor_refuses_a_header_sent_twice()
+    {
+        var response = Response();
+        response.Headers.TryAddWithoutValidation("X-Next-Cursor", ["secret-a", "secret-b"]);
+
+        var ex = Assert.Throws<Pz.Connectors.Abstractions.PzConnectorException>(
+            () => ResponseHeaderCursorStrategy.ReadToken(response, "X-Next-Cursor"));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("X-Next-Cursor", ex.Message);
+        Assert.Contains("2 times", ex.Message);
+        Assert.DoesNotContain("secret", ex.Message);
+    }
 }

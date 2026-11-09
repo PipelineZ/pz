@@ -16,11 +16,15 @@ namespace Pz.Connector.Http;
 /// page's token (in the list request's form), the record index on that page, and the item crawl's next
 /// request token (in the item request's form) or null to start the item from its first request. Optional
 /// keys follow, each only when set: <c>anchor</c> (see <see cref="ForEachToken"/>), <c>skipped</c> and
-/// <c>first_skipped</c>.</summary>
+/// <c>first_skipped</c>. A request that carries a page token header (<c>pagination.location: header</c>) is
+/// <c>v4:</c> + base64url(UTF-8 JSON <c>{"url":...,"body":...,"header":{"name":...,"value":...}}</c>) whatever
+/// its method, the body as in v2 (null for a GET). Only that one header is stored: connection headers and
+/// auth are never part of a request until it is sent.</summary>
 internal static class HttpCheckpointToken
 {
     private const string PostPrefix = "v2:";
     private const string ForEachPrefix = "v3:";
+    private const string HeaderPrefix = "v4:";
 
     /// <summary>The body shape a dataset sends: none, a JSON map, or text (a string or a form).</summary>
     public enum BodyKind { None, Json, Text }
@@ -38,14 +42,20 @@ internal static class HttpCheckpointToken
             request = request with { Url = WithoutQueryParams(request.Url, strip) };
         }
 
-        if (!isPost)
+        if (!isPost && request.PageHeader is null)
         {
             return request.Url.ToString();
         }
 
         var body = request.JsonBody?.DeepClone() ?? (request.TextBody is { } text ? JsonValue.Create(text) : null);
         var payload = new JsonObject { ["url"] = request.Url.ToString(), ["body"] = body };
-        return PostPrefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(payload.ToJsonString()));
+        if (request.PageHeader is not { } header)
+        {
+            return PostPrefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(payload.ToJsonString()));
+        }
+
+        payload["header"] = new JsonObject { ["name"] = header.Name, ["value"] = header.Value };
+        return HeaderPrefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(payload.ToJsonString()));
     }
 
     private static Uri WithoutQueryParams(Uri url, IReadOnlyCollection<string> names)
@@ -75,10 +85,20 @@ internal static class HttpCheckpointToken
         }
     }
 
+    /// <summary>Decodes a token for a request of <paramref name="method"/> and body kind
+    /// <paramref name="expected"/>. <paramref name="pageHeader"/> is the dataset's page token header, when it
+    /// pages by one: a v4 token must then name that header (any case), and the plain form of its method
+    /// (a first page, which has no token yet) is accepted too. Without it every v4 token is refused.</summary>
     public static bool TryDecode(string token, bool isPost, HttpMethod method, BodyKind expected,
-        out HttpPageRequest? request)
+        out HttpPageRequest? request, string? pageHeader = null)
     {
         request = null;
+        if (token.StartsWith(HeaderPrefix, StringComparison.Ordinal))
+        {
+            return pageHeader is not null && TryDecodePayload(token, HeaderPrefix, method, expected, pageHeader,
+                out request);
+        }
+
         if (!isPost)
         {
             // "v3:" parses as an absolute URI of scheme v3, so a for_each token is refused by name.
@@ -93,14 +113,17 @@ internal static class HttpCheckpointToken
             return true;
         }
 
-        if (!token.StartsWith(PostPrefix, StringComparison.Ordinal))
-        {
-            return false;
-        }
+        return token.StartsWith(PostPrefix, StringComparison.Ordinal)
+            && TryDecodePayload(token, PostPrefix, method, expected, pageHeader: null, out request);
+    }
 
+    private static bool TryDecodePayload(string token, string prefix, HttpMethod method, BodyKind expected,
+        string? pageHeader, out HttpPageRequest? request)
+    {
+        request = null;
         try
         {
-            var json = JsonNode.Parse(Base64Url.DecodeFromChars(token.AsSpan(PostPrefix.Length)));
+            var json = JsonNode.Parse(Base64Url.DecodeFromChars(token.AsSpan(prefix.Length)));
             if (json is not JsonObject obj
                 || obj["url"] is not JsonValue urlNode
                 || !urlNode.TryGetValue<string>(out var urlText)
@@ -109,18 +132,34 @@ internal static class HttpCheckpointToken
                 return false;
             }
 
+            (string, string)? header = null;
+            if (pageHeader is not null)
+            {
+                // The value goes back on the wire as a header, so it is held to the same rule as a fresh token.
+                if (obj["header"] is not JsonObject headerNode
+                    || headerNode["name"] is not JsonValue nameNode || !nameNode.TryGetValue<string>(out var name)
+                    || !string.Equals(name, pageHeader, StringComparison.OrdinalIgnoreCase)
+                    || headerNode["value"] is not JsonValue valueNode || !valueNode.TryGetValue<string>(out var value)
+                    || value.Length == 0 || !HeaderTokenPaging.IsHeaderValue(value))
+                {
+                    return false;
+                }
+
+                header = (pageHeader, value);
+            }
+
             // The token's body replaces the configured one on resume, so its kind must be the one the
             // dataset declares; otherwise it would bypass the declared content type.
             switch (obj["body"])
             {
                 case null when expected == BodyKind.None:
-                    request = new HttpPageRequest(method, target, null, null);
+                    request = new HttpPageRequest(method, target, null, null) { PageHeader = header };
                     return true;
                 case JsonObject map when expected == BodyKind.Json:
-                    request = new HttpPageRequest(method, target, map.DeepClone(), null);
+                    request = new HttpPageRequest(method, target, map.DeepClone(), null) { PageHeader = header };
                     return true;
                 case JsonValue value when expected == BodyKind.Text && value.TryGetValue<string>(out var text):
-                    request = new HttpPageRequest(method, target, null, text);
+                    request = new HttpPageRequest(method, target, null, text) { PageHeader = header };
                     return true;
                 default:
                     return false;
