@@ -61,7 +61,7 @@ internal sealed partial record HttpForEachConfig(HttpDatasetConfig? List,
     /// <summary>The keys of a list request, which `values` replaces.</summary>
     private static readonly string[] ListRequestKeys =
         ["path", "query", "method", "body", "body_format", "content_type", "items", "pagination", "error_pointer",
-         "max_pages", "fields", "max_items"];
+         "max_pages", "fields", "max_items", "on_status"];
 
     /// <summary>Keys that describe the item request or the dataset as a whole, never the list request.</summary>
     internal static readonly string[] ItemOnlyKeys =
