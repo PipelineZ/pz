@@ -73,6 +73,30 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   day, initial: "2026-10-01", max_window: 1d }` with `path: /exports/daily/{{ window_upper }}.zip`. The window's upper
   bound can reach today, whose file may not be published yet: that download fails (404) and nothing is lost, the
   watermark stays and a later run fetches the day. Use `until:` or schedule the run after the vendor publishes.
+- **http: one request per list record (`for_each`).** For APIs that expose child data only per parent
+  (`/orders/{id}/lines`), `for_each:` describes a list request, and the dataset's own `path`, `query`, `body`,
+  `pagination`, `items` and `file:` describe the item request sent once per list record. The list request takes the
+  usual request keys (`path`, `query`, `method`, `body`, `body_format`, `content_type`, `items`, `pagination`,
+  `error_pointer`, `max_pages`), so it can page, POST and use `{{ watermark }}`, `{{ window_upper }}` and
+  `{{ run_date }}` (`run_date:` stays at dataset level and is shared). `fields` maps a name to a JSON pointer into
+  each list record, and `{{ item.<name> }}` uses it in the item request's `path`, `query` and `body`. Each item
+  crawl pages to its last page before the next item starts, and in file mode the item request is a download, so
+  "list the exports, then download each one" works. A value from the API is escaped by position (a path segment, a
+  query value, a typed JSON value, or form-encoded text), is never expanded again, and `.` or `..` in a path is
+  refused. Numbers are sent with their JSON text, and a referenced field that is missing, null, an object or an array
+  fails the read, naming the list page, the record and the field.
+  In contract mode a `columns:` entry named like a field is filled from the item. In raw mode a `pz_item` column
+  (a JSON object of every declared field, a field missing from the record as null) follows the envelope columns,
+  and the cursor may be an item field in either mode. `on_missing: skip` moves on after a 404 or 410 on an item's
+  first request (a 404 on a later page still fails) and reports the count in a notice at the end of the read;
+  the default `error` fails. `max_items` stops after that many list records, with a notice. On an incremental
+  dataset `max_items`, `for_each.max_pages` and the item-level `max_pages` are refused at validation, because an item
+  cut short would be skipped for good once the watermark passes it; the 50,000-page ceiling stays an error
+  everywhere. A read resumes from a checkpoint at the item and page it reached. The list page is fetched again, so
+  if the list changed or was reordered in between, an item may be read twice or missed: delivery is at-least-once,
+  and a merge sink removes duplicates. The skip notice and `max_items` count per attempt, so a resumed read does not
+  carry them over. A file-mode item checkpoints only between items. `for_each` cannot be combined with
+  `delta_pointer` or `export:`. Datasets without `for_each` are unchanged.
 
 ### Changed
 
