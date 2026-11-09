@@ -31,6 +31,14 @@ internal sealed class TestPki
     /// <summary>For localhost, chained to the root, but a client certificate (clientAuth only).</summary>
     public X509Certificate2 WrongUsageLeaf { get; }
 
+    /// <summary>A second intermediate under <see cref="Root"/> that no test server is ever given, so no
+    /// <see cref="SslStreamCertificateContext"/> can put it in an OS store, and <see cref="LoneLeaf"/>, issued by
+    /// it. A server presenting <see cref="LoneLeaf"/> alone cannot complete its chain from any store (on Windows
+    /// a server context sends whatever intermediates the machine's CA stores hold, and the other servers put
+    /// <see cref="Intermediate"/> there), so a client receives exactly the leaf.</summary>
+    public X509Certificate2 LoneIntermediate { get; }
+    public X509Certificate2 LoneLeaf { get; }
+
     /// <summary>For localhost, signed by <see cref="Leaf"/>, which is not a CA.</summary>
     public X509Certificate2 SignedByLeaf { get; }
     public X509Certificate2 Client { get; }
@@ -52,6 +60,11 @@ internal sealed class TestPki
             serverAuth: true));
         WrongUsageLeaf = Persist(CreateLeaf("CN=localhost", ["localhost"], Intermediate, now.AddDays(-1), now.AddDays(90),
             serverAuth: false));
+        using var loneKey = RSA.Create(2048);
+        LoneIntermediate = Persist(CreateCa("CN=pz test lone intermediate", loneKey, Root, rootKey,
+            now.AddDays(-60), now.AddYears(1)));
+        LoneLeaf = Persist(CreateLeaf("CN=localhost", ["localhost"], LoneIntermediate, now.AddDays(-1), now.AddDays(90),
+            serverAuth: true));
         SignedByLeaf = Persist(CreateLeaf("CN=localhost", ["localhost"], Leaf, now.AddDays(-1), now.AddDays(80),
             serverAuth: true));
         _clientKey = RSA.Create(2048);
@@ -178,6 +191,7 @@ internal sealed class TestTlsServer : IAsyncDisposable
     private readonly bool _rejectClientCertificates;
     private readonly SslProtocols _protocols;
     private readonly Func<string, string> _respond;
+    private readonly List<(StoreLocation Location, X509Certificate2 Certificate)> _storeAdditions;
 
     /// <param name="requestClientCertificate">Ask for a client certificate but accept a handshake without one.</param>
     /// <param name="requireClientCertificate">Refuse a handshake without a client certificate.</param>
@@ -191,7 +205,9 @@ internal sealed class TestTlsServer : IAsyncDisposable
     {
         _respond = respond ?? (_ => Body);
         _rejectClientCertificates = rejectClientCertificates;
+        var absent = AbsentFromCaStores(chain ?? []);
         _context = leaf is null ? null : SslStreamCertificateContext.Create(leaf, chain ?? [], offline: true);
+        _storeAdditions = absent.Where(a => CaStoreHolds(a.Location, a.Certificate)).ToList();
         _requestClientCertificate = requestClientCertificate || requireClientCertificate;
         _requireClientCertificate = requireClientCertificate;
         _protocols = protocols;
@@ -201,9 +217,6 @@ internal sealed class TestTlsServer : IAsyncDisposable
     }
 
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
-
-    // DIAGNOSTIC (temporary): the intermediates this server's context will send.
-    public IReadOnlyList<X509Certificate2> SentIntermediates => _context?.IntermediateCertificates ?? (IReadOnlyList<X509Certificate2>)[];
 
     public Uri Url(string host = "localhost") => new($"{(_context is null ? "http" : "https")}://{host}:{Port}/");
 
@@ -290,8 +303,43 @@ internal sealed class TestTlsServer : IAsyncDisposable
         await stream.FlushAsync(_stop.Token);
     }
 
+    // On Windows, SslStreamCertificateContext.Create adds the intermediates it is given to the user or machine
+    // CA store when the OS cannot build the chain by itself. A server takes back what its creation added.
+    private static List<(StoreLocation Location, X509Certificate2 Certificate)> AbsentFromCaStores(X509Certificate2Collection chain)
+        => !OperatingSystem.IsWindows()
+            ? []
+            : [.. from location in new[] { StoreLocation.CurrentUser, StoreLocation.LocalMachine }
+                from certificate in chain
+                where !CaStoreHolds(location, certificate)
+                select (location, certificate)];
+
+    private static bool CaStoreHolds(StoreLocation location, X509Certificate2 certificate)
+    {
+        using var store = new X509Store(StoreName.CertificateAuthority, location);
+        store.Open(OpenFlags.ReadOnly);
+        return store.Certificates.Contains(certificate);
+    }
+
+    private void RemoveStoreAdditions()
+    {
+        foreach (var (location, certificate) in _storeAdditions)
+        {
+            try
+            {
+                using var store = new X509Store(StoreName.CertificateAuthority, location);
+                store.Open(OpenFlags.ReadWrite);
+                store.Remove(certificate);
+            }
+            catch (CryptographicException)
+            {
+                // An account that may not write that store; nothing more this server can undo.
+            }
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
+        RemoveStoreAdditions();
         await _stop.CancelAsync();
         _listener.Stop();
         await _accepting.WaitAsync(TimeSpan.FromSeconds(30));
