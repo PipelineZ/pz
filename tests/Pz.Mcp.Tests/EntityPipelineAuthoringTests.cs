@@ -68,6 +68,34 @@ public class EntityPipelineAuthoringTests
         Assert.Contains("orders2:", text);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_literal_credential_in_entity_options_is_refused_before_any_write(bool set)
+    {
+        using var p = new TempProject();
+        var before = File.ReadAllText(Path.Combine(p.Dir, "connections.yml"));
+        Dictionary<string, object?> read = new()
+        {
+            ["path"] = "data/orders.csv", ["format"] = "csv",
+            ["query"] = new Dictionary<string, object?> { ["api_key"] = "hunter2" },
+        };
+
+        var doc = JsonDocument.Parse(set
+            ? await AuthoringTools.SetEntityOptionsAsync(p.Dir, "raw", "orders", read, write: null, RealServices(),
+                CancellationToken.None)
+            : await AuthoringTools.AddEntityAsync(p.Dir, "raw", "customers", read, write: null, RealServices(),
+                CancellationToken.None));
+
+        Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
+        var error = doc.RootElement.GetProperty("errors")[0];
+        Assert.Equal("PZ0601", error.GetProperty("code").GetString());
+        Assert.Contains($"entities.{(set ? "orders" : "customers")}.read.query.api_key",
+            error.GetProperty("message").GetString());
+        Assert.DoesNotContain("hunter2", doc.RootElement.ToString());
+        Assert.Equal(before, File.ReadAllText(Path.Combine(p.Dir, "connections.yml")));
+    }
+
     [Fact]
     public async Task Add_entity_into_an_existing_entities_mapping_appends_a_sibling()
     {
