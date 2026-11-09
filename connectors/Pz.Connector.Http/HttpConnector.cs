@@ -53,7 +53,21 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 3600 },
             "max_response_mb": { "type": "integer", "minimum": 1, "maximum": 2047 },
             "max_download_mb": { "type": "integer", "minimum": 1, "maximum": 1048576 },
-            "allow_hosts": { "type": "array", "items": { "type": "string" } } },
+            "allow_hosts": { "type": "array", "items": { "type": "string" } },
+            "proxy": { "oneOf": [
+                { "const": "none" },
+                { "type": "object", "properties": {
+                    "url": { "type": "string" }, "user": { "type": "string" },
+                    "password": { "type": "string", "writeOnly": true },
+                    "bypass": { "type": "array", "items": { "type": "string" } } },
+                  "required": ["url"], "additionalProperties": false } ] },
+            "tls": { "type": "object", "properties": {
+                "ca_file": { "type": "string" },
+                "client_certificate": { "type": "object", "properties": {
+                    "path": { "type": "string" }, "key_path": { "type": "string" },
+                    "password": { "type": "string", "writeOnly": true } },
+                  "required": ["path"], "additionalProperties": false } },
+              "additionalProperties": false } },
           "additionalProperties": false }
         """;
 

@@ -27,7 +27,7 @@ internal sealed record AzureAdOptions(
 
     /// <summary>Parses the YAML <c>auth:</c> map. Every problem is appended to <paramref name="errors"/>;
     /// the result is null when any was found.</summary>
-    public static AzureAdOptions? TryParse(IReadOnlyDictionary<string, object?> auth, string? baseDir, List<string> errors)
+    public static AzureAdOptions? TryParse(IReadOnlyDictionary<string, object?> auth, string? baseDir, List<string> errors, bool hasTransport = false)
     {
         var before = errors.Count;
         var refused = new HashSet<string>();
@@ -52,6 +52,11 @@ internal sealed record AzureAdOptions(
         else if (method is not null && !Methods.Contains(method))
         {
             errors.Add($"auth.method must be one of: {string.Join(", ", Methods)}");
+        }
+
+        if (method == "credential_chain" && hasTransport)
+        {
+            errors.Add("auth.method credential_chain cannot use proxy or tls: its developer-tool credentials run outside pz");
         }
 
         var scope = Text("scope");
@@ -100,7 +105,7 @@ internal sealed record AzureAdOptions(
 
         return errors.Count > before
             ? null
-            : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(ExpandHome(certificate), baseDir), password, scope!, authority);
+            : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(HomePath.Expand(certificate), baseDir), password, scope!, authority);
     }
 
     // The credential library accepts exactly ASCII letters, ASCII digits, '-' and '.' (so GUIDs, domains and the
@@ -108,20 +113,6 @@ internal sealed record AzureAdOptions(
     // reads tenant_id; the other methods never hand it to the library.
     private static bool IsValidTenantId(string tenantId)
         => tenantId.All(c => c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '.');
-
-    // Neither the shared project-relative resolver nor the credential library expands '~', so a home-relative
-    // certificate path would never be found.
-    private static string? ExpandHome(string? path)
-    {
-        if (path is null || path[0] != '~'
-            || (path.Length > 1 && path[1] != Path.DirectorySeparatorChar && path[1] != Path.AltDirectorySeparatorChar))
-        {
-            return path;
-        }
-
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return home.Length == 0 ? path : Path.Combine(home, path[1..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-    }
 
     /// <summary>Non-blocking <c>pz validate</c> diagnostics for these options.</summary>
     public IReadOnlyList<string> Warnings()

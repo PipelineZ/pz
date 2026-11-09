@@ -29,6 +29,9 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
 
     public long MaxDownloadBytes { get; init; } = DefaultMaxDownloadBytes;
 
+    /// <summary>The 'proxy:' and 'tls:' options; <see cref="HttpTransportOptions.Default"/> when neither is set.</summary>
+    public HttpTransportOptions Transport { get; init; } = HttpTransportOptions.Default;
+
     /// <summary>Highest legal 'max_response_mb'. HttpClient.MaxResponseContentBufferSize refuses any
     /// value above int.MaxValue bytes (2147483647); 2048 MiB (2147483648 bytes) already overflows
     /// that ceiling, so 2047 is the largest whole-MiB value that stays under it.</summary>
@@ -170,6 +173,10 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             }
         }
 
+        var transport = HttpTransportOptions.Parse(config.Values, baseDir, errors);
+        var hasTransport = config.Values.TryGetValue("proxy", out var rawProxy) && rawProxy is not null
+            || config.Values.TryGetValue("tls", out var rawTls) && rawTls is not null;
+
         HttpAuth.Parsed auth = new(null, null, null);
         var authBlock = config.Values.TryGetValue("auth", out var a)
             ? a as IReadOnlyDictionary<string, object?>
@@ -180,7 +187,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         }
         else
         {
-            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors);
+            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport);
         }
 
         var maxResponseBytes = DefaultMaxResponseBytes;
@@ -247,6 +254,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
                 timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings)
             {
                 MaxDownloadBytes = maxDownloadBytes,
+                Transport = transport,
             };
     }
 
