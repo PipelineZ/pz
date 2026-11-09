@@ -34,4 +34,9 @@ internal sealed class PcpServerHooks
     /// <summary>The process exits inside GetReadStats, so a test can prove the host reports the exit, not the
     /// failed call.</summary>
     public bool ExitOnReadStats { get; init; }
+
+    /// <summary>Export timeout and shutdown flush bound for this process's telemetry, in place of the production 2 s
+    /// and 3 s; null keeps them. A telemetry test sets a long one so its outcome does not depend on how loaded the
+    /// machine is.</summary>
+    public TimeSpan? PatientTelemetry { get; init; }
 }

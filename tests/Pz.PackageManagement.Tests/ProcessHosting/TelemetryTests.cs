@@ -48,7 +48,11 @@ public sealed class TelemetryTests : IDisposable
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 5);
-        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        // --patient-telemetry and a long shutdown grace: on a loaded machine the child's 2 s export timeout and 3 s
+        // flush bound drop spans by design, and the host's 10 s grace can kill it mid-flush. With both lifted, every
+        // span is delivered before the child exits, and the client's dispose waits for that exit.
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp",
+            ["--patient-telemetry"]);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
 
         string traceId, hostSpanId;
@@ -60,6 +64,7 @@ public sealed class TelemetryTests : IDisposable
             await using var client = await PcpClient.ConnectAndConfigureAsync(
                 process, LocalFilesManifest(), "test-instance", config,
                 new HostTelemetry("run-123", receiver.Endpoint), CancellationToken.None);
+            client.ShutdownGrace = TimeSpan.FromMinutes(5);
 
             var sourceConnector = new ProcessSourceConnector(client, process);
             await using var src = await sourceConnector.OpenAsync(config, CancellationToken.None);

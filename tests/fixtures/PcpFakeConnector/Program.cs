@@ -55,6 +55,7 @@ internal static class Program
             FailReadStats = options.FailReadStats,
             UnimplementedReadStats = options.UnimplementedReadStats,
             ExitOnReadStats = options.ExitOnReadStats,
+            PatientTelemetry = options.PatientTelemetry ? TimeSpan.FromMinutes(5) : null,
             OnConfigure = () =>
             {
                 connector?.RecordConfigure();
@@ -132,7 +133,8 @@ internal sealed record FixtureOptions(
     bool SkipReads = false,
     bool FailReadStats = false,
     bool UnimplementedReadStats = false,
-    bool ExitOnReadStats = false)
+    bool ExitOnReadStats = false,
+    bool PatientTelemetry = false)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -158,6 +160,7 @@ internal sealed record FixtureOptions(
         bool failReadStats = false;
         bool unimplementedReadStats = false;
         bool exitOnReadStats = false;
+        bool patientTelemetry = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -266,6 +269,9 @@ internal sealed record FixtureOptions(
                 case "--exit-on-read-stats":
                     exitOnReadStats = true;
                     break;
+                case "--patient-telemetry":
+                    patientTelemetry = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -281,7 +287,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats, unimplementedReadStats, exitOnReadStats),
+            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats, unimplementedReadStats, exitOnReadStats, patientTelemetry),
             passthrough.ToArray());
     }
 }
