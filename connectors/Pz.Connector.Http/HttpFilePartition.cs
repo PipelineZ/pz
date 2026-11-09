@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Bindings;
 
 namespace Pz.Connector.Http;
 
@@ -46,6 +47,29 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     /// point it at a directory of their own.</summary>
     internal string? ScratchRoot { get; set; }
 
+    /// <summary>The for_each item this download is for: its fields expand into the request and land on
+    /// every row. Null for a dataset without for_each.</summary>
+    internal ItemValues? Item { get; init; }
+
+    /// <summary>The engine bindings the request expands, when a for_each read already built them for
+    /// every item to share. Null means this partition builds its own from its config.</summary>
+    internal IReadOnlyDictionary<string, BindingValue>? Bindings { get; init; }
+
+    /// <summary>The <c>pz_fetched_at</c> of every row, when a for_each read read the clock once for all
+    /// items. Null means this partition reads the clock itself.</summary>
+    internal DateTimeOffset? FetchedAt { get; init; }
+
+    /// <summary>Where <see cref="Item"/> came from (the list page and record index), appended to an
+    /// error building the download request.</summary>
+    internal string? ItemOrigin { get; init; }
+
+    /// <summary>When set, a 404 or 410 answering the download ends the read with no rows and sets
+    /// <see cref="Missing"/> instead of failing.</summary>
+    internal bool SkipMissing { get; init; }
+
+    /// <summary>True once the download was answered 404/410 under <see cref="SkipMissing"/>.</summary>
+    internal bool Missing { get; private set; }
+
     public string PartitionId => $"{spec.Source}.{spec.Dataset}";
 
     public bool TryResumeFrom(string checkpoint) => false;
@@ -61,9 +85,9 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     {
         var file = config.File!;
         // Read once: every row of this read shares one fetch time and one {{ run_date }}.
-        var now = time.GetUtcNow();
-        var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
-        var first = HttpFirstRequest.Build(connection, config, strategy: null, bindings, Label);
+        var now = FetchedAt ?? time.GetUtcNow();
+        var bindings = Bindings ?? HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
+        var first = BuildFirstRequest(bindings);
 
         var download = first;
         var sender = _sender;
@@ -81,6 +105,12 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         using var scratch = new DownloadScratch(ScratchRoot);
         var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
             token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
+        // DownloadAsync returns a null path only for a 404/410 under SkipMissing.
+        if (path is null)
+        {
+            Missing = true;
+            yield break;
+        }
 
         // Open is lazy: a bad, encrypted or non-matching zip throws on the first MoveNext, inside the
         // scratch's using. Each file's stream is opened by the enumerator and disposed here once its
@@ -108,17 +138,31 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         }
     }
 
+    private HttpPageRequest BuildFirstRequest(IReadOnlyDictionary<string, BindingValue> bindings)
+    {
+        try
+        {
+            return HttpFirstRequest.Build(connection, config, strategy: null, bindings, Label, Item);
+        }
+        catch (PzConnectorException ex) when (ItemOrigin is not null)
+        {
+            throw new PzConnectorException($"{ex.Message} ({ItemOrigin})", ex.IsTransient, ex.RetryAfter,
+                innerException: ex, code: ex.Code, hint: ex.Hint);
+        }
+    }
+
     private IFileFormatReader ReaderFor(HttpFileFormat format) => format switch
     {
-        HttpFileFormat.Csv or HttpFileFormat.Tsv => new HttpCsvFileReader(),
-        HttpFileFormat.Json => new HttpJsonFileReader(connection.MaxResponseBytes),
-        HttpFileFormat.Xml => new HttpXmlFileReader(),
+        HttpFileFormat.Csv or HttpFileFormat.Tsv => new HttpCsvFileReader { Item = Item },
+        HttpFileFormat.Json => new HttpJsonFileReader(connection.MaxResponseBytes) { Item = Item },
+        HttpFileFormat.Xml => new HttpXmlFileReader { Item = Item },
         _ => throw new ArgumentOutOfRangeException(nameof(format), format, null),
     };
 
     /// <summary>Sends the download, refuses a non-2xx or error-page response, and saves the body
-    /// within `max_download_mb`. Returns the saved file and the name a non-zip file goes by.</summary>
-    private async Task<(string Path, string FallbackName)> DownloadAsync(HttpRequestSender sender,
+    /// within `max_download_mb`. Returns the saved file and the name a non-zip file goes by, or a null
+    /// path for a 404/410 under <see cref="SkipMissing"/>.</summary>
+    private async Task<(string? Path, string FallbackName)> DownloadAsync(HttpRequestSender sender,
         HttpPageRequest request, DownloadScratch scratch, CancellationToken ct)
     {
         using var sent = await sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true,
@@ -129,6 +173,11 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
             () => $"{DownloadLabel}: download from {target} {IdleRead.Tail(connection.Timeout)}");
         if (!sent.Response.IsSuccessStatusCode)
         {
+            if (SkipMissing && (int)sent.Response.StatusCode is 404 or 410)
+            {
+                return (null, "");
+            }
+
             throw sender.StatusError(sent, await BodyHeadAsync(content, idle, ct).ConfigureAwait(false),
                 DownloadStage);
         }

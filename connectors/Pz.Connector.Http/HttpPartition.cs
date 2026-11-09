@@ -22,6 +22,38 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
 {
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
+    /// <summary>The for_each item this read fetches for: its fields expand into the request and land on
+    /// every row. Null for a dataset without for_each.</summary>
+    public ItemValues? Item { get; init; }
+
+    private ItemCells? _itemCells;
+
+    /// <summary>The engine bindings every request of this read expands, when the caller already built
+    /// them: a for_each list crawl formats them by the dataset's cursor, and every item shares the list
+    /// crawl's {{ run_date }}. Null means this partition builds its own from its config.</summary>
+    internal IReadOnlyDictionary<string, BindingValue>? Bindings { get; init; }
+
+    /// <summary>The <c>pz_fetched_at</c> of every row, when the caller read the clock once for a whole
+    /// for_each read. Null means each page is stamped with the time it was fetched.</summary>
+    internal DateTimeOffset? FetchedAt { get; init; }
+
+    /// <summary>Where <see cref="Item"/> came from (the list page and record index), appended to an
+    /// error building the item's first request, so a bad field value can be found in the list.</summary>
+    internal string? ItemOrigin { get; init; }
+
+    /// <summary>When set, a 404 or 410 answering the crawl's first request ends the read with no rows and
+    /// sets <see cref="Missing"/> instead of failing. Any later page's 404/410 still fails.</summary>
+    internal bool SkipMissing { get; init; }
+
+    /// <summary>True once the first request was answered 404/410 under <see cref="SkipMissing"/>.</summary>
+    internal bool Missing { get; private set; }
+
+    /// <summary>Where batch buffers come from; null means the shared native pool. Tests count with it.</summary>
+    internal Apache.Arrow.Memory.MemoryAllocator? Allocator { get; init; }
+
+    /// <summary>True when <c>max_pages</c> stopped the crawl with a further page pending.</summary>
+    internal bool TruncatedWithMore => _truncatedWithMore;
+
     // In sync mode the query IS the sync token, whose param name is server-defined, so messages drop
     // the whole query rather than masking the authenticator's params by name.
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
@@ -94,7 +126,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     internal static int UnboundedPageCeiling = 50_000;
 
     // Per-attempt truncation-guard state. Ordinal of the incremental cursor within ProjectRow's
-    // output (raw envelope: fixed slot 3; contract mode:
+    // output (raw envelope: fixed slot 3, or 4 after a for_each dataset's pz_item; contract mode:
     // the cursor column's position in the Columns key order), or -1 when the read is not
     // incremental / has no cursor -- guard disabled.
     private bool _truncatedWithMore;
@@ -126,7 +158,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
             return -1;
         }
 
-        return config.Cursor is null ? -1 : 3;
+        return config.Cursor is null ? -1 : config.IsForEach ? 4 : 3;
     }
 
     private void TrackCursorOrder(object? value)
@@ -205,77 +237,28 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     {
         var columns = config.IsContractMode ? config.Columns! : RawEnvelope.Columns(config);
         var builder = new ArrowBatchBuilder(ContractProjector.BuildSchema(columns),
-            options.TargetBatchBytes, maxRowsPerBatch: options.MaxRowsPerBatch);
-        var strategy = config.PageStrategyFactory?.Invoke();
-        // Read once: every request this partition builds renders the same {{ run_date }}, even
-        // across midnight.
-        var runDate = config.RunDate.Render(time.GetUtcNow());
-        // A resume link wins over sync-token replay -- it is a LATER position inside the same
-        // crawl, whereas PriorSyncState (inside BuildFirstRequest) replays a
-        // whole-feed delta token from a PRIOR run. _syncCandidate capture from the terminal page
-        // is unaffected either way.
-        HttpPageRequest? request = _resume ?? BuildFirstRequest(strategy, runDate);
-        EnsureAllowedTarget(request.Url, "the first request");
+            options.TargetBatchBytes, Allocator, maxRowsPerBatch: options.MaxRowsPerBatch);
+        _itemCells = ItemCells.For(config, Item, Label);
         var page = 0;
-        // An empty page ends the crawl only for a strategy with no other end (page numbers). For
-        // link-header/cursor feeds an empty page in the middle is a gap: Graph delta feeds and
-        // filtered queries both serve one, and stopping there drops every remaining row with no
-        // error and, on an incremental read, advances the watermark past rows never fetched. Body
-        // paging replaces the URL strategy, so its own rule applies (a body cursor feed is a feed
-        // with gaps too).
-        var stopsOnEmptyPage = config.BodyPaging?.StopsOnEmptyPage ?? strategy?.StopsOnEmptyPage ?? true;
 
-        while (request is not null)
+        await foreach (var (_, records, next) in PagesAsync(ct).ConfigureAwait(false))
         {
-            ct.ThrowIfCancellationRequested();
-            if (!_requested.Add(request.KeyDigest))
-            {
-                throw new PzConnectorException(
-                    $"{Label}: pagination is not advancing — '{Redact(request.Url)}' was already requested" +
-                    $"{SameBody(request)} during this crawl; check the pagination options", isTransient: false);
-            }
-
-            if (config.MaxPages is null && page >= UnboundedPageCeiling)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: pagination did not terminate within {UnboundedPageCeiling} pages — the " +
-                    "feed keeps offering another page; set 'max_pages' if this feed really is this " +
-                    "large, or fix the pagination options", isTransient: false);
-            }
-
-            var (records, next) = await FetchPageAsync(strategy, request, ct).ConfigureAwait(false);
             // pz_fetched_at is the request-time UTC when the PAGE was fetched — one
             // timestamp shared by every row landed from this page, not stamped per row.
-            var fetchedAt = time.GetUtcNow();
+            var fetchedAt = FetchedAt ?? time.GetUtcNow();
             var currentPage = page;
             page++;
-            // The page counter restarts at 0 on every ATTEMPT (see the resume-link comment above
-            // seeding `uri`), so max_pages bounds each attempt's fetch count, not the partition's
-            // lifetime total across retries.
-            var stopsAfterThisPage = (records.Count == 0 && (stopsOnEmptyPage || next is null))
-                || (config.MaxPages is { } cap && page >= cap)
-                // Opt-in: some APIs clamp an out-of-range page number to the last real page instead
-                // of serving an empty array, so the feed never actually ends on its own -- a page
-                // whose row count falls short of the requested size is the only signal left.
-                || (config.StopOnShortPage && config.PageSize is { } size && records.Count < size);
 
             var boundaryEnqueued = false;
-            if (!stopsAfterThisPage && next is not null && !next.SameAs(request))
+            if (next is not null)
             {
                 // Enqueue NOW, using records.Count (known immediately, before any of this page's
                 // rows are appended) rather than waiting for this page's own foreach to exit --
-                // see property 1 in the _pageBoundaries comment above. Skipped when the loop is
-                // about to stop or throw: there is nothing beyond what's already appended for this
-                // attempt, so no later position exists to gate a checkpoint behind.
+                // see property 1 in the _pageBoundaries comment above. A page with no next request
+                // (the loop is about to stop or throw) has nothing beyond what's already appended for
+                // this attempt, so no later position exists to gate a checkpoint behind.
                 _pageBoundaries.Enqueue((_rowsAppended + records.Count, next));
                 boundaryEnqueued = true;
-            }
-
-            if (stopsAfterThisPage && records.Count > 0 && config.MaxPages is { } hitCap && page >= hitCap
-                && next is not null && !next.SameAs(request))
-            {
-                // Stopped by the cap with a real further page pending -- not a natural completion.
-                _truncatedWithMore = true;
             }
 
             foreach (var record in records)
@@ -320,25 +303,6 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
                 yield return pageTail;
                 ct.ThrowIfCancellationRequested();
             }
-
-            if (stopsAfterThisPage)
-            {
-                break;
-            }
-
-            if (next is not null && next.SameAs(request))
-            {
-                throw new PzConnectorException(
-                    $"{Label}: pagination is not advancing (next request equals '{Redact(request.Url)}'" +
-                    $"{SameBody(request)}); check the pagination options", isTransient: false);
-            }
-
-            if (next is not null)
-            {
-                EnsureAllowedTarget(next.Url, "the next-page link the endpoint returned");
-            }
-
-            request = next;
         }
 
         // A truncated incremental crawl may only advance the watermark if the landed rows provably
@@ -383,11 +347,102 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
         }
     }
 
+    /// <summary>One fetched page: the request that fetched it, its records, and the request this crawl
+    /// sends next — null when the crawl stops after this page (end of feed, <c>max_pages</c>, or a next
+    /// request that does not advance, which the enumerator then reports as an error).</summary>
+    internal sealed record HttpPage(HttpPageRequest Request, IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next);
+
+    /// <summary>The crawl itself: first request (or the resume position), then each next request, with
+    /// every guard a read has — a request already sent, the page ceiling, <c>max_pages</c>, an empty or
+    /// short page, and targets off the allowed hosts. Rows, batches and checkpoints are the caller's.</summary>
+    internal async IAsyncEnumerable<HttpPage> PagesAsync([EnumeratorCancellation] CancellationToken ct)
+    {
+        var strategy = config.PageStrategyFactory?.Invoke();
+        // Read once: every request this partition builds renders the same {{ run_date }}, even
+        // across midnight. Bindings handed in already carry it.
+        var runDate = Bindings is null ? config.RunDate.Render(time.GetUtcNow()) : null;
+        // A resume link wins over sync-token replay -- it is a LATER position inside the same
+        // crawl, whereas PriorSyncState (inside BuildFirstRequest) replays a
+        // whole-feed delta token from a PRIOR run. _syncCandidate capture from the terminal page
+        // is unaffected either way.
+        HttpPageRequest? request = _resume ?? BuildFirstRequest(strategy, runDate);
+        EnsureAllowedTarget(request.Url, "the first request");
+        var page = 0;
+        // An empty page ends the crawl only for a strategy with no other end (page numbers). For
+        // link-header/cursor feeds an empty page in the middle is a gap: Graph delta feeds and
+        // filtered queries both serve one, and stopping there drops every remaining row with no
+        // error and, on an incremental read, advances the watermark past rows never fetched. Body
+        // paging replaces the URL strategy, so its own rule applies (a body cursor feed is a feed
+        // with gaps too).
+        var stopsOnEmptyPage = config.BodyPaging?.StopsOnEmptyPage ?? strategy?.StopsOnEmptyPage ?? true;
+
+        while (request is not null)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!_requested.Add(request.KeyDigest))
+            {
+                throw new PzConnectorException(
+                    $"{Label}: pagination is not advancing — '{Redact(request.Url)}' was already requested" +
+                    $"{SameBody(request)} during this crawl; check the pagination options", isTransient: false);
+            }
+
+            if (config.MaxPages is null && page >= UnboundedPageCeiling)
+            {
+                throw new PzConnectorException(
+                    $"{Label}: pagination did not terminate within {UnboundedPageCeiling} pages — the " +
+                    "feed keeps offering another page; set 'max_pages' if this feed really is this " +
+                    "large, or fix the pagination options", isTransient: false);
+            }
+
+            var firstOfCrawl = page == 0 && _resume is null;
+            var (records, next) = await FetchPageAsync(strategy, request, firstOfCrawl, ct).ConfigureAwait(false);
+            page++;
+            // The page counter restarts at 0 on every ATTEMPT (see the resume-link comment above
+            // seeding `request`), so max_pages bounds each attempt's fetch count, not the partition's
+            // lifetime total across retries.
+            var stopsAfterThisPage = (records.Count == 0 && (stopsOnEmptyPage || next is null))
+                || (config.MaxPages is { } cap && page >= cap)
+                // Opt-in: some APIs clamp an out-of-range page number to the last real page instead
+                // of serving an empty array, so the feed never actually ends on its own -- a page
+                // whose row count falls short of the requested size is the only signal left.
+                || (config.StopOnShortPage && config.PageSize is { } size && records.Count < size);
+
+            if (stopsAfterThisPage && records.Count > 0 && config.MaxPages is { } hitCap && page >= hitCap
+                && next is not null && !next.SameAs(request))
+            {
+                // Stopped by the cap with a real further page pending -- not a natural completion.
+                _truncatedWithMore = true;
+            }
+
+            yield return new HttpPage(request, records,
+                !stopsAfterThisPage && next is not null && !next.SameAs(request) ? next : null);
+
+            if (stopsAfterThisPage)
+            {
+                break;
+            }
+
+            if (next is not null && next.SameAs(request))
+            {
+                throw new PzConnectorException(
+                    $"{Label}: pagination is not advancing (next request equals '{Redact(request.Url)}'" +
+                    $"{SameBody(request)}); check the pagination options", isTransient: false);
+            }
+
+            if (next is not null)
+            {
+                EnsureAllowedTarget(next.Url, "the next-page link the endpoint returned");
+            }
+
+            request = next;
+        }
+    }
+
     // Names the body without showing it: a repeated POST is identified by "same body", never by content.
     private static string SameBody(HttpPageRequest request)
         => request.JsonBody is not null || request.TextBody is not null ? " with the same body" : "";
 
-    private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy, string runDate)
+    private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy, string? runDate)
     {
         // Delta-link replay is a GET by construction ('delta_pointer' is refused with POST).
         if (TryGetSyncReplay() is { } replay)
@@ -395,8 +450,16 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
             return new HttpPageRequest(HttpMethod.Get, replay, null, null);
         }
 
-        var bindings = HttpFirstRequest.Bindings(spec, config, runDate, Label);
-        return HttpFirstRequest.Build(connection, config, strategy, bindings, Label);
+        var bindings = Bindings ?? HttpFirstRequest.Bindings(spec, config, runDate!, Label);
+        try
+        {
+            return HttpFirstRequest.Build(connection, config, strategy, bindings, Label, Item);
+        }
+        catch (PzConnectorException ex) when (ItemOrigin is not null)
+        {
+            throw new PzConnectorException($"{ex.Message} ({ItemOrigin})", ex.IsTransient, ex.RetryAfter,
+                innerException: ex, code: ex.Code, hint: ex.Hint);
+        }
     }
 
     private Uri? TryGetSyncReplay()
@@ -429,17 +492,29 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     {
         if (config.IsContractMode)
         {
-            return ContractProjector.ProjectRow(record, config.Columns!, Label);
+            return _itemCells is { } cells
+                ? cells.Place(ContractProjector.ProjectRow(record, cells.RecordColumns, Label), 0)
+                : ContractProjector.ProjectRow(record, config.Columns!, Label);
         }
 
-        var row = new object?[config.Cursor is null ? 3 : 4];
+        var cursorSlot = config.IsForEach ? 4 : 3;
+        var row = new object?[config.Cursor is null ? cursorSlot : cursorSlot + 1];
         row[0] = record?.ToJsonString() ?? "null";
         row[1] = page;
         row[2] = fetchedAt;
-        if (config.Cursor is { } cursor)
+        if (config.IsForEach)
+        {
+            row[3] = _itemCells?.Json;
+        }
+
+        if (_itemCells is { CursorFromItem: true })
+        {
+            row[cursorSlot] = _itemCells.Cursor;
+        }
+        else if (config.Cursor is { } cursor)
         {
             JsonPointer.TryResolve(record, config.CursorPointer, out var node);
-            row[3] = ContractProjector.ConvertScalar(node, config.CursorType!, cursor, Label);
+            row[cursorSlot] = ContractProjector.ConvertScalar(node, config.CursorType!, cursor, Label);
         }
 
         return row;
@@ -454,12 +529,12 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     /// its own watermark/sync-state after a post-commit persist. A POST on `read:` is a read the
     /// author asserts has no side effects, so it is replayed on the same terms.</summary>
     private Task<(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next)> FetchPageAsync(
-        IPageStrategy? strategy, HttpPageRequest request, CancellationToken ct)
+        IPageStrategy? strategy, HttpPageRequest request, bool firstOfCrawl, CancellationToken ct)
         => _sender.RunAsync("http.get_page", idempotent: true,
-            innerCt => FetchPageCoreAsync(strategy, request, innerCt), ct);
+            innerCt => FetchPageCoreAsync(strategy, request, firstOfCrawl, innerCt), ct);
 
     private async Task<(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next)> FetchPageCoreAsync(
-        IPageStrategy? strategy, HttpPageRequest request, CancellationToken ct)
+        IPageStrategy? strategy, HttpPageRequest request, bool firstOfCrawl, CancellationToken ct)
     {
         var result = await _sender.SendAsync(request, streamBody: false, credentialsOnlyToOrigin: false, ct)
             .ConfigureAwait(false);
@@ -482,6 +557,12 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
                     throw new PzConnectorException(
                         $"{Label}: the sync token/delta link has expired (HTTP 410) at '{Target(sent, sendUri)}'; " +
                         "re-run with --full-refresh to restart the feed from the beginning", isTransient: false);
+                }
+
+                if (SkipMissing && firstOfCrawl && status is 404 or 410)
+                {
+                    Missing = true;
+                    return ([], null);
                 }
 
                 throw _sender.StatusError(result, text);
@@ -606,7 +687,8 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
 
     private string Target(HttpMethod method, Uri uri) => _sender.Target(method, uri);
 
-    private string Redact(Uri uri) => _sender.Redact(uri);
+    /// <summary><paramref name="uri"/> as this partition's messages show it.</summary>
+    internal string Redact(Uri uri) => _sender.Redact(uri);
 
     private void EnsureAllowedTarget(Uri candidate, string what) => _sender.EnsureAllowedTarget(candidate, what);
 

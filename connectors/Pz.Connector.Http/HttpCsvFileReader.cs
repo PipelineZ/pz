@@ -25,16 +25,21 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
     /// preallocation, so narrow rows pay nothing for the headroom.</summary>
     private const int MaxRowBytes = 16 * 1024 * 1024;
 
+    /// <summary>The for_each item this file was downloaded for; its fields land on every row.</summary>
+    public ItemValues? Item { get; init; }
+
     public IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
         DateTimeOffset fetchedAt, BatchOptions options, string label, CancellationToken ct) =>
-        FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, fetchedAt, options, label, ct), label, file.Name, ct);
+        FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, Item, fetchedAt, options, label, ct), label, file.Name, ct);
 
     private static CsvDataReaderOptions CsvOptions(char delimiter, bool header) =>
         new() { HasHeaders = header, MaxBufferSize = MaxRowBytes, Delimiter = delimiter };
 
     private static async IAsyncEnumerable<RecordBatch> ReadCoreAsync(FileSource file, HttpDatasetConfig config,
-        DateTimeOffset fetchedAt, BatchOptions options, string label, [EnumeratorCancellation] CancellationToken ct)
+        ItemValues? itemValues, DateTimeOffset fetchedAt, BatchOptions options, string label,
+        [EnumeratorCancellation] CancellationToken ct)
     {
+        var item = ItemCells.For(config, itemValues, label);
         var fileConfig = config.File!;
         using var text = new StreamReader(file.Stream, fileConfig.Encoding ?? Encoding.UTF8,
             detectEncodingFromByteOrderMarks: true, leaveOpen: true);
@@ -52,10 +57,10 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
         // Sylvan numbers data rows from 1; this turns that into the file's own line number.
         var lineOffset = fileConfig.SkipLines + (fileConfig.Header ? 1 : 0);
         var source = !config.IsContractMode
-            ? ReadRawAsync(csv, file.Name, config, fetchedAt, options, label, lineOffset, ct)
+            ? ReadRawAsync(csv, file.Name, config, item, fetchedAt, options, label, lineOffset, ct)
             : fileConfig.Header
-                ? ReadByHeaderAsync(csv, file.Name, config, options, label, lineOffset, ct)
-                : ReadPositionalAsync(csv, file.Name, config, options, label, lineOffset, ct);
+                ? ReadByHeaderAsync(csv, file.Name, config, item, options, label, lineOffset, ct)
+                : ReadPositionalAsync(csv, file.Name, config, item, options, label, lineOffset, ct);
 
         await foreach (var batch in source.ConfigureAwait(false))
         {
@@ -63,11 +68,13 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
         }
     }
 
+    /// <summary>Only the columns the item does not fill are looked up in the header; the item's columns
+    /// and `file_column` join each batch as constant columns at their declared positions.</summary>
     private static async IAsyncEnumerable<RecordBatch> ReadByHeaderAsync(CsvDataReader csv, string name,
-        HttpDatasetConfig config, BatchOptions options, string label, long lineOffset,
+        HttpDatasetConfig config, ItemCells? item, BatchOptions options, string label, long lineOffset,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var columns = config.Columns!;
+        var columns = item?.RecordColumns ?? config.Columns!;
         var names = columns.Keys.ToArray();
         var typeNames = columns.Values.ToArray();
         var ordinals = new int[names.Length];
@@ -93,21 +100,36 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
         }
 
         var contractSchema = ContractProjector.BuildSchema(columns);
-        var outputSchema = config.File!.FileColumn is null ? null : FileOutput.Schema(config);
+        var hasFileColumn = config.File!.FileColumn is not null;
+        var hasItemColumns = item is { Columns.Count: > 0 };
+        var outputSchema = !hasItemColumns && !hasFileColumn ? null : FileOutput.Schema(config);
+        List<(int Index, object? Value)>? constants = null;
+        if (hasItemColumns)
+        {
+            constants = [.. item!.Columns];
+            if (hasFileColumn)
+            {
+                constants.Add((outputSchema!.FieldsList.Count - 1, name));
+            }
+        }
+
         await foreach (var batch in CsvArrowReader
             .ReadAsync(csv, contractSchema, typeNames, ordinals, name, options, lineOffset, ct)
             .ConfigureAwait(false))
         {
-            // The appended batch owns the original's arrays; the original is never disposed.
-            yield return outputSchema is null ? batch : FileOutput.AppendFileColumn(batch, outputSchema, name);
+            // The assembled batch owns the original's arrays; the original is never disposed.
+            yield return outputSchema is null ? batch
+                : constants is null ? FileOutput.AppendFileColumn(batch, outputSchema, name)
+                : FileOutput.WithConstantColumns(batch, outputSchema, constants);
         }
     }
 
+    /// <summary>The file's fields map in order onto the columns the item does not fill.</summary>
     private static async IAsyncEnumerable<RecordBatch> ReadPositionalAsync(CsvDataReader csv, string name,
-        HttpDatasetConfig config, BatchOptions options, string label, long lineOffset,
+        HttpDatasetConfig config, ItemCells? item, BatchOptions options, string label, long lineOffset,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var columns = config.Columns!;
+        var columns = item?.RecordColumns ?? config.Columns!;
         var names = columns.Keys.ToArray();
         var typeNames = columns.Values.ToArray();
         var schema = FileOutput.Schema(config);
@@ -124,13 +146,18 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
                     isTransient: false);
             }
 
-            var row = new object?[schema.FieldsList.Count];
+            var row = new object?[item is null ? schema.FieldsList.Count : names.Length];
             for (var i = 0; i < names.Length; i++)
             {
                 var cell = csv.GetString(i);
                 row[i] = cell.Length == 0
                     ? null
                     : TextValueParser.Parse(cell, typeNames[i], $"{label}: file '{name}' line {line}: column '{names[i]}'");
+            }
+
+            if (item is not null)
+            {
+                row = item.Place(row, hasFileColumn ? 1 : 0);
             }
 
             if (hasFileColumn)
@@ -152,7 +179,7 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
     }
 
     private static async IAsyncEnumerable<RecordBatch> ReadRawAsync(CsvDataReader csv, string name,
-        HttpDatasetConfig config, DateTimeOffset fetchedAt, BatchOptions options, string label, long lineOffset,
+        HttpDatasetConfig config, ItemCells? item, DateTimeOffset fetchedAt, BatchOptions options, string label, long lineOffset,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var builder = new ArrowBatchBuilder(FileOutput.Schema(config), options.TargetBatchBytes,
@@ -189,7 +216,7 @@ internal sealed class HttpCsvFileReader : IFileFormatReader
             }
 
             builder.AppendRow(FileOutput.RawRow(payload, name, row, fetchedAt, config,
-                $"{label}: file '{name}' line {csv.RowNumber + lineOffset}"));
+                $"{label}: file '{name}' line {csv.RowNumber + lineOffset}", item));
             if (builder.TryTakeBatch(out var batch))
             {
                 yield return batch!;

@@ -23,13 +23,18 @@ namespace Pz.Connector.Http;
 /// nested children as objects), and its own non-whitespace text as `"#text"`.</summary>
 internal sealed class HttpXmlFileReader : IFileFormatReader
 {
+    /// <summary>The for_each item this file was downloaded for; its fields land on every row.</summary>
+    public ItemValues? Item { get; init; }
+
     public IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
         DateTimeOffset fetchedAt, BatchOptions options, string label, CancellationToken ct) =>
-        FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, fetchedAt, options, label, ct), label, file.Name, ct);
+        FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, Item, fetchedAt, options, label, ct), label, file.Name, ct);
 
     private static async IAsyncEnumerable<RecordBatch> ReadCoreAsync(FileSource file, HttpDatasetConfig config,
-        DateTimeOffset fetchedAt, BatchOptions options, string label, [EnumeratorCancellation] CancellationToken ct)
+        ItemValues? itemValues, DateTimeOffset fetchedAt, BatchOptions options, string label,
+        [EnumeratorCancellation] CancellationToken ct)
     {
+        var item = ItemCells.For(config, itemValues, label);
         var settings = new XmlReaderSettings
         {
             DtdProcessing = DtdProcessing.Prohibit,
@@ -51,8 +56,8 @@ internal sealed class HttpXmlFileReader : IFileFormatReader
             row++;
             var context = $"{label}: file '{file.Name}' record {row}";
             builder.AppendRow(config.IsContractMode
-                ? ContractRow(record, config, file.Name, context)
-                : FileOutput.RawRow(RecordObject(record), file.Name, row, fetchedAt, config, context));
+                ? ContractRow(record, config, item, file.Name, context)
+                : FileOutput.RawRow(RecordObject(record), file.Name, row, fetchedAt, config, context, item));
             if (builder.TryTakeBatch(out var batch))
             {
                 yield return batch!;
@@ -110,10 +115,12 @@ internal sealed class HttpXmlFileReader : IFileFormatReader
         }
     }
 
-    private static object?[] ContractRow(XElement record, HttpDatasetConfig config, string fileName, string context)
+    private static object?[] ContractRow(XElement record, HttpDatasetConfig config, ItemCells? item,
+        string fileName, string context)
     {
-        var columns = config.Columns!;
-        var values = new object?[columns.Count + (config.File!.FileColumn is null ? 0 : 1)];
+        var columns = item?.RecordColumns ?? config.Columns!;
+        var extra = config.File!.FileColumn is null ? 0 : 1;
+        var values = new object?[columns.Count + extra];
         var i = 0;
         foreach (var (name, typeName) in columns)
         {
@@ -137,9 +144,14 @@ internal sealed class HttpXmlFileReader : IFileFormatReader
             values[i++] = text is null ? null : TextValueParser.Parse(text, typeName, $"{context}: column '{name}'");
         }
 
-        if (i < values.Length)
+        if (item is not null)
         {
-            values[i] = fileName;
+            values = item.Place(values, extra);
+        }
+
+        if (extra > 0)
+        {
+            values[^1] = fileName;
         }
 
         return values;

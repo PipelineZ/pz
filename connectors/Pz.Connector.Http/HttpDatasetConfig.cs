@@ -40,13 +40,57 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// verbatim as the first request and captures the terminal page's delta link.</summary>
     public bool IsSyncMode => DeltaLinkPointer is not null;
 
+    /// <summary>The `for_each:` option; non-null makes this config the item request, run once per
+    /// record of the list request it describes.</summary>
+    public HttpForEachConfig? ForEach { get; init; }
+
+    public bool IsForEach => ForEach is not null;
+
     public static HttpDatasetConfig Parse(DatasetSpec spec)
     {
         var errors = new List<string>();
-        var options = spec.Options;
+        var config = ParseCore(spec.Options, spec, errors, listRequest: false);
+        if (errors.Count > 0)
+        {
+            throw new PzConnectorException(
+                $"http dataset '{spec.Source}.{spec.Dataset}': {string.Join("; ", errors)} " +
+                "(fix the dataset options and re-run)", isTransient: false);
+        }
+
+        return config;
+    }
+
+    /// <summary>Parses one request's options, appending every problem to <paramref name="errors"/>
+    /// (the result is meaningful only when none were added). With <paramref name="listRequest"/> the
+    /// options are a `for_each` block: the keys only the item request or the dataset may have are
+    /// refused, its other errors are prefixed `for_each: `, and item references are not allowed.
+    /// Bindings come from <paramref name="spec"/> in both modes, so the list request formats the
+    /// watermark by the dataset's cursor.</summary>
+    internal static HttpDatasetConfig ParseCore(IReadOnlyDictionary<string, object?> options, DatasetSpec spec,
+        List<string> errors, bool listRequest)
+    {
+        var reported = errors;
+        if (listRequest)
+        {
+            var refused = HttpForEachConfig.ItemOnlyKeys.Where(options.ContainsKey).ToList();
+            foreach (var key in refused)
+            {
+                reported.Add($"for_each.{key} is not allowed in the list request");
+            }
+
+            options = options.Where(o => !refused.Contains(o.Key)).ToDictionary();
+            errors = [];
+        }
 
         // The engine's bindings, then the connector's own.
         string[] knownBindings = [.. BindingExpander.FromSpec(spec).Keys, "run_date"];
+
+        HttpForEachConfig? forEach = null;
+        IReadOnlyCollection<string>? itemFields = null;
+        if (!listRequest && options.TryGetValue("for_each", out var rawForEach) && rawForEach is not null)
+        {
+            forEach = HttpForEachConfig.Parse(rawForEach, spec, errors, out itemFields);
+        }
 
         var path = Get(options, "path");
         if (string.IsNullOrEmpty(path) || path[0] != '/')
@@ -55,7 +99,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
         else
         {
-            ValidateBindingTemplate(path, "option 'path'", knownBindings, errors);
+            ValidateBindingTemplate(path, "option 'path'", knownBindings, errors, itemFields: itemFields);
         }
 
         var runDate = RunDateConfig.Parse(options.TryGetValue("run_date", out var rd) ? rd : null, errors);
@@ -67,12 +111,13 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             {
                 var template = YamlScalarText.Of(value) ?? "";
                 query[name] = template;
-                ValidateBindingTemplate(template, $"query option '{name}'", knownBindings, errors);
+                ValidateBindingTemplate(template, $"query option '{name}'", knownBindings, errors,
+                    itemFields: itemFields);
             }
         }
 
         var method = ParseMethod(options, errors);
-        var body = ParseBody(options, method, knownBindings, errors);
+        var body = ParseBody(options, method, knownBindings, itemFields, errors);
         var errorPointer = Get(options, "error_pointer");
         if (errorPointer is not null)
         {
@@ -203,11 +248,14 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
         ValidateFileMode(options, rawFile is not null, rawExport is not null, file, columns, errors);
 
-        if (errors.Count > 0)
+        if (options.TryGetValue("for_each", out var fe) && fe is not null)
         {
-            throw new PzConnectorException(
-                $"http dataset '{spec.Source}.{spec.Dataset}': {string.Join("; ", errors)} " +
-                "(fix the dataset options and re-run)", isTransient: false);
+            ValidateForEach(options, spec, rawExport is not null, deltaPointer is not null, errors);
+        }
+
+        if (listRequest)
+        {
+            reported.AddRange(errors.Select(e => "for_each: " + e));
         }
 
         // Body paging replaces the URL strategy (which was parsed only for validation and the
@@ -219,8 +267,64 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             RunDate = runDate,
             File = file,
             Export = export,
+            ForEach = forEach,
         };
     }
+
+    private static void ValidateForEach(IReadOnlyDictionary<string, object?> options, DatasetSpec spec,
+        bool hasExport, bool hasDelta, List<string> errors)
+    {
+        if (hasDelta)
+        {
+            errors.Add("'for_each' cannot be combined with 'delta_pointer' (a change feed has no list of items)");
+        }
+
+        if (hasExport)
+        {
+            errors.Add("'for_each' cannot be combined with 'export'");
+        }
+
+        // A SQL-declared incremental has no WatermarkCursor on its first run or a full refresh, so a raw
+        // cursor or a watermark reference in either request marks the dataset incremental too.
+        var block = options["for_each"] as IReadOnlyDictionary<string, object?>;
+        var incremental = spec.WatermarkCursor is not null
+            || options.GetValueOrDefault("cursor") is not null
+            || ReferencesWatermark(options)
+            || (block is not null && ReferencesWatermark(block));
+        if (!incremental)
+        {
+            return;
+        }
+
+        foreach (var (present, key) in new[]
+        {
+            (block?.GetValueOrDefault("max_items") is not null, "max_items"),
+            (block?.GetValueOrDefault("max_pages") is not null, "for_each.max_pages"),
+            (options.GetValueOrDefault("max_pages") is not null, "max_pages"),
+        })
+        {
+            if (present)
+            {
+                errors.Add($"for_each on an incremental dataset cannot use {key}: a cut-short item would be " +
+                    "skipped for good once the watermark passes it");
+            }
+        }
+    }
+
+    /// <summary>Whether a request's path, query or body references {{ watermark }} or {{ window_upper }}.</summary>
+    private static bool ReferencesWatermark(IReadOnlyDictionary<string, object?> request)
+        => new[] { "path", "query", "body" }
+            .SelectMany(key => Strings(request.GetValueOrDefault(key)))
+            .SelectMany(HttpTemplate.EngineReferences)
+            .Any(name => name is "watermark" or "window_upper");
+
+    private static IEnumerable<string> Strings(object? value) => value switch
+    {
+        string text => [text],
+        IReadOnlyDictionary<string, object?> map => map.Values.SelectMany(Strings),
+        System.Collections.IEnumerable list => list.Cast<object?>().SelectMany(Strings),
+        _ => [],
+    };
 
     private static void ValidateFileMode(IReadOnlyDictionary<string, object?> options, bool hasFile,
         bool hasExport, HttpFileConfig? file, IReadOnlyDictionary<string, string>? columns, List<string> errors)
@@ -287,7 +391,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     }
 
     private static HttpBody? ParseBody(IReadOnlyDictionary<string, object?> options, HttpMethod method,
-        IReadOnlyCollection<string> knownBindings, List<string> errors)
+        IReadOnlyCollection<string> knownBindings, IReadOnlyCollection<string>? itemFields, List<string> errors)
     {
         options.TryGetValue("body", out var raw);
         var bodyFormat = Get(options, "body_format");
@@ -323,7 +427,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             return null;
         }
 
-        return HttpBody.Parse(raw, bodyFormat, contentType, knownBindings, errors);
+        return HttpBody.Parse(raw, bodyFormat, contentType, knownBindings, errors, itemFields);
     }
 
     private static string? Get(IReadOnlyDictionary<string, object?> options, string key)
@@ -334,8 +438,21 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// <see cref="HttpFirstRequest"/>'s TryExpand calls are the runtime-side defense in depth for the
     /// same two failure modes.</summary>
     internal static void ValidateBindingTemplate(string template, string label,
-        IReadOnlyCollection<string> knownBindings, List<string> errors, bool echoTemplate = true)
+        IReadOnlyCollection<string> knownBindings, List<string> errors, bool echoTemplate = true,
+        IReadOnlyCollection<string>? itemFields = null)
     {
+        // An item reference is not a malformed engine binding: it is checked against the declared
+        // item fields (none here unless the caller passes them, which refuses it).
+        if (HttpTemplate.HasItemReferences(template))
+        {
+            if (!HttpTemplate.TryValidate(template, knownBindings, itemFields, out var error))
+            {
+                errors.Add($"{label}: {error}");
+            }
+
+            return;
+        }
+
         IReadOnlyList<string> referenced;
         try
         {

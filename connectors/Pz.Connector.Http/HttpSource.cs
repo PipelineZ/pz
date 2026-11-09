@@ -90,9 +90,12 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
-        IDatasetPartition partition = config.IsFileMode
-            ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
-            : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate);
+        // for_each comes first: its items may themselves be file downloads.
+        IDatasetPartition partition = config.IsForEach
+            ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
+            : config.IsFileMode
+                ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
+                : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate);
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 
@@ -102,7 +105,8 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
     public void UseOperationGate(IOperationGate gate) => _gate = gate;
 
     /// <summary>Called at most once per open, before any plan/read call; partitions planned afterward
-    /// report a file-mode zip with no matching member (`if_missing: empty`) through it.</summary>
+    /// report a file-mode zip with no matching member (`if_missing: empty`), a for_each cap that stopped
+    /// the read, or for_each items skipped under `on_missing: skip` through it.</summary>
     public void UseNotice(Action<string> notice) => _notice = notice;
 
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
