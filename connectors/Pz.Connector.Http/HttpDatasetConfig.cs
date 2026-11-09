@@ -173,17 +173,18 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         if (Get(options, TimeZoneOption) is { } zoneId)
         {
             watermarkZone = RunDateConfig.FindZone(zoneId, TimeZoneOption, errors);
-            if (watermarkFormat is null)
+            // An unparseable format is reported on its own; only an absent one is "missing".
+            if (watermarkFormat is null && Get(options, "watermark_format") is null)
             {
                 errors.Add($"'{TimeZoneOption}' needs a 'watermark_format' of 'date' or a custom format " +
                     "(the default iso8601 is always UTC)");
             }
-            else if (watermarkFormat.IsAbsolute)
+            else if (watermarkFormat is { IsAbsolute: true })
             {
                 errors.Add($"'{TimeZoneOption}' cannot apply to 'watermark_format: {watermarkFormat.Name}', which " +
                     $"names an instant on its own; remove '{TimeZoneOption}'");
             }
-            else if (watermarkFormat.HasUtcMarker)
+            else if (watermarkFormat is { HasUtcMarker: true })
             {
                 errors.Add($"'watermark_format' '{watermarkFormat.Name}' writes a UTC marker ('Z' or 'UTC'), so " +
                     $"'{TimeZoneOption}' would make it lie; drop the marker or '{TimeZoneOption}'");

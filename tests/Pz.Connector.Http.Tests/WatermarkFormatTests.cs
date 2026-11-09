@@ -182,4 +182,29 @@ public class WatermarkFormatTests
         Assert.True(Format("yyyy-MM-dd HH:mm' UTC'").HasUtcMarker);
         Assert.False(Format("yyyy-MM-dd HH:mm").HasUtcMarker);
     }
+
+    // Apia skipped 2011-12-30 entirely (UTC-10 to UTC+14). A bound in the skipped day needs more than four
+    // 3-hour steps to reach a wall time that exists; one that stays unsafe must fail, never be returned.
+    [Fact]
+    public void A_skipped_day_steps_until_the_bound_is_safe()
+        => Assert.Equal("2011-12-31 00",
+            Format("yyyy-MM-dd HH").Render(Utc("2011-12-30T09:30:00"), true, Zone("Pacific/Apia")));
+
+    [Fact]
+    public void A_bound_still_unsafe_after_the_last_pass_is_a_permanent_error()
+    {
+        var ex = Assert.Throws<Pz.Connectors.Abstractions.PzConnectorException>(() =>
+            Format("yyyy-MM-dd HH").Render(Utc("2011-12-30T09:30:00"), true, Zone("Pacific/Apia"), maxPasses: 1));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("watermark_time_zone", ex.Message, StringComparison.Ordinal);
+    }
+
+    // Santiago starts DST at midnight: 2026-09-06 00:00 does not exist, so a date bound steps a whole day.
+    [Fact]
+    public void A_date_format_in_a_zone_that_skips_midnight_stays_safe()
+    {
+        var santiago = Zone("America/Santiago");
+        Assert.Equal("2026-09-05", Format("date").Render(Utc("2026-09-06T14:00:00"), false, santiago));
+        Assert.Equal("2026-09-07", Format("date").Render(Utc("2026-09-06T02:00:00"), true, santiago));
+    }
 }

@@ -690,4 +690,16 @@ public class HttpFormatsTests
             ["columns"] = new Dictionary<string, string> { ["n"] = "bigint" },
             ["column_pointers"] = Pointers(("n", pointer)),
         }));
+
+    [Fact]
+    public void An_invalid_format_with_a_time_zone_reports_the_format_only()
+    {
+        var message = Errors(Incremental(new()
+        {
+            ["watermark_format"] = "HH:mm",
+            ["watermark_time_zone"] = "America/New_York",
+        }));
+        Assert.Contains("skips the year", message);
+        Assert.DoesNotContain("needs a 'watermark_format'", message);
+    }
 }

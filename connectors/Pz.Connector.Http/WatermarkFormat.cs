@@ -197,8 +197,8 @@ internal sealed class WatermarkFormat
     }
 
     /// <summary>The largest wall-clock shift a time-zone transition makes (Troll in Antarctica moves 2 h).
-    /// A bound that lands in a skipped or repeated hour is moved this far past the transition before it is
-    /// floored or rounded up again, so the API reads it as an instant on the safe side whichever way it
+    /// A bound that lands in a skipped or repeated hour is moved this far (repeatedly, up to
+    /// <see cref="MaxPasses"/> times) past the transition before it is floored or rounded up again, so the API reads it as an instant on the safe side whichever way it
     /// resolves the local time.</summary>
     private static readonly TimeSpan MaxTransitionShift = TimeSpan.FromHours(3);
 
@@ -208,8 +208,17 @@ internal sealed class WatermarkFormat
     /// bound is a local time the zone skips or repeats, the earlier safe wall time is used, and the later
     /// one for the upper bound, so a DST transition never narrows the window. Throws a permanent
     /// <see cref="Pz.Connectors.Abstractions.PzConnectorException"/> (without the value) when rounding up
-    /// would pass year 9999.</summary>
+    /// would pass year 9999, or when no safe wall time is found within 48 hours of a transition.</summary>
     public string Render(DateTimeOffset value, bool upper, TimeZoneInfo? zone = null)
+        => Render(value, upper, zone, MaxPasses);
+
+    /// <summary>How many 3-hour steps a bound may take to leave a skipped or repeated stretch of wall time:
+    /// 48 hours, longer than any transition in the time zone database (Apia skipped a whole day).</summary>
+    private const int MaxPasses = 16;
+
+    /// <summary>As <see cref="Render(DateTimeOffset, bool, TimeZoneInfo?)"/>, with the step cap as a test seam.
+    /// A bound still unsafe after <paramref name="maxPasses"/> steps is a permanent error, never returned.</summary>
+    internal string Render(DateTimeOffset value, bool upper, TimeZoneInfo? zone, int maxPasses)
     {
         var utc = value.ToUniversalTime();
         if (_kind != Kind.Custom || zone is null || zone == TimeZoneInfo.Utc)
@@ -220,11 +229,19 @@ internal sealed class WatermarkFormat
 
         var local = TimeZoneInfo.ConvertTimeFromUtc(utc.UtcDateTime, zone);
         var bound = Bound(local, upper);
-        for (var i = 0; i < 4 && !IsSafe(bound, utc, upper, zone); i++)
+        for (var i = 0; i < maxPasses && !IsSafe(bound, utc, upper, zone); i++)
         {
             bound = upper
                 ? Bound(Shift(bound, MaxTransitionShift), upper: true)
                 : Bound(Shift(bound, -MaxTransitionShift), upper: false);
+        }
+
+        if (!IsSafe(bound, utc, upper, zone))
+        {
+            throw new Pz.Connectors.Abstractions.PzConnectorException(
+                $"'watermark_time_zone: {zone.Id}' has a transition here that the window's " +
+                $"{(upper ? "upper" : "lower")} bound cannot be moved past safely; render in UTC (remove " +
+                "'watermark_time_zone') or use a finer 'watermark_format'", isTransient: false);
         }
 
         return Format(bound);
