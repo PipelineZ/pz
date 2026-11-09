@@ -101,89 +101,71 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
         IReadOnlyList<HttpPageRequest> downloads = [first];
         var sender = _sender;
-        HttpExportJob? job = null;
-        var finished = false;
-        try
+        if (config.Export is { } export)
         {
-            if (config.Export is { } export)
-            {
-                // Same-origin needs no handling here: the send strips credentials from any request to
-                // another origin.
-                job = new HttpExportJob(export, _sender, connection, config, time, Label, bindings, Notice);
-                downloads = await job.RunAsync(first, ct).ConfigureAwait(false);
-                sender = _exportDownloadSender;
-            }
-
-            var reader = ReaderFor(file.Format);
-            var unmatched = 0;
-            // One result file at a time, each with the budgets of a single download, and each file's scratch
-            // deleted before the next download starts, so disk use stays at one file.
-            foreach (var download in downloads)
-            {
-                var budget = new DecompressionBudget(DecompressionFactor * connection.MaxDownloadBytes, Label);
-                using var scratch = new DownloadScratch(ScratchRoot);
-                var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
-                    token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
-                // DownloadAsync returns a null path only for a 404/410 under SkipMissing or an on_status skip.
-                if (path is null)
-                {
-                    Missing = true;
-                    if (Item is null && _skipNotice is not null)
-                    {
-                        Notice?.Invoke(_skipNotice);
-                    }
-
-                    yield break;
-                }
-
-                // Open is lazy: a bad, encrypted or non-matching zip throws on the first MoveNext, inside the
-                // scratch's using. Each file's stream is opened by the enumerator and disposed here once its
-                // reader is done, on success, failure and cancellation alike (readers leave it open).
-                var any = false;
-                foreach (var source in ArchiveReader.Open(path, file, fallbackName, budget, Label))
-                {
-                    any = true;
-                    using (source)
-                    {
-                        await foreach (var batch in reader.ReadAsync(source, config, now, options, Label, ct)
-                                           .ConfigureAwait(false))
-                        {
-                            yield return batch;
-                        }
-                    }
-
-                    ct.ThrowIfCancellationRequested();
-                }
-
-                if (!any)
-                {
-                    unmatched++;
-                }
-            }
-
-            if (unmatched > 0 && downloads.Count == 1)
-            {
-                Notice?.Invoke($"{Label}: no zip entry matches file.members '{file.Members}'; " +
-                    "read as empty (if_missing: empty)");
-            }
-            else if (unmatched > 0)
-            {
-                Notice?.Invoke($"{Label}: no zip entry matches file.members '{file.Members}' in {unmatched} of " +
-                    $"{downloads.Count} result files; read those as empty (if_missing: empty)");
-            }
-
-            finished = true;
+            // Same-origin needs no handling here: the send strips credentials from any request to
+            // another origin.
+            downloads = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings, Notice)
+                .RunAsync(first, ct).ConfigureAwait(false);
+            sender = _exportDownloadSender;
         }
-        finally
+
+        var reader = ReaderFor(file.Format);
+        var unmatched = 0;
+        // One result file at a time, each with the budgets of a single download, and each file's scratch
+        // deleted before the next download starts, so disk use stays at one file.
+        foreach (var download in downloads)
         {
-            // A job whose result this read did not take in full is abandoned: a failure, a cancellation or
-            // an early stop by the engine. The job cancels itself first when it never got ready, so this
-            // is a no-op then.
-            if (!finished && job is not null)
+            var budget = new DecompressionBudget(DecompressionFactor * connection.MaxDownloadBytes, Label);
+            using var scratch = new DownloadScratch(ScratchRoot);
+            var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
+                token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
+            // DownloadAsync returns a null path only for a 404/410 under SkipMissing or an on_status skip.
+            if (path is null)
             {
-                await job.CancelAsync(ct.IsCancellationRequested ? HttpExportJob.ReadCancelled
-                    : HttpExportJob.ReadUnfinished).ConfigureAwait(false);
+                Missing = true;
+                if (Item is null && _skipNotice is not null)
+                {
+                    Notice?.Invoke(_skipNotice);
+                }
+
+                yield break;
             }
+
+            // Open is lazy: a bad, encrypted or non-matching zip throws on the first MoveNext, inside the
+            // scratch's using. Each file's stream is opened by the enumerator and disposed here once its
+            // reader is done, on success, failure and cancellation alike (readers leave it open).
+            var any = false;
+            foreach (var source in ArchiveReader.Open(path, file, fallbackName, budget, Label))
+            {
+                any = true;
+                using (source)
+                {
+                    await foreach (var batch in reader.ReadAsync(source, config, now, options, Label, ct)
+                                       .ConfigureAwait(false))
+                    {
+                        yield return batch;
+                    }
+                }
+
+                ct.ThrowIfCancellationRequested();
+            }
+
+            if (!any)
+            {
+                unmatched++;
+            }
+        }
+
+        if (unmatched > 0 && downloads.Count == 1)
+        {
+            Notice?.Invoke($"{Label}: no zip entry matches file.members '{file.Members}'; " +
+                "read as empty (if_missing: empty)");
+        }
+        else if (unmatched > 0)
+        {
+            Notice?.Invoke($"{Label}: no zip entry matches file.members '{file.Members}' in {unmatched} of " +
+                $"{downloads.Count} result files; read those as empty (if_missing: empty)");
         }
     }
 

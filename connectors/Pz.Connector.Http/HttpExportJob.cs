@@ -14,10 +14,9 @@ namespace Pz.Connector.Http;
 /// a gate slot. Path templates expand the read's <paramref name="bindings"/> (rendered once per partition,
 /// so start, polls, download and cancel agree on <c>{{ run_date }}</c>), then <c>{job_id}</c>.
 ///
-/// With `cancel_path`, a job the read abandons is cancelled: <see cref="RunAsync"/> cancels it itself
-/// when the job times out, fails, a poll fails or the read is cancelled, and the partition calls
-/// <see cref="CancelAsync"/> when it stops before reading every result file. Either way the call is made
-/// at most once, never retried, and its outcome is a notice, never an error.</summary>
+/// With `cancel_path`, a job that never became ready is cancelled once when it times out, reports
+/// failure, a poll fails or the read is cancelled while polling. The call is never retried, and its
+/// outcome is a notice, never an error. A job that reached its ready state is never cancelled.</summary>
 internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender sender, HttpConnectionConfig connection,
     HttpDatasetConfig config, TimeProvider time, string label, IReadOnlyDictionary<string, BindingValue> bindings,
     Action<string>? notice = null)
@@ -40,20 +39,19 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     private const string CancelStage = "export cancel";
 
     /// <summary>The reasons a cancel notice names.</summary>
-    public const string TimedOut = "timed out";
-    public const string ReportedFailure = "reported failure";
-    public const string PollFailed = "poll failed";
-    public const string ReadCancelled = "read was cancelled";
-    public const string ReadUnfinished = "read did not finish";
+    private const string TimedOut = "timed out";
+    private const string ReportedFailure = "reported failure";
+    private const string PollFailed = "poll failed";
+    private const string ReadCancelled = "read was cancelled";
 
-    /// <summary>The started job's id; null until the start response named one.</summary>
-    private string? _jobId;
+    /// <summary>The longest a cancel call may take, and the shorter bound once the read itself was
+    /// cancelled: both well inside the engine's stop grace for a cancelled node.</summary>
+    private static readonly TimeSpan MaxCancelWait = TimeSpan.FromSeconds(10);
+
+    private static readonly TimeSpan MaxCancelWaitCancelled = TimeSpan.FromSeconds(5);
 
     /// <summary>Why the poll loop is about to throw, when the job itself said so (timed out, failed).</summary>
     private string? _stopReason;
-
-    /// <summary>Set by the first <see cref="CancelAsync"/> call: the cancel is attempted at most once.</summary>
-    private int _cancelAttempted;
 
     /// <summary>Every message about the start request names this stage after the label.</summary>
     private string StartLabel => $"{label}: {StartStage}";
@@ -68,22 +66,27 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     {
         var jobId = await sender.RunAsync("http.export_start", idempotent: false,
             token => StartAsync(start, token), ct).ConfigureAwait(false);
-        _jobId = jobId;
+        JsonNode? ready;
         try
         {
-            return await PollAsync(jobId, ct).ConfigureAwait(false);
+            ready = await PollAsync(jobId, ct).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            var reason = ex is OperationCanceledException && ct.IsCancellationRequested
-                ? ReadCancelled
-                : _stopReason ?? PollFailed;
-            await CancelAsync(reason).ConfigureAwait(false);
+            // Only a job that never became ready is cancelled: a ready job is left alone whatever happens to
+            // its download, since a vendor may hand the same finished job to the next attempt.
+            var cancelled = ex is OperationCanceledException && ct.IsCancellationRequested;
+            await CancelAsync(jobId, cancelled ? ReadCancelled : _stopReason ?? PollFailed, cancelled)
+                .ConfigureAwait(false);
             throw;
         }
+
+        return Downloads(ready, jobId);
     }
 
-    private async Task<IReadOnlyList<HttpPageRequest>> PollAsync(string jobId, CancellationToken ct)
+    /// <summary>Polls until the job is ready and returns the ready response; throws when it fails, times
+    /// out or a poll fails.</summary>
+    private async Task<JsonNode?> PollAsync(string jobId, CancellationToken ct)
     {
         var deadline = time.GetUtcNow() + export.Timeout;
         var statusUrl = Resolve(export.StatusPath, "export.status_path", jobId);
@@ -105,7 +108,7 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
                 token => PollOnceAsync(poll, jobId, token), ct).ConfigureAwait(false);
             if (ready)
             {
-                return Downloads(body, jobId);
+                return body;
             }
 
             if (time.GetUtcNow() >= deadline)
@@ -118,31 +121,35 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         }
     }
 
-    /// <summary>Cancels the started job through `cancel_path`, best effort: at most once per job, through the
-    /// gate as non-idempotent (paced, never retried), on a token of its own bounded by the connection's
-    /// timeout (so it still runs after the read was cancelled, and never for long). Never throws: success
-    /// and failure are both notices. Does nothing without `cancel_path` or before a job id is known.</summary>
-    public async Task CancelAsync(string reason)
+    /// <summary>Cancels a job that never became ready through `cancel_path`, best effort: once, through the
+    /// gate as non-idempotent (paced, never retried), on a token of its own so it still runs after the read
+    /// was cancelled. That token is capped at <see cref="MaxCancelWait"/>, or <see cref="MaxCancelWaitCancelled"/>
+    /// once the read itself is cancelled (a node timeout or Ctrl-C), and never above <c>timeout_seconds</c>, so
+    /// the call always ends well inside the engine's stop grace. Never throws: success and failure are both
+    /// notices. The response body is never read: only the status counts.</summary>
+    private async Task CancelAsync(string jobId, string reason, bool readCancelled)
     {
-        if (export.CancelPath is not { } path || _jobId is not { } jobId
-            || Interlocked.Exchange(ref _cancelAttempted, 1) == 1)
+        if (export.CancelPath is not { } path)
         {
             return;
         }
 
-        using var limit = new CancellationTokenSource(connection.Timeout, time);
+        var cap = readCancelled ? MaxCancelWaitCancelled : MaxCancelWait;
+        var bound = connection.Timeout < cap ? connection.Timeout : cap;
+        using var limit = new CancellationTokenSource(bound, time);
         try
         {
             var url = Resolve(path, "export.cancel_path", jobId);
             var request = new HttpPageRequest(export.CancelMethod, url, null, null);
             await sender.RunAsync("http.export_cancel", idempotent: false, async token =>
             {
-                using var sent = await sender.SendAsync(request, streamBody: false, credentialsOnlyToOrigin: true,
+                using var sent = await sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true,
                     CancelStage, token).ConfigureAwait(false);
                 if (!sent.Response.IsSuccessStatusCode)
                 {
-                    var text = await sent.Response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-                    throw sender.StatusError(sent, text, CancelStage);
+                    throw new PzConnectorException(
+                        $"{CancelLabel}: HTTP {(int)sent.Response.StatusCode} from {sender.Target(sent)}",
+                        isTransient: false);
                 }
 
                 return true;
@@ -152,7 +159,7 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         catch (OperationCanceledException) when (limit.IsCancellationRequested)
         {
             notice?.Invoke($"{CancelLabel}: could not cancel export job {Shown(jobId)} ({reason}): no response " +
-                $"within timeout_seconds ({connection.Timeout.TotalSeconds:0.###} s)");
+                $"within {bound.TotalSeconds:0.###} s");
         }
         catch (Exception ex)
         {

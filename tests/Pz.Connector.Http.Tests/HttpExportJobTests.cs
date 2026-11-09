@@ -63,14 +63,15 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     }
 
     private HttpSource Source(Dictionary<string, object?>? auth = null, bool allowFiles = true,
-        string? maxDownloadMb = null)
+        string? maxDownloadMb = null, string? timeoutSeconds = null)
     {
         var values = new Dictionary<string, object?>
         {
             ["base_url"] = _server.BaseUrl.ToString(),
             ["auth"] = auth ?? new Dictionary<string, object?> { ["type"] = "bearer", ["token"] = "secret-token" },
             ["headers"] = new Dictionary<string, object?> { ["X-Conn"] = "header-secret" },
-            ["timeout_seconds"] = IdleTimeout.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["timeout_seconds"] = timeoutSeconds
+                ?? IdleTimeout.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
         if (maxDownloadMb is not null)
         {
@@ -198,6 +199,41 @@ public sealed class HttpExportJobTests : IAsyncLifetime
                 if (done == work)
                 {
                     return (await work, waits);
+                }
+
+                _nextTimer = null;
+                var due = await next;
+                waits.Add(due);
+                _clock.Advance(due);
+            }
+        }
+        finally
+        {
+            if (owned)
+            {
+                await source.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>Like <see cref="Read"/> for a read that must fail: the failure and the waits it parked on.</summary>
+    private async Task<(PzConnectorException Error, List<TimeSpan> Waits)> ReadFailing(DatasetSpec spec,
+        HttpSource? source = null)
+    {
+        var waits = new List<TimeSpan>();
+        var owned = source is null;
+        source ??= Source();
+        try
+        {
+            var partition = Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
+            var work = Collect(partition);
+            while (true)
+            {
+                var next = _nextTimer ??= _clock.NextTimerAsync();
+                var done = await Task.WhenAny(work, next).WaitAsync(TimeSpan.FromSeconds(30));
+                if (done == work)
+                {
+                    return (await Assert.ThrowsAsync<PzConnectorException>(() => work), waits);
                 }
 
                 _nextTimer = null;
@@ -642,6 +678,15 @@ public sealed class HttpExportJobTests : IAsyncLifetime
 
     private static (string, object?) CancelPath(string path = "/reports/{job_id}/cancel") => ("cancel_path", path);
 
+    /// <summary>An export with <c>cancel_path</c> whose cancel call the read helpers must not time out: the
+    /// cancel's 10 s cap is kept out of <see cref="ManualClock.NextTimerAsync"/>, so polls wait 7 s instead
+    /// of the default 10 s.</summary>
+    private Dictionary<string, object?> CancellingExport(params (string Key, object? Value)[] extra)
+    {
+        _clock.Unannounce(TimeSpan.FromSeconds(10));
+        return Export([CancelPath(), ("poll_interval_seconds", "7"), .. extra]);
+    }
+
     private IEnumerable<StubRequest> Cancels(string path = "/reports/j1/cancel")
         => _server.Requests.Where(r => r.Url.AbsolutePath == path && r.Method != "GET");
 
@@ -662,7 +707,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         var gate = new RecordingGate();
 
         var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(
-            Spec(Export(("timeout_minutes", "1"), ("poll_interval_seconds", "30"), CancelPath("/reports/{job_id}"))),
+            Spec(CancellingExport(("timeout_minutes", "1"), ("poll_interval_seconds", "30"), CancelPath("/reports/{job_id}"))),
             gate: gate));
 
         Assert.True(ex.IsTransient);
@@ -684,7 +729,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
 
         var ex = await Assert.ThrowsAsync<PzConnectorException>(
-            () => Read(Spec(Export(CancelPath(), ("cancel_method", "POST")))));
+            () => Read(Spec(CancellingExport(("cancel_method", "POST")))));
 
         Assert.False(ex.IsTransient);
         Assert.Contains("failed with status 'failed'", ex.Message);
@@ -702,7 +747,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
         var gate = new RetryingGate();
 
-        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath())), gate: gate));
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), gate: gate));
 
         // The read's own failure is what surfaces, not the cancel's.
         Assert.Contains("failed with status 'failed'", ex.Message);
@@ -714,20 +759,23 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Rejected_cancel_quotes_a_redacted_body()
+    public async Task Rejected_cancel_reports_the_status_only()
     {
         _server.Map("/reports/j1/cancel", _ => new StubResponse(409, "job j1 already finished"));
         MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
         await using var source = Source(new Dictionary<string, object?>
             { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" });
 
-        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath())), source));
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
 
         var cancel = Assert.Single(Cancels());
         Assert.Contains("api_key=TOPSECRET", cancel.Url.Query);
         var notice = Assert.Single(Notices());
-        Assert.Contains("HTTP 409", notice);
-        Assert.Contains("already finished", notice);
+        Assert.StartsWith("http source 'stub.traffic': export cancel: could not cancel export job j1 " +
+            "(reported failure): HTTP 409 from DELETE ", notice);
+        Assert.Contains("/reports/j1/cancel", notice);
+        // The body is never read, so it is never quoted.
+        Assert.DoesNotContain("already finished", notice);
         Assert.DoesNotContain("TOPSECRET", notice);
     }
 
@@ -738,7 +786,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         _server.Map("/reports/j1", _ => new StubResponse(400, "bad"));
         _server.Map("/reports/j1/cancel", _ => new StubResponse(202, ""));
 
-        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath()))));
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport())));
 
         Assert.Contains("export poll: HTTP 400", ex.Message);
         Assert.Single(Cancels());
@@ -746,7 +794,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Download_failure_cancels_the_job()
+    public async Task Download_failure_never_cancels_a_ready_job()
     {
         _server.Map("/files/abc.csv", _ => new StubResponse(403, "denied"));
         _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
@@ -755,9 +803,61 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath()))));
 
         Assert.Contains("download: HTTP 403", ex.Message);
-        Assert.Single(Cancels());
-        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (read did not finish)"],
-            Notices());
+        Assert.Empty(Cancels());
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Ready_job_without_a_download_url_is_not_cancelled()
+    {
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{}}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath()))));
+
+        Assert.Contains("does not resolve to a URL", ex.Message);
+        Assert.Empty(Cancels());
+    }
+
+    [Fact]
+    public async Task Cancelled_read_during_download_does_not_cancel_a_ready_job()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        _server.Map("/files/abc.csv", _ =>
+        {
+            entered.TrySetResult();
+            release.Wait(TimeSpan.FromSeconds(30));
+            return File(Csv);
+        });
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"url":"/files/abc.csv"}}""");
+        await using var source = Source();
+        var partition = Assert.Single(await source.PlanReadAsync(Spec(Export(CancelPath())), ReadHints.None,
+            CancellationToken.None));
+        using var cts = new CancellationTokenSource();
+
+        try
+        {
+            var reading = Task.Run(async () =>
+            {
+                await foreach (var batch in partition.ReadAsync(new BatchOptions(), cts.Token))
+                {
+                    batch.Dispose();
+                }
+            });
+            _clock.Advance(await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            cts.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading.WaitAsync(TimeSpan.FromSeconds(30)));
+            Assert.Empty(Cancels());
+            Assert.Empty(Notices());
+        }
+        finally
+        {
+            release.Set();
+        }
     }
 
     [Fact]
@@ -827,7 +927,59 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Cancel_that_hangs_ends_at_the_connection_timeout()
+    public async Task Cancel_that_hangs_is_capped_at_ten_seconds()
+    {
+        using var release = new ManualResetEventSlim();
+        _server.Map("/reports/j1/cancel", _ =>
+        {
+            release.Wait(TimeSpan.FromSeconds(30));
+            return new StubResponse(204, "");
+        });
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+
+        try
+        {
+            // timeout_seconds is 77 here; the cancel's own cap (10 s) is the timer the read parks on.
+            var (ex, waits) = await ReadFailing(Spec(Export(CancelPath())));
+
+            Assert.Contains("failed with status 'failed'", ex.Message);
+            Assert.Equal([TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10)], waits);
+            Assert.Equal(["http source 'stub.traffic': export cancel: could not cancel export job j1 " +
+                "(reported failure): no response within 10 s"], Notices());
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_is_capped_by_a_lower_timeout_seconds()
+    {
+        using var release = new ManualResetEventSlim();
+        _server.Map("/reports/j1/cancel", _ =>
+        {
+            release.Wait(TimeSpan.FromSeconds(30));
+            return new StubResponse(204, "");
+        });
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+        await using var source = Source(timeoutSeconds: "3");
+
+        try
+        {
+            var (_, waits) = await ReadFailing(Spec(Export(CancelPath())), source);
+
+            Assert.Equal([TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(3)], waits);
+            Assert.EndsWith("no response within 3 s", Assert.Single(Notices()));
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_that_hangs_after_a_node_timeout_ends_within_five_seconds()
     {
         using var release = new ManualResetEventSlim();
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -837,20 +989,32 @@ public sealed class HttpExportJobTests : IAsyncLifetime
             release.Wait(TimeSpan.FromSeconds(30));
             return new StubResponse(204, "");
         });
-        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+        MapJob("/reports/j1", "\"j1\"", """{"state":"running"}""");
+        await using var source = Source();
+        var partition = Assert.Single(await source.PlanReadAsync(Spec(Export(CancelPath())), ReadHints.None,
+            CancellationToken.None));
+        // The engine's node timeout: the attempt token is cancelled while the job is still running.
+        using var nodeTimeout = new CancellationTokenSource();
 
         try
         {
-            var reading = Read(Spec(Export(CancelPath())));
+            var reading = Task.Run(async () =>
+            {
+                await foreach (var batch in partition.ReadAsync(new BatchOptions(), nodeTimeout.Token))
+                {
+                    batch.Dispose();
+                }
+            });
+            await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            nodeTimeout.Cancel();
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
-            _clock.Advance(IdleTimeout);
+            var cap = await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.Equal(TimeSpan.FromSeconds(5), cap);
+            _clock.Advance(cap);
 
-            var ex = await Assert.ThrowsAsync<PzConnectorException>(() => reading);
-            Assert.Contains("failed with status 'failed'", ex.Message);
-            var notice = Assert.Single(Notices());
-            Assert.StartsWith("http source 'stub.traffic': export cancel: could not cancel export job j1 " +
-                "(reported failure): ", notice);
-            Assert.Contains("77", notice);
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading.WaitAsync(TimeSpan.FromSeconds(30)));
+            Assert.Equal(["http source 'stub.traffic': export cancel: could not cancel export job j1 " +
+                "(read was cancelled): no response within 5 s"], Notices());
         }
         finally
         {
@@ -859,7 +1023,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Early_stop_cancels_the_job()
+    public async Task Early_stop_never_cancels_a_ready_job()
     {
         _server.Map("/files/a.csv", _ => File(Csv));
         _server.Map("/files/b.csv", _ => File(Csv));
@@ -881,10 +1045,9 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         _clock.Advance(due);
         await reading.WaitAsync(TimeSpan.FromSeconds(30));
 
-        Assert.Single(Cancels());
+        Assert.Empty(Cancels());
         Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath == "/files/b.csv");
-        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (read did not finish)"],
-            Notices());
+        Assert.Empty(Notices());
     }
 
     [Fact]
@@ -902,7 +1065,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         _server.Map("/jobs/2026-11-08/j1", _ => new StubResponse(204, ""));
         MapJob("/reports/status", "\"j1\"", """{"state":"failed"}""");
 
-        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(("status_path", "/reports/status"),
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(("status_path", "/reports/status"),
             CancelPath("/jobs/{{ run_date }}/{job_id}")))));
 
         var cancel = Assert.Single(_server.Requests, r => r.Method == "DELETE");
@@ -1074,7 +1237,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Second_file_failure_cancels_the_job()
+    public async Task Second_file_failure_never_cancels_a_ready_job()
     {
         _server.Map("/files/a.csv", _ => File(Csv));
         _server.Map("/files/b.csv", _ => new StubResponse(404, "gone"));
@@ -1085,7 +1248,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
 
         Assert.Contains("download: HTTP 404", ex.Message);
         Assert.Contains("/files/b.csv", ex.Message);
-        Assert.Single(Cancels());
+        Assert.Empty(Cancels());
     }
 
     [Fact]
