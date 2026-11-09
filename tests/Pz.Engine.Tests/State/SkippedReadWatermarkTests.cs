@@ -97,6 +97,101 @@ public sealed class SkippedReadWatermarkTests : IAsyncLifetime
         Assert.Empty(_notices);
     }
 
+    [Fact]
+    public async Task A_skip_an_earlier_attempt_completed_still_holds_the_watermark_when_the_partition_is_reused()
+    {
+        // Attempt 1: partition p1 is skipped and completes, p0 fails, so the node fails. Attempt 2 reuses p1 from
+        // the ledger without reading it (its new object reports nothing) and reads p0.
+        var key = WatermarkStore.Key("mem", "r");
+        _store.Set(key, new Watermark("id", "bigint", "30", "prior-run"));
+        var connector = new ResumingConnector(new InMemoryConnector());
+        var registry = new ConnectorRegistry();
+        registry.AddSource("inmemory", connector);
+        var ctx = new RunContext(_duck, registry, new RunPaths(_dir, "test-run"), NullRunEvents.Instance,
+            Watermarks: _store, Notice: _notices.Add);
+        var node = Node(new NodeId("c4c4c4c4c4c4c4c4"), "r", 25, new IncrementalDef("id", "10", "0", null));
+        ((Dictionary<string, object?>)((SourceDatasetDef)node.Definition!).Dataset.Options)["partitions"] = 2L;
+
+        await Assert.ThrowsAsync<PzConnectorException>(() => new SourceLoadExecutor().ExecuteAsync(node, ctx, default));
+
+        connector.FailP0 = false;
+        var second = await new SourceLoadExecutor().ExecuteAsync(node, ctx, default);
+
+        Assert.Equal(NodeStatus.Success, second.Status);
+        Assert.Equal(1, connector.P1Reads);
+        Assert.Null(second.WatermarkCandidate);
+    }
+
+    private sealed class ResumingConnector(InMemoryConnector inner) : ISourceConnector
+    {
+        public bool FailP0 { get; set; } = true;
+        public int P1Reads;
+
+        public ConnectorInfo Info => inner.Info;
+        public ConnectorCapabilities Capabilities => inner.Capabilities | ConnectorCapabilities.StablePartitionIds;
+        public string ConnectionConfigSchema => inner.ConnectionConfigSchema;
+        public string DatasetConfigSchema => ((ISourceConnector)inner).DatasetConfigSchema;
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+            inner.ValidateAsync(config, ct);
+
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            inner.CheckConnectionAsync(config, ct);
+
+        public async ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+            new Source(await ((ISourceConnector)inner).OpenAsync(config, ct), this);
+
+        private sealed class Source(ISource inner, ResumingConnector owner) : ISource
+        {
+            public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+                inner.GetSchemaAsync(spec, ct);
+
+            public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+            {
+                scan = null;
+                return false;
+            }
+
+            public async ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints,
+                CancellationToken ct)
+            {
+                var planned = await inner.PlanReadAsync(spec, hints, ct);
+                return [.. planned.Select((p, i) => (IDatasetPartition)new Partition(p, i, owner))];
+            }
+
+            public ValueTask DisposeAsync() => inner.DisposeAsync();
+        }
+
+        private sealed class Partition(IDatasetPartition inner, int index, ResumingConnector owner)
+            : IIdentifiedPartition, ISkippedReadPartition
+        {
+            public string PartitionId => $"p{index}";
+
+            public bool ReadSkipped { get; private set; }
+
+            public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options,
+                [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct)
+            {
+                if (index == 1)
+                {
+                    Interlocked.Increment(ref owner.P1Reads);
+                    ReadSkipped = true;
+                    yield break;
+                }
+
+                if (owner.FailP0)
+                {
+                    throw new PzConnectorException("p0 failed", isTransient: false);
+                }
+
+                await foreach (var batch in inner.ReadAsync(options, ct))
+                {
+                    yield return batch;
+                }
+            }
+        }
+    }
+
     /// <summary>The in-memory reference connector, with partitions that report <paramref name="skipped"/> and,
     /// when <paramref name="stableIds"/>, carry ids so the engine reads them in partition mode.</summary>
     private sealed class SkippingConnector(InMemoryConnector inner, bool skipped, bool stableIds) : ISourceConnector

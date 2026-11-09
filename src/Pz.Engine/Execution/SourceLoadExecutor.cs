@@ -910,6 +910,13 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
 
         skipped.NoteAll(partitions ?? skipReporters);
+        // A partition an earlier attempt (or the failed run pz retry reuses) completed as skipped is not read
+        // again in this one; the ledger remembers the skip.
+        if (await PartitionLedger.AnySkippedAsync(ctx.Duck, node.Id.Value, ct).ConfigureAwait(false))
+        {
+            skipped.MarkSkipped();
+        }
+
         var (watermarkError, watermarkCandidate) = await CaptureWatermarkAsync(
             ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, skipped.Any, ct)
             .ConfigureAwait(false);

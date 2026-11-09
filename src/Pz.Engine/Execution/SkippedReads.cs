@@ -20,6 +20,8 @@ internal sealed class SkippedReads
         }
     }
 
+    public void MarkSkipped() => Interlocked.Exchange(ref _any, 1);
+
     public void NoteAll(IEnumerable<IDatasetPartition> partitions)
     {
         foreach (var partition in partitions)

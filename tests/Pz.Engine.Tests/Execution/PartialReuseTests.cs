@@ -120,6 +120,36 @@ public sealed class PartialReuseTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_reused_partition_the_failed_run_read_as_skipped_stays_marked_skipped()
+    {
+        // pz retry reuses the partition without reading it again, so only the ledger can say it was skipped.
+        await SeedPriorAsync();
+        await using (var prior = DuckSession.Open(new RunPaths(_dir, "prior").StagingDbPath))
+        {
+            await prior.ExecuteAsync("create table pz_meta.partitions_skipped (node_id varchar not null, " +
+                "partition_id varchar not null, primary key (node_id, partition_id))");
+            await prior.ExecuteAsync("insert into pz_meta.partitions_skipped values ('aaaaaaaaaaaaaaaa', 'b')");
+        }
+
+        var source = new ListStubSource(
+        [
+            new IdentifiedStubPartition("a", [1, 2]),
+            new IdentifiedStubPartition("b", [3]),
+            new IdentifiedStubPartition("c", [4]),
+        ]);
+        var ctx = Context(new ListStubConnector(source,
+            ConnectorCapabilities.PartitionedRead | ConnectorCapabilities.StablePartitionIds)) with
+        { Reuse = PartialManifest() };
+
+        var result = await new SourceLoadExecutor().ExecuteAsync(Node(), ctx, CancellationToken.None);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(1L, await _duck.ScalarAsync<long>(
+            "select count(*) from pz_meta.partitions_skipped where node_id = 'aaaaaaaaaaaaaaaa' and partition_id = 'b'",
+            default));
+    }
+
+    [Fact]
     public async Task Prior_without_ledger_falls_back_silently()
     {
         var priorPaths = new RunPaths(_dir, "prior");

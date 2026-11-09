@@ -379,6 +379,7 @@ internal static class PartitionModeLoader
                 $"insert into {PartitionLedger.DoneTable} select * from {quotedAlias}.pz_meta.partitions_done " +
                 $"where node_id = '{PartitionLedger.Escape(nodeId)}'", ct).ConfigureAwait(false);
             copiedLedger = true;
+            await CopySkippedAsync(duck, nodeId, alias, quotedAlias, ct).ConfigureAwait(false);
 
             // Checkpointed prefixes ride along when intact; a torn one just restarts fresh.
             var priorCheckpoints = await PartitionLedger.ReadCheckpointsAsync(duck, nodeId, ct, quotedAlias)
@@ -438,6 +439,9 @@ internal static class PartitionModeLoader
                         CancellationToken.None).ConfigureAwait(false);
                     await duck.ExecuteAsync(
                         $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
+                        CancellationToken.None).ConfigureAwait(false);
+                    await duck.ExecuteAsync(
+                        $"delete from {PartitionLedger.SkippedTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
                         CancellationToken.None).ConfigureAwait(false);
                 }
                 catch
@@ -669,7 +673,8 @@ internal static class PartitionModeLoader
             }
 
             await duck.ExecuteTransactionAsync(
-                PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, rows), loadCts.Token)
+                PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, rows,
+                    partition is ISkippedReadPartition { ReadSkipped: true }), loadCts.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -798,7 +803,8 @@ internal static class PartitionModeLoader
             $"insert into {partTable} select * from {segTable}",
             $"drop table {segTable}",
         };
-        statements.AddRange(PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, partRows + segRows));
+        statements.AddRange(PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, partRows + segRows,
+            partition is ISkippedReadPartition { ReadSkipped: true }));
         await duck.ExecuteTransactionAsync(statements, token).ConfigureAwait(false);
     }
 
@@ -843,10 +849,32 @@ internal static class PartitionModeLoader
             $"and partition_id = '{PartitionLedger.Escape(pid)}'",
             $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
             $"and partition_id = '{PartitionLedger.Escape(pid)}'",
+            $"delete from {PartitionLedger.SkippedTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
+            $"and partition_id = '{PartitionLedger.Escape(pid)}'",
         ], ct).ConfigureAwait(false);
 
         await DropBestEffortAsync(duck, PartitionLedger.PartTable(nodeKey, pid)).ConfigureAwait(false);
         await DropBestEffortAsync(duck, PartitionLedger.SegTable(nodeKey, pid)).ConfigureAwait(false);
+    }
+
+    /// <summary>Carries the failed run's skipped-partition rows along with its done rows. A prior staging DB
+    /// written before the table existed has none to carry, and its partitions were never reported skipped.</summary>
+    private static async Task CopySkippedAsync(IDuckSession duck, string nodeId, string alias, string quotedAlias,
+        CancellationToken ct)
+    {
+        await duck.ExecuteAsync(
+            $"delete from {PartitionLedger.SkippedTable} where node_id = '{PartitionLedger.Escape(nodeId)}'", ct)
+            .ConfigureAwait(false);
+        var exists = await duck.ScalarAsync<long>(
+            "select count(*) from duckdb_tables() where database_name = " +
+            $"'{PartitionLedger.Escape(alias)}' and schema_name = 'pz_meta' and table_name = 'partitions_skipped'",
+            ct).ConfigureAwait(false);
+        if (exists > 0)
+        {
+            await duck.ExecuteAsync(
+                $"insert into {PartitionLedger.SkippedTable} select * from {quotedAlias}.pz_meta.partitions_skipped " +
+                $"where node_id = '{PartitionLedger.Escape(nodeId)}'", ct).ConfigureAwait(false);
+        }
     }
 
     private static async Task EnsureMainTableAsync(IDuckSession duck, string mainTable, Schema schema, CancellationToken ct)
