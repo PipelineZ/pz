@@ -39,7 +39,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     column filled from a `for_each` field and with csv/tsv/xml files. On any other connector it is PZ0301, both in
     `pz validate` and when `pz run` opens the source (a connector opts in by listing `column_pointers` in its dataset
     schema; an external connector with no schema is refused). pz writes that `column_pointers` option itself:
-    writing it by hand, in `read:` or as a `source()` argument, is PZ0101.
+    writing it by hand, in `read:` or as a `source()` argument, is PZ0101 on every connector (see Changed).
 - **http: sign in with a refresh token.** `auth.type: oauth2_refresh_token` takes `token_url`, `client_id`,
   `refresh_token`, and optionally `client_secret` (omit it for a public client), `client_auth` (`body` or `basic`;
   `basic` needs a secret), `scope`, `params` and `rotation`. It exchanges the refresh token for access tokens with
@@ -54,11 +54,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     which is permanent.
 
   An `invalid_grant` answer says to authorize again and update `auth.refresh_token`. A `PZ0366` refusal, or an
-  `invalid_grant`, `invalid_client` or `unauthorized_client` answer, is remembered for the rest of the run (the rest of the process): later reads, writes and nodes
+  `invalid_grant`, `invalid_client` or `unauthorized_client` answer, is remembered for the rest of the run: later reads, writes and nodes
   using the same token fail at once without sending it again, so a provider's reuse detection never sees a replay. Any
   `refresh_token` or `client_secret` that the provider echoes in its error text is replaced with `***`.
 - **http: sign in with a login request.** `auth.type: session` sends `login` (`path` relative to `base_url`, or
-  `url`; `method` `post` or `get`; a literal `body` sent as JSON, as a form with `body_format: form`, or as a string with
+  `url`; `method` `post` or `get`, in any case; a literal `body` sent as JSON, as a form with `body_format: form`, or as a string with
   `content_type`; and `headers`), reads the token at `token_pointer` in the JSON response, and sends it on every API
   request as set by `inject`: `bearer` (the default), `{ header: <name>, prefix: <text> }`, or `{ query: <name> }`.
   - A query token is redacted from messages and is never stored in a checkpoint; a resumed read adds the current one.
@@ -86,7 +86,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `retry_after` (a duration up to `600s`), else the engine's backoff. A transient rule that matches an export's start
   request fails the read instead, because a retry would send the start again and could create a second export job.
   The built-in classification of the start is unchanged: a `5xx`, a dropped connection or a timeout stays transient, so
-  the engine's node retry begins a new job, and only a job whose id pz knew is cancelled (with `export.cancel_path`).
+  the engine's node retry begins a new job.
   `action: permanent` fails the read with the rule named. `action: skip` ends the read with a notice saying 0 rows
   landed, and only on the read's first request (the first page, a `for_each` item's first page, or a direct file
   download); a skip rule that matches a later request, or the first request of a resumed attempt, fails the read.
@@ -97,12 +97,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   connector cannot see on a first run or under `--full-refresh`). At run time a skip rule that matches a read the engine sent a watermark (a cursor, value or upper bound) fails the read instead of skipping. One case stays open: on the first run, or under `--full-refresh`, of a raw-mode SQL-declared incremental with an inclusive SQL ceiling, no watermark is sent, so a skip there lands 0 rows and the engine advances the watermark to the ceiling. **A skipped read lands an empty table: an output in
   `replace` mode fed only by it is emptied for that run.** The dataset's rules cover its own (item) requests;
   `for_each.on_status` covers the list request. Built-in cases still come first: a proxy `407` (which a rule cannot
-  name), a `401` handled by an OAuth2 or Azure AD token, and a `410` on a replayed delta link; rules then come before
-  `for_each.on_missing`. The connection key `retry_after: {header, kind}` (`kind`: `seconds`, `ms` or `epoch`) supplies
+  name), a `401` (or, for `session`, any `reauth_status` code) handled by a token sign-in (`azure_ad`,
+  `oauth2_client_credentials`, `oauth2_refresh_token` or `session`), and a `410` on a replayed delta link; rules then
+  come before `for_each.on_missing`. The connection key `retry_after: {header, kind}` (`kind`: `seconds`, `ms` or `epoch`) supplies
   the wait when a `429` or `503`, or a response a rule classifies as transient, has no usable `Retry-After`. It is capped
   at 600 seconds (a stated wait above a day adds a note to check `kind`), also applies to sink requests and to a
-  `session` login answered `429` or `503`, and moves the shared pause of a concurrent read. A value that is not a number, or a wait that is already over (zero, or an epoch in
-  the past), is ignored with a note, and the next source of a wait applies. Without these keys, behaviour is unchanged.
+  `session` login answered `429` or `503`, and moves the shared pause of a concurrent read. A value that is not a
+  number, or a wait that is already over (zero, or an epoch in the past), is ignored with a note, and the next source
+  of a wait applies. Without these keys, behaviour is unchanged.
 - **http: `stop_at_watermark` for newest-first feeds.** A dataset with `cursor_order: desc` and
   `stop_at_watermark: true` stops crawling at the first page that holds a record at or below the stored watermark;
   those records are dropped in the connector, the newer ones on that page land, and a notice gives the page and the
@@ -122,7 +124,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `for_each.concurrency` N above 1 the values are read in pages of 4×N with a checkpoint at each page's barrier, so a
   retry re-reads at most one such page. Those checkpoints carry a hash of the whole `values` list; if the list was
   edited before the retry, the read starts again from the first value, with a notice. The list-request keys (`path`, `query`, `fields`, `pagination`, `max_items`,
-  ...) are refused next to it. `for_each.dedupe: true` skips a list record whose fields tuple an earlier record of the
+  `on_status`, ...) are refused next to it. `for_each.dedupe: true` skips a list record whose fields tuple an earlier record of the
   same read already had (first occurrence wins; fields compare as JSON values, so `"1"` and `1` differ, and a missing
   field equals a null one), and reports the count and the first duplicate in a notice. Duplicates do not count toward
   `max_items`. Dedupe is per attempt: a retry resumed mid-list remembers only the records before its position on the
@@ -142,7 +144,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   Checkpoints of a header-paged read use a new `v4:` token that stores the URL (without a session query token), the
   body and the page header only, never connection headers or credentials; every other read's tokens are unchanged.
   An unknown `location` on a GET read is still ignored, as before, now with a notice; `pz validate` reports it
-  through the dataset schema.
+  through the dataset schema. On a POST read it is still an error that names `query`, `body` and `header`.
   A session sign-in whose `auth.inject.query` names a query parameter that pagination sets (`param` or `size_param`
   of `page`, `offset` or a query `cursor`, on the dataset or its `for_each` list; names compared decoded, in any case)
   is reported by `pz validate` and refused when the read is planned, before any request: each would overwrite the
@@ -154,11 +156,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   or file read fails later. The cancel is sent at most once per job, through the gate as non-idempotent (never retried),
   and waits at most 10 seconds (5 once the run is cancelled, by a node timeout or Ctrl-C, and never longer than
   `timeout_seconds`). Only its status is read. Its outcome is a notice, never an error: the read fails with its own
-  error. A job whose start request failed has no id, so it cannot be cancelled. An empty job id is a permanent error before any poll,
-  and so is one refused under Changed (a `.` or `..` segment, `\`, a control character). Slash-separated ids such as
-  `projects/1/jobs/2`, and base64 ids with `//` or a leading or trailing `/`, still work, inserted escaped as one path
-  segment as before. `download_pointer` may now
-  resolve to a list of URLs: each file is downloaded and read in order, with the full single-file budgets
+  error. A job whose start request failed has no id, so it cannot be cancelled. An empty job id is a permanent error
+  before any poll, and so is one refused under Changed (a `.` or `..` segment, `\`, a control character).
+  Slash-separated ids such as `projects/1/jobs/2`, and base64 ids with `//` or a leading or trailing `/`, still work,
+  inserted escaped as one path segment as before. `download_pointer` may now resolve to a list of URLs: each file is downloaded and read in order, with the full single-file budgets
   (`max_download_mb`, the decompression cap, the idle timeout) and one scratch file on disk at a time. Every URL is
   checked (a string, a valid URL, `allow_hosts`) before the first download. A repeated URL is read once, with a notice
   that counts the duplicates. More than 1000 entries is a permanent error. An empty list reads as no rows, with a
@@ -256,7 +257,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   (`/orders/{id}/lines`), `for_each:` describes a list request, and the dataset's own `path`, `query`, `body`,
   `pagination`, `items` and `file:` describe the item request sent once per list record. The list request takes the
   usual request keys (`path`, `query`, `method`, `body`, `body_format`, `content_type`, `items`, `pagination`,
-  `error_pointer`, `max_pages`), so it can page, POST and use `{{ watermark }}`, `{{ window_upper }}` and
+  `error_pointer`, `max_pages`, and `on_status`), so it can page, POST and use `{{ watermark }}`, `{{ window_upper }}` and
   `{{ run_date }}` (`run_date:` stays at dataset level and is shared). `fields` maps a name to a JSON pointer into
   each list record, and `{{ item.<name> }}` uses it in the item request's `path`, `query` and `body`. In a string
   `body:` whose content type is JSON (`application/json`, the default, or any `+json`), an item reference is refused
@@ -297,10 +298,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   any poll or cancel, because a server or proxy that decodes the escaped `/` would resolve those segments to another
   resource; so is an id containing `\` or a control character. Such ids used to be sent escaped. Every other id,
   empty segments and a leading or trailing `/` included, works as before.
-- **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
-  rounded to the 100 ns tick, which could carry into the next second and skip that second's rows; the extra digits
-  are now dropped.
-
+- **`column_pointers` is a reserved read option name, on every connector.** pz writes it itself from the contract
+  columns' `pointer` entries, so an option of that name written by hand is now PZ0101, whichever connector the dataset
+  uses: in `read:` when `connections.yml` loads, as a `source()` argument when the pipeline compiles. Rename such an
+  option.
 - **http: responses are requested compressed.** Reads, writes and the connection check send
   `Accept-Encoding: gzip, deflate, br` and unpack what comes back; JSON pages typically shrink to 10–20% on the wire
   (measured: a 1 MB page 54% faster, a GitHub issues page 35% faster). `max_response_mb` caps the unpacked size.
@@ -308,6 +309,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Fixed
 
+- **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
+  rounded to the 100 ns tick, which could carry into the next second and skip that second's rows; the extra digits
+  are now dropped.
 - **http: an `allow_hosts` entry no longer receives credentials over plain http.** A next-page link or redirect to
   `http://<allowed host>` from an `https://` `base_url` sent the connection's token unencrypted; it is now refused.
   An `http://` `base_url` may still reach allowed hosts over http. `pz validate` now warns when an `auth:` block or an
