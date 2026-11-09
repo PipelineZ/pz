@@ -258,7 +258,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
 
     private static PzConnectorException JsonContractRequiredError(DatasetSpec spec) =>
         new($"dataset '{spec.Dataset}': sftp json reads need a columns: contract (there is no managed " +
-            "NDJSON schema inference) — declare the columns to read", isTransient: false);
+            "NDJSON schema inference) — declare the columns to read", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     internal static string FileContext(DatasetSpec spec, string path) => $"dataset '{spec.Dataset}': file '{path}'";
 

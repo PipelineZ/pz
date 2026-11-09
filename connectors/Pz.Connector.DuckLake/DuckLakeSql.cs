@@ -83,7 +83,7 @@ internal static class DuckLakeSql
         return (schema, table);
 
         static PzConnectorException Malformed(string entity) => new(
-            $"entity '{entity}': expected 'table' or 'schema.table'", isTransient: false);
+            $"entity '{entity}': expected 'table' or 'schema.table'", isTransient: false, code: PzConnectorErrorCodes.Config);
     }
 
     internal static string QualifiedTable(string alias, string entity)

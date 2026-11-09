@@ -62,7 +62,7 @@ internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISou
         var format = FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", $"dataset '{spec.Dataset}'");
         throw new PzConnectorException(
             $"PZ0312: dataset '{spec.Dataset}': localfiles {format.Name} source is native-scan only; it cannot run " +
-            "on the universal tier (remove engine.force_universal)", isTransient: false);
+            "on the universal tier (remove engine.force_universal)", isTransient: false, code: PzConnectorErrorCodes.Config);
     }
 
     public ValueTask DisposeAsync() => default;
@@ -91,7 +91,7 @@ internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISou
         ExtractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': localfiles {format.Name} requires a declared columns: contract for " +
             $"schema fetch -- {SchemaFetchReason(format.Name)}",
-            isTransient: false);
+            isTransient: false, code: PzConnectorErrorCodes.Config);
 
     /// <summary>Why none of the three formats gives schema fetch anything to infer a schema from
     /// without a declared contract -- json's wording is unchanged from before this source generalised

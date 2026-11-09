@@ -42,14 +42,14 @@ public static partial class PathTemplate
             {
                 throw new PzConnectorException(
                     $"{subject}: unknown path token '{m.Value}' (allowed: {{yyyy}} {{yy}} {{MM}} {{dd}} {{HH}} {{mm}})",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
             seen.Add(match.Level);
         }
 
         if (seen.Count == 0)
         {
-            throw new PzConnectorException($"{subject}: no calendar tokens in path", isTransient: false);
+            throw new PzConnectorException($"{subject}: no calendar tokens in path", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         // Distinct levels must be exactly a coarse→fine prefix (Year, Month, …) with no gaps or reordering.
@@ -59,7 +59,7 @@ public static partial class PathTemplate
         {
             throw new PzConnectorException(
                 $"{subject}: path tokens must be contiguous coarse→fine ({{yyyy}}→{{MM}}→{{dd}}→{{HH}}→{{mm}}), got [{string.Join(", ", distinct)}]",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return distinct[^1];

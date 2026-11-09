@@ -102,7 +102,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         var label = $"http source '{spec.Source}.{spec.Dataset}'";
         if (PaginationClashes(_connection, config) is { Count: > 0 } clashes)
         {
-            throw new PzConnectorException($"{label}: {string.Join("; ", clashes)}", isTransient: false);
+            throw new PzConnectorException($"{label}: {string.Join("; ", clashes)}", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         NoticeIgnoredLocation(config, label, "");

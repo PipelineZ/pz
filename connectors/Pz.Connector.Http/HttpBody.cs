@@ -167,7 +167,7 @@ internal sealed class HttpBody
             throw new PzConnectorException(
                 $"body references binding(s) {string.Join(", ", nulls.Select(n => $"'{n}'"))} with no value " +
                 "(first run or --full-refresh); a string body cannot omit a fragment — set an " +
-                "'initial:' bound on the incremental so the watermark is never null", isTransient: false);
+                "'initial:' bound on the incremental so the watermark is never null", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return result;

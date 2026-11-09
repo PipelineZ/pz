@@ -376,5 +376,5 @@ public static class FileFormatCatalog
 
     private static string Supported() => string.Join(", ", Names);
 
-    private static PzConnectorException Permanent(string message) => new(message, isTransient: false);
+    private static PzConnectorException Permanent(string message) => new(message, isTransient: false, code: PzConnectorErrorCodes.Config);
 }

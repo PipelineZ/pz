@@ -75,8 +75,8 @@ internal static class GcsAuth
             "hmac" => throw new PzConnectorException(
                 "gcs 'hmac' auth has no SDK client: hmac keys drive only the native DuckDB tier " +
                 "(reads and native COPY writes); use 'service_account' or 'adc' for SDK-backed writes",
-                isTransient: false),
-            _ => throw new PzConnectorException($"gcs: unsupported auth '{auth}'", isTransient: false),
+                isTransient: false, code: PzConnectorErrorCodes.Config),
+            _ => throw new PzConnectorException($"gcs: unsupported auth '{auth}'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
 
         var builder = new StorageClientBuilder { Credential = credential };

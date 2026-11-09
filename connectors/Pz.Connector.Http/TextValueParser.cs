@@ -34,7 +34,7 @@ internal static class TextValueParser
                 ? v
                 : throw Invalid(text, typeName, context),
             _ => throw new PzConnectorException(
-                $"{context}: unknown columns: contract type '{typeName}'", isTransient: false),
+                $"{context}: unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
     }
 

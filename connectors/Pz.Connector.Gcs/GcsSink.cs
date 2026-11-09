@@ -71,7 +71,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
             throw new PzConnectorException(
                 $"output '{spec.Output}': gcs 'hmac' auth supports only the native COPY path " +
                 "(remove engine.force_universal, or use 'service_account'/'adc' auth for SDK-backed writes)",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         var (format, objectName) = ResolveObjectName(spec);

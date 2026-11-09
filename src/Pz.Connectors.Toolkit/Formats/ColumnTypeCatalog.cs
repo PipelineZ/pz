@@ -28,7 +28,7 @@ public static class ColumnTypeCatalog
         "date" => Date32Type.Default,
         "timestamp" => new TimestampType(TimeUnit.Microsecond, "+00:00"),
         _ => throw new PzConnectorException(
-            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false),
+            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
     };
 
     public static Field ToArrowField(string columnName, string typeName) =>
@@ -48,6 +48,6 @@ public static class ColumnTypeCatalog
         "date" => "DATE",
         "timestamp" => "TIMESTAMP",
         _ => throw new PzConnectorException(
-            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false),
+            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
     };
 }

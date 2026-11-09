@@ -54,7 +54,7 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
 
     public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
         throw new PzConnectorException(
-            $"output '{spec.Output}': s3 supports only the native COPY path in v0", isTransient: false);
+            $"output '{spec.Output}': s3 supports only the native COPY path in v0", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

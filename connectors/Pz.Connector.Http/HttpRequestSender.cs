@@ -106,7 +106,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
             {
                 throw new PzConnectorException(
                     $"{prefix}: pagination header '{pageHeader.Name}' is also set by the connection's auth; the page " +
-                    "token header must be sent by pagination alone (use another 'auth.header')", isTransient: false);
+                    "token header must be sent by pagination alone (use another 'auth.header')", isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             // Redact the POST-auth URI: an api_key-in-query authenticator just added the secret to
