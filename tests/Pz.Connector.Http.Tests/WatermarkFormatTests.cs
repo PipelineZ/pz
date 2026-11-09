@@ -185,14 +185,18 @@ public class WatermarkFormatTests
 
     // Apia skipped 2011-12-30 entirely (UTC-10 to UTC+14). A bound in the skipped day needs more than four
     // 3-hour steps to reach a wall time that exists; one that stays unsafe must fail, never be returned.
-    [Fact]
+    [SkippableFact]
     public void A_skipped_day_steps_until_the_bound_is_safe()
-        => Assert.Equal("2011-12-31 00",
+    {
+        SkipUnlessApiaSkipsADay();
+        Assert.Equal("2011-12-31 00",
             Format("yyyy-MM-dd HH").Render(Utc("2011-12-30T09:30:00"), true, Zone("Pacific/Apia")));
+    }
 
-    [Fact]
+    [SkippableFact]
     public void A_bound_still_unsafe_after_the_last_pass_is_a_permanent_error()
     {
+        SkipUnlessApiaSkipsADay();
         var ex = Assert.Throws<Pz.Connectors.Abstractions.PzConnectorException>(() =>
             Format("yyyy-MM-dd HH").Render(Utc("2011-12-30T09:30:00"), true, Zone("Pacific/Apia"), maxPasses: 1));
         Assert.False(ex.IsTransient);
@@ -207,4 +211,10 @@ public class WatermarkFormatTests
         Assert.Equal("2026-09-05", Format("date").Render(Utc("2026-09-06T14:00:00"), false, santiago));
         Assert.Equal("2026-09-07", Format("date").Render(Utc("2026-09-06T02:00:00"), true, santiago));
     }
+
+    // Samoa skipped 2011-12-30 entirely. Windows' zone data does not carry that history, so the two tests
+    // that depend on the skipped day run only where the OS data has it.
+    private static void SkipUnlessApiaSkipsADay() =>
+        Skip.IfNot(Zone("Pacific/Apia").IsInvalidTime(new DateTime(2011, 12, 30, 12, 0, 0, DateTimeKind.Unspecified)),
+            "this OS's time zone data does not include Samoa's skipped 2011-12-30");
 }
