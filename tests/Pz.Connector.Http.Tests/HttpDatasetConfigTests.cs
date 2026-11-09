@@ -73,6 +73,7 @@ public class HttpDatasetConfigTests
         // A config refusal: the engine names the connection and dataset, so the message names only the options.
         Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
         Assert.DoesNotContain("'s.d'", ex.Message);
+        Assert.DoesNotContain("fix the dataset options", ex.Message);
         Assert.Contains("path", ex.Message);
         Assert.Contains("cursor_type", ex.Message);
         Assert.Contains("max_pages", ex.Message);

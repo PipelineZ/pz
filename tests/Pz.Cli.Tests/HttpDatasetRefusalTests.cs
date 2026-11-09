@@ -97,6 +97,8 @@ public sealed class HttpDatasetRefusalTests : IDisposable
         Assert.StartsWith("error PZ0301: connection 'api' dataset 'items': ", line);
         Assert.DoesNotContain("'api.items'", line);
         Assert.Contains("hint: fix the options the connector names", line);
+        // The next step is said once, by the hint.
+        Assert.DoesNotContain("fix the dataset options", line);
         Assert.DoesNotContain("pz validate", line);
     }
 

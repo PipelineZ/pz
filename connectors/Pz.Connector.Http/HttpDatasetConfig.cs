@@ -123,9 +123,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         var config = Parse(spec, errors);
         if (errors.Count > 0)
         {
-            // The engine names the connection and dataset of a config refusal; the message names the options.
-            throw new PzConnectorException($"{string.Join("; ", errors)} (fix the dataset options and re-run)",
-                isTransient: false, code: PzConnectorErrorCodes.Config);
+            // The engine names the connection and dataset of a config refusal, and its hint says to fix the options;
+            // the message names the options and what is wrong with them.
+            throw new PzConnectorException(string.Join("; ", errors), isTransient: false,
+                code: PzConnectorErrorCodes.Config);
         }
 
         return config;
