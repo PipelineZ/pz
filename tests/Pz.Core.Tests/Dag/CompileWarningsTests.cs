@@ -192,4 +192,45 @@ public class CompileWarningsTests
         var dag = DagCompiler.Compile(p, ctx);
         Assert.DoesNotContain(dag.Warnings, x => x.Code == PzErrorCode.RunIdentityInRenderedSql);
     }
+
+    private static Pz.Core.Model.PzProject CoarseFormat(string format, string strategy) => Project(
+        [Pipe("events", Into("out", strategy: strategy, keys: strategy == "merge" ? ["id"] : null) +
+                        "select 1 as id from {{ source('api', 'events') }}")],
+        sources: [new Pz.Core.Model.ConnectionDef("api", "http",
+            new Dictionary<string, object?> { ["base_url"] = "https://api.example.com/" },
+            [new Pz.Core.Model.DatasetDef("events", new Dictionary<string, object?>
+            {
+                ["path"] = "/events",
+                ["watermark_format"] = format,
+            }, null)], "connections.yml")],
+        sinks: [Sink()]);
+
+    [Theory]
+    [InlineData("date")]
+    [InlineData("yyyy-MM")]
+    [InlineData("yyyy")]
+    [InlineData("yyyyMMdd")]
+    [InlineData("dd/MM/yyyy")]
+    public void A_coarse_watermark_format_feeding_an_append_sink_is_a_PZ0364_warning(string format)
+    {
+        var p = CoarseFormat(format, "append");
+        var w = Assert.Single(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
+        Assert.Contains("api.events", w.Message, StringComparison.Ordinal);
+        Assert.Contains($"watermark_format: {format}", w.Message, StringComparison.Ordinal);
+        Assert.Contains("lake.out", w.Message, StringComparison.Ordinal);
+        Assert.Contains("re-read", w.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("epoch_s", "append")]
+    [InlineData("iso8601", "append")]
+    [InlineData("yyyy-MM-dd HH", "append")]
+    [InlineData("yyyy-MM-dd'T'HH:mm", "append")]
+    [InlineData("date", "replace")]
+    [InlineData("date", "merge")]
+    public void Fine_formats_or_idempotent_sinks_are_silent(string format, string strategy)
+    {
+        var p = CoarseFormat(format, strategy);
+        Assert.DoesNotContain(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
+    }
 }

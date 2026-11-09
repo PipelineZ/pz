@@ -1418,7 +1418,76 @@ public static class DagCompiler
             }
         }
 
-        return compiled;
+        var coarse = CoarseWatermarkFormatWarnings(compiled, ordered);
+        return coarse.Count == 0 ? compiled : compiled with { Warnings = [.. compiled.Warnings, .. coarse] };
+    }
+
+    /// <summary>A `watermark_format` whose finest unit is a day or coarser (`date`, `yyyy-MM`, `yyyy`,
+    /// `yyyyMMdd`, ...) floors the lower bound and rounds the upper bound by that whole unit, so every run or
+    /// window re-reads up to a day, month or year. Into an append sink each re-read lands again. Never
+    /// refused (an API may take only dates); said once per (dataset, sink) as PZ0364. The option is the
+    /// http connector's, but its name is unique to it, and core only reads the text.</summary>
+    private static List<PzWarning> CoarseWatermarkFormatWarnings(CompiledDag compiled, IReadOnlyList<DagNode> ordered)
+    {
+        var warnings = new List<PzWarning>();
+        foreach (var node in ordered.Where(n => n.Kind == NodeKind.SourceLoad))
+        {
+            if (node.Definition is not SourceDatasetDef sourceDef
+                || sourceDef.Dataset.Options.GetValueOrDefault("watermark_format") is not string format
+                || !IsCoarseWatermarkFormat(format))
+            {
+                continue;
+            }
+
+            foreach (var sinkNode in compiled.Descendants(node.Id).Where(d => d.Kind == NodeKind.SinkWrite))
+            {
+                var sinkDef = (SinkOutputDef)sinkNode.Definition;
+                if (sinkDef.Output.Mode != "append")
+                {
+                    continue;
+                }
+
+                warnings.Add(new PzWarning(PzErrorCode.ConnectorConfigWarning,
+                    $"dataset '{sourceDef.Source.Name}.{sourceDef.Dataset.Name}' renders its watermark with " +
+                    $"'watermark_format: {format}', whose unit is a day or longer: every run or window re-reads " +
+                    $"up to a whole unit, and append sink '{sinkDef.Sink.Name}.{sinkDef.Output.Name}' lands those " +
+                    "rows again", sourceDef.Source.FilePath, null,
+                    "use a finer format (one with hours, minutes or seconds) if the API accepts one, or write with " +
+                    "strategy: merge so re-read rows replace themselves"));
+            }
+        }
+
+        return warnings;
+    }
+
+    /// <summary>True for `date`, and for a custom format with no hour, minute, second or fraction letter
+    /// outside quoted text. Presets other than `date` are second-level or finer.</summary>
+    private static bool IsCoarseWatermarkFormat(string format)
+    {
+        if (format == "date")
+        {
+            return true;
+        }
+
+        if (format is "iso8601" or "epoch_s" or "epoch_ms")
+        {
+            return false;
+        }
+
+        var quoted = false;
+        foreach (var c in format)
+        {
+            if (c == '\'')
+            {
+                quoted = !quoted;
+            }
+            else if (!quoted && c is 'H' or 'm' or 's' or 'f')
+            {
+                return false;
+            }
+        }
+
+        return format.Contains('y');
     }
 
     /// <summary>Which top-level key in an options bag CanonicalJson.Serialize could not hash -- walked
