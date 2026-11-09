@@ -46,10 +46,12 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     public const long MaxResponseMbCap = 2047;
 
     /// <summary>Masks the value of every authenticator secret query param found in
-    /// <paramref name="text"/>. Anything the endpoint sends back can echo the request URL, so
-    /// response-derived text goes through this before it reaches an exception message. A name is compared
-    /// as the query string compares it (decoded, any case), so an echo spelled <c>API_KEY</c> or
-    /// <c>%61pi_key</c> is masked too; the value runs to the next <c>&amp;</c>.</summary>
+    /// <paramref name="text"/>: the one redaction for every message built from text the endpoint sends back, which
+    /// can echo the request URL. A name is compared as the query string compares it (decoded, any case), so an
+    /// echo spelled <c>API_KEY</c> or <c>%61pi_key</c> is masked too, and it is found after any of the forms a
+    /// separator takes when the URL is echoed escaped: <c>?</c> or <c>&amp;</c> as is, HTML (<c>&amp;amp;</c>),
+    /// JSON (<c>\u0026</c>) and percent-encoded inside another parameter (<c>%3F</c>, <c>%26</c>, with
+    /// <c>%3D</c> for <c>=</c>). The value runs to the next separator, quote, angle bracket or whitespace.</summary>
     public string RedactSecretParams(string text)
     {
         var secrets = Authenticator?.SecretQueryParams ?? [];
@@ -58,26 +60,39 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             return text;
         }
 
-        var names = QueryPairName.Matches(text);
-        for (var i = names.Count - 1; i >= 0; i--)
+        // Names are found anywhere, inside another parameter's value too (a redirect target echoing the request),
+        // so the scan never consumes a value; only a secret's value is masked, from its = to where it ends.
+        var masked = new System.Text.StringBuilder(text.Length);
+        var copied = 0;
+        foreach (System.Text.RegularExpressions.Match match in EchoedQueryName.Matches(text))
         {
-            var match = names[i];
-            var name = match.Groups["name"].Value;
-            if (!secrets.Contains(HttpCheckpointToken.DecodedQueryName(name), StringComparer.OrdinalIgnoreCase))
+            var valueStart = match.Index + match.Length;
+            if (valueStart <= copied
+                || !secrets.Contains(HttpCheckpointToken.DecodedQueryName(match.Groups["name"].Value),
+                    StringComparer.OrdinalIgnoreCase))
             {
                 continue;
             }
 
-            var valueStart = match.Index + match.Length;
-            var end = text.IndexOf('&', valueStart);
-            text = string.Concat(text.AsSpan(0, valueStart), "***", end < 0 ? "" : text.AsSpan(end));
+            var valueEnd = EchoedValueEnd.Match(text, valueStart) is { Success: true } end ? end.Index : text.Length;
+            masked.Append(text, copied, valueStart - copied).Append("***");
+            copied = valueEnd;
         }
 
-        return text;
+        return copied == 0 ? text : masked.Append(text, copied, text.Length - copied).ToString();
     }
 
-    private static readonly System.Text.RegularExpressions.Regex QueryPairName =
-        new(@"(?<=[?&])(?<name>[^=&?#\s""']+)=", System.Text.RegularExpressions.RegexOptions.Compiled);
+    // sep: ? & &amp; \u0026 %3F %26. name: plain characters or percent-escapes other than an escaped = or &.
+    // eq: = or %3D.
+    private static readonly System.Text.RegularExpressions.Regex EchoedQueryName = new(
+        @"(?<=\?|&amp;|&|\\u0026|%3[Ff]|%26)" +
+        @"(?<name>(?:[^=&?#\s""'<>\\%;]|%(?!3[Dd]|26)[0-9A-Fa-f]{2})+)" +
+        @"(?:=|%3[Dd])",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Where a value ends: the next separator in any of its forms, a quote, an angle bracket or whitespace.
+    private static readonly System.Text.RegularExpressions.Regex EchoedValueEnd = new(
+        @"&|\\u0026|%26|[\s""'<>]", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>True when <paramref name="candidate"/> may be requested with this connection's
     /// credentials attached: the base URL's own origin (scheme + host + port), or a host the author
