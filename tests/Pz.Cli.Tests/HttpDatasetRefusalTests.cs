@@ -143,6 +143,19 @@ public sealed class HttpDatasetRefusalTests : IDisposable
         Assert.StartsWith("error PZ0301: connection 'gcs': gcs sources require 'auth: hmac'", line);
     }
 
+    // A plan failure maps to its exit code by the planner's own verdict: a config refusal is exit 2, a connector
+    // that failed rather than refused means pz could not run on its own terms, exit 3 (builtins only refuse
+    // offline, so no builtin project can reach the fatal case; the engine tests cover the classification).
+    [Fact]
+    public void A_plan_failure_exits_fatal_only_when_the_planner_says_so()
+    {
+        var error = new Pz.Core.Validation.PzError("PZ0330", "connection 'api': connector 'x' failed while planning", null, null, null);
+
+        Assert.Equal(ExitCodes.ConfigError, ExitCodes.ForPlanFailure(new Pz.Core.Validation.PzValidationException([error])));
+        Assert.Equal(ExitCodes.Fatal,
+            ExitCodes.ForPlanFailure(new Pz.Core.Validation.PzValidationException([error]) { IsFatal = true }));
+    }
+
     private void WriteProject(string itemsRead, string? otherRead = null, string baseUrl = "https://api.example.com")
     {
         Directory.CreateDirectory(Path.Combine(_work, "pipelines"));

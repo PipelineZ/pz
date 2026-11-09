@@ -47,11 +47,42 @@ public sealed class ConfigRefusalPlanningTests
     }
 
     private static async Task<IReadOnlyList<PzError>> PlanErrorsAsync(CompiledDag dag, ConnectorRegistry registry,
-        IReadOnlySet<NodeId>? executing = null)
-    {
-        var ex = await Assert.ThrowsAsync<PzValidationException>(() => new ExecutionPlanner(registry)
+        IReadOnlySet<NodeId>? executing = null) => (await PlanFailureAsync(dag, registry, executing)).Errors;
+
+    private static async Task<PzValidationException> PlanFailureAsync(CompiledDag dag, ConnectorRegistry registry,
+        IReadOnlySet<NodeId>? executing = null) =>
+        await Assert.ThrowsAsync<PzValidationException>(() => new ExecutionPlanner(registry)
             .PlanAsync(dag, forceUniversal: false, CancellationToken.None, executing: executing));
-        return ex.Errors;
+
+    // A config refusal is the author's to fix (exit 2); a connector that failed rather than refused -- transient,
+    // a defect, a dead or misbehaving process -- means pz could not plan on its own terms (exit 3). A host that
+    // would not spawn or handshake is an install problem, reported as config exactly as when the registry is built.
+    [Theory]
+    [InlineData("config", false)]
+    [InlineData("transient", true)]
+    [InlineData("unhandled", true)]
+    [InlineData(PzErrorCode.ConnectorSpawnFailed, false)]
+    [InlineData(PzErrorCode.ConnectorDiedMidOperation, true)]
+    [InlineData(PzErrorCode.ProtocolViolation, true)]
+    public async Task A_plan_failure_is_fatal_only_when_a_connector_failed_rather_than_refused(string kind, bool fatal)
+    {
+        var connector = new StubThrowingConnector
+        {
+            OpenThrows = () => kind switch
+            {
+                "config" => Config("bad"),
+                "transient" => new PzConnectorException("timed out", isTransient: true),
+                "unhandled" => new PzConnectorException("unhandled NullReferenceException", isTransient: false,
+                    code: PzConnectorErrorCodes.Unhandled),
+                _ => new InvalidProgramException(kind),
+            },
+        };
+        var (dag, registry) = TwoDatasetsAndAnOutput(connector);
+        registry.DescribeHostFailure = ex => ex is InvalidProgramException ? new ConnectorHostFailure(ex.Message, "host", null) : null;
+
+        var failure = await PlanFailureAsync(dag, registry);
+
+        Assert.Equal(fatal, failure.IsFatal);
     }
 
     [Fact]

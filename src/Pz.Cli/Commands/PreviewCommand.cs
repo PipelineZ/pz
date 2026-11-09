@@ -94,7 +94,7 @@ internal static partial class PreviewCommand
         }
         catch (PzValidationException ex)
         {
-            return Fail(args, ex.Errors[0], ExitCodes.ConfigError);
+            return Fail(args, ex.Errors[0], ExitCodes.ForPlanFailure(ex));
         }
         catch (PreviewNodeFailedException ex)
         {

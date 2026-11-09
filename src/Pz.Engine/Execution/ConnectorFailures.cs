@@ -23,6 +23,14 @@ public static class ConnectorFailures
 {
     public const string ConfigHint = "fix the options the connector names";
 
+    /// <summary>Whether a classified failure means pz could not do its own work, rather than that the config is
+    /// wrong: a connector failure (PZ0330), or a connector process that broke protocol or died (PZ0357, PZ0358).
+    /// A config refusal is not, and neither is a connector that would not spawn or handshake (PZ0355, PZ0356): an
+    /// install problem, reported as config exactly as when the registry is built.</summary>
+    public static bool IsFatal(PzError error) =>
+        error.Code is PzErrorCode.ConnectionCheckFailed or PzErrorCode.ProtocolViolation
+            or PzErrorCode.ConnectorDiedMidOperation;
+
     public static PzError? Classify(Exception ex, string connector, string subject, string file, string phase,
         Func<Exception, ConnectorHostFailure?>? describeHostFailure)
     {

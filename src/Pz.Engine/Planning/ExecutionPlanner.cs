@@ -154,7 +154,8 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         if (errors.Count > 0)
         {
-            throw new PzValidationException(errors);
+            // Every other error is the project's to fix; a connector that failed rather than refused is not.
+            throw new PzValidationException(errors) { IsFatal = errors.Any(ConnectorFailures.IsFatal) };
         }
 
         var budget = MemoryBudget.Compute(engineConfig ?? new EngineConfig());
