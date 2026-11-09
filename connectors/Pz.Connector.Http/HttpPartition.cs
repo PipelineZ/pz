@@ -13,8 +13,9 @@ using Pz.Connectors.Toolkit.Paging;
 namespace Pz.Connector.Http;
 
 /// <summary>One dataset's universal-tier read: request → classify → decode → project → yield,
-/// following pagination until exhausted. Never retries, never sleeps — classification is this
-/// class's whole resilience duty (the engine owns policy). Batches yielded become
+/// following pagination until exhausted. Never retries, and never sleeps except to wait out the
+/// read's shared <c>Retry-After</c> pause when it can run requests concurrently — classification is
+/// this class's whole resilience duty (the engine owns policy). Batches yielded become
 /// engine-owned; nothing here retains them.</summary>
 internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate = null,

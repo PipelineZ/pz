@@ -11,7 +11,8 @@ namespace Pz.Connector.Http;
 /// file mode its one download) before the next record starts. The clock is read once, so the list and
 /// every item share one {{ run_date }} and one <c>pz_fetched_at</c>. Checkpoints name the list page,
 /// the record index and the item crawl's position (see <see cref="HttpCheckpointToken"/>). Never retries,
-/// never sleeps.</summary>
+/// and never sleeps except to wait out the read's shared <c>Retry-After</c> pause when
+/// <c>for_each.concurrency</c> is above 1.</summary>
 internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
     ThrottlePause? pause = null)

@@ -9,7 +9,8 @@ namespace Pz.Connector.Http;
 /// <summary>One file-mode dataset read: download the response body to a per-partition temp
 /// directory, open it as zip, gzip or plain, and parse each selected file with the dataset's format
 /// reader. The whole download is one gated, idempotent operation (`http.download`); a retry starts
-/// it over. Never retries, never sleeps. Emits no checkpoint: a file has no resumable position.</summary>
+/// it over. Never retries, and never sleeps except to wait out the read's shared <c>Retry-After</c>
+/// pause when it can run requests concurrently. Emits no checkpoint: a file has no resumable position.</summary>
 internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
     ThrottlePause? pause = null)

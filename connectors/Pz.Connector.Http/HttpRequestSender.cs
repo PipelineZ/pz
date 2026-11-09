@@ -71,7 +71,9 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
         var current = first;
         for (var hop = 0; ; hop++)
         {
-            // Every hop is a request the throttled API sees, so each one waits out the read's pause.
+            // Every hop is a request the throttled API sees, so each one waits out the read's pause. This
+            // runs inside the gated op, whose pacing token is already spent: requests released together
+            // by a pause are shaped by the gate's bucket only from their next request on.
             if (pause is not null)
             {
                 await pause.WaitAsync(ct).ConfigureAwait(false);
