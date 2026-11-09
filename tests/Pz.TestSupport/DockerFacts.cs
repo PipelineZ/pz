@@ -5,6 +5,10 @@ namespace Pz.TestSupport;
 
 public static class DockerFacts
 {
+    /// <summary>Docker suites consult these facts before they build a container, so this is a second guard behind
+    /// each suite's own module initializer: a suite added without one still gets the lifted timeout.</summary>
+    static DockerFacts() => TestcontainersRegex.LiftMatchTimeout();
+
     /// <summary>How long the probe may take. The answer is cached for the whole test process, so a probe that
     /// times out on a slow but working daemon skips every docker suite in it.</summary>
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(30);
