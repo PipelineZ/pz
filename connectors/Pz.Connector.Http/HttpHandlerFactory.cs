@@ -241,7 +241,8 @@ internal static class HttpHandlerFactory
     /// trusts is accepted. Otherwise the only acceptable fault is an untrusted or incomplete chain: a name
     /// mismatch, a missing certificate or chain, or any other chain status (expiry included) is refused, and
     /// the certificate must then chain, as a server certificate (serverAuth), to an anchor in the file (a
-    /// root or an intermediate). Revocation is not checked, matching the runtime's default for
+    /// root or an intermediate), bridged only by certificates the server sent: an intermediate some OS store
+    /// on this machine happens to hold never completes the chain. Revocation is not checked, matching the runtime's default for
     /// system-trusted certificates (a private CA rarely publishes a reachable CRL or OCSP responder).</summary>
     internal static bool Trusts(X509Certificate2Collection ca, X509Certificate2? certificate, X509Chain? presented,
         SslPolicyErrors errors)
@@ -268,12 +269,13 @@ internal static class HttpHandlerFactory
         chain.ChainPolicy.DisableCertificateDownloads = true;
         chain.ChainPolicy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
         // The certificates the server sent bridge to the anchor; they belong to the runtime, which disposes them.
-        chain.ChainPolicy.ExtraStore.AddRange(presented.ChainPolicy.ExtraStore);
+        var sent = presented.ChainPolicy.ExtraStore;
+        chain.ChainPolicy.ExtraStore.AddRange(sent);
         try
         {
             if (chain.Build(certificate))
             {
-                return true;
+                return AnchorBridgedBySent(ca, sent, chain.ChainElements, firstAnchor: 0) is not null;
             }
 
             // An intermediate in the file is an anchor too. Some chain engines (OpenSSL on Linux) accept only a
@@ -287,18 +289,9 @@ internal static class HttpHandlerFactory
             }
 
             var elements = chain.ChainElements;
-            for (var i = 1; i < elements.Count; i++)
-            {
-                if (!ca.Any(anchor => anchor.RawDataMemory.Span.SequenceEqual(elements[i].Certificate.RawDataMemory.Span)))
-                {
-                    continue;
-                }
-
-                return elements.Take(i).All(e => e.ChainElementStatus.All(s => s.Status == X509ChainStatusFlags.NoError))
-                    && elements[i].ChainElementStatus.All(s => IsAnchorFault(s.Status));
-            }
-
-            return false;
+            return AnchorBridgedBySent(ca, sent, elements, firstAnchor: 1) is { } i
+                && elements.Take(i).All(e => e.ChainElementStatus.All(s => s.Status == X509ChainStatusFlags.NoError))
+                && elements[i].ChainElementStatus.All(s => IsAnchorFault(s.Status));
         }
         finally
         {
@@ -308,6 +301,34 @@ internal static class HttpHandlerFactory
             }
         }
     }
+
+    /// <summary>The index of the chain's lowest element (from <paramref name="firstAnchor"/> up) that is a
+    /// 'ca_file' anchor, provided every element between the leaf and it is one the server sent; null when
+    /// there is no anchor or a bridging certificate came from anywhere else. Chain engines search OS stores
+    /// for issuers (Windows' machine and user CA stores, .NET's user CA store on Linux), and what those hold
+    /// differs per machine, so a chain is judged only by what the server sent plus the file.</summary>
+    private static int? AnchorBridgedBySent(X509Certificate2Collection ca, X509Certificate2Collection sent,
+        X509ChainElementCollection elements, int firstAnchor)
+    {
+        for (var i = 0; i < elements.Count; i++)
+        {
+            if (i >= firstAnchor && Holds(ca, elements[i].Certificate))
+            {
+                return i;
+            }
+
+            // Element 0 is the server's own certificate; everything above it must have come from the server.
+            if (i > 0 && !Holds(sent, elements[i].Certificate))
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool Holds(X509Certificate2Collection certificates, X509Certificate2 certificate)
+        => certificates.Any(c => c.RawDataMemory.Span.SequenceEqual(certificate.RawDataMemory.Span));
 
     private const string ServerAuthentication = "1.3.6.1.5.5.7.3.1";
 

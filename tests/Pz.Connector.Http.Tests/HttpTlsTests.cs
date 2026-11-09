@@ -258,6 +258,38 @@ public sealed class HttpTlsTests : IDisposable
     }
 
     [Fact]
+    public void Trust_rule_bridges_only_with_sent_certificates_never_an_os_store()
+    {
+        // On Windows, SslStreamCertificateContext puts a server's intermediates into the machine (or user)
+        // CA store, and every chain engine there searches that store; .NET on Linux searches the user's CA
+        // store too. An intermediate the server did not send must not bridge a leaf to a root-only ca_file
+        // just because some store on this machine happens to hold it.
+        const SslPolicyErrors chainErrors = SslPolicyErrors.RemoteCertificateChainErrors;
+        X509Certificate2Collection rootOnly = [_pki.Root];
+        using var store = new X509Store(StoreName.CertificateAuthority, StoreLocation.CurrentUser);
+        store.Open(OpenFlags.ReadWrite);
+        var added = !store.Certificates.Contains(_pki.Intermediate);
+        store.Add(_pki.Intermediate);
+        try
+        {
+            using (var omitted = Presented(_pki.Leaf))
+            {
+                Assert.False(HttpHandlerFactory.Trusts(rootOnly, _pki.Leaf, omitted, chainErrors));
+            }
+
+            using var sent = Presented(_pki.Leaf, _pki.Intermediate);
+            Assert.True(HttpHandlerFactory.Trusts(rootOnly, _pki.Leaf, sent, chainErrors));
+        }
+        finally
+        {
+            if (added)
+            {
+                store.Remove(_pki.Intermediate);
+            }
+        }
+    }
+
+    [Fact]
     public void Transport_failures_are_classified()
     {
         var target = new Uri("https://localhost/");
