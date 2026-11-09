@@ -121,7 +121,7 @@ public class HttpAuthConfigTests
         HttpConnectionConfig.Parse(Config("https://api.example.com",
             new Dictionary<string, object?> { ["type"] = "kerberos" }), errors);
         var error = Assert.Single(errors);
-        foreach (var name in new[] { "api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials", "oauth2_refresh_token" })
+        foreach (var name in new[] { "api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials", "oauth2_refresh_token", "session" })
         {
             Assert.Contains(name, error, StringComparison.Ordinal);
         }

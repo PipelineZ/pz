@@ -36,7 +36,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "base_url": { "type": "string" },
             "check_path": { "type": "string" },
             "auth": { "type": "object", "properties": {
-                "type": { "enum": ["api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials", "oauth2_refresh_token"] },
+                "type": { "enum": ["api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials", "oauth2_refresh_token", "session"] },
                 "token": { "type": "string" }, "user": { "type": "string" },
                 "password": { "type": "string" }, "key": { "type": "string" },
                 "header": { "type": "string" }, "param": { "type": "string" },
@@ -49,7 +49,23 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "token_url": { "type": "string" },
                 "refresh_token": { "type": "string", "writeOnly": true },
                 "client_auth": { "enum": ["body", "basic"] },
-                "params": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } } },
+                "params": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+                "login": { "type": "object", "properties": {
+                    "path": { "type": "string" }, "url": { "type": "string" },
+                    "method": { "enum": ["post", "get"] },
+                    "body": { "type": ["object", "string"], "writeOnly": true },
+                    "body_format": { "enum": ["json", "form"] },
+                    "content_type": { "type": "string" },
+                    "headers": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } } },
+                  "additionalProperties": false },
+                "token_pointer": { "type": "string" },
+                "inject": { "oneOf": [
+                    { "const": "bearer" },
+                    { "type": "object", "properties": {
+                        "header": { "type": "string" }, "prefix": { "type": "string" }, "query": { "type": "string" } },
+                      "additionalProperties": false } ] },
+                "ttl": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h|d)$" },
+                "expires_in_pointer": { "type": "string" } },
                 "required": ["type"], "additionalProperties": false },
             "headers": { "type": "object", "additionalProperties": { "type": "string" } },
             "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 3600 },

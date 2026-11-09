@@ -569,6 +569,39 @@ public sealed class HttpTlsTests : IDisposable
         Assert.Equal(new string?[] { _pki.Client.Thumbprint }, api.ClientCertificates.ToArray());
     }
 
+    /// <summary>A session token for <c>POST /login</c>, the rows for anything else.</summary>
+    private static string SessionOrRows(string requestLine) => requestLine.StartsWith("POST /login ", StringComparison.Ordinal)
+        ? """{"token":"sess"}"""
+        : TestTlsServer.Body;
+
+    private static (string, object?) Session() => ("auth", Map(("type", "session"),
+        ("login", Map(("path", "login"), ("body", Map(("user", "u"))))),
+        ("token_pointer", "/token"), ("ttl", "30m")));
+
+    [Fact]
+    public async Task Session_login_trusts_ca_file_uses_proxy_and_presents_the_certificate_to_its_origin()
+    {
+        // api.test is reachable only through the proxy, and its certificate only through tls.ca_file.
+        await using (var proxy = new TestProxy())
+        await using (var server = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), respond: SessionOrRows))
+        {
+            var url = server.Url("api.test");
+            Assert.Equal(2, await ReadAsync(Config(url, Tls(), Map(("url", proxy.Url.ToString())), Session())));
+            Assert.Equal(["POST /login HTTP/1.1", "GET /items HTTP/1.1"], server.Requests.ToArray());
+            Assert.Equal([$"api.test:{server.Port}", $"api.test:{server.Port}"], proxy.Targets.ToArray());
+
+            var untrusted = await ReadFailsAsync(Config(url, null, Map(("url", proxy.Url.ToString())), Session()));
+            Assert.False(untrusted.IsTransient);
+            Assert.Contains("tls.ca_file", untrusted.Message, StringComparison.Ordinal);
+            Assert.Contains("session login", untrusted.Message, StringComparison.Ordinal);
+        }
+
+        // Same origin: the login presents the client certificate, like every request to base_url.
+        await using var same = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), requestClientCertificate: true, respond: SessionOrRows);
+        Assert.Equal(2, await ReadAsync(Config(same.Url(), Tls(client: Pfx()), extra: Session())));
+        Assert.Equal(new string?[] { _pki.Client.Thumbprint, _pki.Client.Thumbprint }, same.ClientCertificates.ToArray());
+    }
+
     private sealed class ProbeOptions : ClientOptions
     {
     }
