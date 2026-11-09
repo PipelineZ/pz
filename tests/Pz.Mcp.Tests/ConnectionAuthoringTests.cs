@@ -49,6 +49,25 @@ public class ConnectionAuthoringTests
     }
 
     [Fact]
+    public async Task Literal_secret_nested_under_auth_is_refused_before_any_write()
+    {
+        using var p = new TempProject();
+        var before = File.ReadAllText(Path.Combine(p.Dir, "connections.yml"));
+        var doc = JsonDocument.Parse(await AuthoringTools.AddConnectionAsync(
+            p.Dir, "api", "http",
+            new()
+            {
+                ["base_url"] = "https://api.example.com",
+                ["auth"] = new Dictionary<string, object?> { ["type"] = "bearer", ["token"] = "hunter2" },
+            }, RealServices(), CancellationToken.None));
+        Assert.False(doc.RootElement.GetProperty("applied").GetBoolean());
+        Assert.Equal("PZ0601", doc.RootElement.GetProperty("errors")[0].GetProperty("code").GetString());
+        Assert.Contains("auth.token", doc.RootElement.GetProperty("errors")[0].GetProperty("message").GetString());
+        Assert.DoesNotContain("hunter2", doc.RootElement.ToString());
+        Assert.Equal(before, File.ReadAllText(Path.Combine(p.Dir, "connections.yml")));
+    }
+
+    [Fact]
     public async Task Env_ref_password_is_accepted()
     {
         using var p = new TempProject();

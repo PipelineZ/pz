@@ -11,8 +11,12 @@ namespace Pz.Mcp.Handlers;
 /// a caller gets PZ0601 back with zero side effects and the secret itself never leaves this process
 /// (the returned <see cref="PzError.Message"/> names the offending KEY only, never the value).
 ///
-/// Credential shape is two signals: (a) the floor — a key whose name (case-insensitive) CONTAINS
-/// "password", "secret", "token", "key", or "connection_string" — and (b) a property the connector's own
+/// Credential shape is two signals: (a) the floor — a key at ANY depth (nested maps such as an http
+/// <c>auth:</c>, <c>proxy:</c>, <c>tls:</c> or <c>headers:</c>, and maps inside lists) whose name
+/// (case-insensitive) CONTAINS "pass", "pwd", "secret", "token", "key", "credential", "connection_string",
+/// "authorization" or "cookie", unless it ends in <c>_url</c>, <c>_uri</c>, <c>_pointer</c>, <c>_path</c>,
+/// <c>_file</c> or <c>_fingerprint</c> (where a thing is, not the thing), plus a session <c>login.body</c>
+/// written as one string with no <c>${</c> in it — and (b) a property the connector's own
 /// <c>ConnectionConfigSchema</c> flags <c>writeOnly</c>/<c>format: password</c>, offered by the
 /// <c>connectionSchemaJson</c> overload for forward compatibility. **Only (a) runs in the shipped
 /// surface**: <see cref="AuthoringTools"/> calls the name-heuristic overload and nothing calls the other
@@ -26,7 +30,11 @@ namespace Pz.Mcp.Handlers;
 public static class CredentialGuard
 {
     private static readonly Regex CredentialShapedKeyName =
-        new("password|secret|token|key|connection_string", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        new("pass|pwd|secret|token|key|credential|connection_string|authorization|cookie",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static readonly Regex NotASecret =
+        new("(_|^)(url|uri|pointer|path|file|fingerprint)$", RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex EnvRefPattern = new(@"^\$\{[^}]+\}$", RegexOptions.Compiled);
 
@@ -47,33 +55,73 @@ public static class CredentialGuard
             : CredentialShapedPropertiesFromSchema(connectionSchemaJson);
 
         var errors = new List<PzError>();
-        foreach (var (key, value) in connection)
-        {
-            if (value is not string text)
-            {
-                continue; // only a literal string can carry a credential -- numbers/bools/maps cannot
-            }
-
-            if (EnvRefPattern.IsMatch(text))
-            {
-                continue; // "${VAR}" (and nothing else) -- an env var reference, not a literal
-            }
-
-            if (!CredentialShapedKeyName.IsMatch(key) && !schemaFlagged.Contains(key))
-            {
-                continue;
-            }
-
-            errors.Add(new PzError(PzErrorCode.McpLiteralCredential,
-                $"connection option '{key}' looks like a literal credential typed directly into YAML.",
-                null, null,
-                $"write '{key}' as an env var reference instead, e.g. \"${{{key.ToUpperInvariant()}}}\", " +
-                "and set that environment variable out of band rather than typing the value here -- " +
-                "see https://pipelinez.dev/how-to/secure-connection-config/"));
-        }
-
+        Walk(connection, prefix: "", parentKey: null, schemaFlagged, errors);
         return errors;
     }
+
+    /// <summary>Checks every string at any depth: nested maps (<c>auth:</c>, <c>proxy:</c>, <c>tls:</c>,
+    /// <c>headers:</c>) and lists, named by their dotted path (<c>auth.login.body.password</c>,
+    /// <c>accounts[1].secret</c>). The schema signal applies to top-level properties only, where the schema
+    /// names them.</summary>
+    private static void Walk(Dictionary<string, object?> map, string prefix, string? parentKey,
+        HashSet<string> schemaFlagged, List<PzError> errors)
+    {
+        foreach (var (key, value) in map)
+        {
+            var path = prefix.Length == 0 ? key : $"{prefix}.{key}";
+            switch (value)
+            {
+                case Dictionary<string, object?> nested:
+                    Walk(nested, path, key, [], errors);
+                    break;
+                case List<object?> list:
+                    WalkList(list, path, key, errors);
+                    break;
+                case string text:
+                    // A session login body written as one form string carries its credential inline; with no
+                    // variable reference anywhere in it, it was typed by hand.
+                    var handTypedForm = key == "body" && parentKey == "login" && !text.Contains("${", StringComparison.Ordinal);
+                    var flagged = handTypedForm
+                        || IsCredentialShaped(key) || (prefix.Length == 0 && schemaFlagged.Contains(key));
+                    if (flagged && !EnvRefPattern.IsMatch(text))
+                    {
+                        errors.Add(Refusal(path, key));
+                    }
+
+                    break;
+            }
+        }
+    }
+
+    private static void WalkList(List<object?> list, string path, string key, List<PzError> errors)
+    {
+        for (var i = 0; i < list.Count; i++)
+        {
+            switch (list[i])
+            {
+                case Dictionary<string, object?> nested:
+                    Walk(nested, $"{path}[{i}]", key, [], errors);
+                    break;
+                case List<object?> inner:
+                    WalkList(inner, $"{path}[{i}]", key, errors);
+                    break;
+            }
+        }
+    }
+
+    // A path, URL, JSON pointer or fingerprint names where a thing is, never the secret itself, even when its
+    // name says key or token (tls key_path, auth token_url, token_pointer, sftp host_key_fingerprint).
+    private static bool IsCredentialShaped(string key)
+        => CredentialShapedKeyName.IsMatch(key) && !NotASecret.IsMatch(key);
+
+    private static PzError Refusal(string path, string key) => new(PzErrorCode.McpLiteralCredential,
+        $"connection option '{path}' looks like a literal credential typed directly into YAML.",
+        null, null,
+        $"write '{path}' as an env var reference instead, e.g. \"${{{EnvName(key)}}}\", " +
+        "and set that environment variable out of band rather than typing the value here -- " +
+        "see https://pipelinez.dev/how-to/secure-connection-config/");
+
+    private static string EnvName(string key) => Regex.Replace(key, "[^A-Za-z0-9]+", "_").ToUpperInvariant();
 
     /// <summary>Property names a JSON Schema marks <c>"writeOnly": true</c> or <c>"format": "password"</c>
     /// — the two conventional JSON-Schema-vocabulary ways to flag a secret-shaped field. Malformed
