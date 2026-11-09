@@ -25,6 +25,25 @@ internal sealed class BoundTransport : IDisposable
     /// <summary>'tls.client_certificate' with its private key; null when it is not set.</summary>
     public X509Certificate2? ClientCert { get; }
 
+    // The 'ca_file' trust callback's last verdict per authority, so a failed handshake can name tls.ca_file
+    // without reading the runtime's (possibly localized) exception text.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> _refused = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Notes the trust callback's verdict for the request's authority and returns it.</summary>
+    public bool Record(Uri? request, bool trusted)
+    {
+        if (request is not null)
+        {
+            _refused[request.Authority] = !trusted;
+        }
+
+        return trusted;
+    }
+
+    /// <summary>True when the trust callback refused <paramref name="target"/>'s certificate at its last
+    /// handshake; null when it never judged that authority (no 'ca_file', or the handshake failed before).</summary>
+    public bool? WasRefused(Uri target) => _refused.TryGetValue(target.Authority, out var refused) ? refused : null;
+
     /// <summary>Loads the files <paramref name="options"/> names. Every failure is a permanent error that
     /// names the setting and the path, never a password.</summary>
     public static BoundTransport? Load(HttpTransportOptions options)
@@ -107,7 +126,7 @@ internal sealed class BoundTransport : IDisposable
         {
             if (keyPath is null)
             {
-                certificate = X509CertificateLoader.LoadPkcs12FromFile(path, password, X509KeyStorageFlags.Exportable);
+                certificate = X509CertificateLoader.LoadPkcs12FromFile(path, password, X509KeyStorageFlags.DefaultKeySet);
             }
             else
             {
@@ -115,7 +134,7 @@ internal sealed class BoundTransport : IDisposable
                     ? X509Certificate2.CreateFromPemFile(path, keyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(path, password, keyPath);
                 certificate = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null,
-                    X509KeyStorageFlags.Exportable);
+                    X509KeyStorageFlags.DefaultKeySet);
             }
         }
         catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException or ArgumentException)
@@ -186,8 +205,8 @@ internal static class HttpHandlerFactory
 
         if (bound.CaCerts is { } ca)
         {
-            handler.ServerCertificateCustomValidationCallback = (_, certificate, chain, errors)
-                => Trusts(ca, certificate, chain, errors);
+            handler.ServerCertificateCustomValidationCallback = (request, certificate, chain, errors)
+                => bound.Record(request.RequestUri, Trusts(ca, certificate, chain, errors));
         }
 
         if (withClientCertificate && bound.ClientCert is { } client)
@@ -210,9 +229,10 @@ internal static class HttpHandlerFactory
 
     /// <summary>'tls.ca_file' adds trust anchors and relaxes nothing else. A certificate the system already
     /// trusts is accepted. Otherwise the only acceptable fault is an untrusted or incomplete chain: a name
-    /// mismatch, a missing certificate or any other chain status (expiry included) is refused, and the chain
-    /// must then build to an anchor in the file (a root or an intermediate). Revocation is not checked, matching the runtime's default
-    /// for system-trusted certificates (a private CA rarely publishes a reachable CRL or OCSP responder).</summary>
+    /// mismatch, a missing certificate or chain, or any other chain status (expiry included) is refused, and
+    /// the certificate must then chain, as a server certificate (serverAuth), to an anchor in the file (a
+    /// root or an intermediate). Revocation is not checked, matching the runtime's default for
+    /// system-trusted certificates (a private CA rarely publishes a reachable CRL or OCSP responder).</summary>
     internal static bool Trusts(X509Certificate2Collection ca, X509Certificate2? certificate, X509Chain? presented,
         SslPolicyErrors errors)
     {
@@ -221,14 +241,12 @@ internal static class HttpHandlerFactory
             return true;
         }
 
-        if (certificate is null || errors != SslPolicyErrors.RemoteCertificateChainErrors)
+        if (certificate is null || presented is null || errors != SslPolicyErrors.RemoteCertificateChainErrors)
         {
             return false;
         }
 
-        if (presented is not null
-            && presented.ChainStatus.Any(s => s.Status is not (X509ChainStatusFlags.NoError
-                or X509ChainStatusFlags.UntrustedRoot or X509ChainStatusFlags.PartialChain)))
+        if (presented.ChainStatus.Any(s => !IsAnchorFault(s.Status)))
         {
             return false;
         }
@@ -238,69 +256,92 @@ internal static class HttpHandlerFactory
         chain.ChainPolicy.CustomTrustStore.AddRange(ca);
         chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
         chain.ChainPolicy.DisableCertificateDownloads = true;
-        if (presented is not null)
+        chain.ChainPolicy.ApplicationPolicy.Add(new Oid(ServerAuthentication));
+        // The certificates the server sent bridge to the anchor; they belong to the runtime, which disposes them.
+        chain.ChainPolicy.ExtraStore.AddRange(presented.ChainPolicy.ExtraStore);
+        try
         {
-            // The certificates the server sent (and the system chain built from them) bridge to the anchor.
-            chain.ChainPolicy.ExtraStore.AddRange(presented.ChainPolicy.ExtraStore);
-            foreach (var element in presented.ChainElements.Skip(1))
+            if (chain.Build(certificate))
             {
-                chain.ChainPolicy.ExtraStore.Add(element.Certificate);
-            }
-        }
-
-        if (chain.Build(certificate))
-        {
-            return true;
-        }
-
-        // An intermediate in the file is an anchor too. Some chain engines (OpenSSL on Linux) accept only a
-        // self-signed anchor and report the chain as partial or untrusted at the file's certificate, so the
-        // built chain is checked by hand: every certificate below the anchor must be clean (validity,
-        // signature, constraints), and the anchor itself may carry only the partial/untrusted flags.
-        var elements = chain.ChainElements;
-        for (var i = 1; i < elements.Count; i++)
-        {
-            if (!ca.Any(anchor => anchor.RawDataMemory.Span.SequenceEqual(elements[i].Certificate.RawDataMemory.Span)))
-            {
-                continue;
+                return true;
             }
 
-            return elements.Take(i).All(e => e.ChainElementStatus.All(s => s.Status == X509ChainStatusFlags.NoError))
-                && elements[i].ChainElementStatus.All(s => s.Status is X509ChainStatusFlags.NoError
-                    or X509ChainStatusFlags.PartialChain or X509ChainStatusFlags.UntrustedRoot);
-        }
+            // An intermediate in the file is an anchor too. Some chain engines (OpenSSL on Linux) accept only a
+            // self-signed anchor and report the chain as partial or untrusted at the file's certificate, so the
+            // built chain is checked by hand: the chain may carry no fault but those two, every certificate
+            // below the anchor must be clean (validity, signature, constraints, usage), and the anchor itself
+            // may carry only the partial/untrusted flags.
+            if (chain.ChainStatus.Any(s => !IsAnchorFault(s.Status)))
+            {
+                return false;
+            }
 
-        return false;
+            var elements = chain.ChainElements;
+            for (var i = 1; i < elements.Count; i++)
+            {
+                if (!ca.Any(anchor => anchor.RawDataMemory.Span.SequenceEqual(elements[i].Certificate.RawDataMemory.Span)))
+                {
+                    continue;
+                }
+
+                return elements.Take(i).All(e => e.ChainElementStatus.All(s => s.Status == X509ChainStatusFlags.NoError))
+                    && elements[i].ChainElementStatus.All(s => IsAnchorFault(s.Status));
+            }
+
+            return false;
+        }
+        finally
+        {
+            foreach (var element in chain.ChainElements)
+            {
+                element.Certificate.Dispose();
+            }
+        }
     }
 
+    private const string ServerAuthentication = "1.3.6.1.5.5.7.3.1";
+
+    private static bool IsAnchorFault(X509ChainStatusFlags status)
+        => status is X509ChainStatusFlags.NoError or X509ChainStatusFlags.UntrustedRoot or X509ChainStatusFlags.PartialChain;
+
     /// <summary>The failures 'proxy' and 'tls' explain, as a message detail and a transient flag; null for
-    /// any other failure, which keeps its existing classification. A TLS failure is permanent, naming
-    /// tls.ca_file when the server's certificate was refused and tls.client_certificate otherwise; a refused
-    /// proxy tunnel is permanent and names the proxy credentials; an I/O error while a client certificate is
-    /// configured stays transient (a server refusing the certificate after a TLS 1.3 handshake looks
-    /// exactly like a reset) but says where to look.</summary>
-    internal static (string Detail, bool Transient)? Describe(HttpRequestException ex, HttpTransportOptions options)
+    /// any other failure, which keeps its existing classification.
+    /// <list type="bullet">
+    /// <item>A TLS authentication failure (an <see cref="AuthenticationException"/>) is permanent: naming
+    /// tls.ca_file when the server's certificate was refused (recorded by the 'ca_file' trust callback for
+    /// <paramref name="target"/>; without one, the runtime's refusal text is the fallback) and
+    /// tls.client_certificate otherwise.</item>
+    /// <item>A proxy's explicit 407 to the tunnel request is permanent and names the proxy credentials; any
+    /// other refused tunnel keeps its status's class.</item>
+    /// <item>An I/O failure (a reset during or after the handshake) keeps its class; with a client
+    /// certificate configured it gains a hint, since a server refusing the certificate after a TLS 1.3
+    /// handshake looks exactly like a reset.</item>
+    /// </list></summary>
+    internal static (string Detail, bool Transient)? Describe(HttpRequestException ex, HttpConnectionConfig connection, Uri target)
     {
         var chain = Chain(ex).ToList();
-        if (ex.HttpRequestError == HttpRequestError.SecureConnectionError || chain.OfType<AuthenticationException>().Any())
+        if (chain.OfType<AuthenticationException>().Any())
         {
             var cause = chain[^1].Message;
-            return chain.OfType<AuthenticationException>().Any(a => a.Message.Contains("remote certificate", StringComparison.OrdinalIgnoreCase))
+            var serverRefused = connection.Bound?.WasRefused(target)
+                ?? chain.OfType<AuthenticationException>().Any(a => a.Message.Contains("remote certificate", StringComparison.OrdinalIgnoreCase));
+            return serverRefused
                 ? ($"the server's TLS certificate was refused ({cause}); if the server uses a private CA, set tls.ca_file " +
                     "to its CA certificate (an expired certificate or a host name mismatch is always refused)", false)
                 : ($"the TLS handshake failed ({cause}); if the server requires a client certificate, check tls.client_certificate", false);
         }
 
-        if (ex.HttpRequestError == HttpRequestError.ProxyTunnelError)
+        if (ex.HttpRequestError == HttpRequestError.ProxyTunnelError && ex.StatusCode is { } status)
         {
-            return ex.StatusCode is { } status && status != HttpStatusCode.ProxyAuthenticationRequired
-                ? ($"the proxy refused the tunnel (HTTP {(int)status})", TransientClassifier.IsTransientStatus((int)status))
-                : (ProxyAuthenticationFailed, false);
+            return status == HttpStatusCode.ProxyAuthenticationRequired
+                ? (ProxyAuthenticationFailed, false)
+                : ($"the proxy refused the tunnel (HTTP {(int)status})", TransientClassifier.IsTransientStatus((int)status));
         }
 
-        if (options.CertPath is not null && chain.OfType<IOException>().Any())
+        if (connection.Transport.CertPath is not null
+            && (ex.HttpRequestError == HttpRequestError.SecureConnectionError || chain.OfType<IOException>().Any()))
         {
-            return ($"{ex.Message} {ClientCertificateHint}", true);
+            return ($"{ex.Message} {ClientCertificateHint}", TransientClassifier.IsTransientException(ex));
         }
 
         return null;

@@ -1,4 +1,6 @@
+using System.Net.Security;
 using System.Security.Authentication;
+using System.Security.Cryptography.X509Certificates;
 using Azure.Core;
 using Azure.Core.Pipeline;
 using Azure.Identity;
@@ -162,6 +164,14 @@ public sealed class HttpTlsTests : IDisposable
             Assert.Equal(2, await ReadAsync(Config(withRoot.Url(), Tls("intermediate.pem"))));
         }
 
+        // An intermediate anchor relaxes nothing below it: an expired leaf is still refused.
+        await using (var expired = new TestTlsServer(_pki.ExpiredLeaf, _pki.ServerChain()))
+        {
+            var refused = await ReadFailsAsync(Config(expired.Url(), Tls("intermediate.pem")));
+            Assert.False(refused.IsTransient);
+            Assert.Contains("tls.ca_file", refused.Message, StringComparison.Ordinal);
+        }
+
         // A root-only file cannot bridge a missing intermediate.
         await using var partial = new TestTlsServer(_pki.Leaf, _pki.ServerChain(withIntermediate: false));
         var ex = await ReadFailsAsync(Config(partial.Url(), Tls()));
@@ -208,39 +218,100 @@ public sealed class HttpTlsTests : IDisposable
         Assert.Equal(new string?[] { _pki.Client.Thumbprint }, tls12.ClientCertificates.ToArray());
     }
 
+    /// <summary>The system chain the runtime hands the trust callback: built with system trust over what the
+    /// server sent.</summary>
+    private static X509Chain Presented(X509Certificate2 leaf, params X509Certificate2[] sent)
+    {
+        var chain = new X509Chain();
+        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        chain.ChainPolicy.DisableCertificateDownloads = true;
+        chain.ChainPolicy.ExtraStore.AddRange(sent);
+        chain.Build(leaf);
+        return chain;
+    }
+
+    [Fact]
+    public void Trust_rule_refuses_wrong_usage_and_a_leaf_used_as_ca()
+    {
+        const SslPolicyErrors chainErrors = SslPolicyErrors.RemoteCertificateChainErrors;
+        foreach (var anchor in new[] { _pki.Root, _pki.Intermediate })
+        {
+            X509Certificate2Collection ca = [anchor];
+            using (var good = Presented(_pki.Leaf, _pki.Intermediate))
+            {
+                Assert.True(HttpHandlerFactory.Trusts(ca, _pki.Leaf, good, chainErrors), anchor.Subject);
+            }
+
+            using (var wrongUsage = Presented(_pki.WrongUsageLeaf, _pki.Intermediate))
+            {
+                Assert.False(HttpHandlerFactory.Trusts(ca, _pki.WrongUsageLeaf, wrongUsage, chainErrors), anchor.Subject);
+            }
+
+            using (var leafAsCa = Presented(_pki.SignedByLeaf, _pki.Leaf, _pki.Intermediate))
+            {
+                Assert.False(HttpHandlerFactory.Trusts(ca, _pki.SignedByLeaf, leafAsCa, chainErrors), anchor.Subject);
+            }
+
+            // Without the runtime's chain there is nothing to judge.
+            Assert.False(HttpHandlerFactory.Trusts(ca, _pki.Leaf, null, chainErrors));
+        }
+    }
+
     [Fact]
     public void Transport_failures_are_classified()
     {
-        var bound = Parse(Config(new Uri("https://localhost/"), Tls(client: Pfx()))).Bind(TimeProvider.System);
+        var target = new Uri("https://localhost/");
+        var bound = Parse(Config(target, Tls(client: Pfx()))).Bind(TimeProvider.System);
         using var _ = bound.Bound;
+        var plain = Parse(Config(target));
+
+        // A reset during the handshake keeps today's (transient) class; with a certificate it gains the hint.
+        HttpRequestException HandshakeReset() => new(HttpRequestError.SecureConnectionError,
+            "The SSL connection could not be established, see inner exception.", new IOException("reset"));
+        Assert.Null(HttpHandlerFactory.Describe(HandshakeReset(), plain, target));
+        Assert.True(Pz.Connectors.Toolkit.Http.TransientClassifier.IsTransientException(HandshakeReset()));
+        var handshakeHint = HttpHandlerFactory.Describe(HandshakeReset(), bound, target);
+        Assert.True(handshakeHint!.Value.Transient);
+        Assert.EndsWith(HttpHandlerFactory.ClientCertificateHint, handshakeHint.Value.Detail, StringComparison.Ordinal);
+
+        // The trust callback's own refusal names tls.ca_file, whatever the runtime's text says.
+        var alertText = new HttpRequestException(HttpRequestError.SecureConnectionError, "ssl",
+            new AuthenticationException("Authentication failed, see inner exception."));
+        Assert.Contains("tls.client_certificate", HttpHandlerFactory.Describe(alertText, bound, target)!.Value.Detail, StringComparison.Ordinal);
+        bound.Bound!.Record(target, trusted: false);
+        Assert.Contains("tls.ca_file", HttpHandlerFactory.Describe(alertText, bound, target)!.Value.Detail, StringComparison.Ordinal);
+        bound.Bound.Record(target, trusted: true);
+        Assert.Contains("tls.client_certificate", HttpHandlerFactory.Describe(alertText, bound, target)!.Value.Detail, StringComparison.Ordinal);
 
         // A refusal after the handshake, with a certificate configured: transient, naming the setting.
         var reset = HttpHandlerFactory.Describe(
-            new HttpRequestException(HttpRequestError.ResponseEnded, "ended", new IOException("reset")), bound.Transport);
+            new HttpRequestException(HttpRequestError.ResponseEnded, "ended", new IOException("reset")), bound, target);
         Assert.NotNull(reset);
         Assert.True(reset.Value.Transient);
         Assert.EndsWith(HttpHandlerFactory.ClientCertificateHint, reset.Value.Detail, StringComparison.Ordinal);
 
         // Without a certificate configured, the same failure keeps today's classification.
         Assert.Null(HttpHandlerFactory.Describe(
-            new HttpRequestException(HttpRequestError.ResponseEnded, "ended", new IOException("reset")), HttpTransportOptions.Default));
+            new HttpRequestException(HttpRequestError.ResponseEnded, "ended", new IOException("reset")), plain, target));
 
         // A handshake alert (a server refusing inside a TLS 1.2 handshake): permanent, naming the certificate.
         var alert = HttpHandlerFactory.Describe(new HttpRequestException(HttpRequestError.SecureConnectionError,
             "The SSL connection could not be established, see inner exception.",
             new AuthenticationException("Authentication failed, see inner exception.", new IOException("handshake failure"))),
-            HttpTransportOptions.Default);
+            plain, target);
         Assert.False(alert!.Value.Transient);
         Assert.Contains("tls.client_certificate", alert.Value.Detail, StringComparison.Ordinal);
         Assert.DoesNotContain("tls.ca_file", alert.Value.Detail, StringComparison.Ordinal);
 
-        // A refused tunnel with another status keeps that status's class; a 407 names the credentials.
+        // A refused tunnel with another status keeps that status's class; only an explicit 407 names the
+        // credentials, and a tunnel failure without a status keeps today's classification.
         var badGateway = HttpHandlerFactory.Describe(new HttpRequestException(HttpRequestError.ProxyTunnelError, "tunnel",
-            null, System.Net.HttpStatusCode.BadGateway), HttpTransportOptions.Default);
+            null, System.Net.HttpStatusCode.BadGateway), plain, target);
         Assert.True(badGateway!.Value.Transient);
         var auth = HttpHandlerFactory.Describe(new HttpRequestException(HttpRequestError.ProxyTunnelError, "tunnel",
-            null, System.Net.HttpStatusCode.ProxyAuthenticationRequired), HttpTransportOptions.Default);
+            null, System.Net.HttpStatusCode.ProxyAuthenticationRequired), plain, target);
         Assert.Equal((HttpHandlerFactory.ProxyAuthenticationFailed, false), auth);
+        Assert.Null(HttpHandlerFactory.Describe(new HttpRequestException(HttpRequestError.ProxyTunnelError, "tunnel"), plain, target));
     }
 
     [Fact]

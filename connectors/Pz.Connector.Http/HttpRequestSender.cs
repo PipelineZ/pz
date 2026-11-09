@@ -110,7 +110,7 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
                     $"({connection.MaxResponseBytes / (1024 * 1024)} MiB)", isTransient: false,
                     innerException: ex);
             }
-            catch (HttpRequestException ex) when (HttpHandlerFactory.Describe(ex, connection.Transport) is { } failure)
+            catch (HttpRequestException ex) when (HttpHandlerFactory.Describe(ex, connection, sendUri) is { } failure)
             {
                 throw new PzConnectorException(
                     $"{prefix}: request to {Target(sent, sendUri, serverChosen)} failed: {failure.Detail}",

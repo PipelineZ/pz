@@ -186,20 +186,20 @@ internal sealed record AzureAdOptions(
                     return new DefaultAzureCredential((DefaultAzureCredentialOptions)options);
             }
         }
-        catch (PzConnectorException)
+        catch (Exception ex)
         {
-            // A certificate that would not load: the transport built above is released with it.
+            // The caller never receives a credential to own them, so a loaded certificate and a transport
+            // built above are released here, whatever refused construction.
             owned?.Dispose();
+            if (ex is ArgumentException)
+            {
+                // The library's text can echo the refused settings; only the auth block is named.
+                throw new PzConnectorException(
+                    "azure_ad: the credential could not be created from the auth settings (check tenant_id, client_id and authority_host)",
+                    isTransient: false);
+            }
+
             throw;
-        }
-        catch (ArgumentException)
-        {
-            // The library's text can echo the refused settings; only the auth block is named. A loaded
-            // certificate is released here because the caller never receives a credential to own it.
-            owned?.Dispose();
-            throw new PzConnectorException(
-                "azure_ad: the credential could not be created from the auth settings (check tenant_id, client_id and authority_host)",
-                isTransient: false);
         }
     }
 
@@ -232,15 +232,6 @@ internal sealed record AzureAdOptions(
                 + "a password-protected certificate must be PKCS#12 or an encrypted PEM)",
                 isTransient: false);
         }
-    }
-}
-
-internal sealed class DisposeBoth(IDisposable first, IDisposable second) : IDisposable
-{
-    public void Dispose()
-    {
-        first.Dispose();
-        second.Dispose();
     }
 }
 

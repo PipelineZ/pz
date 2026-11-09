@@ -28,6 +28,11 @@ internal sealed class TestPki
 
     /// <summary>Valid and chained to the root, but only for 'other.test'.</summary>
     public X509Certificate2 WrongNameLeaf { get; }
+    /// <summary>For localhost, chained to the root, but a client certificate (clientAuth only).</summary>
+    public X509Certificate2 WrongUsageLeaf { get; }
+
+    /// <summary>For localhost, signed by <see cref="Leaf"/>, which is not a CA.</summary>
+    public X509Certificate2 SignedByLeaf { get; }
     public X509Certificate2 Client { get; }
     private readonly RSA _clientKey;
 
@@ -44,6 +49,10 @@ internal sealed class TestPki
         ExpiredLeaf = Persist(CreateLeaf("CN=localhost", ["localhost", "api.test"], Intermediate, now.AddDays(-30),
             now.AddDays(-1), serverAuth: true));
         WrongNameLeaf = Persist(CreateLeaf("CN=other.test", ["other.test"], Intermediate, now.AddDays(-1), now.AddDays(90),
+            serverAuth: true));
+        WrongUsageLeaf = Persist(CreateLeaf("CN=localhost", ["localhost"], Intermediate, now.AddDays(-1), now.AddDays(90),
+            serverAuth: false));
+        SignedByLeaf = Persist(CreateLeaf("CN=localhost", ["localhost"], Leaf, now.AddDays(-1), now.AddDays(80),
             serverAuth: true));
         _clientKey = RSA.Create(2048);
         Client = Persist(CreateLeaf("CN=pz client", [], Root, now.AddDays(-1), now.AddDays(90), serverAuth: false,
@@ -143,7 +152,10 @@ internal sealed class TestPki
 
         // A child's validity must sit inside the issuer's, or the chain fails for that reason instead.
         var after = notAfter < issuer.NotAfter ? notAfter : new DateTimeOffset(issuer.NotAfter.ToUniversalTime());
-        using var signed = request.Create(issuer, notBefore, after, Serial());
+        // The generator overload signs with any key: one test needs a certificate issued by a non-CA leaf.
+        using var issuerKey = issuer.GetRSAPrivateKey()!;
+        using var signed = request.Create(issuer.SubjectName, X509SignatureGenerator.CreateForRSA(issuerKey, RSASignaturePadding.Pkcs1),
+            notBefore, after, Serial());
         return signed.CopyWithPrivateKey(leafKey);
     }
 

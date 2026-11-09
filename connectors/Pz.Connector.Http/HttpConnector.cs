@@ -210,15 +210,15 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             return new ConnectionCheck(false, "sign-in failed: " + ex.Message);
         }
 
+        // Resolve check_path the same way dataset paths resolve (HttpFirstRequest.Build):
+        // a relative segment against the slash-terminated base, not root-relative to the host —
+        // otherwise a base_url path prefix (e.g. '/api/v2') is silently dropped.
+        var target = connection.CheckPath is { } checkPath
+            ? new Uri(connection.BaseUrl, checkPath.TrimStart('/'))
+            : connection.BaseUrl;
         try
         {
             using var client = HttpSource.CreateClient(bound);
-            // Resolve check_path the same way dataset paths resolve (HttpFirstRequest.Build):
-            // a relative segment against the slash-terminated base, not root-relative to the host —
-            // otherwise a base_url path prefix (e.g. '/api/v2') is silently dropped.
-            var target = connection.CheckPath is { } checkPath
-                ? new Uri(connection.BaseUrl, checkPath.TrimStart('/'))
-                : connection.BaseUrl;
 
             // A real read follows a 3xx by hand (HttpRequestSender.SendAsync) rather
             // than treating it as failure -- the check must accept the same shape of response a read
@@ -283,7 +283,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         }
         catch (HttpRequestException ex)
         {
-            var detail = HttpHandlerFactory.Describe(ex, connection.Transport)?.Detail ?? ex.Message;
+            var detail = HttpHandlerFactory.Describe(ex, bound, target)?.Detail ?? ex.Message;
             return new ConnectionCheck(false, $"could not reach '{connection.BaseUrl}': {detail}");
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)

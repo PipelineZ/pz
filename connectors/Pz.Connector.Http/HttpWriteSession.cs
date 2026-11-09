@@ -154,7 +154,7 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
         {
             response = await client.SendAsync(request, ct).ConfigureAwait(false);
         }
-        catch (HttpRequestException ex) when (HttpHandlerFactory.Describe(ex, connection.Transport) is { } failure)
+        catch (HttpRequestException ex) when (HttpHandlerFactory.Describe(ex, connection, request.RequestUri ?? uri) is { } failure)
         {
             throw new PzConnectorException($"{Label}: request to {safeUri} failed: {failure.Detail}",
                 failure.Transient, innerException: ex);
