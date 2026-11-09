@@ -57,6 +57,59 @@ public class YamlMapperTests
         Assert.Contains("Malformed YAML", error.Message);
     }
 
+    [Theory]
+    [InlineData("api:\n  auth: { type: bearer, token: ${API_TOKEN} }\n", 2)]
+    [InlineData("api:\n  auth: {token: ${API_TOKEN}}\n", 2)]
+    [InlineData("api:\n  auth: {\n    type: bearer,\n    token: ${API_TOKEN}\n  }\n", 4)]
+    [InlineData("api:\n  hosts: [a, ${HOST}]\n", 2)]
+    public void A_variable_reference_inside_a_flow_collection_gets_a_quoting_hint(string yaml, int line)
+    {
+        LoadString(yaml, out var error);
+
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Equal(line, error.Line);
+        Assert.Contains("Malformed YAML", error.Message);
+        Assert.Contains("${...} inside a { } or [ ] collection", error.Hint);
+        Assert.Contains("quote it", error.Hint);
+        Assert.Contains("token: \"${X}\"", error.Hint);
+    }
+
+    [Fact]
+    public void A_variable_reference_in_a_flow_collection_the_scanner_fails_on_without_a_line_gets_the_hint_too()
+    {
+        // YamlDotNet's scanner throws a non-YamlException (no position) on a multiline plain scalar inside an
+        // unclosed flow sequence; a ${...} written in that flow collection still deserves the quoting hint.
+        LoadString("hosts: [a, ${HOST}\nversion 0.1.0\n", out var error);
+
+        Assert.NotNull(error);
+        Assert.Null(error.Line);
+        Assert.Contains("Malformed YAML", error.Message);
+        Assert.Contains("quote it", error.Hint);
+    }
+
+    [Theory]
+    [InlineData("api:\n\ttoken: ${API_TOKEN}\n")]
+    [InlineData("api:\n  auth: \"Bearer ${API_TOKEN}\" extra\n")]
+    [InlineData("api:\n  auth: 'Bearer ${API_TOKEN}' extra\n")]
+    [InlineData("api:\n  auth: { token: \"Bearer ${API_TOKEN}\" x }\n")]
+    public void A_variable_reference_outside_a_flow_collection_or_inside_quotes_keeps_the_plain_hint(string yaml)
+    {
+        LoadString(yaml, out var error);
+
+        Assert.NotNull(error);
+        Assert.DoesNotContain("${", error.Hint);
+    }
+
+    [Fact]
+    public void A_flow_collection_error_without_a_variable_keeps_the_plain_hint()
+    {
+        LoadString("api:\n  auth: { type: bearer, token: {x }\n", out var error);
+
+        Assert.NotNull(error);
+        Assert.DoesNotContain("${", error.Hint);
+    }
+
     [Fact]
     public void Alias_expansion_beyond_the_node_budget_is_a_config_error()
     {

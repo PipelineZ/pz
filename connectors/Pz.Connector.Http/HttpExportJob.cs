@@ -65,6 +65,22 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
 
     private string CancelLabel => $"{label}: {CancelStage}";
 
+    /// <summary>The start request's idempotency key: a UUID-shaped (version 8, RFC 9562) SHA-256 digest of the scope
+    /// (run and node), the partition and the start request itself. A for_each item's values are in the request; its
+    /// raw JSON is not hashed, since that follows the key order of the API's answer to a list fetched again. Every
+    /// engine retry of the node in the run sends the same key for the same request (the request's
+    /// <c>{{ run_date }}</c> renders from the run's start); another run, node, item or request gets another. No clock
+    /// or randomness goes in, so the key is reproducible.</summary>
+    internal static string IdempotencyKey(string scope, string partition, HttpPageRequest start)
+    {
+        var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(
+            string.Join('\n', "pz.export.start", scope, partition, start.Key)));
+        hash[6] = (byte)((hash[6] & 0x0F) | 0x80);
+        hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
+        var hex = Convert.ToHexStringLower(hash.AsSpan(0, 16));
+        return $"{hex[..8]}-{hex[8..12]}-{hex[12..16]}-{hex[16..20]}-{hex[20..32]}";
+    }
+
     public async Task<IReadOnlyList<HttpPageRequest>> RunAsync(HttpPageRequest start, CancellationToken ct)
     {
         var jobId = await sender.RunAsync("http.export_start", idempotent: false,

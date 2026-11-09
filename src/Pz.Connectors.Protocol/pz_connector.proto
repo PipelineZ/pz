@@ -127,7 +127,16 @@ message ValidationResultMsg {
   repeated string errors = 1; // aggregate, never throw-per-error
   repeated string warnings = 2; // said about a config that is still valid; never fails validation
 }
-message CheckRequest { google.protobuf.Struct config = 1; }
+// The run (or validation pass) and node an open or a check serves -- Pz.Connectors.Abstractions.ConnectorRunContext.
+// Optional on every request that opens the connector's source or sink (the first one opens it, and the connector
+// hands it IRunContextAware.UseRunContext) and on CheckRequest (IScopedConnectionCheck). An older host sends none and
+// an older connector ignores it: both behave as before.
+message RunContextMsg {
+  string run = 1;
+  optional string node = 2;
+  optional string started_at = 3; // ISO 8601 round-trip ("O") form; absent when the host has no run start
+}
+message CheckRequest { google.protobuf.Struct config = 1; optional RunContextMsg run_context = 2; }
 message ConnectionCheckMsg { bool ok = 1; optional string message = 2; }
 
 message DatasetSpecMsg {
@@ -152,10 +161,10 @@ message BatchOptionsMsg {
   int32 target_batch_bytes = 1;
   int32 max_rows_per_batch = 2;
 }
-message GetSchemaRequest { string op_id = 1; DatasetSpecMsg spec = 2; }
+message GetSchemaRequest { string op_id = 1; DatasetSpecMsg spec = 2; optional RunContextMsg run_context = 3; }
 message DatasetSchemaMsg { bytes arrow_schema_ipc = 1; } // Arrow IPC schema message, never a type list
 
-message NativeScanRequest { string op_id = 1; DatasetSpecMsg spec = 2; }
+message NativeScanRequest { string op_id = 1; DatasetSpecMsg spec = 2; optional RunContextMsg run_context = 3; }
 message NativeScanResponse {
   bool found = 1; // false → universal path
   string sql_fragment = 2;
@@ -165,7 +174,7 @@ message NativeScanResponse {
   optional string sniff_fragment = 6;
 }
 
-message PlanReadRequest { string op_id = 1; DatasetSpecMsg spec = 2; ReadHintsMsg hints = 3; }
+message PlanReadRequest { string op_id = 1; DatasetSpecMsg spec = 2; ReadHintsMsg hints = 3; optional RunContextMsg run_context = 4; }
 message PartitionMsg {
   string partition_id = 1;   // stable iff StablePartitionIds declared; else host-side ordinal
   bool checkpointing = 2;    // partition implements ICheckpointingPartition
@@ -178,7 +187,7 @@ message OpenReadRequest {
   optional string resume_checkpoint = 4; // ICheckpointingPartition resume token
 }
 message ReadStreamTicket { bytes ticket = 1; } // exactly 16 random bytes, single-use
-message NaturalReadShapeRequest { string op_id = 1; DatasetSpecMsg spec = 2; } // op_id is for log correlation only: the host attaches no cancel ladder to this plan-time probe.
+message NaturalReadShapeRequest { string op_id = 1; DatasetSpecMsg spec = 2; optional RunContextMsg run_context = 3; } // op_id is for log correlation only: the host attaches no cancel ladder to this plan-time probe.
 message NaturalReadShapeResponse {
   // Mirrors Pz.Connectors.Abstractions.NaturalReadShape. FULL is the zero value on purpose: an
   // absent/defaulted answer means "not a feed".
@@ -209,7 +218,11 @@ message ConnectorStats {
   uint32 drops = 9;
 }
 // Unset stats = the stream reported nothing, or the op/partition is unknown.
-message ReadStatsResponse { optional ConnectorStats stats = 1; }
+// skipped_by: the partition implements ISkippedReadPartition and reported, once its stream ended, which rule of the
+// dataset's config skipped its read in whole or in part (ISkippedReadPartition.SkippedBy). Absent when nothing was
+// skipped, and from a connector that predates the field. A host that cannot read this answer (the call failed for any
+// reason but UNIMPLEMENTED) fails the read transiently rather than assume nothing was skipped.
+message ReadStatsResponse { optional ConnectorStats stats = 1; optional string skipped_by = 2; }
 
 // Names the stream the way the call that opened it did: a read by its op and partition (exactly as
 // OpenReadRequest/ReadStateRequest resolve them), a write by its session. An unknown op, partition or
@@ -225,7 +238,7 @@ message StreamFailureResponse {
   optional PzErrorDetail failure = 1;
 }
 
-message NativeCopyRequest { string op_id = 1; OutputSpecMsg spec = 2; }
+message NativeCopyRequest { string op_id = 1; OutputSpecMsg spec = 2; optional RunContextMsg run_context = 3; }
 message NativeCopyResponse {
   bool found = 1;
   string copy_sql = 2;
@@ -252,6 +265,7 @@ message BeginWriteRequest {
   string op_id = 1;
   OutputSpecMsg spec = 2;
   bytes arrow_schema_ipc = 3;
+  optional RunContextMsg run_context = 4;
 }
 // Mirrors Pz.Connectors.Abstractions.AbortSemantics by ordinal (DiscardsAll=0/BestEffort=1/None=2).
 enum AbortSemanticsMsg {

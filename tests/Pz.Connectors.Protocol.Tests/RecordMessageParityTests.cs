@@ -14,6 +14,7 @@ public class RecordMessageParityTests
         (typeof(DatasetSpec), DatasetSpecMsg.Descriptor, []),
         (typeof(OutputSpec), OutputSpecMsg.Descriptor, ["max_text_lengths_set"]),
         (typeof(WriteAttempt), WriteAttemptMsg.Descriptor, []),
+        (typeof(ConnectorRunContext), RunContextMsg.Descriptor, []),
         (typeof(ReadHints), ReadHintsMsg.Descriptor, ["columns_set"]),
         (typeof(BatchOptions), BatchOptionsMsg.Descriptor, []),
         (typeof(ValidationResult), ValidationResultMsg.Descriptor, []),

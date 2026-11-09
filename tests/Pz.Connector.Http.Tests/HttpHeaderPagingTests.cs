@@ -561,34 +561,21 @@ public sealed class HttpHeaderPagingTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task An_unknown_location_on_a_get_read_still_runs_with_a_notice()
+    public async Task An_unknown_location_on_a_get_read_fails_the_plan_before_any_request()
     {
-        // Configs like this loaded before header paging existed (the connector ignored the key on GET), so they
-        // must keep running; `pz validate` still reports the value through the dataset schema.
         MapThreePages(r => Query(r, "cursor"));
-        var notices = new List<string>();
         var errors = new List<string>();
         var connection = HttpConnectionConfig.Parse(new ConnectorConfig(
             new Dictionary<string, object?> { ["base_url"] = _server.BaseUrl.ToString() }), errors);
         await using var source = new HttpSource(connection!, TimeProvider.System);
-        source.UseNotice(notices.Add);
         var options = Map(("path", "/items"), ("items", "/data"),
             ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("param", "cursor"), ("location", "cookie"))));
 
-        var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(Assert.Single(await source.PlanReadAsync(
-            new DatasetSpec("s", "d", options), ReadHints.None, CancellationToken.None)));
+        var ex = await Assert.ThrowsAnyAsync<Exception>(async () => await source.PlanReadAsync(
+            new DatasetSpec("s", "d", options), ReadHints.None, CancellationToken.None));
 
-        Assert.Equal(4, (await DrainAsync(partition)).Rows);
-        Assert.Equal(["", "t1", "t2"], _server.Requests.Select(r => Query(r, "cursor")));
-        var notice = Assert.Single(notices);
-        Assert.Contains("pagination 'location' 'cookie' is not one of query, body, header", notice);
-        Assert.Contains("ignored", notice);
-        var schema = Json.Schema.JsonSchema.FromText(new HttpConnector().DatasetConfigSchema);
-        Assert.False(schema.Evaluate(System.Text.Json.JsonSerializer.SerializeToElement(new Dictionary<string, object>
-        {
-            ["path"] = "/items",
-            ["pagination"] = new Dictionary<string, object> { ["strategy"] = "page", ["location"] = "cookie" },
-        })).IsValid);
+        Assert.Contains("pagination 'location' must be 'query', 'body' or 'header', got 'cookie'", ex.Message);
+        Assert.Empty(_server.Requests);
     }
 
     [Theory]

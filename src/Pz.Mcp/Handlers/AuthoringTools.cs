@@ -163,6 +163,16 @@ internal static class AuthoringTools
         Dictionary<string, object?>? read, Dictionary<string, object?>? write,
         CliServices services, bool isSet, CancellationToken ct)
     {
+        // Before anything else, as for a connection: a credential typed into a dataset's query, headers or body is
+        // refused with nothing loaded or written.
+        var credentialErrors = (read is null ? [] : CredentialGuard.FindLiteralCredentialsUnder(read, $"{EntitiesKey}.{entity}.read"))
+            .Concat(write is null ? [] : CredentialGuard.FindLiteralCredentialsUnder(write, $"{EntitiesKey}.{entity}.write"))
+            .ToList();
+        if (credentialErrors.Count > 0)
+        {
+            return ToolEnvelope.Errors(credentialErrors, applied: false);
+        }
+
         PzProject project;
         try
         {

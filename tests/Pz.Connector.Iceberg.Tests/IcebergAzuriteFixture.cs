@@ -15,7 +15,7 @@ public sealed class IcebergAzuriteFixture : IAsyncLifetime
 {
     // Pinned in step with tests/Pz.Connector.AzureBlob.Tests/AzuriteFixture.cs: older tags reject
     // the Azure.Storage.Blobs 12.24.0 SDK's default REST API version.
-    private const string ImageName = "mcr.microsoft.com/azure-storage/azurite:3.35.0";
+    internal const string ImageName = "mcr.microsoft.com/azure-storage/azurite:3.35.0";
 
     public const string Container = "pz-iceberg-e2e";
 
@@ -31,7 +31,7 @@ public sealed class IcebergAzuriteFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        if (!DockerFacts.IsAvailable || DockerFacts.IsOffline)
+        if (!DockerFacts.IsAvailable || DockerFacts.IsOffline || !DockerFacts.CanProvide(ImageName))
         {
             return;
         }

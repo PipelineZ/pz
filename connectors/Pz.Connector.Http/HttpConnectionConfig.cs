@@ -46,19 +46,53 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     public const long MaxResponseMbCap = 2047;
 
     /// <summary>Masks the value of every authenticator secret query param found in
-    /// <paramref name="text"/>. Anything the endpoint sends back can echo the request URL, so
-    /// response-derived text goes through this before it reaches an exception message.</summary>
+    /// <paramref name="text"/>: the one redaction for every message built from text the endpoint sends back, which
+    /// can echo the request URL. A name is compared as the query string compares it (decoded, any case), so an
+    /// echo spelled <c>API_KEY</c> or <c>%61pi_key</c> is masked too, and it is found after any of the forms a
+    /// separator takes when the URL is echoed escaped: <c>?</c> or <c>&amp;</c> as is, HTML (<c>&amp;amp;</c>),
+    /// JSON (<c>\u0026</c>) and percent-encoded inside another parameter (<c>%3F</c>, <c>%26</c>, with
+    /// <c>%3D</c> for <c>=</c>). The value runs to the next separator, quote, angle bracket or whitespace.</summary>
     public string RedactSecretParams(string text)
     {
-        foreach (var param in Authenticator?.SecretQueryParams ?? [])
+        var secrets = Authenticator?.SecretQueryParams ?? [];
+        if (secrets.Count == 0)
         {
-            text = System.Text.RegularExpressions.Regex.Replace(
-                text, $"(?<=[?&]){System.Text.RegularExpressions.Regex.Escape(param)}=[^&]*",
-                $"{param}=***");
+            return text;
         }
 
-        return text;
+        // Names are found anywhere, inside another parameter's value too (a redirect target echoing the request),
+        // so the scan never consumes a value; only a secret's value is masked, from its = to where it ends.
+        var masked = new System.Text.StringBuilder(text.Length);
+        var copied = 0;
+        foreach (System.Text.RegularExpressions.Match match in EchoedQueryName.Matches(text))
+        {
+            var valueStart = match.Index + match.Length;
+            if (valueStart <= copied
+                || !secrets.Contains(HttpCheckpointToken.DecodedQueryName(match.Groups["name"].Value),
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var valueEnd = EchoedValueEnd.Match(text, valueStart) is { Success: true } end ? end.Index : text.Length;
+            masked.Append(text, copied, valueStart - copied).Append("***");
+            copied = valueEnd;
+        }
+
+        return copied == 0 ? text : masked.Append(text, copied, text.Length - copied).ToString();
     }
+
+    // sep: ? & &amp; \u0026 %3F %26. name: plain characters or percent-escapes other than an escaped = or &.
+    // eq: = or %3D.
+    private static readonly System.Text.RegularExpressions.Regex EchoedQueryName = new(
+        @"(?<=\?|&amp;|&|\\u0026|%3[Ff]|%26)" +
+        @"(?<name>(?:[^=&?#\s""'<>\\%;]|%(?!3[Dd]|26)[0-9A-Fa-f]{2})+)" +
+        @"(?:=|%3[Dd])",
+        System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // Where a value ends: the next separator in any of its forms, a quote, an angle bracket or whitespace.
+    private static readonly System.Text.RegularExpressions.Regex EchoedValueEnd = new(
+        @"&|\\u0026|%26|[\s""'<>]", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>True when <paramref name="candidate"/> may be requested with this connection's
     /// credentials attached: the base URL's own origin (scheme + host + port), or a host the author
@@ -98,11 +132,11 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         return false;
     }
 
-    /// <summary>Query parameters taken out of every URL a checkpoint stores: a session token sent as a query
-    /// parameter (the sign-in adds the current one back to the resumed request). An api_key query parameter is not
-    /// in this list.</summary>
-    public IReadOnlyCollection<string> CheckpointStrippedParams
-        => Authenticator is SessionAuthenticator session ? session.SecretQueryParams : [];
+    /// <summary>Query parameters taken out of every URL a checkpoint stores: every secret the authenticator
+    /// sends as a query parameter (an <c>api_key</c> <c>param:</c>, a session token injected as a query). An API
+    /// may echo either into its next links; the authenticator adds the current value back to the resumed
+    /// request, so nothing is lost by not storing it.</summary>
+    public IReadOnlyCollection<string> CheckpointStrippedParams => Authenticator?.SecretQueryParams ?? [];
 
     /// <summary>True when the connection sends credentials: an authenticator (built or still to be
     /// built by <see cref="AuthFactory"/>) or an Authorization header.</summary>

@@ -14,6 +14,9 @@ public sealed class DuckLakePostgresCatalogFixture : IAsyncLifetime
     public DuckLakePostgresCatalogFixture()
     {
         DockerFacts.SkipUnlessDocker();
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
+        DockerFacts.SkipUnlessImage("postgres:16-alpine");
     }
 
     public string Host { get; private set; } = "";

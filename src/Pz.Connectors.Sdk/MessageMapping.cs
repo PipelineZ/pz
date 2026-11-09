@@ -150,6 +150,19 @@ internal static class SpecMapping
                 : null,
         };
 
+    /// <summary>The run context a request carries; null when the host sent none (an older host).</summary>
+    public static ConnectorRunContext? ToRunContext(RunContextMsg? context) =>
+        context is null
+            ? null
+            : new ConnectorRunContext(context.Run, context.HasNode ? context.Node : null)
+            {
+                StartedAt = context.HasStartedAt && DateTimeOffset.TryParse(context.StartedAt,
+                    System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind,
+                    out var startedAt)
+                    ? startedAt
+                    : null,
+            };
+
     public static ReadHints ToReadHints(ReadHintsMsg? hints) => hints is null
         ? ReadHints.None
         : new ReadHints(

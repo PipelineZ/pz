@@ -463,4 +463,40 @@ public class OAuth2ClientCredentialsTests
             Assert.Same(thrown, ex.InnerException);
         }
     }
+
+    [Theory]
+    [InlineData(401, "invalid_client")]
+    [InlineData(400, "unauthorized_client")]
+    public async Task A_refused_client_is_tried_once_by_every_authenticator_together(int status, string error)
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/token", _ => new StubResponse(status, $$"""{"error":"{{error}}"}"""));
+
+        var first = await FailureAsync(server);
+        var again = await FailureAsync(server);
+
+        Assert.Contains(error, first.Message);
+        Assert.False(again.IsTransient);
+        Assert.Contains(error, again.Message);
+        Assert.Contains("pz did not try again", again.Message);
+        Assert.Single(server.Requests);
+    }
+
+    [Fact]
+    public async Task A_changed_secret_or_another_error_is_tried_again()
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/token", _ => new StubResponse(401, """{"error":"invalid_client"}"""));
+
+        await FailureAsync(server);
+        await FailureAsync(server, d => d["client_secret"] = "another-secret");
+
+        Assert.Equal(2, server.Requests.Count);
+
+        await using var other = new StubHttpServer();
+        other.Map("/token", _ => new StubResponse(400, """{"error":"invalid_request"}"""));
+        await FailureAsync(other);
+        await FailureAsync(other);
+        Assert.Equal(2, other.Requests.Count);
+    }
 }

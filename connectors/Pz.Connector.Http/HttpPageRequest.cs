@@ -15,6 +15,10 @@ internal sealed record HttpPageRequest(HttpMethod Method, Uri Url, JsonNode? Jso
     /// time and never stored here.</summary>
     public (string Name, string Value)? PageHeader { get; init; }
 
+    /// <summary>An export start's idempotency key header (<c>export.idempotency_key_header</c>); null on every other
+    /// request. Not part of <see cref="Key"/>: it names the attempt's job, not a page.</summary>
+    public (string Name, string Value)? IdempotencyKey { get; init; }
+
     /// <summary>Identity of the whole request: two requests with the same key fetch the same page.
     /// Body paging keeps the URL fixed and moves the body, so a URL-only identity would call every
     /// body-paged request a repeat (or, compared with <c>==</c>, never a change). Header paging keeps both
@@ -55,6 +59,14 @@ internal sealed record HttpPageRequest(HttpMethod Method, Uri Url, JsonNode? Jso
             throw new Pz.Connectors.Abstractions.PzConnectorException(
                 $"the page token header '{header.Name}' could not be added to the request; name the header the API " +
                 "reads the token from in 'pagination.param'", isTransient: false);
+        }
+
+        if (IdempotencyKey is { } idempotency && !message.Headers.TryAddWithoutValidation(idempotency.Name, idempotency.Value))
+        {
+            message.Dispose();
+            throw new Pz.Connectors.Abstractions.PzConnectorException(
+                $"the idempotency key header '{idempotency.Name}' could not be added to the export start; name the " +
+                "header the API reads the key from in 'export.idempotency_key_header'", isTransient: false);
         }
 
         if (body is not null && (JsonBody is not null || TextBody is not null))

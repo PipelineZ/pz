@@ -21,7 +21,8 @@ namespace Pz.Connector.Http;
 /// resume prefix so a retried delivery picks up strictly after the last acknowledged row. The sink
 /// side is an explicit interface implementation because <c>ISourceConnector.OpenAsync</c> and
 /// <c>ISinkConnector.OpenAsync</c> differ only by return type.</summary>
-public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema, IDatasetConfigValidator
+public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema, IDatasetConfigValidator,
+    IScopedConnectionCheck
 {
     public ConnectorInfo Info { get; } = new("http", "0.1.0", ProtocolVersion.Major);
 
@@ -203,7 +204,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "cancel_path": { "type": "string", "pattern": "^/.*\\{job_id\\}",
                     "not": { "pattern": "\\{job_id\\}.*\\{job_id\\}" } },
                 "cancel_method": { "type": "string",
-                    "pattern": "^([Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh])$" } },
+                    "pattern": "^([Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh])$" },
+                "idempotency_key_header": { "type": "string", "minLength": 1 } },
                 "required": ["job_id", "status_path", "status_pointer", "ready"],
                 "dependentRequired": { "cancel_method": ["cancel_path"] },
                 "additionalProperties": false },
@@ -293,7 +295,15 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
     // off, see HttpSource.CreateClient), so a bound here stops a redirect loop from hanging the check.
     private const int MaxCheckRedirects = 5;
 
-    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
+    /// <summary>A check on its own is a scope of its own: a refused sign-in here does not stop a later check or run
+    /// in the same process from trying.</summary>
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
+        => CheckConnectionAsync(config, new ConnectorRunContext("check-" + Guid.NewGuid().ToString("N"), null), ct);
+
+    /// <summary>A check inside a run or validation pass shares that pass's sign-in scope, so a refused credential is
+    /// tried once for the check and the pass's reads together.</summary>
+    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext context,
+        CancellationToken ct)
     {
         var errors = new List<string>();
         var connection = HttpConnectionConfig.Parse(config, errors);
@@ -328,6 +338,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         // Resolve check_path the same way dataset paths resolve (HttpFirstRequest.Build):
         // a relative segment against the slash-terminated base, not root-relative to the host —
         // otherwise a base_url path prefix (e.g. '/api/v2') is silently dropped.
+        HttpAuth.UseRunContext(bound.Authenticator, context);
+
         var target = connection.CheckPath is { } checkPath
             ? new Uri(connection.BaseUrl, checkPath.TrimStart('/'))
             : connection.BaseUrl;

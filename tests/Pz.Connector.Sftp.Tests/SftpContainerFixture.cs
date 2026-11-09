@@ -22,7 +22,9 @@ public sealed class SftpContainerFixture : IAsyncLifetime
     public SftpContainerFixture()
     {
         DockerFacts.SkipUnlessDocker();
-        DockerFacts.SkipIfOffline();
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
+        DockerFacts.SkipUnlessImage(ImageName);
     }
 
     public string Host { get; private set; } = "";

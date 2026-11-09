@@ -24,13 +24,15 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - run: dotnet build Pz.slnx -c Release
-      # Both legs run the full suite. On ubuntu, Linux Docker lets every Testcontainers suite
-      # (Postgres/MinIO/Azurite) actually RUN. The windows runner's Docker daemon answers but runs
-      # Windows containers, which DockerFacts counts as no docker, so those suites SKIP there and
-      # everything else -- the PCP host over AF_UNIX, file locking, ACLs, paths, line endings -- runs
-      # on Windows for real. PZ_TESTS_OFFLINE=1 skips network-dependent tests (e.g. the live
-      # api.github.com smoke, whose SkipIfOffline() gate keys only on this env var) to keep CI hermetic
-      # -- the stub-server suites cover the same logic offline.
+      # Both legs run the full suite. On ubuntu, Linux Docker runs the Testcontainers suites that need no
+      # network beyond their image (Postgres, SQL Server, State.SqlServer, DuckLake-Postgres catalog,
+      # SFTP, fake-gcs, the EndToEnd suites); a missing image is pulled, and a refused pull fails the job
+      # (CI is set). The windows runner's Docker daemon answers but runs Windows containers, which
+      # DockerFacts counts as no docker, so those suites SKIP there and everything else -- the PCP host
+      # over AF_UNIX, file locking, ACLs, paths, line endings -- runs on Windows for real.
+      # PZ_TESTS_OFFLINE=1 skips network-dependent tests: the live api.github.com smoke, and the docker
+      # suites that load DuckDB extensions from the network (MinIO/S3, GCS native, Iceberg, Azurite, MySQL
+      # native, DuckLake, Quack, SQLite native). Those run in the network-suites job below.
       # --blame-hang: a hung test must name itself. On 2026-07-22 a run sat silent for 25 minutes
       # (last suite output 11:38, workflow-level cancel 12:07) and the log couldn't say which test
       # stalled -- passing tests print nothing at normal verbosity, so silence hides the culprit.
@@ -46,6 +48,36 @@ jobs:
         if: failure()
         with:
           name: hang-blame-${{ matrix.os }}
+          path: '**/TestResults/**'
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The docker suites that also need the network: DuckDB loads its httpfs, azure, iceberg, mysql, ducklake and
+  # sqlite extensions from the extension repository, so build-test (PZ_TESTS_OFFLINE=1) skips them. Here they run
+  # against their containers. GitHub sets CI=true, so a refused image pull fails the job instead of skipping.
+  # The DuckDbExtension format tests and the Azurite TLS facts have their own jobs and are filtered out.
+  network-suites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build Pz.slnx -c Release
+      - name: docker suites that need DuckDB extensions
+        run: |
+          for project in Pz.Connector.S3.Tests Pz.Connector.Gcs.Tests Pz.Connector.Iceberg.Tests \
+                         Pz.Connector.AzureBlob.Tests Pz.Connector.MySql.Tests Pz.Connector.DuckLake.Tests \
+                         Pz.Connector.Quack.Tests Pz.Connector.Sqlite.Tests; do
+            dotnet test "tests/${project}" -c Release --no-build \
+              --filter "Category!=DuckDbExtension&Category!=AzuriteTls" \
+              --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: failure()
+        with:
+          name: hang-blame-network-suites
           path: '**/TestResults/**'
           if-no-files-found: ignore
           retention-days: 7

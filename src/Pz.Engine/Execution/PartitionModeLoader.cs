@@ -28,7 +28,7 @@ internal static class PartitionModeLoader
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadAsync(
         DagNode node, RunContext ctx, IReadOnlyList<(IIdentifiedPartition Partition, string Id)> partitions,
         Schema schema, string mainTable, string? windowLower, string? windowUpper, long reusedCount,
-        bool isSyncDataset, CancellationToken ct)
+        bool isSyncDataset, CancellationToken ct, SkippedReadGuard? skipGuard = null)
     {
         var duck = ctx.Duck;
         var nodeId = node.Id.Value;
@@ -84,7 +84,7 @@ internal static class PartitionModeLoader
         using var admission = new SemaphoreSlim(Environment.ProcessorCount);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var tasks = pending.Select(p => RunAdmittedAsync(duck, p.Partition, p.Id, nodeId, nodeKey, mainTable,
-            schema, ctx.EffectiveBatch, admission, loadCts, failures, checkpoints, OnResumed)).ToArray();
+            schema, ctx.EffectiveBatch, admission, loadCts, failures, checkpoints, OnResumed, skipGuard)).ToArray();
 
         try
         {
@@ -124,7 +124,7 @@ internal static class PartitionModeLoader
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadStreamingAsync(
         DagNode node, RunContext ctx, IAsyncEnumerable<IDatasetPartition> stream, Schema schema,
         string mainTable, string? windowLower, string? windowUpper, long reusedCount, SourceDatasetDef def,
-        CancellationToken ct)
+        CancellationToken ct, SkippedReadGuard? skipGuard = null)
     {
         var duck = ctx.Duck;
         var nodeId = node.Id.Value;
@@ -195,7 +195,7 @@ internal static class PartitionModeLoader
                 await admission.WaitAsync(loadCts.Token).ConfigureAwait(false);
                 tasks.RemoveAll(t => t.IsCompletedSuccessfully);
                 tasks.Add(RunThenReleaseAsync(duck, identified, pid, nodeId, nodeKey, mainTable, schema,
-                    ctx.EffectiveBatch, loadCts, failures, admission, checkpoints, OnResumed));
+                    ctx.EffectiveBatch, loadCts, failures, admission, checkpoints, OnResumed, skipGuard));
                 admitted++;
             }
         }
@@ -575,13 +575,14 @@ internal static class PartitionModeLoader
     private static async Task RunAdmittedAsync(IDuckSession duck, IIdentifiedPartition partition, string pid,
         string nodeId, string nodeKey, string mainTable, Schema schema, BatchOptions batchOptions,
         SemaphoreSlim admission, CancellationTokenSource loadCts, ConcurrentQueue<PzConnectorException> failures,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         await admission.WaitAsync(loadCts.Token).ConfigureAwait(false);
         try
         {
             await RunPartitionAsync(duck, partition, pid, nodeId, nodeKey, mainTable, schema, batchOptions,
-                loadCts, failures, checkpoints, onResumed).ConfigureAwait(false);
+                loadCts, failures, checkpoints, onResumed, skipGuard).ConfigureAwait(false);
         }
         finally
         {
@@ -595,12 +596,13 @@ internal static class PartitionModeLoader
     private static async Task RunThenReleaseAsync(IDuckSession duck, IIdentifiedPartition partition, string pid,
         string nodeId, string nodeKey, string mainTable, Schema schema, BatchOptions batchOptions,
         CancellationTokenSource loadCts, ConcurrentQueue<PzConnectorException> failures, SemaphoreSlim admission,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         try
         {
             await RunPartitionAsync(duck, partition, pid, nodeId, nodeKey, mainTable, schema, batchOptions,
-                loadCts, failures, checkpoints, onResumed).ConfigureAwait(false);
+                loadCts, failures, checkpoints, onResumed, skipGuard).ConfigureAwait(false);
         }
         finally
         {
@@ -612,14 +614,15 @@ internal static class PartitionModeLoader
         string pid, string nodeId, string nodeKey, string mainTable, Schema schema,
         BatchOptions batchOptions, CancellationTokenSource loadCts,
         ConcurrentQueue<PzConnectorException> failures,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         try
         {
             if (partition is ICheckpointingPartition checkpointing)
             {
                 await RunCheckpointingPartitionAsync(duck, checkpointing, pid, nodeId, nodeKey, mainTable,
-                    schema, batchOptions, loadCts, failures, checkpoints, onResumed).ConfigureAwait(false);
+                    schema, batchOptions, loadCts, failures, checkpoints, onResumed, skipGuard).ConfigureAwait(false);
                 return;
             }
 
@@ -668,6 +671,8 @@ internal static class PartitionModeLoader
                 rows += await duck.AppendArrowBatchAsync(partTable, batch, schema, loadCts.Token).ConfigureAwait(false);
             }
 
+            // A skip on an incremental dataset fails the node before the partition is recorded as done.
+            skipGuard?.Check(partition);
             await duck.ExecuteTransactionAsync(
                 PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, rows), loadCts.Token)
                 .ConfigureAwait(false);
@@ -711,7 +716,8 @@ internal static class PartitionModeLoader
         ICheckpointingPartition partition, string pid, string nodeId, string nodeKey, string mainTable,
         Schema schema, BatchOptions batchOptions, CancellationTokenSource loadCts,
         ConcurrentQueue<PzConnectorException> failures,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         var partTable = PartitionLedger.PartTable(nodeKey, pid);
         var segTable = PartitionLedger.SegTable(nodeKey, pid);
@@ -782,6 +788,9 @@ internal static class PartitionModeLoader
 
             if (partition.TryGetCheckpoint(out var checkpoint) && checkpoint is not null)
             {
+                // A checkpoint past a skipped part of an incremental read is never stored: no resumed attempt
+                // may start beyond the skip.
+                skipGuard?.Check(partition);
                 await duck.ExecuteTransactionAsync(
                     PartitionLedger.CheckpointStatements(nodeId, pid, segTable, partTable, checkpoint, partRows + segRows),
                     token).ConfigureAwait(false);
@@ -798,6 +807,7 @@ internal static class PartitionModeLoader
             $"insert into {partTable} select * from {segTable}",
             $"drop table {segTable}",
         };
+        skipGuard?.Check(partition);
         statements.AddRange(PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, partRows + segRows));
         await duck.ExecuteTransactionAsync(statements, token).ConfigureAwait(false);
     }

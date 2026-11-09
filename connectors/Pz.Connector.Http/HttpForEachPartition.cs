@@ -22,8 +22,24 @@ namespace Pz.Connector.Http;
 internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
     ThrottlePause? pause = null)
-    : ICheckpointingPartition
+    : ICheckpointingPartition, ISkippedReadPartition
 {
+    private string? _skippedBy;
+
+    /// <summary>The first item an `on_status` skip rule skipped in this read (an `on_missing` 404 does not count),
+    /// set when that item finishes: before any checkpoint past it is offered, as
+    /// <see cref="ISkippedReadPartition"/> requires.</summary>
+    public string? SkippedBy => Volatile.Read(ref _skippedBy);
+
+    /// <summary>Notes an item partition whose read an `on_status` skip rule ended.</summary>
+    private void NoteRuleSkip(IDatasetPartition item, ItemValues values)
+    {
+        if (item is ISkippedReadPartition { SkippedBy: { } rule })
+        {
+            Interlocked.CompareExchange(ref _skippedBy, $"{rule} ({values.Identity()})", null);
+        }
+    }
+
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
     /// <summary>Where a non-fatal notice goes (a cap that stopped the read, items skipped under
@@ -33,6 +49,14 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// <summary>The parent of each file-mode item's scratch directory; null means `Path.GetTempPath()`.
     /// Tests point it at a directory of their own.</summary>
     internal string? ScratchRoot { get; set; }
+
+    /// <summary>Handed to each file-mode item (<see cref="HttpFilePartition.IdempotencyScope"/>).</summary>
+    internal string? IdempotencyScope { get; init; }
+
+    /// <summary>When the run started (<see cref="ConnectorRunContext.StartedAt"/>): <c>{{ run_date }}</c> renders from it,
+    /// so every attempt of the run sends the same dated request. Null renders from the clock at read time.</summary>
+    internal DateTimeOffset? RunStartedAt { get; init; }
+
 
     /// <summary>Where JSON items' batch buffers come from; null means the shared native pool. Tests count
     /// with it.</summary>
@@ -93,7 +117,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         var now = time.GetUtcNow();
         // The dataset's bindings serve both requests: the list formats the watermark by the dataset's
         // cursor type, and both render the same {{ run_date }}.
-        var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
+        var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(RunStartedAt ?? now), Label);
         // The list crawl and every item share this read's Retry-After pause: a throttle on any of them
         // holds back the others.
         var list = forEach.List is { } listRequest
@@ -229,6 +253,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                     pending?.Dispose();
                 }
 
+                NoteRuleSkip(item.Partition, values);
                 if (item.Missing())
                 {
                     skipped++;
@@ -412,6 +437,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                 ItemOrigin = origin,
                 Notice = notice,
                 ScratchRoot = ScratchRoot,
+                IdempotencyScope = IdempotencyScope,
             };
             return (file, () => file.Missing, () => false);
         }

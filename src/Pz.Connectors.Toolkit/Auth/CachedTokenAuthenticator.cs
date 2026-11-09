@@ -16,7 +16,8 @@ public sealed record FetchedToken(string AccessToken, DateTimeOffset? ExpiresOn)
 /// token in any exception message. A subclass that names a <see cref="SignInKey"/> gets two more
 /// guarantees: its sign-ins are serialised with every other authenticator in the process that has the same
 /// key, and once one of them fails with an exception marked by <see cref="Terminal"/>, every later sign-in
-/// with that key fails at once with the same permanent error and sends nothing.</summary>
+/// with that key in the same run (<see cref="RunScope"/>) fails at once with the same permanent error and sends
+/// nothing.</summary>
 public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuthenticator, IDisposable
 {
     public static readonly TimeSpan RefreshMargin = TimeSpan.FromMinutes(5);
@@ -31,6 +32,11 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
     private int _generation;
     private bool _accepted;
     private string? _discardedAccepted;
+
+    /// <summary>The run this authenticator signs in for (set before its first sign-in). A <see cref="Terminal"/>
+    /// refusal is remembered only for authenticators with the same key AND the same run, so a later run in the same
+    /// process tries once more. Null (the host names no run) shares one scope for the process.</summary>
+    public string? RunScope { get; set; }
 
     /// <summary>Query parameters that carry the token; none for the default bearer header. A subclass that
     /// puts the token in the URL (<see cref="ApplyToken"/>) names the parameter here so messages redact it.</summary>
@@ -259,7 +265,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
         try
         {
-            if (SignInRefusals.TryGet(key, out var refused))
+            if (SignInRefusals.TryGet(key, RunScope, out var refused))
             {
                 throw new PzConnectorException(refused + RepeatSuffix, isTransient: false);
             }
@@ -268,7 +274,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
         }
         catch (PzConnectorException ex) when (!ex.IsTransient && ex.Data[TerminalMark] is true)
         {
-            SignInRefusals.Record(key, ex.Message);
+            SignInRefusals.Record(key, RunScope, ex.Message);
             throw;
         }
         finally

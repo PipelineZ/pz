@@ -6,12 +6,13 @@ namespace Pz.Connector.S3.Tests;
 
 /// <summary>Shared MinIO container for the S3 e2e suite (one collection, one container -- container
 /// startup is the expensive part). The constructor calls <see cref="DockerFacts.SkipUnlessDocker"/> and
-/// <see cref="DockerFacts.SkipIfOffline"/> before any Testcontainers call, so a docker-less or
-/// explicitly-offline machine never attempts to start a container or pull an image. Pinned image tag
-/// (mirrors <c>PostgresContainerFixture</c>'s "postgres:16-alpine" pinning practice).</summary>
+/// <see cref="DockerFacts.SkipIfOffline"/> before any Testcontainers call: a docker-less machine skips, and an
+/// offline one too, because the suite loads DuckDB's httpfs extension from the network. The image is the
+/// community-maintained <c>pgsty/minio</c> build at a pinned release tag: MinIO no longer publishes
+/// <c>minio/minio</c> images to a public registry.</summary>
 public sealed class MinioFixture : IAsyncLifetime
 {
-    private const string ImageName = "minio/minio:RELEASE.2025-09-07T16-13-09Z";
+    private const string ImageName = "pgsty/minio:RELEASE.2026-08-04T00-00-00Z";
 
     /// <summary>Bucket created during <see cref="InitializeAsync"/> -- DuckDB's <c>COPY ... TO 's3://'</c>
     /// cannot create buckets itself, so this fixture creates it up front via the AWS S3 SDK (the same
@@ -24,6 +25,9 @@ public sealed class MinioFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
+        DockerFacts.SkipUnlessImage(ImageName);
     }
 
     public string Host { get; private set; } = "";

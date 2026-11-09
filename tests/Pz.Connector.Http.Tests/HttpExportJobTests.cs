@@ -1640,4 +1640,129 @@ public sealed class HttpExportJobTests : IAsyncLifetime
             RawBody = buffer.ToArray(),
         };
     }
+
+    private HttpSource SourceFor(string run, string node)
+    {
+        var source = Source();
+        source.UseRunContext(new ConnectorRunContext(run, node));
+        return source;
+    }
+
+    private List<string?> StartKeys()
+        => [.. _server.Requests.Where(r => r.Method == "POST" && r.Url.AbsolutePath == "/reports")
+            .Select(r => r.Headers.TryGetValue("Idempotency-Key", out var v) ? v : null)];
+
+    [Fact]
+    public async Task An_idempotency_key_header_is_stable_across_retries_of_one_node_in_one_run()
+    {
+        // A start answered 5xx after the vendor queued the job: the engine retries the node, and an API that
+        // honours the key hands back the same job instead of starting a second one.
+        var starts = 0;
+        _server.Map("/reports", _ => ++starts == 1 ? Json("{}", 503) : Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json(Ready(FilesUrl("out.csv"))));
+        _files.Map("/out.csv", _ => File(Csv));
+        var spec = Spec(Export(("idempotency_key_header", "Idempotency-Key")));
+
+        await using (var first = SourceFor("run-1", "node-a"))
+        {
+            Assert.True((await ReadFailing(spec, first)).Error.IsTransient);
+        }
+
+        await using (var retry = SourceFor("run-1", "node-a"))
+        {
+            Assert.Equal(2, (await Read(spec, retry)).Rows.Count);
+        }
+
+        await using (var nextRun = SourceFor("run-2", "node-a"))
+        {
+            await Read(spec, nextRun);
+        }
+
+        await using (var otherNode = SourceFor("run-1", "node-b"))
+        {
+            await Read(spec, otherNode);
+        }
+
+        var keys = StartKeys();
+        Assert.Equal(4, keys.Count);
+        Assert.All(keys, k => Assert.Matches("^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", k!));
+        Assert.Equal(keys[0], keys[1]);
+        Assert.NotEqual(keys[0], keys[2]);
+        Assert.NotEqual(keys[0], keys[3]);
+        // Only the start carries it: polls and downloads are reads.
+        Assert.All(_server.Requests.Where(r => r.Method == "GET").Concat(_files.Requests),
+            r => Assert.False(r.Headers.ContainsKey("Idempotency-Key")));
+    }
+
+    [Fact]
+    public async Task Without_the_option_the_start_carries_no_idempotency_key()
+    {
+        MapJob("/reports/j1", "\"j1\"", Ready(FilesUrl("out.csv")));
+        _files.Map("/out.csv", _ => File(Csv));
+
+        await using var source = SourceFor("run-1", "node-a");
+        await Read(Spec(Export()), source);
+
+        Assert.Equal([null], StartKeys());
+    }
+
+    [Fact]
+    public async Task Without_a_run_context_every_source_gets_its_own_key()
+    {
+        MapJob("/reports/j1", "\"j1\"", Ready(FilesUrl("out.csv")));
+        _files.Map("/out.csv", _ => File(Csv));
+        var spec = Spec(Export(("idempotency_key_header", "Idempotency-Key")));
+
+        await Read(spec);
+        await Read(spec);
+
+        var keys = StartKeys();
+        Assert.Equal(2, keys.Count);
+        Assert.NotNull(keys[0]);
+        Assert.NotEqual(keys[0], keys[1]);
+    }
+
+    [Theory]
+    [InlineData("Bad Header", "is not a valid HTTP header name")]
+    [InlineData("Authorization", "cannot carry the idempotency key")]
+    [InlineData("Content-Type", "cannot carry the idempotency key")]
+    public void A_bad_idempotency_key_header_is_refused(string header, string expected)
+    {
+        var errors = new List<string>();
+        HttpExportConfig.Parse(Export(("idempotency_key_header", header)), errors);
+
+        Assert.Contains(errors, e => e.StartsWith("export.idempotency_key_header", StringComparison.Ordinal)
+            && e.Contains(expected, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_retry_after_midnight_sends_the_same_dated_start_and_the_same_key()
+    {
+        var starts = 0;
+        _server.Map("/reports", _ => ++starts == 1 ? Json("{}", 503) : Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json(Ready(FilesUrl("out.csv"))));
+        _files.Map("/out.csv", _ => File(Csv));
+        var spec = Spec(Export(("idempotency_key_header", "Idempotency-Key")),
+            o => o["body"] = new Dictionary<string, object?> { ["metric"] = "visits", ["day"] = "{{ run_date }}" });
+        var run = new ConnectorRunContext("run-1", "node-a") { StartedAt = Now };
+
+        await using (var first = Source())
+        {
+            first.UseRunContext(run);
+            Assert.True((await ReadFailing(spec, first)).Error.IsTransient);
+        }
+
+        _clock.Advance(TimeSpan.FromDays(1));
+        await using (var retry = Source())
+        {
+            retry.UseRunContext(run);
+            await Read(spec, retry);
+        }
+
+        var startRequests = _server.Requests.Where(r => r.Method == "POST" && r.Url.AbsolutePath == "/reports").ToList();
+        Assert.Equal(2, startRequests.Count);
+        Assert.Contains("2026-11-08", startRequests[1].Body);
+        Assert.Equal(startRequests[0].Body, startRequests[1].Body);
+        Assert.Equal(StartKeys()[0], StartKeys()[1]);
+    }
 }

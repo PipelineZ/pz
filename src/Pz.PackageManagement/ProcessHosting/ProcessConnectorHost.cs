@@ -226,7 +226,8 @@ public sealed class ProcessConnectorHost : IAsyncDisposable
 /// <summary>One registered <c>runtime: "process"</c> connector, before (and after) anything is spawned.
 /// Implements both connector directions because which one a package is used as is the caller's
 /// question, exactly as it is for an in-process <c>IConnector</c>.</summary>
-internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema, IAsyncDisposable
+internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema, IScopedConnectionCheck,
+    IAsyncDisposable
 {
     private readonly ConnectorPackageRef _packageRef;
     private readonly ConnectorManifest _manifest;
@@ -308,13 +309,24 @@ internal sealed class LazyProcessConnector : ISourceConnector, ISinkConnector, I
         }
     }
 
-    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+        CheckAsync(config, context: null, ct);
+
+    /// <summary>The check inside a run or validation pass: the context crosses on the CheckRequest, and a connector
+    /// that does not know the field checks exactly as before.</summary>
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext context,
+        CancellationToken ct) => CheckAsync(config, context, ct);
+
+    private async ValueTask<ConnectionCheck> CheckAsync(ConnectorConfig config, ConnectorRunContext? context,
+        CancellationToken ct)
     {
         var instance = await SpawnAsync(config, track: false, ct).ConfigureAwait(false);
         await using (instance.ConfigureAwait(false))
         {
-            return await new ProcessSourceConnector(instance.Client, instance.Process)
-                .CheckConnectionAsync(instance.Config, ct).ConfigureAwait(false);
+            var core = new ProcessSourceConnector(instance.Client, instance.Process);
+            return context is null
+                ? await core.CheckConnectionAsync(instance.Config, ct).ConfigureAwait(false)
+                : await core.CheckConnectionAsync(instance.Config, context, ct).ConfigureAwait(false);
         }
     }
 

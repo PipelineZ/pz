@@ -56,7 +56,7 @@ public static class PzConnectorHost
             logging.SetMinimumLevel(LogLevel.Trace);
             logging.AddProvider(new HostLoggerProvider(peer));
         });
-        using var telemetry = new ConnectorTelemetry(options);
+        using var telemetry = new ConnectorTelemetry(options, hooks?.PatientTelemetry);
         var connector = create(new PzConnectorContext(loggerFactory, telemetry));
         if (connector is not (ISourceConnector or ISinkConnector))
         {

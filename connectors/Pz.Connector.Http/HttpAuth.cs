@@ -46,6 +46,15 @@ internal static class HttpAuth
         }
     }
 
+    /// <summary>Scopes the sign-in's refusal latch to the run (<see cref="CachedTokenAuthenticator.RunScope"/>).</summary>
+    internal static void UseRunContext(IRequestAuthenticator? authenticator, ConnectorRunContext context)
+    {
+        if (authenticator is CachedTokenAuthenticator cached)
+        {
+            cached.RunScope = context.Run;
+        }
+    }
+
     internal sealed record Parsed(
         IRequestAuthenticator? Static,
         Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? Factory,

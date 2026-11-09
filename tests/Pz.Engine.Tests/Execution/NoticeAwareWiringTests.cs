@@ -178,6 +178,24 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         Assert.Equal(["api: unpinned host key"], received);
     }
 
+    [Fact]
+    public async Task Source_and_sink_receive_the_run_and_node_once_per_open()
+    {
+        var source = new NoticeAwareFakeSource();
+        var sink = new NoticeAwareFakeSink();
+
+        var sourceCtx = SourceContext(new NoticeStubConnector(source), null);
+        var sinkCtx = SinkContext(sink, null);
+        await new SourceLoadExecutor().ExecuteAsync(SourceNode(), sourceCtx, default);
+        await new SinkWriteExecutor().ExecuteAsync(SinkNode(), sinkCtx, default);
+
+        // The run's start rides along, the same for every attempt of every node.
+        Assert.Equal([new ConnectorRunContext("test-run", "eeeeeeeeeeeeeeee") { StartedAt = sourceCtx.StartedAt }],
+            source.RunContexts);
+        Assert.Equal([new ConnectorRunContext("test-run", "eeeeeeeeeeeeeeee") { StartedAt = sinkCtx.StartedAt }],
+            sink.RunContexts);
+    }
+
     /// <summary>A source/sink that does not implement <see cref="INoticeAware"/> at all is untouched --
     /// the existing-connector regression the gate-wiring tests pin the same way.</summary>
     [Fact]
@@ -207,9 +225,13 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(source);
     }
 
-    private sealed class NoticeAwareFakeSource : ISource, INoticeAware
+    private sealed class NoticeAwareFakeSource : ISource, INoticeAware, IRunContextAware
     {
         private Action<string>? _notice;
+
+        public List<ConnectorRunContext> RunContexts { get; } = [];
+
+        public void UseRunContext(ConnectorRunContext context) => RunContexts.Add(context);
         private int _useNoticeCalls;
 
         public int UseNoticeCalls => Volatile.Read(ref _useNoticeCalls);
@@ -271,9 +293,13 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         public ValueTask DisposeAsync() => default;
     }
 
-    private sealed class NoticeAwareFakeSink : ISinkConnector, ISink, INoticeAware
+    private sealed class NoticeAwareFakeSink : ISinkConnector, ISink, INoticeAware, IRunContextAware
     {
         private Action<string>? _notice;
+
+        public List<ConnectorRunContext> RunContexts { get; } = [];
+
+        public void UseRunContext(ConnectorRunContext context) => RunContexts.Add(context);
         private int _useNoticeCalls;
 
         public int UseNoticeCalls => Volatile.Read(ref _useNoticeCalls);

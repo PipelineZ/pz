@@ -53,6 +53,22 @@ public class AuthenticatorsTests
     }
 
     [Theory]
+    [InlineData("API_KEY")]
+    [InlineData("%61pi_key")]
+    [InlineData("api%5Fkey")]
+    public void An_api_key_query_param_replaces_an_echo_of_itself_in_any_case_or_encoding(string echoed)
+    {
+        // A next link that echoes the key under another spelling must not send the key twice.
+        Assert.True(Authenticators.TryCreate(Auth(("type", "api_key"), ("key", "K"), ("param", "api_key")),
+            out var query, out _));
+        var request = new HttpRequestMessage(HttpMethod.Get, $"https://x/items?page=2&{echoed}=OLD&ApiKeyHint=1");
+
+        query!.Apply(request);
+
+        Assert.Equal("?page=2&ApiKeyHint=1&api_key=K", request.RequestUri!.Query);
+    }
+
+    [Theory]
     [InlineData("bearer")]                   // missing token
     [InlineData("basic")]                    // missing user/password
     [InlineData("api_key")]                  // missing key and header/param

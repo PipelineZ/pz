@@ -52,6 +52,10 @@ internal static class Program
                 : null,
             IgnoreCancel = options.IgnoreCancel,
             IgnoreShutdown = options.IgnoreShutdown,
+            FailReadStats = options.FailReadStats,
+            UnimplementedReadStats = options.UnimplementedReadStats,
+            ExitOnReadStats = options.ExitOnReadStats,
+            PatientTelemetry = options.PatientTelemetry ? TimeSpan.FromMinutes(5) : null,
             OnConfigure = () =>
             {
                 connector?.RecordConfigure();
@@ -99,7 +103,12 @@ internal static class Program
 /// <c>--emit-stats</c> reports remote stats through <see cref="Pz.Connectors.Abstractions.ConnectorStats"/>:
 /// per partition batch one request, 100 wire bytes, 0.25 "ru" and a <c>fake.batches</c> extra; per sink
 /// session one request per batch written and one on commit. It also declines native copy on the sink,
-/// so writes take the batch path that reports.</para></summary>
+/// so writes take the batch path that reports.</para>
+/// <para><c>--report-run-context</c> answers with the run context it was handed (<c>run/node</c>, or
+/// <c>none</c>): a connection check as its message, a schema fetch and a write's start as a permanent error
+/// whose message names it.</para>
+/// <para><c>--skip-reads</c> makes every partition report, once its stream ends, that a rule skipped its read
+/// (<see cref="Pz.Connectors.Abstractions.ISkippedReadPartition"/>).</para></summary>
 internal sealed record FixtureOptions(
     bool HangHandshake,
     bool DieImmediately,
@@ -123,6 +132,12 @@ internal sealed record FixtureOptions(
     bool ThrowUnhandled,
     bool NativeOnly,
     bool EmitStats,
+    bool ReportRunContext = false,
+    bool SkipReads = false,
+    bool FailReadStats = false,
+    bool UnimplementedReadStats = false,
+    bool ExitOnReadStats = false,
+    bool PatientTelemetry = false,
     bool ThrowUnhandledAtPlan = false)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
@@ -144,6 +159,12 @@ internal sealed record FixtureOptions(
         bool throwUnhandled = false;
         bool nativeOnly = false;
         bool emitStats = false;
+        bool reportRunContext = false;
+        bool skipReads = false;
+        bool failReadStats = false;
+        bool unimplementedReadStats = false;
+        bool exitOnReadStats = false;
+        bool patientTelemetry = false;
         bool throwUnhandledAtPlan = false;
 
         for (var i = 0; i < args.Length; i++)
@@ -238,6 +259,24 @@ internal sealed record FixtureOptions(
                 case "--emit-stats":
                     emitStats = true;
                     break;
+                case "--report-run-context":
+                    reportRunContext = true;
+                    break;
+                case "--skip-reads":
+                    skipReads = true;
+                    break;
+                case "--fail-read-stats":
+                    failReadStats = true;
+                    break;
+                case "--unimplemented-read-stats":
+                    unimplementedReadStats = true;
+                    break;
+                case "--exit-on-read-stats":
+                    exitOnReadStats = true;
+                    break;
+                case "--patient-telemetry":
+                    patientTelemetry = true;
+                    break;
                 case "--throw-unhandled-at-plan":
                     throwUnhandledAtPlan = true;
                     break;
@@ -256,7 +295,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly, emitStats, throwUnhandledAtPlan),
+            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats, unimplementedReadStats, exitOnReadStats, patientTelemetry, throwUnhandledAtPlan),
             passthrough.ToArray());
     }
 }

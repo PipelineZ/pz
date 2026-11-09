@@ -30,7 +30,7 @@ public sealed class AzuriteTlsFixture : IAsyncLifetime
     public static string? CertDir =>
         Environment.GetEnvironmentVariable("PZ_TEST_AZURITE_TLS_DIR") is { Length: > 0 } dir ? dir : null;
 
-    public static bool IsEnabled => CertDir is not null && DockerFacts.IsAvailable;
+    public static bool IsEnabled => CertDir is not null && DockerFacts.IsAvailable && DockerFacts.CanProvide(ImageName);
 
     public string ConnectionString { get; private set; } = "";
 

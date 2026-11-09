@@ -231,6 +231,24 @@ public static class MessageMapping
 
     public static WriteAttempt ToWriteAttempt(WriteAttemptMsg msg) => new(msg.Node, msg.Run, msg.Ordinal);
 
+    // ---- ConnectorRunContext ---------------------------------------------------------------------
+
+    public static RunContextMsg ToRunContextMsg(ConnectorRunContext context)
+    {
+        var msg = new RunContextMsg { Run = context.Run };
+        if (context.Node is not null)
+        {
+            msg.Node = context.Node;
+        }
+
+        if (context.StartedAt is { } startedAt)
+        {
+            msg.StartedAt = startedAt.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        return msg;
+    }
+
     // ---- OutputSpec ------------------------------------------------------------------------------
 
     public static OutputSpecMsg ToOutputSpecMsg(OutputSpec spec)

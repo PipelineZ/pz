@@ -50,6 +50,7 @@ public sealed class IcebergAzureFilesTests(IcebergRestCatalogFixture catalog, Ic
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        DockerFacts.SkipUnlessImage(IcebergAzuriteFixture.ImageName);
         await using var duck = DuckSession.Open(Path.Combine(dir, "scratch.duckdb"));
 
         // Write through the REST catalog onto MinIO.

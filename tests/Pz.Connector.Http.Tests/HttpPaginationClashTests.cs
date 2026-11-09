@@ -117,6 +117,20 @@ public sealed class HttpPaginationClashTests
     }
 
     [Fact]
+    public async Task Validate_reports_an_api_key_query_param_named_like_a_pagination_param()
+    {
+        // The key would overwrite the page position on every request, and stripping it from checkpoints would
+        // drop the position with it.
+        var connection = Connection(("auth", Map(("type", "api_key"), ("key", "k"), ("param", "Page"))));
+
+        var result = await ValidateAsync(connection, BothPaged());
+
+        var error = Assert.Single(result.Errors);
+        Assert.StartsWith("for_each.pagination query parameter 'page' is also the api_key query parameter " +
+            "('auth.param')", error);
+    }
+
+    [Fact]
     public async Task A_connection_that_does_not_parse_is_refused_at_open_coded_config()
     {
         var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await new HttpConnector().OpenAsync(

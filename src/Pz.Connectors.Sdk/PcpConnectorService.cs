@@ -166,9 +166,13 @@ internal sealed class PcpConnectorService(
     public override Task<ConnectionCheckMsg> CheckConnection(CheckRequest request, ServerCallContext context) =>
         Guarded(async () =>
         {
-            var check = await connector
-                .CheckConnectionAsync(new ConnectorConfig(StructMapping.ToDictionary(request.Config)), context.CancellationToken)
-                .ConfigureAwait(false);
+            var config = new ConnectorConfig(StructMapping.ToDictionary(request.Config));
+            // A host that names the run (or validation pass) the check serves reaches a connector that can share
+            // it; an older host, or a connector without IScopedConnectionCheck, checks exactly as before.
+            var check = SpecMapping.ToRunContext(request.RunContext) is { } runContext
+                && connector is IScopedConnectionCheck scoped
+                ? await scoped.CheckConnectionAsync(config, runContext, context.CancellationToken).ConfigureAwait(false)
+                : await connector.CheckConnectionAsync(config, context.CancellationToken).ConfigureAwait(false);
             var message = new ConnectionCheckMsg { Ok = check.Ok };
             if (check.Message is not null)
             {
@@ -185,7 +189,7 @@ internal sealed class PcpConnectorService(
         {
             using var linked = LinkOp(request.OpId, context);
             var ct = linked.Token;
-            var source = await OpenSourceAsync(ct).ConfigureAwait(false);
+            var source = await OpenSourceAsync(ct, request.RunContext).ConfigureAwait(false);
             var schema = await source.GetSchemaAsync(SpecMapping.ToDatasetSpec(request.Spec), ct).ConfigureAwait(false);
             return new DatasetSchemaMsg { ArrowSchemaIpc = await SchemaCodec.SerializeAsync(schema.Schema, ct).ConfigureAwait(false) };
         });
@@ -195,7 +199,7 @@ internal sealed class PcpConnectorService(
         {
             using var linked = LinkOp(request.OpId, context);
             var ct = linked.Token;
-            var source = await OpenSourceAsync(ct).ConfigureAwait(false);
+            var source = await OpenSourceAsync(ct, request.RunContext).ConfigureAwait(false);
             if (!source.TryGetNativeScan(SpecMapping.ToDatasetSpec(request.Spec), out var scan))
             {
                 return new NativeScanResponse { Found = false };
@@ -230,7 +234,7 @@ internal sealed class PcpConnectorService(
             var ct = linked.Token;
             var spec = SpecMapping.ToDatasetSpec(request.Spec);
             var hints = SpecMapping.ToReadHints(request.Hints);
-            var source = await OpenSourceAsync(ct).ConfigureAwait(false);
+            var source = await OpenSourceAsync(ct, request.RunContext).ConfigureAwait(false);
             var partitions = await source.PlanReadAsync(spec, hints, ct).ConfigureAwait(false);
             var declared = await source.GetSchemaAsync(spec, ct).ConfigureAwait(false);
             // The plan is what every later RPC resolves against: the SAME partition instances the
@@ -306,7 +310,7 @@ internal sealed class PcpConnectorService(
         Guarded(async () =>
         {
             using var linked = LinkOp(request.OpId, context);
-            var source = await OpenSourceAsync(linked.Token).ConfigureAwait(false);
+            var source = await OpenSourceAsync(linked.Token, request.RunContext).ConfigureAwait(false);
             if (source is not INaturalReadShapeSource natural)
             {
                 throw new RpcException(new Status(
@@ -324,12 +328,32 @@ internal sealed class PcpConnectorService(
     public override Task<ReadStatsResponse> GetReadStats(ReadStateRequest request, ServerCallContext context) =>
         Guarded(() =>
         {
+            if (hooks.ExitOnReadStats)
+            {
+                Environment.Exit(3);
+            }
+
+            if (hooks.UnimplementedReadStats)
+            {
+                throw new RpcException(new Status(StatusCode.Unimplemented, "no read stats here"));
+            }
+
+            if (hooks.FailReadStats)
+            {
+                throw new RpcException(new Status(StatusCode.Internal, "read stats refused on purpose"));
+            }
+
             // An unknown op or partition, or one never opened, simply reported nothing.
             var response = new ReadStatsResponse();
             if (_plans.TryGetValue(request.OpId, out var plan) &&
                 plan.Stats.TryGetValue(request.PartitionId, out var stats))
             {
                 response.Stats = ConnectorStatsMapping.ToProto(stats);
+                // Asked once the stream has ended, which is when ISkippedReadPartition answers.
+                if (ResolvePartition(plan, request.PartitionId) is ISkippedReadPartition { SkippedBy: { } rule })
+                {
+                    response.SkippedBy = rule;
+                }
             }
 
             return Task.FromResult(response);
@@ -402,7 +426,7 @@ internal sealed class PcpConnectorService(
         {
             using var linked = LinkOp(request.OpId, context);
             var ct = linked.Token;
-            var sink = await OpenSinkAsync(ct).ConfigureAwait(false);
+            var sink = await OpenSinkAsync(ct, request.RunContext).ConfigureAwait(false);
             if (!sink.TryGetNativeCopy(SpecMapping.ToOutputSpec(request.Spec), out var copy))
             {
                 return new NativeCopyResponse { Found = false };
@@ -425,7 +449,7 @@ internal sealed class PcpConnectorService(
         {
             using var linked = LinkOp(request.OpId, context);
             var ct = linked.Token;
-            var sink = await OpenSinkAsync(ct).ConfigureAwait(false);
+            var sink = await OpenSinkAsync(ct, request.RunContext).ConfigureAwait(false);
             var schema = await SchemaCodec.DeserializeAsync(request.ArrowSchemaIpc, ct).ConfigureAwait(false);
             var stats = new ConnectorStatsAccumulator();
             var budget = new RemoteSpanBudget();
@@ -645,7 +669,10 @@ internal sealed class PcpConnectorService(
     private CancellationTokenSource LinkOp(string opId, ServerCallContext context) =>
         CancellationTokenSource.CreateLinkedTokenSource(OpToken(opId), context.CancellationToken);
 
-    private async ValueTask<ISource> OpenSourceAsync(CancellationToken ct)
+    /// <summary>Opens the connector's source once per process (the host spawns one process per open). The request
+    /// that opens it hands over <paramref name="runContext"/> when the host sent one: an engine open always does,
+    /// before any other request, so the opened source learns its run and node exactly once.</summary>
+    private async ValueTask<ISource> OpenSourceAsync(CancellationToken ct, RunContextMsg? runContext = null)
     {
         if (_source is not null)
         {
@@ -674,6 +701,11 @@ internal sealed class PcpConnectorService(
                 aware.UseOperationGate(_gate);
             }
 
+            if (SpecMapping.ToRunContext(runContext) is { } sourceContext && opened is IRunContextAware runAware)
+            {
+                runAware.UseRunContext(sourceContext);
+            }
+
             _source = opened;
             return opened;
         }
@@ -683,7 +715,8 @@ internal sealed class PcpConnectorService(
         }
     }
 
-    private async ValueTask<ISink> OpenSinkAsync(CancellationToken ct)
+    /// <summary>The sink side of <see cref="OpenSourceAsync"/>, with the same run-context handover.</summary>
+    private async ValueTask<ISink> OpenSinkAsync(CancellationToken ct, RunContextMsg? runContext = null)
     {
         if (_sink is not null)
         {
@@ -708,6 +741,11 @@ internal sealed class PcpConnectorService(
             if (opened is IOperationGateAware aware)
             {
                 aware.UseOperationGate(_gate);
+            }
+
+            if (SpecMapping.ToRunContext(runContext) is { } sinkContext && opened is IRunContextAware runAware)
+            {
+                runAware.UseRunContext(sinkContext);
             }
 
             _sink = opened;

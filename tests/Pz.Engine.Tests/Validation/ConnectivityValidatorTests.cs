@@ -355,6 +355,82 @@ public sealed class ConnectivityValidatorTests
     /// <summary>Minimal connector double giving each test direct control over `CheckConnectionAsync`
     /// (<see cref="InMemoryConnector"/>'s always reports Ok, with no fault-injection hook for it). Opening
     /// a source is never exercised by the connection-check-focused tests that use this, so it throws.</summary>
+    [Fact]
+    public async Task The_check_and_the_schema_probe_of_one_pass_share_one_scope_and_the_next_pass_gets_another()
+    {
+        // A refused credential is tried once per pass: the check and the probe must see the same scope.
+        var connector = new ScopeRecordingConnector();
+        var registry = new ConnectorRegistry();
+        registry.AddSource("scoped", connector);
+        var dataset = new DatasetDef("t", new Dictionary<string, object?>(), null);
+        var source = new ConnectionDef("db", "scoped", new Dictionary<string, object?>(), [dataset], "connections.yml");
+
+        await ConnectivityValidator.RunAsync(Project([source]), registry, default);
+        await ConnectivityValidator.RunAsync(Project([source]), registry, default);
+
+        Assert.Equal(4, connector.Seen.Count);
+        Assert.Equal(["check", "open", "check", "open"], connector.Seen.Select(s => s.Where));
+        Assert.All(connector.Seen, s => Assert.Null(s.Context.Node));
+        Assert.Equal(connector.Seen[0].Context, connector.Seen[1].Context);
+        Assert.Equal(connector.Seen[2].Context, connector.Seen[3].Context);
+        Assert.NotEqual(connector.Seen[0].Context, connector.Seen[2].Context);
+    }
+
+    private sealed class ScopeRecordingConnector : ISourceConnector, IScopedConnectionCheck
+    {
+        public List<(string Where, ConnectorRunContext Context)> Seen { get; } = [];
+
+        public ConnectorInfo Info => new("scoped", "0.0.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+            new(ValidationResult.Success);
+
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            throw new InvalidOperationException("the scoped overload must be used");
+
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext context,
+            CancellationToken ct)
+        {
+            lock (Seen)
+            {
+                Seen.Add(("check", context));
+            }
+
+            return new(new ConnectionCheck(true));
+        }
+
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(new Source(this));
+
+        private sealed class Source(ScopeRecordingConnector owner) : ISource, IRunContextAware
+        {
+            public void UseRunContext(ConnectorRunContext context)
+            {
+                lock (owner.Seen)
+                {
+                    owner.Seen.Add(("open", context));
+                }
+            }
+
+            public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+                new(new DatasetSchema(new Schema([new Field("id", Int64Type.Default, true)], null)));
+
+            public bool TryGetNativeScan(DatasetSpec spec,
+                [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
+            {
+                scan = null;
+                return false;
+            }
+
+            public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints,
+                CancellationToken ct) => new(System.Array.Empty<IDatasetPartition>());
+
+            public ValueTask DisposeAsync() => default;
+        }
+    }
+
     private sealed class FaultyConnector : ISourceConnector, ISinkConnector
     {
         public Func<CancellationToken, ValueTask<ConnectionCheck>>? CheckConnectionFunc { get; init; }

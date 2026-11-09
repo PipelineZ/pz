@@ -17,6 +17,11 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
     /// <summary>The `cancel_method` (default DELETE); meaningful only with <see cref="CancelPath"/>.</summary>
     public HttpMethod CancelMethod { get; init; } = HttpMethod.Delete;
 
+    /// <summary>The `idempotency_key_header` (e.g. <c>Idempotency-Key</c>): the start request carries a key that
+    /// every engine retry of the same node in the same run repeats, so an API that honours it hands back the job a
+    /// failed attempt already started. Null sends no key.</summary>
+    public string? IdempotencyKeyHeader { get; init; }
+
     private static readonly Dictionary<string, HttpMethod> CancelMethods = new(StringComparer.OrdinalIgnoreCase)
     {
         ["delete"] = HttpMethod.Delete,
@@ -135,6 +140,21 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
             }
         }
 
+        var idempotencyHeader = Get("idempotency_key_header");
+        if (idempotencyHeader is not null)
+        {
+            if (!HttpHeaderNames.IsToken(idempotencyHeader))
+            {
+                errors.Add($"export.idempotency_key_header '{idempotencyHeader}' is not a valid HTTP header name");
+            }
+            else if (HeaderTokenPaging.ReservedHeaders.Contains(idempotencyHeader)
+                || !HttpHeaderNames.IsRequestHeader(idempotencyHeader))
+            {
+                errors.Add($"export.idempotency_key_header '{idempotencyHeader}' cannot carry the idempotency key (pz " +
+                    "or the HTTP stack sets that header); name the header the API reads the key from, e.g. Idempotency-Key");
+            }
+        }
+
         var ready = StringList(block, "ready", required: true, errors);
         var failed = StringList(block, "failed", required: false, errors);
 
@@ -151,6 +171,7 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
         {
             CancelPath = cancelPath,
             CancelMethod = cancelMethod,
+            IdempotencyKeyHeader = idempotencyHeader,
         };
     }
 

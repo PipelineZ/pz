@@ -4,8 +4,10 @@
 //! `dotnet run --project src/Pz.Cli -- connector test <entrypoint> --config <probe.yml>`.
 //!
 //! SKIPs cleanly (prints a message, does not fail the test) when either toolchain this needs is
-//! missing -- `dotnet` (the host's own build) or a repo root this test can actually locate `src/Pz.Cli`
-//! under (a `cargo package`/vendored build of this crate, with no host repo alongside it, has no
+//! missing -- a `dotnet` that can run the SDK the repo's `global.json` requires (the first `dotnet` on
+//! PATH may be a runtime-only or older install, so every `dotnet` on PATH, `$DOTNET_ROOT` and
+//! `~/.dotnet` are tried; under `CI` a missing SDK fails instead, so CI is never weakened into a skip)
+//! or a repo root this test can actually locate `src/Pz.Cli` under (a `cargo package`/vendored build of this crate, with no host repo alongside it, has no
 //! conformance verb to run against at all). Matches every other docker/toolchain-gated suite in this
 //! repository (`Xunit.SkippableFact`, the various `scripts/macro-bench-*.sh` scripts): absence of an
 //! optional dependency is a skip, never a failure.
@@ -20,10 +22,14 @@ fn memory_sink_passes_every_sink_conformance_vector() {
         return;
     };
 
-    if Command::new("dotnet").arg("--version").output().is_err() {
-        eprintln!("SKIP: dotnet not available");
+    let Some(dotnet) = find_dotnet(&repo_root) else {
+        let message =
+            "no dotnet that can run the .NET SDK global.json requires was found (tried every \
+                       `dotnet` on PATH, $DOTNET_ROOT and ~/.dotnet)";
+        assert!(std::env::var_os("CI").is_none(), "{message}");
+        eprintln!("SKIP: {message}");
         return;
-    }
+    };
 
     let build = Command::new(env!("CARGO"))
         .args(["build", "--example", "memory_sink"])
@@ -50,7 +56,8 @@ fn memory_sink_passes_every_sink_conformance_vector() {
     )
     .expect("failed to write the conformance probe config");
 
-    let output = Command::new("dotnet")
+    let output = Command::new(&dotnet)
+        .env("DOTNET_ROOT", dotnet.parent().unwrap_or(Path::new(".")))
         .args(["run", "--project"])
         .arg(repo_root.join("src/Pz.Cli"))
         .args(["-c", "Release", "--", "connector", "test"])
@@ -81,6 +88,50 @@ fn memory_sink_passes_every_sink_conformance_vector() {
             .any(|line| line.starts_with("PASS numeric-option-fidelity")),
         "expected the numeric-option-fidelity vector to pass; got:\n{stdout}"
     );
+}
+
+/// The first `dotnet` that resolves the SDK `global.json` asks for: `dotnet --version`, run from the repo root,
+/// fails for a runtime-only install or one without a matching SDK.
+fn find_dotnet(repo_root: &Path) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(root) = std::env::var_os("DOTNET_ROOT") {
+        candidates.push(PathBuf::from(root).join(dotnet_binary()));
+    }
+    if let Some(path) = std::env::var_os("PATH") {
+        candidates.extend(std::env::split_paths(&path).map(|dir| dir.join(dotnet_binary())));
+    }
+    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        candidates.push(PathBuf::from(home).join(".dotnet").join(dotnet_binary()));
+    }
+    candidates
+        .into_iter()
+        .find(|candidate| runs_repo_sdk(candidate, repo_root))
+}
+
+fn runs_repo_sdk(dotnet: &Path, repo_root: &Path) -> bool {
+    dotnet.is_file()
+        && Command::new(dotnet)
+            .arg("--version")
+            .current_dir(repo_root)
+            .env("DOTNET_ROOT", dotnet.parent().unwrap_or(Path::new(".")))
+            .output()
+            .is_ok_and(|output| output.status.success())
+}
+
+fn dotnet_binary() -> String {
+    format!("dotnet{}", std::env::consts::EXE_SUFFIX)
+}
+
+#[test]
+fn a_dotnet_that_cannot_run_the_repo_sdk_is_not_chosen() {
+    let Some(repo_root) = find_repo_root() else {
+        return;
+    };
+    assert!(!runs_repo_sdk(Path::new("/nonexistent/dotnet"), &repo_root));
+    // A program that runs but is not a dotnet with the SDK (it exits non-zero on `--version`).
+    if Path::new("/bin/false").is_file() {
+        assert!(!runs_repo_sdk(Path::new("/bin/false"), &repo_root));
+    }
 }
 
 fn find_repo_root() -> Option<PathBuf> {

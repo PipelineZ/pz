@@ -13,12 +13,12 @@ namespace Pz.Connector.Iceberg.Tests;
 /// bucket, both on one Docker network. The engine's DuckDB session on the host reaches the catalog
 /// and the bucket through their mapped ports; the catalog reaches the bucket by network alias. The
 /// constructor calls <see cref="DockerFacts.SkipUnlessDocker"/> and <see cref="DockerFacts.SkipIfOffline"/>
-/// before any Testcontainers call, so a docker-less or explicitly-offline machine never attempts to
-/// start a container; the SkipException re-thrown at test-class construction is reported as a Skip
+/// before any Testcontainers call: a docker-less machine skips, and an offline one too, because the suite
+/// loads DuckDB's iceberg and httpfs extensions from the network. Its images go through the docker image gate; the SkipException re-thrown at test-class construction is reported as a Skip
 /// by Xunit.SkippableFact.</summary>
 public sealed class IcebergRestCatalogFixture : IAsyncLifetime
 {
-    private const string MinioImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z";
+    private const string MinioImage = "pgsty/minio:RELEASE.2026-08-04T00-00-00Z";
     private const string RestImage = "apache/iceberg-rest-fixture:1.10.1";
 
     /// <summary>The warehouse bucket. DuckDB cannot create buckets, and neither can the catalog, so
@@ -33,6 +33,9 @@ public sealed class IcebergRestCatalogFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
+        DockerFacts.SkipUnlessImage(MinioImage, RestImage);
     }
 
     /// <summary>The catalog's REST endpoint as the host sees it.</summary>

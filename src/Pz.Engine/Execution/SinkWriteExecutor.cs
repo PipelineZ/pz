@@ -42,6 +42,13 @@ public sealed class SinkWriteExecutor : INodeExecutor
             gateAware.UseOperationGate(gate);
         }
 
+        // Called once per open, like UseOperationGate above: state a connector keeps past this open (a refused
+        // sign-in) is scoped to this run, and a key a retried attempt must reproduce can use the node id.
+        if (sink is IRunContextAware runAware)
+        {
+            runAware.UseRunContext(new ConnectorRunContext(ctx.Paths.RunId, node.Id.Value) { StartedAt = ctx.StartedAt });
+        }
+
         // Called once per open, like UseOperationGate above. The callback itself delivers each distinct
         // text once per RUN: other nodes open the same connection and would say the same thing.
         if (sink is INoticeAware noticeAware && ctx.ConnectorNoticeFor(def.Sink.Name) is { } connectorNotice)

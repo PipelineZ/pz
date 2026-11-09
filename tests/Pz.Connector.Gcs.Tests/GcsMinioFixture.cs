@@ -11,7 +11,7 @@ namespace Pz.Connector.Gcs.Tests;
 /// Same skip/pinning practice as the s3 suite's MinioFixture.</summary>
 public sealed class GcsMinioFixture : IAsyncLifetime
 {
-    private const string ImageName = "minio/minio:RELEASE.2025-09-07T16-13-09Z";
+    private const string ImageName = "pgsty/minio:RELEASE.2026-08-04T00-00-00Z";
 
     /// <summary>Bucket created during <see cref="InitializeAsync"/> -- DuckDB's COPY cannot create
     /// buckets itself, so this fixture creates it up front via the AWS S3 SDK.</summary>
@@ -23,6 +23,9 @@ public sealed class GcsMinioFixture : IAsyncLifetime
     {
         DockerFacts.SkipUnlessDocker();
         DockerFacts.SkipIfOffline();
+        // Its images (and the Testcontainers reaper) must be present or pullable: a refused pull skips with the
+        // reason locally and fails under CI.
+        DockerFacts.SkipUnlessImage(ImageName);
     }
 
     public string AccessKey { get; private set; } = "";

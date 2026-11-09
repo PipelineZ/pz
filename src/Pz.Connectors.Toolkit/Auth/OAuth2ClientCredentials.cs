@@ -33,10 +33,16 @@ public sealed record OAuth2ClientCredentialsOptions(
 /// <summary>Fetches bearer tokens with the OAuth2 client-credentials grant. Owns its HttpClient (no
 /// redirects: the secret must not follow a Location). Failure messages carry only the endpoint's
 /// scheme://authority, the status and the server's OAuth error fields, never the secret or token.</summary>
+/// <remarks>An <c>invalid_client</c> or <c>unauthorized_client</c> answer (a wrong or revoked secret, a client not
+/// allowed this grant) is remembered for the run (<see cref="CachedTokenAuthenticator.SignInKey"/>): the other nodes
+/// on the connection fail at once instead of each sending the same refused secret.</remarks>
 public sealed class OAuth2ClientCredentialsAuthenticator : CachedTokenAuthenticator
 {
+    private static readonly string[] TerminalErrors = ["invalid_client", "unauthorized_client"];
+
     private readonly OAuth2ClientCredentialsOptions _options;
     private readonly OAuth2TokenEndpoint _endpoint;
+    private readonly string _signInKey;
 
     public OAuth2ClientCredentialsAuthenticator(OAuth2ClientCredentialsOptions options, TimeSpan timeout, TimeProvider time)
         : this(options, timeout, time, handler: null)
@@ -55,7 +61,15 @@ public sealed class OAuth2ClientCredentialsAuthenticator : CachedTokenAuthentica
         _options = options;
         _endpoint = new OAuth2TokenEndpoint(options.TokenUrl, options.ClientId, options.ClientSecret, options.BasicClientAuth,
             options.Scope, timeout, time, handler);
+        _signInKey = Fingerprint(
+            [
+                "oauth2_client_credentials", options.TokenUrl.AbsoluteUri, options.ClientId, options.ClientSecret,
+                options.Scope, options.BasicClientAuth ? "basic" : "body",
+                .. options.Params.OrderBy(p => p.Key, StringComparer.Ordinal).SelectMany(p => new[] { p.Key, p.Value }),
+            ]);
     }
+
+    protected override string? SignInKey => _signInKey;
 
     public override void Dispose()
     {
@@ -67,7 +81,7 @@ public sealed class OAuth2ClientCredentialsAuthenticator : CachedTokenAuthentica
     {
         var grant = new List<KeyValuePair<string, string>> { new("grant_type", "client_credentials") };
         grant.AddRange(_options.Params);
-        var (token, _) = await _endpoint.RequestAsync(grant, errorHints: null, ct).ConfigureAwait(false);
+        var (token, _) = await _endpoint.RequestAsync(grant, errorHints: null, ct, TerminalErrors).ConfigureAwait(false);
         return token;
     }
 }

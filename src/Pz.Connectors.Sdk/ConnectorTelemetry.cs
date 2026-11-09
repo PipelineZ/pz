@@ -16,7 +16,10 @@ namespace Pz.Connectors.Sdk;
 /// <see cref="Start"/> ran with the endpoint the host sent in <c>HostInfo</c>. Until then every
 /// <c>StartActivity</c>/<c>Counter.Add</c> is the documented BCL no-op -- the same zero-cost rule the
 /// engine relies on when OTel is off.</summary>
-internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisposable
+/// <param name="patience">Test hook only (<see cref="PcpServerHooks.PatientTelemetry"/>): replaces the export timeout
+/// and the shutdown flush bound, so a test on a loaded machine is not decided by how fast its collector answers.
+/// Null keeps the production bounds.</param>
+internal sealed class ConnectorTelemetry(PzConnectorHostOptions options, TimeSpan? patience = null) : IDisposable
 {
     public const string SourceName = "Pz.Connector";
 
@@ -25,7 +28,11 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
     /// into a kill.</summary>
     public static readonly TimeSpan FlushBound = TimeSpan.FromSeconds(3);
 
-    private static readonly TimeSpan ExportTimeout = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan DefaultExportTimeout = TimeSpan.FromSeconds(2);
+
+    private readonly TimeSpan _exportTimeout = patience ?? DefaultExportTimeout;
+
+    private readonly TimeSpan _flushBound = patience ?? FlushBound;
 
     private readonly Lock _gate = new();
     private TracerProvider? _tracer;
@@ -109,7 +116,7 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
             void Exporter(OtlpExporterOptions o, Uri url)
             {
                 o.Endpoint = url;
-                o.TimeoutMilliseconds = (int)ExportTimeout.TotalMilliseconds;
+                o.TimeoutMilliseconds = (int)_exportTimeout.TotalMilliseconds;
                 o.Protocol = http ? OtlpExportProtocol.HttpProtobuf : OtlpExportProtocol.Grpc;
                 if (http)
                 {
@@ -117,7 +124,7 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
                     o.HttpClientFactory = () => new HttpClient(
                         new HeadersFileHandler(target.HeadersFile, NoteOnce) { InnerHandler = new HttpClientHandler() })
                     {
-                        Timeout = ExportTimeout,
+                        Timeout = _exportTimeout,
                     };
                 }
             }
@@ -229,7 +236,7 @@ internal sealed class ConnectorTelemetry(PzConnectorHostOptions options) : IDisp
             _meter = null;
         }
 
-        var bound = (int)FlushBound.TotalMilliseconds;
+        var bound = (int)_flushBound.TotalMilliseconds;
         Task.WaitAll(
             Task.Run(() => tracer?.Shutdown(bound)),
             Task.Run(() => meter?.Shutdown(bound)));

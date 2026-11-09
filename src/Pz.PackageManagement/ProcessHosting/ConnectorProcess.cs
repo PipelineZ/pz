@@ -87,6 +87,32 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// throw <see cref="InvalidOperationException"/> rather than answer the question.</summary>
     public bool HasExited => Interlocked.CompareExchange(ref _disposed, 0, 0) != 0 || _process.HasExited;
 
+    /// <summary>True when the child has exited or does so within <paramref name="timeout"/>. For a failure path that
+    /// must tell "the call failed" from "the process died under the call": a dead connector's RPC fails a moment
+    /// before the OS reports the exit.</summary>
+    internal async Task<bool> ExitedWithinAsync(TimeSpan timeout)
+    {
+        if (HasExited)
+        {
+            return true;
+        }
+
+        try
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            await _process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            return HasExited;
+        }
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+    }
+
     /// <summary>Last <see cref="StderrTailCapBytes"/> of the child's stderr, oldest-truncated. Meant
     /// for failure diagnostics attached to thrown exceptions -- there is no guarantee it captures a
     /// complete line at the front.</summary>

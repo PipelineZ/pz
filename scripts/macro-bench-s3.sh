@@ -32,7 +32,7 @@ PZ=(dotnet "${ROOT_DIR}/src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll")
 echo "-- Starting MinIO container --"
 docker run -d --name "${CONTAINER}" -e "MINIO_ROOT_USER=${MINIO_USER}" \
   -e "MINIO_ROOT_PASSWORD=${MINIO_PASSWORD}" -p "${PORT}:9000" \
-  minio/minio:RELEASE.2025-09-07T16-13-09Z server /data >/dev/null
+  pgsty/minio:RELEASE.2026-08-04T00-00-00Z server /data >/dev/null
 for _ in $(seq 1 60); do
   if docker exec "${CONTAINER}" mc alias set local http://127.0.0.1:9000 "${MINIO_USER}" "${MINIO_PASSWORD}" >/dev/null 2>&1; then break; fi
   sleep 1

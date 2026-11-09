@@ -29,9 +29,8 @@ internal abstract class BodyPaging
     {
         string? Get(string key) => pagination.TryGetValue(key, out var v) ? YamlScalarText.Of(v) : null;
 
-        // Only POST reads come here. An unknown location is an error on them, as it always was: ignoring a typo
-        // such as `bdy` would send the position in the query string to an API that reads only the body, which
-        // answers page 1 forever. GET reads ignore it with a notice (HttpDatasetConfig.IgnoredLocation).
+        // Only POST reads come here. An unknown location is an error: ignoring a typo such as `bdy` would send the
+        // position in the query string to an API that reads only the body, which answers page 1 forever.
         var location = Get("location");
         if (location is not (null or "query" or "body" or "header"))
         {

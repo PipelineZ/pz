@@ -4,7 +4,7 @@ using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Http;
 
-internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, INaturalReadShapeSource
+internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, IRunContextAware, INaturalReadShapeSource
 {
     private readonly HttpConnectionConfig _connection;
     private readonly TimeProvider _time;
@@ -105,12 +105,6 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
             throw new PzConnectorException($"{label}: {string.Join("; ", clashes)}", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
-        NoticeIgnoredLocation(config, label, "");
-        if (config.ForEach?.List is { } listRequest)
-        {
-            NoticeIgnoredLocation(listRequest, label, "for_each.");
-        }
-
         // One Retry-After pause per read, shared by every request the partition makes (pages, the
         // for_each list, items, downloads), and only for a read that can have requests in flight
         // together: at concurrency 1 the gate's retry policy alone paces a throttled request, exactly as
@@ -121,12 +115,12 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         // for_each comes first: its items may themselves be file downloads.
         IDatasetPartition partition = config.IsForEach
             ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                { Notice = _notice }
+                { Notice = _notice, IdempotencyScope = IdempotencyScope, RunStartedAt = RunContext?.StartedAt }
             : config.IsFileMode
                 ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                    { Notice = _notice }
+                    { Notice = _notice, IdempotencyScope = IdempotencyScope, RunStartedAt = RunContext?.StartedAt }
                 : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                    { Notice = _notice };
+                    { Notice = _notice, RunStartedAt = RunContext?.StartedAt };
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 
@@ -165,15 +159,19 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
                 "('auth.inject.query'); each would overwrite the other on every page request (rename one of them, or " +
                 "send the session token in a header)");
         }
-    }
 
-    /// <summary>An unknown `location` on a GET read is ignored, with a notice.</summary>
-    private void NoticeIgnoredLocation(HttpDatasetConfig request, string label, string prefix)
-    {
-        if (request.IgnoredLocation is { } location)
+        if (connection.Authenticator is { } auth and not SessionAuthenticator)
         {
-            _notice?.Invoke($"{label}: {prefix}pagination 'location' '{location}' is not one of query, body, header; " +
-                "it is ignored and the token goes in the query string (fix it: `pz validate` reports it)");
+            foreach (var keyParam in auth.SecretQueryParams)
+            {
+                if (request.QueryPagingParams.FirstOrDefault(p => string.Equals(HttpCheckpointToken.DecodedQueryName(keyParam),
+                        HttpCheckpointToken.DecodedQueryName(p), StringComparison.OrdinalIgnoreCase)) is { } keyClash)
+                {
+                    clashes.Add($"{prefix}pagination query parameter '{keyClash}' is also the api_key query parameter " +
+                        "('auth.param'); each would overwrite the other on every page request (rename one of them, or " +
+                        "send the key in a header with 'auth.header')");
+                }
+            }
         }
     }
 
@@ -192,6 +190,24 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         _notice = notice;
         HttpAuth.UseNotice(_connection.Authenticator, notice);
     }
+
+    /// <summary>Called at most once per open, before any plan/read call: the sign-in remembers a refusal for this
+    /// run only.</summary>
+    public void UseRunContext(ConnectorRunContext context)
+    {
+        RunContext = context;
+        HttpAuth.UseRunContext(_connection.Authenticator, context);
+    }
+
+    /// <summary>The run and node this source reads for; null when the host named none.</summary>
+    internal ConnectorRunContext? RunContext { get; private set; }
+
+    private readonly string _ownScope = Guid.NewGuid().ToString("N");
+
+    /// <summary>What an export start's idempotency key is scoped to: the run and node, which every engine retry of
+    /// the node repeats; with no run known, this opened source alone (no retry can reuse it then).</summary>
+    private string IdempotencyScope
+        => RunContext is { } run ? $"run\n{run.Run}\n{run.Node}" : $"source\n{_ownScope}";
 
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
         HttpDatasetConfig.Parse(spec).IsSyncMode ? NaturalReadShape.Feed : NaturalReadShape.Full;

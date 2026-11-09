@@ -22,6 +22,121 @@ public delegate string YamlScalarInterpolator(string text, bool isPlain, IReadOn
 /// </summary>
 public static class YamlMapper
 {
+    private const string FlowVariableHint =
+        "a ${...} inside a { } or [ ] collection is read as the start of another map, so quote it: " +
+        "write token: \"${X}\", not token: ${X} (or use block style, one key per line)";
+
+    /// <summary>For a parser failure with no position: true when any line holds a <c>${</c> written unquoted inside a
+    /// flow collection.</summary>
+    private static bool UnquotedVariableAfterFlowOpener(string path)
+        => ReadLines(path) is { } lines && FlowVariableLines(lines).Count > 0;
+
+    /// <summary>True when a line the parser failed on holds a <c>${</c> written unquoted inside a flow collection
+    /// (<c>auth: { token: ${X} }</c>): there the <c>{</c> of the reference opens a nested flow map, and the parser's
+    /// own message ("did not find expected ',' or '}'") never says why. A reference in block style, or inside
+    /// quotes, is not this mistake.</summary>
+    private static bool UnquotedVariableInFlow(string path, YamlException ex)
+    {
+        if (ex.Start.Line <= 0 || ReadLines(path) is not { } lines)
+        {
+            return false;
+        }
+
+        var first = ex.Start.Line;
+        var last = Math.Max(ex.Start.Line, ex.End.Line);
+        return FlowVariableLines(lines).Any(line => line >= first && line <= last);
+    }
+
+    private static string[]? ReadLines(string path)
+    {
+        try
+        {
+            return File.ReadAllLines(path);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The 1-based lines holding a <c>${</c> outside quotes while a flow collection (<c>{</c> or <c>[</c>
+    /// outside quotes, comments and references) is open. Quote and nesting state carry across lines, as a flow
+    /// collection or a double-quoted scalar may span several.</summary>
+    private static HashSet<long> FlowVariableLines(string[] lines)
+    {
+        var found = new HashSet<long>();
+        var depth = 0;
+        var inDouble = false;
+        var inSingle = false;
+        for (var n = 0; n < lines.Length; n++)
+        {
+            var text = lines[n];
+            for (var i = 0; i < text.Length; i++)
+            {
+                var c = text[i];
+                if (inDouble)
+                {
+                    if (c == '\\')
+                    {
+                        i++;
+                    }
+                    else if (c == '"')
+                    {
+                        inDouble = false;
+                    }
+
+                    continue;
+                }
+
+                if (inSingle)
+                {
+                    if (c == '\'' && i + 1 < text.Length && text[i + 1] == '\'')
+                    {
+                        i++;
+                    }
+                    else if (c == '\'')
+                    {
+                        inSingle = false;
+                    }
+
+                    continue;
+                }
+
+                if (c == '#' && (i == 0 || char.IsWhiteSpace(text[i - 1])))
+                {
+                    break;
+                }
+
+                switch (c)
+                {
+                    case '"':
+                        inDouble = true;
+                        break;
+                    case '\'' when i == 0 || !char.IsLetterOrDigit(text[i - 1]):
+                        inSingle = true;
+                        break;
+                    case '$' when i + 1 < text.Length && text[i + 1] == '{':
+                        if (depth > 0)
+                        {
+                            found.Add(n + 1);
+                        }
+
+                        var close = text.IndexOf('}', i + 2);
+                        i = close < 0 ? text.Length : close;
+                        break;
+                    case '{' or '[':
+                        depth++;
+                        break;
+                    case '}' or ']':
+                        depth = Math.Max(0, depth - 1);
+                        break;
+                }
+            }
+        }
+
+        return found;
+    }
+
     /// <summary>
     /// Loads <paramref name="path"/> as YAML. <paramref name="relativePath"/> is the
     /// project-relative path used when reporting a syntax error.
@@ -56,7 +171,7 @@ public static class YamlMapper
                 $"Malformed YAML: {ex.Message}",
                 relativePath,
                 line,
-                "fix the YAML syntax near this location"));
+                UnquotedVariableInFlow(path, ex) ? FlowVariableHint : "fix the YAML syntax near this location"));
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -67,7 +182,7 @@ public static class YamlMapper
                 $"Malformed YAML: {ex.Message}",
                 relativePath,
                 null,
-                "fix the YAML syntax in this file"));
+                UnquotedVariableAfterFlowOpener(path) ? FlowVariableHint : "fix the YAML syntax in this file"));
         }
 
         if (yamlStream.Documents.Count > 1)

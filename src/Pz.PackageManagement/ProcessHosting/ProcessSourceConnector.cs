@@ -13,7 +13,7 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// already-connected, already-Configure()'d client (<c>PcpClient.ConnectAndConfigureAsync</c>)
 /// -- <see cref="OpenAsync"/> makes no RPC of its own, since PCP has no separate "open" call: the
 /// wrapped connector opens lazily, connector-side, on its first source-specific RPC.</summary>
-public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess process) : ISourceConnector
+public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess process) : ISourceConnector, IScopedConnectionCheck
 {
     private readonly ProcessConnectorCore _core = new(client, process);
 
@@ -31,6 +31,9 @@ public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess pr
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
         _core.CheckConnectionAsync(config, ct);
 
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext context,
+        CancellationToken ct) => _core.CheckConnectionAsync(config, ct, context);
+
     // `config` is the same connection config the client was already Configure()'d with (the engine
     // calls OpenAsync with `def.Source.Connection` every time, exactly what built the ConnectorConfig
     // ConnectAndConfigureAsync sent) -- there is nothing left to send here.
@@ -39,8 +42,17 @@ public sealed class ProcessSourceConnector(PcpClient client, ConnectorProcess pr
 }
 
 internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
-    : ISource, IOperationGateAware, IGatedShim, INaturalReadShapeSource
+    : ISource, IOperationGateAware, IGatedShim, INaturalReadShapeSource, IRunContextAware
 {
+    /// <summary>The run and node the engine opened this shim for; sent on every request that may open the
+    /// connector's source, so the connector process gets it before its own open (null until handed over).</summary>
+    private RunContextMsg? _runContext;
+
+    public void UseRunContext(ConnectorRunContext context) =>
+        Volatile.Write(ref _runContext, MessageMapping.ToRunContextMsg(context));
+
+    private RunContextMsg? RunContext => Volatile.Read(ref _runContext);
+
     /// <summary>Holds whatever gate the engine hands this instance -- see
     /// <see cref="IOperationGateAware"/>'s own contract (called once, after <c>OpenAsync</c> returns,
     /// before any plan/read call). Nothing in this shim wraps its OWN RPC calls in it: the gated
@@ -58,7 +70,7 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var opId = NewOpId();
-        var request = new GetSchemaRequest { OpId = opId, Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        var request = new GetSchemaRequest { OpId = opId, Spec = MessageMapping.ToDatasetSpecMsg(spec), RunContext = RunContext };
         using var ladder = client.AttachCancelLadder(opId, ct);
         try
         {
@@ -92,7 +104,7 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
         // No cancel ladder: this call carries no caller token to escalate on, and its own deadline
         // firing already surfaces as a transient PzConnectorException. Condemning the whole instance
         // because a planner probe was slow would be a far bigger hammer than that failure warrants.
-        var request = new NativeScanRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        var request = new NativeScanRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec), RunContext = RunContext };
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         NativeScanResponse response;
         try
@@ -134,7 +146,10 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
     {
         // Synchronous in the ABI and called once per dataset at plan time, off the hot path -- the
         // same brief block under an internal deadline TryGetNativeScan accepts, for the same reason.
-        var request = new NaturalReadShapeRequest { OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec) };
+        var request = new NaturalReadShapeRequest
+        {
+            OpId = NewOpId(), Spec = MessageMapping.ToDatasetSpecMsg(spec), RunContext = RunContext,
+        };
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         NaturalReadShapeResponse response;
         try
@@ -177,6 +192,7 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
             OpId = opId,
             Spec = MessageMapping.ToDatasetSpecMsg(spec),
             Hints = MessageMapping.ToReadHintsMsg(hints),
+            RunContext = RunContext,
         };
 
         // Every partition implements IIdentifiedPartition, or none do -- StablePartitionIds is a
@@ -225,8 +241,12 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
 /// was made under (the connector resolves <c>OpenReadStream</c>'s partition id against that same op's
 /// plan, per the fixture's <c>PlannedRead</c> lookup).</summary>
 internal sealed class ProcessPartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IDatasetPartition
+    : ISkippedReadPartition
 {
+    /// <summary>What the connector's partition reported when its stream ended (<c>ReadStatsResponse.skipped_by</c>);
+    /// null when nothing was skipped, or from a connector that predates the field or has no stats call.</summary>
+    public string? SkippedBy { get; private set; }
+
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         ReadCoreAsync(options, ct);
 
@@ -267,7 +287,9 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
     /// timeout all mean "no stats". The poll's token is independent of the caller's: a read that failed
     /// because its caller cancelled must still be able to report what it consumed, while cancelling the
     /// caller or abandoning the read early does not poll at all.</summary>
-    private async ValueTask PollReadStatsAsync()
+    /// <returns>False when the answer could not be read (anything but a connector without the call, which can
+    /// report no skip). Stats alone never fail a read; the skip report does, because the engine must know it.</returns>
+    private async ValueTask<bool> PollReadStatsAsync()
     {
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         try
@@ -276,9 +298,16 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
                 .GetReadStatsAsync(new ReadStateRequest { OpId = opId, PartitionId = partitionId }, cancellationToken: cts.Token)
                 .ConfigureAwait(false);
             HostStats.Merge(response.Stats);
+            SkippedBy = response.HasSkippedBy ? response.SkippedBy : null;
+            return true;
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return true;
         }
         catch (Exception ex) when (ex is RpcException or ObjectDisposedException or OperationCanceledException)
         {
+            return false;
         }
     }
 
@@ -344,7 +373,22 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
             yield return batch;
         }
 
-        await PollReadStatsAsync().ConfigureAwait(false);
+        // Fail closed: a read whose skip report could not be read may have skipped data the engine must not commit as
+        // complete. Transient, so the engine reads the partition again.
+        if (!await PollReadStatsAsync().ConfigureAwait(false))
+        {
+            // A connector that died under the call is reported as what it is (exit code, stderr), not as the call.
+            if (await process.ExitedWithinAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false))
+            {
+                throw ProcessFailureMapping.ToPzConnectorException(
+                    client, process, "connector process exited after completing a partition read");
+            }
+
+            throw new PzConnectorException(
+                "the out-of-process connector finished a partition read, but whether a rule skipped part of it could " +
+                "not be read (its read stats call failed); the read is retried rather than committed as complete",
+                isTransient: true);
+        }
 
         // Layer 2: the stream ended with a proper EOS marker, but a connector must never exit before
         // the host-initiated Shutdown RPC -- observing it already gone here means it crashed during or
@@ -362,9 +406,11 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
 /// connector declared <see cref="ConnectorCapabilities.StablePartitionIds"/>, per
 /// <see cref="IIdentifiedPartition"/>'s contract.</summary>
 internal sealed class ProcessIdentifiedPartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IIdentifiedPartition
+    : IIdentifiedPartition, ISkippedReadPartition
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public string? SkippedBy => _inner.SkippedBy;
 
     public string PartitionId => partitionId;
 
@@ -392,9 +438,11 @@ internal static class ProcessPartitions
 /// <summary>Composition over <see cref="ProcessPartition"/> for a partition whose plan entry declared
 /// <c>sync_state</c>; see <see cref="ProcessPartitions"/>.</summary>
 internal sealed class ProcessSyncStatePartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IDatasetPartition, ISyncStatePartition
+    : ISkippedReadPartition, ISyncStatePartition
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public string? SkippedBy => _inner.SkippedBy;
 
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         _inner.ReadAsync(options, ct);
@@ -406,9 +454,11 @@ internal sealed class ProcessSyncStatePartition(PcpClient client, ConnectorProce
 /// <see cref="ISyncStatePartition"/> (plan entry declared <c>sync_state</c>); see
 /// <see cref="ProcessPartitions"/>.</summary>
 internal sealed class ProcessIdentifiedSyncStatePartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
-    : IIdentifiedPartition, ISyncStatePartition
+    : IIdentifiedPartition, ISyncStatePartition, ISkippedReadPartition
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
+
+    public string? SkippedBy => _inner.SkippedBy;
 
     public string PartitionId => partitionId;
 
@@ -452,12 +502,19 @@ internal readonly struct ProcessConnectorCore(PcpClient client, ConnectorProcess
         }
     }
 
-    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
+    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct,
+        ConnectorRunContext? context = null)
     {
         try
         {
+            var request = new CheckRequest { Config = MessageMapping.ToStruct(config.Values) };
+            if (context is not null)
+            {
+                request.RunContext = MessageMapping.ToRunContextMsg(context);
+            }
+
             var response = await client.Grpc
-                .CheckConnectionAsync(new CheckRequest { Config = MessageMapping.ToStruct(config.Values) }, cancellationToken: ct)
+                .CheckConnectionAsync(request, cancellationToken: ct)
                 .ConfigureAwait(false);
             return MessageMapping.ToConnectionCheck(response);
         }

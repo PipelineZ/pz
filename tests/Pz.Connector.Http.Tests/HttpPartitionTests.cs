@@ -495,6 +495,50 @@ public class HttpPartitionTests
         Assert.Contains("api_key=***", ex.Message);
     }
 
+    [Theory]
+    [InlineData("API_KEY")]
+    [InlineData("%61pi_key")]
+    [InlineData("api%5Fkey")]
+    public async Task Api_key_echoed_in_another_case_or_encoding_is_redacted(string echoedName)
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/items", _ => new StubResponse(404,
+            $$"""{"error":"forbidden, retry https://x/items?page=1&{{echoedName}}=TOPSECRET&x=1"}"""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadAllAsync(server,
+            new() { ["path"] = "/items" },
+            new()
+            {
+                ["auth"] = new Dictionary<string, object?>
+                    { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" },
+            }));
+
+        Assert.DoesNotContain("TOPSECRET", ex.Message);
+        Assert.Contains($"{echoedName}=***&x=1", ex.Message);
+    }
+
+    [Theory]
+    [InlineData(@"retry https://x/items?a=1\u0026api_key=TOPSECRET\u0026b=2", @"api_key=***\u0026b=2")]
+    [InlineData("retry <a href=\\\"https://x/items?a=1&amp;api_key=TOPSECRET&amp;b=2\\\">", "api_key=***&amp;b=2")]
+    [InlineData("retry https://x/login?next=https%3A%2F%2Fx%2Fitems%3Fapi_key%3DTOPSECRET%26b%3D1", "api_key%3D***%26b%3D1")]
+    [InlineData("retry https://x/login?next=%2Fitems%3Fa%3D1%26API_KEY%3DTOPSECRET", "API_KEY%3D***")]
+    public async Task Api_key_echoed_escaped_in_an_error_body_is_redacted(string echo, string masked)
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/items", _ => new StubResponse(404, "{\"error\":\"" + echo + "\"}"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadAllAsync(server,
+            new() { ["path"] = "/items" },
+            new()
+            {
+                ["auth"] = new Dictionary<string, object?>
+                    { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" },
+            }));
+
+        Assert.DoesNotContain("TOPSECRET", ex.Message);
+        Assert.Contains(masked, ex.Message);
+    }
+
     [Fact]
     public async Task Response_over_max_response_mb_is_a_permanent_error_naming_the_option()
     {

@@ -48,7 +48,11 @@ public sealed class TelemetryTests : IDisposable
 
         var dataDir = NewTempDir();
         WriteCsv(Path.Combine(dataDir, "small.csv"), 5);
-        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp");
+        // --patient-telemetry and a long shutdown grace: on a loaded machine the child's 2 s export timeout and 3 s
+        // flush bound drop spans by design, and the host's 10 s grace can kill it mid-flush. With both lifted, every
+        // span is delivered before the child exits, and the client's dispose waits for that exit.
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp",
+            ["--patient-telemetry"]);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
 
         string traceId, hostSpanId;
@@ -60,6 +64,7 @@ public sealed class TelemetryTests : IDisposable
             await using var client = await PcpClient.ConnectAndConfigureAsync(
                 process, LocalFilesManifest(), "test-instance", config,
                 new HostTelemetry("run-123", receiver.Endpoint), CancellationToken.None);
+            client.ShutdownGrace = TimeSpan.FromMinutes(5);
 
             var sourceConnector = new ProcessSourceConnector(client, process);
             await using var src = await sourceConnector.OpenAsync(config, CancellationToken.None);
@@ -88,9 +93,12 @@ public sealed class TelemetryTests : IDisposable
         }
         // `client` disposed above: Shutdown RPC -> the child flushed before exiting.
 
+        // Wait for every span asserted below, not just two: the child's exporter may deliver them in several
+        // batches, in any order, so the first batch to hold read_stream and CommitWrite need not hold PlanRead.
+        string[] expected = ["pcp.PlanRead", "pcp.OpenReadStream", "pcp.read_stream", "pcp.BeginWrite", "pcp.write_stream",
+            "pcp.CommitWrite"];
         var spans = await receiver.WaitForSpansAsync(
-            s => s.Any(x => x.Name == "pcp.read_stream") && s.Any(x => x.Name == "pcp.CommitWrite"), WaitTimeout,
-            () => process.StderrTail);
+            s => expected.All(name => s.Any(x => x.Name == name)), WaitTimeout, () => process.StderrTail);
 
         var planRead = Assert.Single(spans, s => s.Name == "pcp.PlanRead");
         Assert.Equal(traceId, Hex(planRead.TraceId));

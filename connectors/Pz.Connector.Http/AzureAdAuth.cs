@@ -115,6 +115,15 @@ internal sealed record AzureAdOptions(
     private static bool IsValidTenantId(string tenantId)
         => tenantId.All(c => c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '.');
 
+    /// <summary>What a refused service-principal sign-in is remembered under for the run (endpoint, tenant, client and
+    /// secret or certificate, fingerprinted, never stored); null for managed identity and the credential chain, whose
+    /// failures are about the machine they run on, and send no secret an identity provider could count against an
+    /// account.</summary>
+    public string?[]? SignInKeyParts => Method == "service_principal"
+        ? ["azure_ad", Method, AuthorityHost?.AbsoluteUri, TenantId, ClientId, ClientSecret, CertificatePath,
+            CertificatePassword, Scope]
+        : null;
+
     /// <summary>Non-blocking <c>pz validate</c> diagnostics for these options.</summary>
     public IReadOnlyList<string> Warnings()
         => Scope.EndsWith("/.default", StringComparison.OrdinalIgnoreCase)
@@ -208,7 +217,7 @@ internal sealed record AzureAdOptions(
         Func<Uri, HttpMessageHandler>? handlers = null)
     {
         var credential = CreateCredential(timeout, out var owned, handlers);
-        return new AzureAdAuthenticator(credential, Scope, Method, time, owned);
+        return new AzureAdAuthenticator(credential, Scope, Method, time, owned, SignInKeyParts);
     }
 
     // The path overload of the credential cannot take a password, so the file is loaded here. PEM text means
@@ -237,9 +246,17 @@ internal sealed record AzureAdOptions(
 
 /// <summary>Fetches bearer tokens from any Azure.Identity credential. Failures are reported through
 /// <see cref="AzureAdAuth.Classify"/>. <paramref name="owned"/> (a loaded certificate) is disposed with it.</summary>
-internal sealed class AzureAdAuthenticator(TokenCredential credential, string scope, string method, TimeProvider time, IDisposable? owned = null)
+/// <remarks>With <paramref name="signInKey"/> (a service principal), a refusal of the client's credentials
+/// (<see cref="AzureAdAuth.IsCredentialRefusal"/>) is remembered for the run: the other nodes on the connection fail at
+/// once instead of each sending the same wrong secret to Entra.</remarks>
+internal sealed class AzureAdAuthenticator(TokenCredential credential, string scope, string method, TimeProvider time,
+    IDisposable? owned = null, string?[]? signInKey = null)
     : CachedTokenAuthenticator(time)
 {
+    private readonly string? _signInKey = signInKey is null ? null : Fingerprint(signInKey);
+
+    protected override string? SignInKey => _signInKey;
+
     public override void Dispose()
     {
         base.Dispose();
@@ -256,7 +273,10 @@ internal sealed class AzureAdAuthenticator(TokenCredential credential, string sc
         catch (Exception ex) when (!ct.IsCancellationRequested
             && ex is AuthenticationFailedException or CredentialUnavailableException or RequestFailedException or TimeoutException or TaskCanceledException)
         {
-            throw AzureAdAuth.Classify(ex, method, scope);
+            var failure = AzureAdAuth.Classify(ex, method, scope);
+            throw !failure.IsTransient && _signInKey is not null && AzureAdAuth.IsCredentialRefusal(ex)
+                ? Terminal(failure)
+                : failure;
         }
         catch (ArgumentException) when (!ct.IsCancellationRequested)
         {
@@ -276,6 +296,28 @@ internal static partial class AzureAdAuth
     // Entra's "this scope/resource is not valid for the client-credentials grant" answers.
     [GeneratedRegex(@"AADSTS(?:70011|1002012|500011)(?!\d)")]
     private static partial Regex InvalidScopeCode();
+
+    // Entra's answers that the client's own credentials are wrong for good: an invalid or expired secret, an unknown
+    // application or tenant, a certificate assertion that does not verify, a disabled application. A clock-skewed
+    // assertion (AADSTS700024) and throttling are not among them.
+    [GeneratedRegex(@"AADSTS(?:7000215|7000222|700016|90002|700027|7000112)(?!\d)")]
+    private static partial Regex CredentialRefusalCode();
+
+    /// <summary>True when <paramref name="ex"/> (anywhere in its chain) says the client's credentials were refused:
+    /// an MSAL <c>invalid_client</c>/<c>unauthorized_client</c> error or one of the AADSTS codes above.</summary>
+    internal static bool IsCredentialRefusal(Exception ex)
+    {
+        for (var inner = ex; inner is not null; inner = inner.InnerException)
+        {
+            if (inner is MsalServiceException { ErrorCode: "invalid_client" or "unauthorized_client" }
+                || CredentialRefusalCode().IsMatch(inner.Message))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /// <summary>Maps an Azure.Identity failure to a connector exception. The SDK message can carry trace
     /// and correlation IDs, URLs and server text, so only the first AADSTS code, the configured scope and fixed hints are used.</summary>

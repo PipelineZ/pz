@@ -68,6 +68,13 @@ public sealed class SourceLoadExecutor : INodeExecutor
             gateAware.UseOperationGate(gate);
         }
 
+        // Called once per open, like UseOperationGate above: state a connector keeps past this open (a refused
+        // sign-in) is scoped to this run, and a key a retried attempt must reproduce can use the node id.
+        if (source is IRunContextAware runAware)
+        {
+            runAware.UseRunContext(new ConnectorRunContext(ctx.Paths.RunId, node.Id.Value) { StartedAt = ctx.StartedAt });
+        }
+
         // Called once per open, like UseOperationGate above. The callback itself delivers each distinct
         // text once per RUN: other nodes open the same connection and would say the same thing.
         if (source is INoticeAware noticeAware && ctx.ConnectorNoticeFor(def.Source.Name) is { } connectorNotice)
@@ -449,11 +456,12 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // sized to Environment.ProcessorCount -- a bounded I/O fan-out default, no YAML knob. Determinism
         // is unaffected: partitions already funnel through the one bounded channel into the one serialized
         // DuckDB ingest, so cross-partition row order was never guaranteed either way.
+        var skipGuard = new SkippedReadGuard(def, shape);
         var pump = streamingSource is null
-            ? PumpPartitionsAsync(partitions!, channel.Writer, pumpCts, stall, ctx.EffectiveBatch)
+            ? PumpPartitionsAsync(partitions!, channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipGuard)
             : PumpStreamingPartitionsAsync(
                 streamingSource.PlanReadStreamingAsync(spec, hints, pumpCts.Token),
-                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, Environment.ProcessorCount);
+                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, Environment.ProcessorCount, skipGuard);
         Activity.Current = nodeActivity;
 
         try
@@ -797,6 +805,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         PzError? loadError;
         long rows;
         PartitionStats stats;
+        var skipGuard = new SkippedReadGuard(def, shape);
         if (streamingSource is not null)
         {
             // A streaming source's identity contract is validated AT ADMISSION, one
@@ -804,7 +813,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // pre-validate up front the way the list branch below does.
             (loadError, rows, stats) = await PartitionModeLoader.LoadStreamingAsync(node, ctx,
                 streamingSource.PlanReadStreamingAsync(spec, hints, ct), schema, tableName,
-                windowLower, windowUpper, reusedCount: 0, def, ct).ConfigureAwait(false);
+                windowLower, windowUpper, reusedCount: 0, def, ct, skipGuard).ConfigureAwait(false);
         }
         else
         {
@@ -865,7 +874,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // skip-reused within a run — plumbed through so PartitionModeLoader can reset-and-reread
             // it live instead of silently stalling sync-state advancement.
             (loadError, rows, stats) = await PartitionModeLoader.LoadAsync(node, ctx, identified, schema,
-                tableName, windowLower, windowUpper, reused, shape == ResolvedReadShape.Feed, ct)
+                tableName, windowLower, windowUpper, reused, shape == ResolvedReadShape.Feed, ct, skipGuard)
                 .ConfigureAwait(false);
         }
 
@@ -1292,9 +1301,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// with the fault. A clean run completes the channel with no error.</summary>
     private static async Task PumpPartitionsAsync(
         IReadOnlyList<IDatasetPartition> partitions, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions)
+        StallAccumulator stall, BatchOptions batchOptions, SkippedReadGuard skipGuard)
     {
-        var tasks = partitions.Select(partition => PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions)).ToArray();
+        var tasks = partitions.Select(partition => PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions, skipGuard)).ToArray();
 
         try
         {
@@ -1323,7 +1332,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// external cancel). A clean run completes the channel with no error.</summary>
     private static async Task PumpStreamingPartitionsAsync(
         IAsyncEnumerable<IDatasetPartition> partitions, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, int maxConcurrency)
+        StallAccumulator stall, BatchOptions batchOptions, int maxConcurrency, SkippedReadGuard skipGuard)
     {
         using var gate = new SemaphoreSlim(maxConcurrency);
         var tasks = new List<Task>();
@@ -1345,7 +1354,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 // a fault, retained cancelled siblings are themselves bounded by the gate (~maxConcurrency), so
                 // memory stays bounded there too.
                 tasks.RemoveAll(t => t.IsCompletedSuccessfully);
-                tasks.Add(PumpOneThenReleaseAsync(partition, writer, pumpCts, stall, batchOptions, gate));
+                tasks.Add(PumpOneThenReleaseAsync(partition, writer, pumpCts, stall, batchOptions, gate, skipGuard));
             }
 
             await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -1370,11 +1379,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// or was cancelled by a sibling's fault.</summary>
     private static async Task PumpOneThenReleaseAsync(
         IDatasetPartition partition, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, SemaphoreSlim gate)
+        StallAccumulator stall, BatchOptions batchOptions, SemaphoreSlim gate, SkippedReadGuard skipGuard)
     {
         try
         {
-            await PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions).ConfigureAwait(false);
+            await PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions, skipGuard).ConfigureAwait(false);
         }
         finally
         {
@@ -1413,7 +1422,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
     private static async Task PumpPartitionAsync(
         IDatasetPartition partition, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions)
+        StallAccumulator stall, BatchOptions batchOptions, SkippedReadGuard skipGuard)
     {
         try
         {
@@ -1431,6 +1440,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     stall.AddProducer(stall.Timestamp - start);
                 }
             }
+
+            // A skip on an incremental dataset fails the node before ingest can commit what was read.
+            skipGuard.Check(partition);
         }
         catch
         {

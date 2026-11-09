@@ -71,11 +71,14 @@ scripts/verify-sdk-package.sh
 Benchmarks live in `tests/Pz.Benchmarks` (BenchmarkDotNet) plus `scripts/macro-bench.sh` (throughput) and `scripts/scale-bench.sh` (project-size scaling).
 
 No direct pushes to `main` — land changes through a PR; CI (`.github/workflows/ci.yml`) must be
-green. Six jobs: `build-test`, an ubuntu+windows matrix where both legs build and run the full
-`dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — on windows the docker suites
+green. Seven jobs: `build-test`, an ubuntu+windows matrix where both legs build and run the full
+`dotnet test` (with `PZ_TESTS_OFFLINE=1` and `--blame-hang-timeout 10m`) — `PZ_TESTS_OFFLINE` skips the
+live-network tests and the docker suites that load DuckDB extensions from the network; on windows the docker suites
 skip, because `DockerFacts` counts a daemon that can't run Linux containers as no docker, and everything
 else runs for real, including the PCP host over AF_UNIX (only facts needing bash fixtures, `/proc` or
-a unix exec bit skip there); `pack-and-verify` (ubuntu), which runs `scripts/verify-tool-install.sh`
+a unix exec bit skip there); `network-suites` (ubuntu), which runs those extension-loading docker suites (MinIO/S3,
+GCS, Iceberg, Azurite, MySQL, DuckLake, Quack, SQLite) online against their containers, where `CI` makes a refused
+image pull fail rather than skip; `pack-and-verify` (ubuntu), which runs `scripts/verify-tool-install.sh`
 so the install path a stranger's first five commands depend on cannot silently rot; `format-extensions`
 (ubuntu), which runs the `Category=DuckDbExtension` tests (xlsx/avro, needing network to install
 DuckDB's excel/avro extensions) that `build-test` excludes; `verify-aot` (ubuntu), the Native AOT
