@@ -296,11 +296,8 @@ public class HttpStatusRulesConfigTests
     [InlineData("seconds", "1.5", 1_500)]
     [InlineData("ms", "2500", 2_500)]
     [InlineData("epoch", "1000045", 45_000)]
-    [InlineData("epoch", "999990", 0)]
-    [InlineData("seconds", "0", 0)]
     [InlineData("seconds", "86400", 600_000)]
     [InlineData("ms", "900000", 600_000)]
-    [InlineData("epoch", "99999999999", 600_000)]
     public void Configured_header_reads_each_kind_capped_at_600s(string kindText, string value, int ms)
     {
         var kind = kindText switch { "seconds" => RetryAfterKind.Seconds, "ms" => RetryAfterKind.Milliseconds, _ => RetryAfterKind.Epoch };
@@ -325,7 +322,7 @@ public class HttpStatusRulesConfigTests
             out var note);
 
         Assert.Null(wait);
-        Assert.Equal(" (retry_after header 'X-Wait' value is not a non-negative number; the engine's backoff applies)",
+        Assert.Equal(" (retry_after header 'X-Wait' value is not a non-negative number; ignored)",
             note);
     }
 
@@ -453,5 +450,44 @@ public class HttpStatusRulesConfigTests
             Rule(("status", "4xx"), ("action", "permanent")),
             Rule(("status", 403), ("action", "transient")),
         })).OnStatus!.Count);
+    }
+
+    private static readonly DateTimeOffset Million = DateTimeOffset.FromUnixTimeSeconds(1_000_000);
+
+    [Theory]
+    [InlineData("epoch", "999990")]
+    [InlineData("epoch", "1000000")]
+    [InlineData("seconds", "0")]
+    [InlineData("ms", "0")]
+    public void Configured_wait_already_over_counts_as_no_value(string kindText, string value)
+    {
+        var kind = kindText switch { "seconds" => RetryAfterKind.Seconds, "ms" => RetryAfterKind.Milliseconds, _ => RetryAfterKind.Epoch };
+        using var response = WithHeader("X-Wait", value);
+
+        Assert.Null(new HttpRetryAfterHeader("X-Wait", kind).Read(response, Million, out var note));
+        Assert.Equal(" (retry_after header 'X-Wait' states no wait; ignored)", note);
+    }
+
+    [Theory]
+    [InlineData("seconds", "1700000000", "1700000000")]
+    [InlineData("epoch", "99999999999", "99998999999")]
+    [InlineData("ms", "90000000000", "90000000")]
+    public void Absurd_configured_wait_is_capped_with_a_note(string kindText, string value, string stated)
+    {
+        var kind = kindText switch { "seconds" => RetryAfterKind.Seconds, "ms" => RetryAfterKind.Milliseconds, _ => RetryAfterKind.Epoch };
+        using var response = WithHeader("X-Wait", value);
+
+        Assert.Equal(TimeSpan.FromSeconds(600), new HttpRetryAfterHeader("X-Wait", kind).Read(response, Million, out var note));
+        Assert.Equal($" (retry_after header 'X-Wait' states {stated} s; capped at 600 s, check retry_after.kind)", note);
+    }
+
+    [Fact]
+    public void Configured_header_is_also_read_from_content_headers()
+    {
+        using var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Content = new StringContent("{}") };
+        Assert.True(response.Content.Headers.TryAddWithoutValidation("X-Wait", "8"));
+
+        Assert.Equal(TimeSpan.FromSeconds(8),
+            new HttpRetryAfterHeader("X-Wait", RetryAfterKind.Seconds).Read(response, Million, out _));
     }
 }

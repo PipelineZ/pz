@@ -25,10 +25,16 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
     /// pause.</summary>
     internal static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(600);
 
-    /// <summary>The wait the response's configured header states, capped at <see cref="MaxWait"/> (a time
-    /// already past is zero), or null when the header is absent or unreadable. <paramref name="note"/> is
-    /// empty, or, for a header that is present but unreadable, a message suffix saying it was
-    /// ignored.</summary>
+    /// <summary>A stated wait this far above <see cref="MaxWait"/> is almost surely a wrong <c>kind</c> (an epoch
+    /// read as seconds, milliseconds read as an epoch), so the capped wait carries a note saying so.</summary>
+    private static readonly TimeSpan Implausible = TimeSpan.FromDays(1);
+
+    /// <summary>The wait the response's configured header states, capped at <see cref="MaxWait"/>, or null when
+    /// the header is absent, unreadable, or states no wait (zero, or an epoch already past -- usual under clock
+    /// skew): a zero hint would override every other source and make the engine retry with no delay at all,
+    /// so it counts as no value and the caller falls through to the rule's <c>retry_after</c> or the engine's
+    /// backoff. <paramref name="note"/> is empty, or a message suffix saying why the value was ignored or that
+    /// an implausibly long wait was capped.</summary>
     public TimeSpan? Read(HttpResponseMessage response, DateTimeOffset now, out string note)
     {
         note = "";
@@ -41,7 +47,7 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
         var raw = values.FirstOrDefault()?.Trim();
         if (!decimal.TryParse(raw, NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var number))
         {
-            note = $" (retry_after header '{Header}' value is not a non-negative number; the engine's backoff applies)";
+            note = $" (retry_after header '{Header}' value is not a non-negative number; ignored)";
             return null;
         }
 
@@ -53,10 +59,22 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
         };
         if (seconds <= 0)
         {
-            return TimeSpan.Zero;
+            note = $" (retry_after header '{Header}' states no wait; ignored)";
+            return null;
         }
 
-        return seconds >= (decimal)MaxWait.TotalSeconds ? MaxWait : TimeSpan.FromMilliseconds((double)(seconds * 1000m));
+        if (seconds < (decimal)MaxWait.TotalSeconds)
+        {
+            return TimeSpan.FromMilliseconds((double)(seconds * 1000m));
+        }
+
+        if (seconds > (decimal)Implausible.TotalSeconds)
+        {
+            note = $" (retry_after header '{Header}' states {seconds.ToString("0.###", CultureInfo.InvariantCulture)} s; " +
+                $"capped at {(int)MaxWait.TotalSeconds} s, check retry_after.kind)";
+        }
+
+        return MaxWait;
     }
 
     /// <summary>Parses the <c>retry_after</c> map; null when absent. Problems go to <paramref name="errors"/>.</summary>

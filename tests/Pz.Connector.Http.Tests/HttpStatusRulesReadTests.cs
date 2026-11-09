@@ -230,7 +230,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 
         Assert.Null(ex.RetryAfter);
         Assert.EndsWith("(retry_after header 'X-RateLimit-Reset' value is not a non-negative number; " +
-            "the engine's backoff applies)", ex.Message);
+            "ignored)", ex.Message);
     }
 
     [Fact]
@@ -577,5 +577,35 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         Assert.False(wait.IsCompleted);
         clock.Advance(TimeSpan.FromSeconds(12));
         await wait;
+    }
+
+    [Fact]
+    public async Task Past_epoch_in_the_configured_header_falls_through_to_the_rules_wait()
+    {
+        var clock = new ManualClock();
+        clock.Advance(TimeSpan.FromSeconds(1_700_000_000));
+        _server.Map("/r", _ => Status(403, "secondary rate limit", ("X-RateLimit-Reset", "1699999990")));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(
+            Paged(Rules(Map(("status", 403), ("body_contains", "rate limit"), ("action", "transient"),
+                ("retry_after", "60s")))), null, clock,
+            ("retry_after", Map(("header", "X-RateLimit-Reset"), ("kind", "epoch")))));
+
+        Assert.Equal(TimeSpan.FromSeconds(60), ex.RetryAfter);
+        Assert.Contains("(retry_after header 'X-RateLimit-Reset' states no wait; ignored)", ex.Message);
+    }
+
+    [Fact]
+    public async Task Past_epoch_on_a_429_leaves_the_wait_to_the_engine()
+    {
+        var clock = new ManualClock();
+        clock.Advance(TimeSpan.FromSeconds(1_700_000_000));
+        _server.Map("/r", _ => Status(429, "{}", ("X-RateLimit-Reset", "1699999990")));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Paged(null), null, clock,
+            ("retry_after", Map(("header", "X-RateLimit-Reset"), ("kind", "epoch")))));
+
+        Assert.True(ex.IsTransient);
+        Assert.Null(ex.RetryAfter);
     }
 }
