@@ -78,12 +78,25 @@ public sealed class HttpPaginationClashTests
     }
 
     [Fact]
-    public async Task Validate_leaves_an_unparseable_connection_or_dataset_to_the_other_checks()
+    public async Task Validate_leaves_an_unparseable_connection_to_the_connection_check()
     {
-        // The connection's own check and the dataset schema already report these; the clash check adds nothing.
+        // The connection's own check already reports it; the clash check adds nothing.
         Assert.True((await ValidateAsync(new ConnectorConfig(new Dictionary<string, object?>()), BothPaged())).IsValid);
-        Assert.True((await ValidateAsync(Connection(("headers", Map(("X-Page", "x")))),
-            Map(("path", "/x"), ("pagination", Map(("strategy", "nope")))))).IsValid);
+    }
+
+    [Fact]
+    public async Task Validate_reports_every_refusal_of_the_dataset_parse_naming_the_option()
+    {
+        // The engine asks only about a schema-clean dataset, so these are the cross-field rules no schema states:
+        // the plan would refuse them, and `pz validate` must too.
+        var result = await ValidateAsync(Connection(),
+            Map(("path", "/x"), ("stop_at_watermark", true), ("watermark_time_zone", "UTC")));
+
+        Assert.Equal(3, result.Errors.Count);
+        Assert.Contains(result.Errors, e => e.StartsWith("'stop_at_watermark' requires 'cursor_order: desc'", StringComparison.Ordinal));
+        Assert.Contains(result.Errors, e => e.StartsWith("'stop_at_watermark' requires 'cursor'", StringComparison.Ordinal));
+        Assert.Contains(result.Errors, e => e.StartsWith("'watermark_time_zone' needs a 'watermark_format'", StringComparison.Ordinal));
+        Assert.All(result.Errors, e => Assert.DoesNotContain("http dataset", e));
     }
 
     [Fact]

@@ -653,6 +653,35 @@ public sealed class ConnectorConfigValidatorTests
         Assert.NotNull(orders.Options["columns"]);
     }
 
+    // The connector's dataset check reads the dataset the way the plan will, so for a dataset its schema already
+    // rejected it would only repeat those findings: it is asked about schema-clean datasets alone. A connector
+    // that refuses by throwing is reported like one that returns its findings, never as an escaped exception.
+    [Fact]
+    public async Task Dataset_check_skips_schema_rejected_datasets_and_reports_a_thrown_refusal()
+    {
+        var registry = new ConnectorRegistry();
+        var connector = new StubDatasetValidatorConnector
+        {
+            DatasetConfigSchema = """{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}""",
+            ValidateDatasetFunc = (_, dataset) =>
+                throw new PzConnectorException($"'{dataset.Options["path"]}' clashes", isTransient: false),
+        };
+        registry.AddSource("stub-ds", connector);
+
+        var source = new ConnectionDef("api", "stub-ds", new Dictionary<string, object?>(),
+            [
+                new DatasetDef("typo", new Dictionary<string, object?> { ["path"] = "/a", ["pathh"] = "/b" }, null),
+                new DatasetDef("orders", new Dictionary<string, object?> { ["path"] = "/o" }, null),
+            ], "connections.yml");
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default);
+
+        Assert.Equal(["connection 'api' dataset 'typo': unknown option 'pathh'", "connection 'api' dataset 'orders': '/o' clashes"],
+            errors.Select(e => e.Message));
+        Assert.All(errors, e => Assert.Equal(PzErrorCode.ConnectorConfigInvalid, e.Code));
+        Assert.Equal(["orders"], connector.Seen.Select(d => d.Dataset));
+    }
+
     // A sink's write: options were never schema-validated at all before IOutputConfigSchema: a typo'd
     // option reached the connector unchecked and was silently ignored. These pin both halves of the
     // fix -- a connector that offers the capability gets its outputs checked, one that does not is

@@ -120,7 +120,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     public static HttpDatasetConfig Parse(DatasetSpec spec)
     {
         var errors = new List<string>();
-        var config = ParseCore(spec.Options, spec, errors, listRequest: false);
+        var config = Parse(spec, errors);
         if (errors.Count > 0)
         {
             throw new PzConnectorException(
@@ -130,6 +130,11 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
         return config;
     }
+
+    /// <summary>Parses the dataset, appending every refusal to <paramref name="errors"/> (each names the option,
+    /// not the dataset); the result is meaningful only when none were added.</summary>
+    internal static HttpDatasetConfig Parse(DatasetSpec spec, List<string> errors) =>
+        ParseCore(spec.Options, spec, errors, listRequest: false);
 
     /// <summary>Parses one request's options, appending every problem to <paramref name="errors"/>
     /// (the result is meaningful only when none were added). With <paramref name="listRequest"/> the

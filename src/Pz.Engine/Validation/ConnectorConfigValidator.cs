@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using Json.Pointer;
 using Json.Schema;
 using Pz.Connectors.Abstractions;
+using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.Engine.Execution;
@@ -87,8 +88,12 @@ public static class ConnectorConfigValidator
             ValidateSchema(connector.ConnectionConfigSchema, source.Connection, "connection", source.Name,
                 "connection", source.FilePath, errors, connectionFlaggedKeys, requiredFlaggedKeys);
 
+            // Datasets the connector's own dataset check may see: those its DatasetConfigSchema accepted. A
+            // schema-rejected dataset would only have its schema findings repeated by the connector's parse.
+            var schemaClean = new HashSet<string>(StringComparer.Ordinal);
             foreach (var dataset in source.Datasets)
             {
+                var errorsBefore = errors.Count;
                 var options = MergeColumns(dataset.Options, dataset.Columns);
                 // pz wrote this key, not the user: its refusal comes after the cross-field check below
                 // (whose spawn gives an external connector its schema), never as an "unknown option".
@@ -100,6 +105,10 @@ public static class ConnectorConfigValidator
                 ValidateSchema(connector.DatasetConfigSchema, options, "connection", source.Name,
                     $"dataset '{dataset.Name}'", source.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
                     new HashSet<string>(StringComparer.Ordinal));
+                if (errors.Count == errorsBefore)
+                {
+                    schemaClean.Add(dataset.Name);
+                }
             }
 
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(source), "connection", source.Name, source.FilePath,
@@ -107,7 +116,7 @@ public static class ConnectorConfigValidator
 
             if (connector is IDatasetConfigValidator datasetValidator)
             {
-                await ValidateDatasetsAsync(datasetValidator, registry.ConfigFor(source), source, errors, ct)
+                await ValidateDatasetsAsync(datasetValidator, registry.ConfigFor(source), source, schemaClean, errors, ct)
                     .ConfigureAwait(false);
             }
 
@@ -672,21 +681,35 @@ public static class ConnectorConfigValidator
 
     /// <summary>The connector's own checks of each dataset against its connection
     /// (<see cref="IDatasetConfigValidator"/>, optional), one error per finding, naming the dataset. The options
-    /// are shaped as a real read's <see cref="DatasetSpec"/> (<see cref="SpecBuilder.ForSourceLoad(SourceDatasetDef)"/>:
-    /// the dataset's options plus its contract columns), so the check sees what the plan will.</summary>
+    /// are shaped as the plan's <see cref="DatasetSpec"/> (<see cref="SpecBuilder.ForSourceLoad(SourceDatasetDef)"/>:
+    /// the dataset's options plus its contract columns, and a declared incremental's cursor), so the check sees what
+    /// the plan will. Only datasets in
+    /// <paramref name="schemaClean"/> are asked about. A connector that refuses by throwing
+    /// <see cref="PzConnectorException"/> instead of returning its findings is reported the same way: a refusal of
+    /// the config is a config error, whichever way the connector says it.</summary>
     private static async Task ValidateDatasetsAsync(IDatasetConfigValidator validator, ConnectorConfig config,
-        ConnectionDef source, List<PzError> errors, CancellationToken ct)
+        ConnectionDef source, HashSet<string> schemaClean, List<PzError> errors, CancellationToken ct)
     {
         foreach (var dataset in source.Datasets)
         {
-            var options = new Dictionary<string, object?>(dataset.Options);
-            if (dataset.Columns is not null)
+            if (!schemaClean.Contains(dataset.Name))
             {
-                options["columns"] = dataset.Columns;
+                continue;
             }
 
-            var result = await validator.ValidateDatasetAsync(config, new DatasetSpec(source.Name, dataset.Name, options), ct)
-                .ConfigureAwait(false);
+            // The plan's own probe spec, declared incremental cursor included: a rule that holds only for an
+            // incremental dataset must see the dataset as the plan will.
+            var spec = SpecBuilder.ForSourceLoad(new SourceDatasetDef(source, dataset));
+            ValidationResult result;
+            try
+            {
+                result = await validator.ValidateDatasetAsync(config, spec, ct).ConfigureAwait(false);
+            }
+            catch (PzConnectorException ex) when (!ex.IsTransient)
+            {
+                result = ValidationResult.Failed(ex.Message);
+            }
+
             foreach (var message in result.Errors)
             {
                 errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
