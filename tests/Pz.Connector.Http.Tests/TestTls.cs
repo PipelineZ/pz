@@ -177,16 +177,19 @@ internal sealed class TestTlsServer : IAsyncDisposable
     private readonly bool _requireClientCertificate;
     private readonly bool _rejectClientCertificates;
     private readonly SslProtocols _protocols;
+    private readonly Func<string, string> _respond;
 
     /// <param name="requestClientCertificate">Ask for a client certificate but accept a handshake without one.</param>
     /// <param name="requireClientCertificate">Refuse a handshake without a client certificate.</param>
     /// <param name="rejectClientCertificates">Refuse every client certificate (a server trusting another CA).</param>
+    /// <param name="respond">The JSON body for a request line; <see cref="Body"/> for every request when null.</param>
     /// <remarks>SslStream validates the client certificate once its own handshake is complete, so a refusal
     /// reaches the client as a closed connection, never as a handshake alert, whatever the TLS version.</remarks>
     public TestTlsServer(X509Certificate2? leaf, X509Certificate2Collection? chain = null,
         bool requestClientCertificate = false, bool requireClientCertificate = false,
-        SslProtocols protocols = SslProtocols.None, bool rejectClientCertificates = false)
+        SslProtocols protocols = SslProtocols.None, bool rejectClientCertificates = false, Func<string, string>? respond = null)
     {
+        _respond = respond ?? (_ => Body);
         _rejectClientCertificates = rejectClientCertificates;
         _context = leaf is null ? null : SslStreamCertificateContext.Create(leaf, chain ?? [], offline: true);
         _requestClientCertificate = requestClientCertificate || requireClientCertificate;
@@ -270,8 +273,9 @@ internal sealed class TestTlsServer : IAsyncDisposable
         }
 
         await TestHttp.ReadBodyAsync(stream, head, _stop.Token);
-        Requests.Enqueue(head.Split("\r\n")[0]);
-        var bytes = Encoding.UTF8.GetBytes(Body);
+        var line = head.Split("\r\n")[0];
+        Requests.Enqueue(line);
+        var bytes = Encoding.UTF8.GetBytes(_respond(line));
         var response = $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {bytes.Length}\r\n" +
             "Connection: close\r\n\r\n";
         await stream.WriteAsync(Encoding.ASCII.GetBytes(response), _stop.Token);

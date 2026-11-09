@@ -54,7 +54,8 @@ internal static class HttpAuth
                     : none;
             case OAuth2ClientCredentials:
                 return OAuth2ClientCredentialsOptions.TryParse(auth, errors) is { } oauth
-                    ? new Parsed(null, (time, _) => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time), null)
+                    ? new Parsed(null, (time, handlers) => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time,
+                        handlers?.Invoke(oauth.TokenUrl)), null)
                     : none;
             case "api_key" or "bearer" or "basic":
                 if (!Authenticators.TryCreate(auth, out var authenticator, out var error))

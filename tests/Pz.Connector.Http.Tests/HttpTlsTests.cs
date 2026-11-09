@@ -454,6 +454,61 @@ public sealed class HttpTlsTests : IDisposable
         Assert.Contains("auth.method credential_chain cannot use proxy or tls: its developer-tool credentials run outside pz", errors);
     }
 
+    /// <summary>A token for <c>POST /token</c>, the rows for anything else.</summary>
+    private static string TokenOrRows(string requestLine) => requestLine.StartsWith("POST /token ", StringComparison.Ordinal)
+        ? """{"access_token":"tok","token_type":"Bearer","expires_in":3600}"""
+        : TestTlsServer.Body;
+
+    private static (string, object?) OAuth(Uri tokenUrl) => ("auth", Map(("type", "oauth2_client_credentials"),
+        ("token_url", new Uri(tokenUrl, "token").ToString()), ("client_id", "c"), ("client_secret", "s3cret")));
+
+    [Fact]
+    public async Task Token_endpoint_trusts_ca_file_and_uses_proxy()
+    {
+        // api.test is reachable only through the proxy, and its certificate only through tls.ca_file.
+        await using var proxy = new TestProxy();
+        await using var server = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), respond: TokenOrRows);
+        var url = server.Url("api.test");
+        var proxyMap = Map(("url", proxy.Url.ToString()));
+
+        Assert.Equal(2, await ReadAsync(Config(url, Tls(), proxyMap, OAuth(url))));
+        Assert.Equal(["POST /token HTTP/1.1", "GET /items HTTP/1.1"], server.Requests.ToArray());
+        Assert.Equal([$"api.test:{server.Port}", $"api.test:{server.Port}"], proxy.Targets.ToArray());
+
+        // Without the ca_file the token endpoint's certificate is refused, permanently, naming the setting.
+        var untrusted = await ReadFailsAsync(Config(url, null, proxyMap, OAuth(url)));
+        Assert.False(untrusted.IsTransient);
+        Assert.Contains("tls.ca_file", untrusted.Message, StringComparison.Ordinal);
+
+        // A proxy refusing the credentials is permanent and names them, never the password.
+        await using var guarded = new TestProxy("u", "right-pw");
+        var refused = await ReadFailsAsync(Config(url, Tls(),
+            Map(("url", guarded.Url.ToString()), ("user", "u"), ("password", "wrong-pw-1234")), OAuth(url)));
+        Assert.False(refused.IsTransient);
+        Assert.Contains("proxy.user/proxy.password", refused.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("wrong-pw-1234", refused.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Token_endpoint_cert_only_same_host()
+    {
+        // Same origin as base_url: the token request presents the client certificate too.
+        await using (var same = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), requestClientCertificate: true, respond: TokenOrRows))
+        {
+            Assert.Equal(2, await ReadAsync(Config(same.Url(), Tls(client: Pfx()), extra: OAuth(same.Url()))));
+            Assert.Equal(["POST /token HTTP/1.1", "GET /items HTTP/1.1"], same.Requests.ToArray());
+            Assert.Equal(new string?[] { _pki.Client.Thumbprint, _pki.Client.Thumbprint }, same.ClientCertificates.ToArray());
+        }
+
+        // Another origin (here another port on the same host): trusted through ca_file, but no certificate.
+        await using var token = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), requestClientCertificate: true, respond: TokenOrRows);
+        await using var api = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), requestClientCertificate: true);
+        Assert.Equal(2, await ReadAsync(Config(api.Url(), Tls(client: Pfx()), extra: OAuth(token.Url()))));
+        Assert.Equal(["POST /token HTTP/1.1"], token.Requests.ToArray());
+        Assert.Equal(new string?[] { null }, token.ClientCertificates.ToArray());
+        Assert.Equal(new string?[] { _pki.Client.Thumbprint }, api.ClientCertificates.ToArray());
+    }
+
     private sealed class ProbeOptions : ClientOptions
     {
     }

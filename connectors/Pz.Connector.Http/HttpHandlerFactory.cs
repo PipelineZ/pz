@@ -170,7 +170,7 @@ internal static class HttpHandlerFactory
     /// can never carry credentials to a host the endpoint picked. With neither 'proxy' nor 'tls' the handler
     /// is exactly the one connections always had (default proxy, system trust, no client certificate).
     /// <paramref name="withClientCertificate"/> is false for the bare (cross-origin) client and for a token
-    /// endpoint on another host: the certificate identifies pz to the API, not to whatever host it names.</summary>
+    /// endpoint on another origin: the certificate identifies pz to the API, not to whatever host it names.</summary>
     public static HttpClientHandler Create(HttpConnectionConfig connection, BoundTransport? bound, bool withClientCertificate)
     {
         var handler = new HttpClientHandler
@@ -219,13 +219,18 @@ internal static class HttpHandlerFactory
     }
 
     /// <summary>The handler source a token-fetching authenticator uses for its token endpoint: the client
-    /// certificate is presented only when the endpoint's host is <c>base_url</c>'s host. Null when the
-    /// connection sets neither 'proxy' nor 'tls', so authenticators keep their own default transport.</summary>
+    /// certificate is presented only when the endpoint has <c>base_url</c>'s origin (scheme, host and port,
+    /// the rule credentials follow everywhere else). Null when the connection sets neither 'proxy' nor
+    /// 'tls', so authenticators keep their own default transport.</summary>
     public static Func<Uri, HttpMessageHandler>? TokenEndpointHandlers(HttpConnectionConfig connection, BoundTransport? bound)
         => bound is null
             ? null
-            : endpoint => Create(connection, bound, withClientCertificate:
-                string.Equals(endpoint.Host, connection.BaseUrl.Host, StringComparison.OrdinalIgnoreCase));
+            : endpoint => Create(connection, bound, withClientCertificate: IsSameOrigin(endpoint, connection.BaseUrl));
+
+    private static bool IsSameOrigin(Uri a, Uri b)
+        => string.Equals(a.Scheme, b.Scheme, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(a.Host, b.Host, StringComparison.OrdinalIgnoreCase)
+            && a.Port == b.Port;
 
     /// <summary>'tls.ca_file' adds trust anchors and relaxes nothing else. A certificate the system already
     /// trusts is accepted. Otherwise the only acceptable fault is an untrusted or incomplete chain: a name
