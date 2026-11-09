@@ -155,36 +155,45 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                 // last batch carried the crawl's checkpoint ends without an item-boundary one; a resume
                 // there re-requests the item's trailing page.
                 await using var batches = item.Partition.ReadAsync(options, ct).GetAsyncEnumerator(ct);
-                var more = await NextAsync(batches, values).ConfigureAwait(false);
-                while (more)
+                // The batch read but not yet handed to the engine: still this read's to release, whether the
+                // lookahead throws or the engine stops the read at a yield while a batch is read ahead.
+                RecordBatch? pending = null;
+                try
                 {
-                    var batch = batches.Current;
-                    if (item.Partition.TryGetCheckpoint(out var inner) && inner is not null)
+                    if (await NextAsync(batches, values).ConfigureAwait(false))
                     {
-                        _checkpointCandidate = HttpCheckpointToken.EncodeForEach(new(listToken, index, inner, anchor,
-                            skipped, firstSkipped));
+                        pending = batches.Current;
+                    }
+
+                    while (pending is { } batch)
+                    {
+                        if (item.Partition.TryGetCheckpoint(out var inner) && inner is not null)
+                        {
+                            _checkpointCandidate = HttpCheckpointToken.EncodeForEach(new(listToken, index, inner, anchor,
+                                skipped, firstSkipped));
+                            pending = null;
+                            yield return batch;
+                            if (await NextAsync(batches, values).ConfigureAwait(false))
+                            {
+                                pending = batches.Current;
+                            }
+
+                            continue;
+                        }
+
+                        var more = await NextAsync(batches, values).ConfigureAwait(false);
+                        pending = more ? batches.Current : null;
+                        // index + 1 may equal the page's record count; the token keeps this list page, and a
+                        // resume from it moves on to the next one.
+                        _checkpointCandidate = more
+                            ? null
+                            : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped));
                         yield return batch;
-                        more = await NextAsync(batches, values).ConfigureAwait(false);
-                        continue;
                     }
-
-                    try
-                    {
-                        more = await NextAsync(batches, values).ConfigureAwait(false);
-                    }
-                    catch
-                    {
-                        // Not yet handed to the engine, so still this read's to release.
-                        batch.Dispose();
-                        throw;
-                    }
-
-                    // index + 1 may equal the page's record count; the token keeps this list page, and a
-                    // resume from it moves on to the next one.
-                    _checkpointCandidate = more
-                        ? null
-                        : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped));
-                    yield return batch;
+                }
+                finally
+                {
+                    pending?.Dispose();
                 }
 
                 if (item.Missing())
