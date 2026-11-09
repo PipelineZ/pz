@@ -794,6 +794,27 @@ public sealed class ConnectorConfigValidatorTests
         }
     }
 
+    // The plan never probes the native path of a dataset that resumes from a sync token (feed or cdc): it takes
+    // the arrow path. Validate skips the probe for those shapes too, so it is never stricter than the plan.
+    [Theory]
+    [InlineData("feed")]
+    [InlineData("cdc")]
+    public async Task A_token_resumed_dataset_is_not_native_probed_at_validate(string shape)
+    {
+        var registry = new ConnectorRegistry();
+        var connector = new StubDatasetValidatorConnector
+        {
+            Shape = shape == "feed" ? NaturalReadShape.Feed : NaturalReadShape.Full,
+            NativeScanThrows = _ => new PzConnectorException("refused", isTransient: false, code: PzConnectorErrorCodes.Config),
+        };
+        registry.AddSource("stub-ds", connector);
+        var dataset = new DatasetDef("events", new Dictionary<string, object?>(), null,
+            shape == "cdc" ? new SyncModeDef(SyncMode.Cdc, null) : null);
+        var source = new ConnectionDef("db", "stub-ds", new Dictionary<string, object?>(), [dataset], "connections.yml");
+
+        Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([source]), registry, default));
+    }
+
     // An output on a connection whose connector also reads is schema-checked too, not only a write-only one's.
     [Fact]
     public async Task Outputs_of_a_read_write_connection_are_schema_validated()

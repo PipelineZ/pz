@@ -7,6 +7,7 @@ using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.Engine.Execution;
+using Pz.Engine.Planning;
 
 namespace Pz.Engine.Validation;
 
@@ -267,9 +268,10 @@ public static class ConnectorConfigValidator
                 foreach (var dataset in connection.Datasets.Where(d => !datasetsWithFindings.Contains(d.Name)))
                 {
                     var spec = SpecBuilder.ForSourceLoad(new SourceDatasetDef(connection, dataset));
+                    ResolvedReadShape shape;
                     try
                     {
-                        (source as INaturalReadShapeSource)?.GetNaturalReadShape(spec);
+                        shape = ReadShapeResolver.Resolve(dataset, source, spec);
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException &&
                                                Classify(ex, connection, $"{subject} dataset '{dataset.Name}'",
@@ -279,7 +281,9 @@ public static class ConnectorConfigValidator
                         continue;
                     }
 
-                    if (!forceUniversal)
+                    // A dataset that resumes from a sync token takes the arrow path, so the plan never probes its
+                    // native scan; neither does validate.
+                    if (!forceUniversal && shape is not (ResolvedReadShape.Feed or ResolvedReadShape.Cdc))
                     {
                         try
                         {

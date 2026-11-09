@@ -62,6 +62,9 @@ internal sealed class StubDatasetValidatorConnector : ISourceConnector, IDataset
     /// <summary>Thrown by the read-shape probe tier 3 runs on the opened source, when set.</summary>
     public Func<DatasetSpec, Exception?>? ShapeThrows { get; init; }
 
+    /// <summary>The source's natural read shape (Full unless set).</summary>
+    public NaturalReadShape Shape { get; init; } = NaturalReadShape.Full;
+
     /// <summary>Thrown by the source's native-scan probe, when set.</summary>
     public Func<DatasetSpec, Exception?>? NativeScanThrows { get; init; }
 
@@ -96,7 +99,7 @@ internal sealed class ShapeSource(StubDatasetValidatorConnector owner) : NoopSou
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec)
     {
         owner.ShapeProbed.Add(spec.Dataset);
-        return owner.ShapeThrows?.Invoke(spec) is { } refusal ? throw refusal : NaturalReadShape.Full;
+        return owner.ShapeThrows?.Invoke(spec) is { } refusal ? throw refusal : owner.Shape;
     }
 
     public override bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
