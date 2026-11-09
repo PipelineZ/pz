@@ -138,6 +138,12 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
             resume = resume with { List = HttpForEachConfig.ValuesToken, Index = 0, Item = null, Anchor = null };
         }
 
+        // A skip an earlier attempt saw before its checkpoint is not seen again; the token carries it.
+        if (resume is { RuleSkipped: true })
+        {
+            Interlocked.Exchange(ref _ruleSkipped, 1);
+        }
+
         if (forEach.Concurrency > 1)
         {
             await foreach (var batch in ReadParallelAsync(list, bindings, now, resume, options, ct).ConfigureAwait(false))
@@ -221,7 +227,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                         if (item.Partition.TryGetCheckpoint(out var inner) && inner is not null)
                         {
                             _checkpointCandidate = HttpCheckpointToken.EncodeForEach(new(listToken, index, inner, anchor,
-                                skipped, firstSkipped));
+                                skipped, firstSkipped, ReadSkipped));
                             pending = null;
                             yield return batch;
                             if (await NextAsync(batches, values).ConfigureAwait(false))
@@ -238,7 +244,8 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                         // resume from it moves on to the next one.
                         _checkpointCandidate = more
                             ? null
-                            : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped));
+                            : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped,
+                                ReadSkipped));
                         yield return batch;
                     }
                 }

@@ -335,6 +335,52 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task An_item_skip_before_a_checkpoint_is_still_reported_after_a_resume()
+    {
+        // Attempt 1 skips item b by a rule, lands c (offering a checkpoint past b), then fails on d. The resumed
+        // attempt starts at d and never sees b again, but must still tell the engine the read skipped data.
+        var failD = true;
+        _server.Map("/orders", _ => Status(200, """{"data":[{"id":"a"},{"id":"b"},{"id":"c"},{"id":"d"}]}"""));
+        _server.MapPrefix("/o/", r => r.Url.AbsolutePath switch
+        {
+            "/o/b" => Status(400, "no data for period"),
+            "/o/d" when failD => Status(400, "boom"),
+            _ => Status(200, """{"lines":[{"sku":"x"}]}"""),
+        });
+        var options = Map(("path", "/o/{{ item.id }}"), ("items", "/lines"),
+            ("for_each", Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("id", "/id"))))),
+            ("on_status", Rules(Map(("status", 400), ("body_contains", "no data"), ("action", "skip")))));
+
+        string? token = null;
+        await using (var source = Source())
+        {
+            var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(Assert.Single(
+                await source.PlanReadAsync(new DatasetSpec("s", "d", options), ReadHints.None, CancellationToken.None)));
+            await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            {
+                await foreach (var batch in partition.ReadAsync(new BatchOptions(MaxRowsPerBatch: 1), CancellationToken.None))
+                {
+                    batch.Dispose();
+                    if (partition.TryGetCheckpoint(out var offered) && offered is not null)
+                    {
+                        token = offered;
+                    }
+                }
+            });
+        }
+
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(token!, out var position));
+        Assert.Equal(3, position.Index);
+        Assert.True(position.RuleSkipped);
+
+        failD = false;
+        var mark = _server.Requests.Count;
+        Assert.Equal(1, await Read(options, token));
+        Assert.DoesNotContain(_server.Requests.Skip(mark), r => r.Url.AbsolutePath == "/o/b");
+        Assert.True(_readSkipped);
+    }
+
+    [Fact]
     public async Task Skip_on_a_later_page_fails_naming_the_rule()
     {
         _server.Map("/r", req => req.Url.Query.Contains("page=2")
