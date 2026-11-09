@@ -1,4 +1,7 @@
+using System.Buffers;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using Apache.Arrow.Memory;
 using Pz.Connector.Http;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit;
@@ -34,22 +37,26 @@ public sealed class HttpForEachReadTests : IAsyncLifetime
         }
     }
 
-    private HttpSource Source(TimeProvider? time = null)
+    private HttpSource Source(TimeProvider? time = null, Dictionary<string, object?>? auth = null)
     {
         var errors = new List<string>();
-        var connection = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
+        var settings = new Dictionary<string, object?> { ["base_url"] = _server.BaseUrl.ToString() };
+        if (auth is not null)
         {
-            ["base_url"] = _server.BaseUrl.ToString(),
-        }), errors);
+            settings["auth"] = auth;
+        }
+
+        var connection = HttpConnectionConfig.Parse(new ConnectorConfig(settings), errors);
         Assert.Empty(errors);
         var source = new HttpSource(connection!, time ?? TimeProvider.System);
         source.UseNotice(_notices.Add);
         return source;
     }
 
-    private async Task<List<object?[]>> Read(DatasetSpec spec, IOperationGate? gate = null, TimeProvider? time = null)
+    private async Task<List<object?[]>> Read(DatasetSpec spec, IOperationGate? gate = null, TimeProvider? time = null,
+        Dictionary<string, object?>? auth = null)
     {
-        await using var source = Source(time);
+        await using var source = Source(time, auth);
         if (gate is not null)
         {
             source.UseOperationGate(gate);
@@ -412,6 +419,151 @@ public sealed class HttpForEachReadTests : IAsyncLifetime
         Assert.Equal(2, rows.Count);
         Assert.All(rows, r => Assert.Equal(start, r[2]));
         Assert.Equal(["""{"id":"e1"}""", """{"id":"e2"}"""], rows.Select(r => r[3]));
+    }
+
+    [Fact]
+    public async Task On_missing_skip_covers_410()
+    {
+        MapOrders("o1", "o2", "o3");
+        MapLines(new() { ["o1"] = 1, ["o3"] = 1 }, (id, page) => id == "o2" && page == 1 ? new StubResponse(410, "gone") : null);
+
+        var rows = await Read(Spec(OrdersOptions(Map(("on_missing", "skip")))));
+
+        Assert.Equal(["o1-1", "o3-1"], rows.Select(r => JsonNode.Parse((string)r[0]!)!["sku"]!.GetValue<string>()));
+        Assert.Equal("http source 's.d': skipped 1 items that returned 404/410 (first: item order_id=o2)",
+            Assert.Single(_notices));
+    }
+
+    [Fact]
+    public async Task Item_max_pages_truncation_is_reported()
+    {
+        MapOrders("o1", "o2", "o3");
+        // o3's first page is empty, so max_pages did not cut it short.
+        MapLines(new() { ["o1"] = 2, ["o2"] = 3 });
+
+        var rows = await Read(Spec(OrdersOptions(extra: Map(("max_pages", 1)))));
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("http source 's.d': max_pages stopped 2 items before their last page (first: item order_id=o1)",
+            Assert.Single(_notices));
+    }
+
+    [Fact]
+    public async Task Max_items_reached_at_end_of_list_page_does_not_fetch_the_next_page()
+    {
+        _server.Map("/orders", r => Query(r, "cursor") == "X"
+            ? new StubResponse(500, "must not be requested")
+            : new StubResponse(200, """{"data":[{"id":"o1"},{"id":"o2"}],"next_cursor":"X"}"""));
+        MapLines(new() { ["o1"] = 1, ["o2"] = 1 });
+
+        var rows = await Read(Spec(OrdersOptions(Map(("max_items", 2),
+            ("pagination", Map(("strategy", "cursor"), ("param", "cursor"), ("pointer", "/next_cursor")))))));
+
+        Assert.Equal(2, rows.Count);
+        Assert.DoesNotContain(_server.Requests, r => r.Url.Query.Contains("cursor=X"));
+        Assert.Equal("http source 's.d': stopped after max_items (2) items; more list records may be available",
+            Assert.Single(_notices));
+    }
+
+    [Fact]
+    public async Task Secret_in_list_page_url_is_redacted_in_item_errors()
+    {
+        _server.Map("/orders", r => Query(r, "page") == "2"
+            ? new StubResponse(200, """{"data":[{"name":"no id"}]}""")
+            : new StubResponse(200, """{"data":[{"id":"o1"}]}""", new Dictionary<string, string>
+            {
+                ["Link"] = $"<{_server.BaseUrl}orders?page=2&api_key=TOPSECRET>; rel=\"next\"",
+            }));
+        MapLines(new() { ["o1"] = 1 });
+        var options = OrdersOptions(Map(("pagination", Map(("strategy", "link_header")))));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(options),
+            auth: new() { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" }));
+
+        Assert.Contains("item field 'order_id' is missing from the record", ex.Message);
+        Assert.Contains("api_key=***", ex.Message);
+        Assert.Contains("record 0", ex.Message);
+        Assert.DoesNotContain("TOPSECRET", ex.Message);
+    }
+
+    [Fact]
+    public async Task Item_identity_appears_once_in_a_conversion_error()
+    {
+        MapOrders("abc");
+        MapLines(new() { ["abc"] = 1 });
+        var options = OrdersOptions(extra: Map(("columns", new Dictionary<string, string>
+            { ["order_id"] = "int", ["sku"] = "varchar" })));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(options)));
+
+        Assert.Contains("column 'order_id'", ex.Message);
+        Assert.Single(Regex.Matches(ex.Message, Regex.Escape("item order_id=abc")));
+    }
+
+    /// <summary>Counts the buffers it hands out that are not yet disposed.</summary>
+    private sealed class CountingAllocator : MemoryAllocator
+    {
+        private int _outstanding;
+        private int _allocated;
+
+        public int Outstanding => Volatile.Read(ref _outstanding);
+
+        public int Allocated => Volatile.Read(ref _allocated);
+
+        protected override IMemoryOwner<byte> AllocateInternal(int length, out int bytesAllocated)
+        {
+            Interlocked.Increment(ref _allocated);
+            Interlocked.Increment(ref _outstanding);
+            bytesAllocated = length;
+            return new Owner(new byte[length], this);
+        }
+
+        private sealed class Owner(byte[] buffer, CountingAllocator allocator) : IMemoryOwner<byte>
+        {
+            private int _disposed;
+
+            public Memory<byte> Memory => buffer;
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    Interlocked.Decrement(ref allocator._outstanding);
+                }
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Held_batch_is_disposed_when_the_lookahead_throws()
+    {
+        MapOrders("o1");
+        _server.MapPrefix("/orders/", _ => new StubResponse(200, """{"lines":[{"sku":"a","qty":1},{"sku":"b","qty":"x"}]}"""));
+        var options = OrdersOptions(extra: Map(("columns", new Dictionary<string, string>
+            { ["sku"] = "varchar", ["qty"] = "int" })));
+        options.Remove("pagination");
+        var allocator = new CountingAllocator();
+
+        await using var source = Source();
+        var partition = Assert.IsType<HttpForEachPartition>(
+            Assert.Single(await source.PlanReadAsync(Spec(options), ReadHints.None, CancellationToken.None)));
+        partition.Allocator = allocator;
+        var yielded = 0;
+        // Row "a" is built into a batch and held while the next one is read; row "b" fails to convert.
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+        {
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(TargetBatchBytes: 1, MaxRowsPerBatch: 1),
+                               CancellationToken.None))
+            {
+                yielded++;
+                batch.Dispose();
+            }
+        });
+
+        Assert.Contains("column 'qty'", ex.Message);
+        Assert.Equal(0, yielded);
+        Assert.True(allocator.Allocated > 0);
+        Assert.Equal(0, allocator.Outstanding);
     }
 
     [Fact]

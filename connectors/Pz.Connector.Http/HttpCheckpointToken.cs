@@ -1,4 +1,6 @@
 using System.Buffers.Text;
+using System.Diagnostics.CodeAnalysis;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -12,7 +14,9 @@ namespace Pz.Connector.Http;
 /// method's shape, a different version or a malformed payload is refused, never thrown. A for_each
 /// read's token is <c>v3:</c> + base64url(UTF-8 JSON <c>{"list":...,"index":n,"item":...}</c>): the list
 /// page's token (in the list request's form), the record index on that page, and the item crawl's next
-/// request token (in the item request's form) or null to start the item from its first request.</summary>
+/// request token (in the item request's form) or null to start the item from its first request. Optional
+/// keys follow, each only when set: <c>anchor</c> (see <see cref="ForEachToken"/>), <c>skipped</c> and
+/// <c>first_skipped</c>.</summary>
 internal static class HttpCheckpointToken
 {
     private const string PostPrefix = "v2:";
@@ -94,19 +98,58 @@ internal static class HttpCheckpointToken
         }
     }
 
+    /// <summary>A for_each read's position. <paramref name="Anchor"/> is <see cref="Anchor(ItemValues)"/> of
+    /// the record the position was taken at: the record at <paramref name="Index"/> while its item is in
+    /// progress (<paramref name="Item"/> set), else the record just finished, at <c>Index - 1</c>. A resume
+    /// that finds another record there restarts the list page. <paramref name="Skipped"/> and
+    /// <paramref name="FirstSkipped"/> are the `on_missing: skip` count and first identity so far, so a
+    /// retry still reports skips made before its resume position.</summary>
+    internal sealed record ForEachToken(string List, int Index, string? Item, string? Anchor = null,
+        int Skipped = 0, string? FirstSkipped = null);
+
+    /// <summary>A record's anchor: base64url SHA-256 of its <c>pz_item</c> JSON.</summary>
+    public static string Anchor(ItemValues values)
+        => Base64Url.EncodeToString(SHA256.HashData(Encoding.UTF8.GetBytes(values.ToJsonString())));
+
     public static string EncodeForEach(string listToken, int index, string? itemToken)
+        => EncodeForEach(new ForEachToken(listToken, index, itemToken));
+
+    public static string EncodeForEach(ForEachToken token)
     {
-        var payload = new JsonObject { ["list"] = listToken, ["index"] = index, ["item"] = itemToken };
+        var payload = new JsonObject { ["list"] = token.List, ["index"] = token.Index, ["item"] = token.Item };
+        if (token.Anchor is not null)
+        {
+            payload["anchor"] = token.Anchor;
+        }
+
+        if (token.Skipped > 0)
+        {
+            payload["skipped"] = token.Skipped;
+        }
+
+        if (token.FirstSkipped is not null)
+        {
+            payload["first_skipped"] = token.FirstSkipped;
+        }
+
         return ForEachPrefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(payload.ToJsonString()));
     }
 
-    /// <summary>Splits a <c>v3:</c> token into its parts; the embedded tokens are not decoded here (each
-    /// has its own request's method and body kind). A negative index or a malformed payload is refused.</summary>
     public static bool TryDecodeForEach(string token, out string listToken, out int index, out string? itemToken)
     {
-        listToken = "";
-        index = 0;
-        itemToken = null;
+        var ok = TryDecodeForEach(token, out var decoded);
+        listToken = decoded?.List ?? "";
+        index = decoded?.Index ?? 0;
+        itemToken = decoded?.Item;
+        return ok;
+    }
+
+    /// <summary>Splits a <c>v3:</c> token into its parts; the embedded tokens are not decoded here (each
+    /// has its own request's method and body kind). A negative index or count, an optional key of the
+    /// wrong type, or a malformed payload is refused.</summary>
+    public static bool TryDecodeForEach(string token, [NotNullWhen(true)] out ForEachToken? decoded)
+    {
+        decoded = null;
         if (!token.StartsWith(ForEachPrefix, StringComparison.Ordinal))
         {
             return false;
@@ -119,26 +162,34 @@ internal static class HttpCheckpointToken
                 || !listNode.TryGetValue<string>(out var list)
                 || obj["index"] is not JsonValue indexNode
                 || !indexNode.TryGetValue<int>(out var at)
-                || at < 0)
+                || at < 0
+                || !TryOptionalString(obj, "item", out var item)
+                || !TryOptionalString(obj, "anchor", out var anchor)
+                || !TryOptionalString(obj, "first_skipped", out var firstSkipped))
             {
                 return false;
             }
 
-            string? item = null;
-            if (obj["item"] is { } itemNode
-                && (itemNode is not JsonValue itemValue || !itemValue.TryGetValue(out item)))
+            var skipped = 0;
+            if (obj["skipped"] is { } skippedNode
+                && (skippedNode is not JsonValue skippedValue || !skippedValue.TryGetValue(out skipped) || skipped < 0))
             {
                 return false;
             }
 
-            listToken = list;
-            index = at;
-            itemToken = item;
+            decoded = new ForEachToken(list, at, item, anchor, skipped, firstSkipped);
             return true;
         }
         catch (Exception e) when (e is FormatException or JsonException or ArgumentException or InvalidOperationException)
         {
             return false;
         }
+    }
+
+    /// <summary>An absent or null key is null; anything but a JSON string is refused.</summary>
+    private static bool TryOptionalString(JsonObject obj, string key, out string? value)
+    {
+        value = null;
+        return obj[key] is not { } node || (node is JsonValue v && v.TryGetValue(out value));
     }
 }

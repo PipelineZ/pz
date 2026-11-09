@@ -105,6 +105,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         using var scratch = new DownloadScratch(ScratchRoot);
         var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
             token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
+        // DownloadAsync returns a null path only for a 404/410 under SkipMissing.
         if (path is null)
         {
             Missing = true;

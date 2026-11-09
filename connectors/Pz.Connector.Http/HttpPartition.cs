@@ -48,6 +48,9 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     /// <summary>True once the first request was answered 404/410 under <see cref="SkipMissing"/>.</summary>
     internal bool Missing { get; private set; }
 
+    /// <summary>Where batch buffers come from; null means the shared native pool. Tests count with it.</summary>
+    internal Apache.Arrow.Memory.MemoryAllocator? Allocator { get; init; }
+
     /// <summary>True when <c>max_pages</c> stopped the crawl with a further page pending.</summary>
     internal bool TruncatedWithMore => _truncatedWithMore;
 
@@ -234,7 +237,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     {
         var columns = config.IsContractMode ? config.Columns! : RawEnvelope.Columns(config);
         var builder = new ArrowBatchBuilder(ContractProjector.BuildSchema(columns),
-            options.TargetBatchBytes, maxRowsPerBatch: options.MaxRowsPerBatch);
+            options.TargetBatchBytes, Allocator, maxRowsPerBatch: options.MaxRowsPerBatch);
         _itemCells = ItemCells.For(config, Item, Label);
         var page = 0;
 
@@ -684,10 +687,8 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
 
     private string Target(HttpMethod method, Uri uri) => _sender.Target(method, uri);
 
-    private string Redact(Uri uri) => _sender.Redact(uri);
-
     /// <summary><paramref name="uri"/> as this partition's messages show it.</summary>
-    internal string RedactUrl(Uri uri) => _sender.Redact(uri);
+    internal string Redact(Uri uri) => _sender.Redact(uri);
 
     private void EnsureAllowedTarget(Uri candidate, string what) => _sender.EnsureAllowedTarget(candidate, what);
 

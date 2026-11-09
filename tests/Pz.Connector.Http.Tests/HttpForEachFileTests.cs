@@ -26,6 +26,26 @@ public sealed class HttpForEachFileTests : IAsyncLifetime
         Directory.Delete(_scratchRoot, recursive: true);
     }
 
+    private sealed class RecordingGate : IOperationGate
+    {
+        public List<(string Label, bool Idempotent)> Calls { get; } = [];
+
+        public Task<T> ExecuteAsync<T>(string opLabel, bool idempotent, Func<CancellationToken, Task<T>> op,
+            CancellationToken ct)
+        {
+            lock (Calls)
+            {
+                Calls.Add((opLabel, idempotent));
+            }
+
+            return op(ct);
+        }
+
+        public void ReportBudget(int remaining, DateTimeOffset resetAt)
+        {
+        }
+    }
+
     private HttpSource Source()
     {
         var errors = new List<string>();
@@ -41,16 +61,21 @@ public sealed class HttpForEachFileTests : IAsyncLifetime
 
     /// <summary>Reads the dataset's single partition with scratch under this class's root;
     /// <paramref name="onBatch"/> runs after each batch's rows are taken.</summary>
-    private async Task<List<object?[]>> Read(DatasetSpec spec, Action? onBatch = null)
+    private async Task<List<object?[]>> Read(DatasetSpec spec, Action? onBatch = null, IOperationGate? gate = null,
+        CancellationToken ct = default)
     {
         await using var source = Source();
+        if (gate is not null)
+        {
+            source.UseOperationGate(gate);
+        }
+
         var schema = (await source.GetSchemaAsync(spec, CancellationToken.None)).Schema;
         var partition = Assert.IsType<HttpForEachPartition>(
             Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None)));
         partition.ScratchRoot = _scratchRoot;
         var rows = new List<object?[]>();
-        await foreach (var batch in partition.ReadAsync(new BatchOptions(TargetBatchBytes: 1, MaxRowsPerBatch: 1),
-                           CancellationToken.None))
+        await foreach (var batch in partition.ReadAsync(new BatchOptions(TargetBatchBytes: 1, MaxRowsPerBatch: 1), ct))
         {
             using (batch)
             {
@@ -220,5 +245,65 @@ public sealed class HttpForEachFileTests : IAsyncLifetime
         Assert.EndsWith("(item export_id=bad)", ex.Message);
         Assert.Equal([1, 0, 0], seen.Select(dirs => dirs.Length));
         Assert.Empty(ScratchDirs());
+    }
+
+    [Fact]
+    public async Task Raw_file_items_carry_pz_item_and_pz_file_per_item()
+    {
+        MapExports("e1", "e2");
+        _server.MapPrefix("/exports/", r => r.Url.AbsolutePath switch
+        {
+            "/exports/e1/file" => File(Zip(("a.csv", "name\nx\ny\n")), "application/zip"),
+            "/exports/e2/file" => File(Zip(("b.csv", "name\nz\n")), "application/zip"),
+            _ => new StubResponse(500, "unexpected"),
+        });
+        var options = ExportsOptions(Map(("format", "csv"), ("archive", "zip"), ("members", "*.csv")));
+        options.Remove("columns");
+
+        var rows = await Read(Spec(options));
+
+        // payload, pz_file, pz_row, pz_fetched_at, pz_item
+        Assert.Equal(
+            [
+                ("a.csv", """{"export_id":"e1"}"""),
+                ("a.csv", """{"export_id":"e1"}"""),
+                ("b.csv", """{"export_id":"e2"}"""),
+            ],
+            rows.Select(r => ((string)r[1]!, (string)r[4]!)).ToList());
+        Assert.Equal(["x", "y", "z"], rows.Select(r => JsonNode.Parse((string)r[0]!)!["name"]!.GetValue<string>()));
+    }
+
+    [Fact]
+    public async Task Each_item_download_goes_through_the_gate()
+    {
+        MapExports("e1", "e2");
+        _server.MapPrefix("/exports/", _ => File("name,n\na,1\n"));
+        var gate = new RecordingGate();
+
+        await Read(Spec(ExportsOptions(Map(("format", "csv")))), gate: gate);
+
+        Assert.Equal([("http.get_page", true), ("http.download", true), ("http.download", true)], gate.Calls);
+    }
+
+    [Fact]
+    public async Task Cancelled_mid_file_item_removes_its_scratch()
+    {
+        MapExports("e1", "e2");
+        _server.MapPrefix("/exports/", _ => File("name,n\na,1\nb,2\nc,3\nd,4\n"));
+        using var cts = new CancellationTokenSource();
+        var seen = new List<int>();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Read(Spec(ExportsOptions(Map(("format", "csv")))),
+            onBatch: () =>
+            {
+                seen.Add(ScratchDirs().Length);
+                cts.Cancel();
+            },
+            ct: cts.Token));
+
+        // Cancelled while e1's file was still open, and nothing of it is left behind.
+        Assert.Equal([1], seen);
+        Assert.Empty(ScratchDirs());
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath.Contains("e2"));
     }
 }

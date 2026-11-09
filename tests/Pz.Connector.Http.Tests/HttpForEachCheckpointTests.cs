@@ -77,9 +77,11 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
             var values = new List<string>();
             using (batch)
             {
+                var itemColumn = batch.Schema.GetFieldIndex("pz_item");
                 for (var r = 0; r < batch.Length; r++)
                 {
                     values.Add(Key((string)FileReaderRows.Value(batch.Column(0), r)!));
+                    attempt.Items.Add(itemColumn < 0 ? null : (string?)FileReaderRows.Value(batch.Column(itemColumn), r));
                 }
             }
 
@@ -100,6 +102,13 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
         public List<(List<string> Keys, string? Token)> Batches { get; } = [];
         public string? LastToken { get; set; }
         public List<string> Keys => [.. Batches.SelectMany(b => b.Keys)];
+
+        /// <summary>Each row's pz_item, in row order; null when the dataset has no pz_item column.</summary>
+        public List<string?> Items { get; } = [];
+
+        /// <summary>Each raw row's (line sku, pz_item order_id).</summary>
+        public List<(string Sku, string OrderId)> Labels
+            => [.. Keys.Zip(Items, (k, i) => (k, JsonNode.Parse(i!)!["order_id"]!.GetValue<string>()))];
     }
 
     /// <summary>A raw row's line sku; a file row's own first column as is.</summary>
@@ -234,7 +243,7 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Shrunk_list_page_continues()
+    public async Task Shrunk_list_page_restarts()
     {
         var shrunk = false;
         _server.Map("/orders", r => Query(r, "page") switch
@@ -250,12 +259,129 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
         Assert.True(HttpCheckpointToken.TryDecodeForEach(first.LastToken!, out _, out var index, out _));
         Assert.Equal(2, index);
 
+        // The finished record (o2, at index 1) is no longer on the page, so the page is read again from its
+        // first record: a duplicate, never a gap.
         shrunk = true;
         var mark = _server.Requests.Count;
         var resumed = await Run(spec, first.LastToken);
 
-        Assert.Equal(["o4-1"], resumed.Keys);
-        Assert.Equal(["/orders?page=1", "/orders?page=2", "/orders/o4/lines", "/orders?page=3"], RequestsSince(mark));
+        Assert.Equal(["o1-1", "o4-1"], resumed.Keys);
+        Assert.Equal(["/orders?page=1", "/orders/o1/lines", "/orders?page=2", "/orders/o4/lines", "/orders?page=3"],
+            RequestsSince(mark));
+    }
+
+    [Fact]
+    public async Task Record_shifted_down_mid_item_restarts_the_list_page()
+    {
+        var shifted = false;
+        _server.Map("/orders", _ => shifted ? OrdersPage("o2", "o3", "o4") : OrdersPage("o1", "o2", "o3", "o4"));
+        MapLines();
+        var spec = Spec(OrdersOptions(paged: true));
+
+        var first = await Run(spec, stopAfter: keys => keys.Contains("o3-1"));
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(first.LastToken!, out _, out var index, out var item));
+        Assert.Equal(2, index);
+        Assert.NotNull(item);
+
+        // o1 is gone: index 2 now holds o4, and o3's next-page token must not be read as o4's.
+        shifted = true;
+        var resumed = await Run(spec, first.LastToken);
+
+        Assert.Equal(["o2-1", "o2-2", "o3-1", "o3-2", "o4-1", "o4-2"], resumed.Keys);
+        Assert.All(resumed.Labels, l => Assert.StartsWith(l.OrderId + "-", l.Sku));
+    }
+
+    [Fact]
+    public async Task Record_shifted_down_at_an_item_boundary_is_not_skipped()
+    {
+        var shifted = false;
+        _server.Map("/orders", _ => shifted ? OrdersPage("o2", "o3", "o4") : OrdersPage("o1", "o2", "o3", "o4"));
+        MapLines();
+        var spec = Spec(OrdersOptions(paged: false));
+
+        var first = await Run(spec, stopAfter: keys => keys.Contains("o2-1"));
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(first.LastToken!, out _, out var index, out var item));
+        Assert.Equal(2, index);
+        Assert.Null(item);
+
+        // o1 is gone: index 2 now holds o4, so continuing there would skip o3.
+        shifted = true;
+        var resumed = await Run(spec, first.LastToken);
+
+        Assert.Equal(["o2-1", "o3-1", "o4-1"], resumed.Keys);
+        Assert.All(resumed.Labels, l => Assert.StartsWith(l.OrderId + "-", l.Sku));
+    }
+
+    [Fact]
+    public async Task Unchanged_list_resumes_at_the_anchor()
+    {
+        _server.Map("/orders", _ => OrdersPage("o1", "o2", "o3", "o4"));
+        MapLines();
+        var spec = Spec(OrdersOptions(paged: true));
+
+        var first = await Run(spec, stopAfter: keys => keys.Contains("o3-1"));
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(first.LastToken!, out var token));
+        Assert.Equal(HttpCheckpointToken.Anchor(ItemValues.From(JsonNode.Parse("""{"id":"o3"}"""), [("order_id", "/id")])),
+            token!.Anchor);
+
+        var resumed = await Run(spec, first.LastToken);
+
+        Assert.Equal(["o3-2", "o4-1", "o4-2"], resumed.Keys);
+        Assert.All(resumed.Labels, l => Assert.StartsWith(l.OrderId + "-", l.Sku));
+    }
+
+    [Fact]
+    public async Task Post_list_and_get_item_tokens_each_keep_their_shape()
+    {
+        var (source, partition) = await Open(Spec(OrdersOptions(paged: true, Map(
+            ("path", "/orders/search"), ("method", "post"), ("body", Map(("status", "open")))))));
+        await using var _ = source;
+        var listUrl = new Uri($"{_server.BaseUrl}orders/search");
+        var listV2 = HttpCheckpointToken.Encode(new HttpPageRequest(HttpMethod.Post, listUrl,
+            JsonNode.Parse("""{"status":"open"}"""), null), isPost: true);
+        var itemGet = $"{_server.BaseUrl}orders/o1/lines?page=2";
+        var itemV2 = HttpCheckpointToken.Encode(new HttpPageRequest(HttpMethod.Post, new Uri(itemGet),
+            JsonNode.Parse("""{"a":1}"""), null), isPost: true);
+
+        Assert.True(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach(listV2, 0, itemGet)));
+        Assert.True(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach(listV2, 1, null)));
+        // A GET-shaped list token for the POST list, or a POST-shaped item token for the GET item: refused.
+        Assert.False(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach(listUrl.ToString(), 0, null)));
+        Assert.False(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach(listV2, 0, itemV2)));
+        // A text body where the list declares a JSON map: refused.
+        var listText = HttpCheckpointToken.Encode(new HttpPageRequest(HttpMethod.Post, listUrl, null, "status=open"),
+            isPost: true);
+        Assert.False(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach(listText, 0, null)));
+    }
+
+    [Fact]
+    public async Task Multi_batch_pages_offer_item_tokens_only_at_page_boundaries()
+    {
+        _server.Map("/orders", _ => OrdersPage("o1"));
+        _server.MapPrefix("/orders/", r => Query(r, "page") switch
+        {
+            "1" => new StubResponse(200, """{"lines":[{"sku":"a"},{"sku":"b"}]}"""),
+            "2" => new StubResponse(200, """{"lines":[{"sku":"c"},{"sku":"d"}]}"""),
+            _ => new StubResponse(200, """{"lines":[]}"""),
+        });
+
+        var run = await Run(Spec(OrdersOptions(paged: true)), options: new BatchOptions(TargetBatchBytes: 1, MaxRowsPerBatch: 1));
+
+        Assert.Equal(["a", "b", "c", "d"], run.Keys);
+        var offered = run.Batches.Select(b =>
+        {
+            if (b.Token is null)
+            {
+                return null;
+            }
+
+            Assert.True(HttpCheckpointToken.TryDecodeForEach(b.Token, out _, out var index, out var item));
+            Assert.Equal(0, index);
+            return item;
+        }).ToList();
+        // Mid-page batches offer nothing; each page's last batch names the next page.
+        Assert.Equal([null, $"{_server.BaseUrl}orders/o1/lines?page=2", null, $"{_server.BaseUrl}orders/o1/lines?page=3"],
+            offered);
     }
 
     [Fact]
@@ -299,6 +425,13 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
             Assert.False(forEach.TryResumeFrom("v3:" + Base64Url.EncodeToString("""{"list":1,"index":0}"""u8)));
             Assert.True(forEach.TryResumeFrom(v3));
             Assert.True(forEach.TryResumeFrom(HttpCheckpointToken.EncodeForEach(listUrl, 7, null)));
+            Assert.True(forEach.TryResumeFrom(HttpCheckpointToken.EncodeForEach(
+                new HttpCheckpointToken.ForEachToken(listUrl, 2, null, "abc", 3, "item order_id=o2"))));
+            foreach (var extra in new[] { "\"anchor\":5", "\"skipped\":-1", "\"skipped\":\"1\"", "\"first_skipped\":[]" })
+            {
+                Assert.False(forEach.TryResumeFrom("v3:" + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(
+                    $$"""{"list":"{{listUrl}}","index":1,"item":null,{{extra}}}"""))));
+            }
         }
 
         // File items have no position inside them: an item token is refused there.
@@ -351,10 +484,9 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Skip_before_a_resumed_item_crawl_is_not_reported_by_the_retry()
+    public async Task Skip_before_a_resumed_item_crawl_is_reported_by_the_retry()
     {
-        // The skip count belongs to an attempt. A retry resumed past the skipped item never sees it, so
-        // the final attempt reports none.
+        // The skip count rides in the checkpoint, so a retry resumed past the skipped item still reports it.
         _server.Map("/orders", _ => OrdersPage("o1", "o2", "o3", "o4"));
         var o3Fails = true;
         MapLines(overrideFor: (id, page) =>
@@ -378,15 +510,18 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
             }
         });
         Assert.True(ex.IsTransient);
-        Assert.True(HttpCheckpointToken.TryDecodeForEach(token!, out _, out var index, out var item));
-        Assert.Equal(2, index);
-        Assert.NotNull(item);
+        Assert.True(HttpCheckpointToken.TryDecodeForEach(token!, out var position));
+        Assert.Equal(2, position!.Index);
+        Assert.NotNull(position.Item);
+        Assert.Equal(1, position.Skipped);
+        Assert.Equal("item order_id=o2", position.FirstSkipped);
 
         o3Fails = false;
         var resumed = await Run(spec, token);
 
         Assert.Equal(["o3-2", "o4-1", "o4-2"], resumed.Keys);
-        Assert.Empty(_notices);
+        Assert.Equal("http source 's.d': skipped 1 items that returned 404/410 (first: item order_id=o2)",
+            Assert.Single(_notices));
     }
 
     private static Dictionary<string, object?> ExportsOptions()
@@ -410,11 +545,13 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
         var first = await Run(spec, options: oneRow, stopAfter: keys => keys.Contains("c"));
 
         var listUrl = $"{_server.BaseUrl}exports";
+        static string? Anchor(string id) => HttpCheckpointToken.Anchor(
+            ItemValues.From(JsonNode.Parse($$"""{"id":"{{id}}"}"""), [("export_id", "/id")]));
         Assert.Equal(
             [
                 (["a"], null),
-                (["b"], HttpCheckpointToken.EncodeForEach(listUrl, 1, null)),
-                (["c"], HttpCheckpointToken.EncodeForEach(listUrl, 2, null)),
+                (["b"], HttpCheckpointToken.EncodeForEach(new HttpCheckpointToken.ForEachToken(listUrl, 1, null, Anchor("e1")))),
+                (["c"], HttpCheckpointToken.EncodeForEach(new HttpCheckpointToken.ForEachToken(listUrl, 2, null, Anchor("e2")))),
             ],
             first.Batches.Select(b => (b.Keys.ToArray(), b.Token)).ToList(),
             new BatchComparer());
@@ -454,5 +591,11 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
             "v3:" + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(
                 """{"list":"https://h.example/l","index":3,"item":"https://h.example/i?page=2"}""")),
             HttpCheckpointToken.EncodeForEach("https://h.example/l", 3, "https://h.example/i?page=2"));
+        // The optional keys follow, only when set.
+        Assert.Equal(
+            "v3:" + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(
+                """{"list":"https://h.example/l","index":3,"item":null,"anchor":"x","skipped":2,"first_skipped":"item id=a"}""")),
+            HttpCheckpointToken.EncodeForEach(
+                new HttpCheckpointToken.ForEachToken("https://h.example/l", 3, null, "x", 2, "item id=a")));
     }
 }
