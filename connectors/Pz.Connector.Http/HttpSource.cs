@@ -115,10 +115,10 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         // for_each comes first: its items may themselves be file downloads.
         IDatasetPartition partition = config.IsForEach
             ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                { Notice = _notice }
+                { Notice = _notice, IdempotencyScope = IdempotencyScope }
             : config.IsFileMode
                 ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                    { Notice = _notice }
+                    { Notice = _notice, IdempotencyScope = IdempotencyScope }
                 : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
                     { Notice = _notice };
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
@@ -201,6 +201,13 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
 
     /// <summary>The run and node this source reads for; null when the host named none.</summary>
     internal ConnectorRunContext? RunContext { get; private set; }
+
+    private readonly string _ownScope = Guid.NewGuid().ToString("N");
+
+    /// <summary>What an export start's idempotency key is scoped to: the run and node, which every engine retry of
+    /// the node repeats; with no run known, this opened source alone (no retry can reuse it then).</summary>
+    private string IdempotencyScope
+        => RunContext is { } run ? $"run\n{run.Run}\n{run.Node}" : $"source\n{_ownScope}";
 
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
         HttpDatasetConfig.Parse(spec).IsSyncMode ? NaturalReadShape.Feed : NaturalReadShape.Full;

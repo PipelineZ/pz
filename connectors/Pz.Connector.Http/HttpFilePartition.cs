@@ -82,6 +82,13 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
     public string PartitionId => $"{spec.Source}.{spec.Dataset}";
 
+    /// <summary>What an export start's idempotency key is scoped to: the run and node (stable across the engine's
+    /// retries of the node), or, with no run known, the opened source. Null only for a partition built directly,
+    /// which then uses a scope of its own.</summary>
+    internal string? IdempotencyScope { get; init; }
+
+    private readonly string _ownScope = Guid.NewGuid().ToString("N");
+
     public bool TryResumeFrom(string checkpoint) => false;
 
     public bool TryGetCheckpoint(out string? checkpoint)
@@ -105,8 +112,15 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         {
             // Same-origin needs no handling here: the send strips credentials from any request to
             // another origin.
+            var start = export.IdempotencyKeyHeader is { } keyHeader
+                ? first with
+                {
+                    IdempotencyKey = (keyHeader,
+                        HttpExportJob.IdempotencyKey(IdempotencyScope ?? _ownScope, PartitionId, Item?.ToJsonString(), first)),
+                }
+                : first;
             downloads = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings, Notice)
-                .RunAsync(first, ct).ConfigureAwait(false);
+                .RunAsync(start, ct).ConfigureAwait(false);
             sender = _exportDownloadSender;
         }
 

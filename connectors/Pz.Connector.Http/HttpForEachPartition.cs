@@ -34,6 +34,9 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// Tests point it at a directory of their own.</summary>
     internal string? ScratchRoot { get; set; }
 
+    /// <summary>Handed to each file-mode item (<see cref="HttpFilePartition.IdempotencyScope"/>).</summary>
+    internal string? IdempotencyScope { get; init; }
+
     /// <summary>Where JSON items' batch buffers come from; null means the shared native pool. Tests count
     /// with it.</summary>
     internal MemoryAllocator? Allocator { get; set; }
@@ -412,6 +415,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                 ItemOrigin = origin,
                 Notice = notice,
                 ScratchRoot = ScratchRoot,
+                IdempotencyScope = IdempotencyScope,
             };
             return (file, () => file.Missing, () => false);
         }
