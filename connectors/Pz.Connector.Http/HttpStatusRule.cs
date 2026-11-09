@@ -21,6 +21,9 @@ internal sealed record HttpStatusRule(string Label, IReadOnlySet<int> Codes, IRe
     /// shared pause.</summary>
     internal static readonly TimeSpan MaxRetryAfter = TimeSpan.FromSeconds(600);
 
+    /// <summary>Statuses a <c>skip</c> rule may name only together with <c>body_contains</c>.</summary>
+    private static readonly int[] BroadSkipCodes = [401, 403, 408, 429];
+
     private static readonly HashSet<string> Keys = ["status", "body_contains", "action", "retry_after"];
 
     /// <summary>Whether the rule covers <paramref name="status"/> and, when it names a substring,
@@ -189,6 +192,17 @@ internal sealed record HttpStatusRule(string Label, IReadOnlySet<int> Codes, IRe
             {
                 retryAfter = wait;
             }
+        }
+
+        // A skip with nothing but a status to go on must not catch the responses that mean "your
+        // credentials or your pace are wrong": an expired key, a missing permission or a throttle would
+        // otherwise end the read as an empty success.
+        if (action == StatusAction.Skip && bodyContains is null
+            && (classes.Count > 0 || codes.Overlaps(BroadSkipCodes)))
+        {
+            errors.Add($"{name}: action 'skip' without body_contains must name exact status codes, not " +
+                "'4xx'/'5xx', and none of 401, 403, 408, 429 (an expired key, a missing permission or a " +
+                "throttle would end the read as an empty success); add body_contains or narrow status");
         }
 
         return errors.Count > before

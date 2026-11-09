@@ -42,7 +42,7 @@ public class HttpStatusRulesConfigTests
         {
             Rule(("status", 403), ("body_contains", "secondary rate limit"), ("action", "transient"),
                 ("retry_after", "60s")),
-            Rule(("status", new List<object?> { 400, "422", "5xx" }), ("action", "skip")),
+            Rule(("status", new List<object?> { 400, "422", "5xx" }), ("body_contains", "no data"), ("action", "skip")),
             Rule(("status", "4xx"), ("action", "permanent")),
         }));
 
@@ -52,9 +52,9 @@ public class HttpStatusRulesConfigTests
         Assert.Equal(StatusAction.Transient, rules[0].Action);
         Assert.Equal(TimeSpan.FromSeconds(60), rules[0].RetryAfter);
         Assert.Equal("secondary rate limit", rules[0].BodyContains);
-        Assert.True(rules[1].Matches(422, ""));
-        Assert.True(rules[1].Matches(504, ""));
-        Assert.False(rules[1].Matches(404, ""));
+        Assert.True(rules[1].Matches(422, "no data"));
+        Assert.True(rules[1].Matches(504, "no data"));
+        Assert.False(rules[1].Matches(404, "no data"));
         Assert.True(rules[2].Matches(418, ""));
         Assert.True(config.HasSkipRule);
     }
@@ -411,5 +411,47 @@ public class HttpStatusRulesConfigTests
         Assert.Contains("for_each: on_status[1].status '99' is not a status", message);
         Assert.Contains("for_each.on_status[0]: action 'skip' is not allowed on a dataset that is or could be " +
             "incremental", message);
+    }
+
+    [Theory]
+    [InlineData("4xx")]
+    [InlineData("5xx")]
+    [InlineData(401)]
+    [InlineData(403)]
+    [InlineData(408)]
+    [InlineData(429)]
+    public void Broad_skip_without_body_contains_is_refused(object status)
+    {
+        var message = Message(Options(new List<object?>
+        {
+            Rule(("status", new List<object?> { 400, status }), ("action", "skip")),
+        }));
+
+        Assert.Contains("on_status[0]: action 'skip' without body_contains must name exact status codes, not " +
+            "'4xx'/'5xx', and none of 401, 403, 408, 429", message);
+    }
+
+    [Theory]
+    [InlineData("4xx")]
+    [InlineData(403)]
+    [InlineData(429)]
+    public void Broad_skip_with_body_contains_is_allowed(object status)
+    {
+        var config = Parse(Options(new List<object?>
+        {
+            Rule(("status", status), ("body_contains", "no data for period"), ("action", "skip")),
+        }));
+
+        Assert.True(config.HasSkipRule);
+    }
+
+    [Fact]
+    public void Broad_transient_and_permanent_rules_stay_allowed()
+    {
+        Assert.Equal(2, Parse(Options(new List<object?>
+        {
+            Rule(("status", "4xx"), ("action", "permanent")),
+            Rule(("status", 403), ("action", "transient")),
+        })).OnStatus!.Count);
     }
 }

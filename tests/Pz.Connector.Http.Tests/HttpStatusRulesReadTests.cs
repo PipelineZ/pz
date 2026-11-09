@@ -470,7 +470,8 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
             ? Status(403, "order archived")
             : Status(200, """[{"sku":"x"}]"""));
 
-        var rows = await Read(Orders(null, ("on_status", Rules(Map(("status", 403), ("action", "skip"))))));
+        var rows = await Read(Orders(null,
+            ("on_status", Rules(Map(("status", 403), ("body_contains", "archived"), ("action", "skip"))))));
 
         Assert.Equal(2, rows);
         Assert.Equal("http source 's.d': skipped 1 items whose first request matched an on_status skip rule " +
@@ -483,7 +484,8 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         MapOrders();
 
         var ex = await Fails(Orders(Map(("on_missing", "skip")),
-            ("on_status", Rules(Map(("status", 404), ("action", "permanent")), Map(("status", 403), ("action", "skip"))))));
+            ("on_status", Rules(Map(("status", 404), ("action", "permanent")),
+                Map(("status", 403), ("body_contains", "archived"), ("action", "skip"))))));
 
         Assert.False(ex.IsTransient);
         Assert.Contains("(on_status[0]: permanent)", ex.Message);
