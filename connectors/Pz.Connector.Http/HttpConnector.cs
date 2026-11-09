@@ -157,7 +157,9 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "message_pointer": { "type": "string" },
                 "download_pointer": { "type": "string" }, "download_path": { "type": "string" },
                 "poll_interval_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
-                "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 1440 } },
+                "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
+                "cancel_path": { "type": "string" },
+                "cancel_method": { "enum": ["delete", "post", "put", "patch"] } },
                 "required": ["job_id", "status_path", "status_pointer", "ready"],
                 "additionalProperties": false },
             "for_each": { "type": "object", "properties": {

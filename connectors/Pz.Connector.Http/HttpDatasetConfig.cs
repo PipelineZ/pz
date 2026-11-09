@@ -478,6 +478,11 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             {
                 ValidateBindingTemplate(downloadPath, "export.download_path", knownBindings, errors);
             }
+
+            if (export.CancelPath is { } cancelPath)
+            {
+                ValidateBindingTemplate(cancelPath, "export.cancel_path", knownBindings, errors);
+            }
         }
 
         ValidateFileMode(options, rawFile is not null, rawExport is not null, file, columns, errors);

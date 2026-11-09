@@ -137,6 +137,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   A session sign-in whose `auth.inject.query` names a query parameter that pagination sets (`param` or `size_param`
   of `page`, `offset` or a query `cursor`, on the dataset or its `for_each` list; names compared decoded, in any case)
   is refused when the read is planned, before any request: each would overwrite the other on every page.
+- **http: export job clean-up and multi-file results.** `export.cancel_path` (with `{job_id}` exactly once, and the
+  engine bindings) and `export.cancel_method` (`delete` by default, or `post`, `put`, `patch`; no body) cancel a job the
+  read abandons: a job that timed out, reported a `failed` status, failed a poll, or whose result the read did not take
+  in full (a download or file failure, a cancelled run, an early stop). The cancel is sent at most once per job, through
+  the gate as non-idempotent (never retried), and is bounded by `timeout_seconds` even after the run was cancelled. Its
+  outcome is a notice, never an error: the read fails with its own error. A job whose start request failed has no id,
+  so it cannot be cancelled. `download_pointer` may now resolve to a list of URLs: each file is downloaded and read in
+  order, with the full single-file budgets (`max_download_mb`, the decompression cap, the idle timeout) and one
+  scratch file on disk at a time. Every URL is checked (a string, a valid URL, `allow_hosts`) before the first download.
+  An empty list reads as no rows, with a notice. Under `if_missing: empty`, several files give one notice that counts
+  the files with no matching member. There is still no checkpoint: a retry starts a new job. Without `cancel_path`, and
+  with a single URL, nothing changes.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

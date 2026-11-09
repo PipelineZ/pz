@@ -10,6 +10,21 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
 {
     public const string JobIdToken = "{job_id}";
 
+    /// <summary>The `cancel_path` template: where a job the read abandons is cancelled (best effort, once,
+    /// never retried). Null when the dataset sets none, which keeps the job running on failure as before.</summary>
+    public string? CancelPath { get; init; }
+
+    /// <summary>The `cancel_method` (default DELETE); meaningful only with <see cref="CancelPath"/>.</summary>
+    public HttpMethod CancelMethod { get; init; } = HttpMethod.Delete;
+
+    private static readonly Dictionary<string, HttpMethod> CancelMethods = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["delete"] = HttpMethod.Delete,
+        ["post"] = HttpMethod.Post,
+        ["put"] = HttpMethod.Put,
+        ["patch"] = HttpMethod.Patch,
+    };
+
     public static HttpExportConfig? Parse(object? raw, List<string> errors)
     {
         if (raw is null)
@@ -88,6 +103,38 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
             errors.Add("export needs one of download_pointer or download_path");
         }
 
+        var cancelPath = Get("cancel_path");
+        if (cancelPath is not null)
+        {
+            if (cancelPath.Length == 0 || cancelPath[0] != '/')
+            {
+                errors.Add($"export.cancel_path must start with '/', got '{cancelPath}'");
+            }
+
+            if (CountOf(cancelPath) != 1)
+            {
+                errors.Add($"export.cancel_path must contain {JobIdToken} exactly once (the cancel must name the " +
+                    $"job), got '{cancelPath}'");
+            }
+        }
+
+        var cancelMethod = HttpMethod.Delete;
+        if (Get("cancel_method") is { } methodText)
+        {
+            if (!CancelMethods.TryGetValue(methodText, out var parsed))
+            {
+                errors.Add($"export.cancel_method must be one of delete, post, put, patch, got '{methodText}'");
+            }
+            else if (cancelPath is null && !rejected.Contains("cancel_path"))
+            {
+                errors.Add("export.cancel_method requires export.cancel_path");
+            }
+            else
+            {
+                cancelMethod = parsed;
+            }
+        }
+
         var ready = StringList(block, "ready", required: true, errors);
         var failed = StringList(block, "failed", required: false, errors);
 
@@ -100,7 +147,11 @@ internal sealed record HttpExportConfig(string JobIdPointer, string StatusPath, 
         }
 
         return new HttpExportConfig(jobId!, statusPath!, statusPointer!, ready, failed, messagePointer,
-            downloadPointer, downloadPath, TimeSpan.FromSeconds(poll), TimeSpan.FromMinutes(timeout));
+            downloadPointer, downloadPath, TimeSpan.FromSeconds(poll), TimeSpan.FromMinutes(timeout))
+        {
+            CancelPath = cancelPath,
+            CancelMethod = cancelMethod,
+        };
     }
 
     private static int CountOf(string path)
