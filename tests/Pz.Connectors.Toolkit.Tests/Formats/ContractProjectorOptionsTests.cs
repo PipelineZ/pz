@@ -216,4 +216,21 @@ public class ContractProjectorOptionsTests
             Assert.False(ex.IsTransient);
         }
     }
+
+    // 0 is the epoch itself (and a common "never" sentinel); the seconds guard is for (0, 1e11) and below 0.
+    [Theory]
+    [InlineData("0")]
+    [InlineData("0.0")]
+    [InlineData("-0")]
+    public void Zero_milliseconds_is_the_epoch(string json)
+        => Assert.Equal(DateTimeOffset.UnixEpoch,
+            Convert(json, new ContractReadOptions { EpochUnit = EpochUnit.Milliseconds }));
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("0.5")]
+    public void Just_above_zero_milliseconds_still_looks_like_seconds(string json)
+        => Assert.Contains("looks like seconds",
+            Assert.Throws<PzConnectorException>(() =>
+                Convert(json, new ContractReadOptions { EpochUnit = EpochUnit.Milliseconds })).Message);
 }

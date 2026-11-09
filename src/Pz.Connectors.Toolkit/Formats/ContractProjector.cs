@@ -164,7 +164,8 @@ public static class ContractProjector
         // The unit-confusion guards come first. A seconds feed read as milliseconds lands in early 1970,
         // and a milliseconds feed read as seconds lands centuries ahead: both would be silently wrong
         // timestamps, and a wrong cursor would move the watermark wrongly for good.
-        if (!seconds && value < MinPlausibleMilliseconds)
+        // Exactly 0 is the epoch instant (and a common "never" sentinel), not a seconds value.
+        if (!seconds && value != 0 && value < MinPlausibleMilliseconds)
         {
             throw new PzConnectorException(
                 $"{where} is out of range (before 1973-03-03, below 1e11 ms); it looks like seconds" +
@@ -189,7 +190,8 @@ public static class ContractProjector
         return DateTimeOffset.UnixEpoch.AddTicks((long)decimal.Truncate(value * ticksPerUnit));
     }
 
-    /// <summary>1e11 ms is 1973-03-03T09:46:40Z: a smaller milliseconds value is almost always seconds.</summary>
+    /// <summary>1e11 ms is 1973-03-03T09:46:40Z: a smaller milliseconds value other than exactly 0 is almost
+    /// always seconds.</summary>
     public const decimal MinPlausibleMilliseconds = 100_000_000_000m;
 
     /// <summary>3000-01-01T00:00:00Z in seconds: a larger seconds value is almost always milliseconds.</summary>
