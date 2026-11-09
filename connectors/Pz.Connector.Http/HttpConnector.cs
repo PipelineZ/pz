@@ -31,7 +31,52 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         ConnectorCapabilities.CheckpointableReads |
         ConnectorCapabilities.Merge | ConnectorCapabilities.CheckpointableWrites;
 
-    public string ConnectionConfigSchema => """
+    // Shared schema fragments. Each mirrors its parser exactly (HttpSchemaParserAgreementTests holds them to it).
+
+    /// <summary>An RFC 9110 token: what a header field name may contain (as the parsers check it).</summary>
+    private const string HeaderName = """{ "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" }""";
+
+    /// <summary>A header a request can carry itself: a token that is not a content header
+    /// (as the parsers check it).</summary>
+    private const string RequestHeaderName = """
+        { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
+          "not": { "pattern": "^([Cc][Oo][Nn][Tt][Ee][Nn][Tt]-.*|[Aa][Ll][Ll][Oo][Ww]|[Ee][Xx][Pp][Ii][Rr][Ee][Ss]|[Ll][Aa][Ss][Tt]-[Mm][Oo][Dd][Ii][Ff][Ii][Ee][Dd])$" } }
+        """;
+
+    /// <summary>A session <c>ttl</c>: the pz duration grammar from 1s to 30d.</summary>
+    private const string SessionTtl =
+        "^0*([1-9][0-9]{3,8}ms|1[0-9]{9}ms|2[0-4][0-9]{8}ms|25[0-8][0-9]{7}ms|259[01][0-9]{6}ms|2592000000ms" +
+        "|[1-9][0-9]{0,5}s|1[0-9]{6}s|2[0-4][0-9]{5}s|25[0-8][0-9]{4}s|259[01][0-9]{3}s|2592000s" +
+        "|[1-9][0-9]{0,3}m|[1-3][0-9]{4}m|4[0-2][0-9]{3}m|43[01][0-9]{2}m|43200m" +
+        "|[1-9][0-9]?h|[1-6][0-9]{2}h|7[01][0-9]h|720h|([1-9]|[12][0-9]|30)d)$";
+
+    /// <summary>A rule's <c>retry_after</c>: the pz duration grammar above 0 and at most 600s.</summary>
+    private const string RuleRetryAfter =
+        "^0*([1-9][0-9]{0,4}ms|[1-5][0-9]{5}ms|600000ms|[1-9][0-9]?s|[1-5][0-9]{2}s|600s|([1-9]|10)m)$";
+
+    /// <summary>One <c>status</c> entry: a code from 400 to 599 other than 407, or a class.</summary>
+    private const string StatusEntry =
+        """{ "anyOf": [ { "type": "integer", "minimum": 400, "maximum": 599, "not": { "const": 407 } }, { "enum": ["4xx", "5xx"] } ] }""";
+
+    /// <summary>What a <c>skip</c> rule without <c>body_contains</c> may name: exact codes, none of 401, 403, 408, 429.</summary>
+    private const string NarrowSkipEntry = """{ "type": "integer", "not": { "enum": [401, 403, 408, 429] } }""";
+
+    private const string StatusRules = $$"""
+        { "type": "array", "minItems": 1, "items": { "type": "object", "properties": {
+            "status": { "anyOf": [ {{StatusEntry}}, { "type": "array", "minItems": 1, "items": {{StatusEntry}} } ] },
+            "body_contains": { "type": "string", "minLength": 1 },
+            "action": { "enum": ["transient", "permanent", "skip"] },
+            "retry_after": { "type": "string", "pattern": "{{RuleRetryAfter}}" } },
+            "required": ["status", "action"], "additionalProperties": false,
+            "allOf": [
+                { "if": { "required": ["retry_after"] }, "then": { "properties": { "action": { "const": "transient" } } } },
+                { "if": { "properties": { "action": { "const": "skip" } }, "required": ["action"],
+                          "not": { "required": ["body_contains"] } },
+                  "then": { "properties": { "status": { "anyOf": [ {{NarrowSkipEntry}},
+                      { "type": "array", "items": {{NarrowSkipEntry}} } ] } } } } ] } }
+        """;
+
+    public string ConnectionConfigSchema => $$"""
         { "type": "object", "required": ["base_url"], "properties": {
             "base_url": { "type": "string" },
             "check_path": { "type": "string" },
@@ -53,7 +98,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "params": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
                 "login": { "type": "object", "properties": {
                     "path": { "type": "string" }, "url": { "type": "string" },
-                    "method": { "enum": ["post", "get"] },
+                    "method": { "type": "string", "pattern": "^([Pp][Oo][Ss][Tt]|[Gg][Ee][Tt])$" },
                     "body": { "type": ["object", "string"], "writeOnly": true },
                     "body_format": { "enum": ["json", "form"] },
                     "content_type": { "type": "string" },
@@ -63,12 +108,14 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "inject": { "oneOf": [
                     { "const": "bearer" },
                     { "type": "object", "properties": {
-                        "header": { "type": "string" }, "prefix": { "type": "string" }, "query": { "type": "string" } },
+                        "header": {{RequestHeaderName}}, "prefix": { "type": "string" }, "query": { "type": "string" } },
+                      "oneOf": [ { "required": ["header"] }, { "required": ["query"] } ],
+                      "dependentRequired": { "prefix": ["header"] },
                       "additionalProperties": false } ] },
-                "ttl": { "type": "string", "pattern": "^[0-9]+(ms|s|m|h|d)$" },
+                "ttl": { "type": "string", "pattern": "{{SessionTtl}}" },
                 "expires_in_pointer": { "type": "string" },
-                "reauth_status": { "type": "array", "minItems": 1,
-                    "items": { "type": "integer", "minimum": 400, "maximum": 499 } } },
+                "reauth_status": { "type": "array",
+                    "items": { "type": "integer", "minimum": 400, "maximum": 499, "not": { "enum": [407, 429] } } } },
                 "required": ["type"], "additionalProperties": false },
             "headers": { "type": "object", "additionalProperties": { "type": "string" } },
             "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 3600 },
@@ -76,7 +123,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "max_download_mb": { "type": "integer", "minimum": 1, "maximum": 1048576 },
             "allow_hosts": { "type": "array", "items": { "type": "string" } },
             "retry_after": { "type": "object", "properties": {
-                "header": { "type": "string" }, "kind": { "enum": ["seconds", "ms", "epoch"] } },
+                "header": {{HeaderName}}, "kind": { "enum": ["seconds", "ms", "epoch"] } },
                 "required": ["header", "kind"], "additionalProperties": false },
             "proxy": { "oneOf": [
                 { "const": "none" },
@@ -95,7 +142,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
           "additionalProperties": false }
         """;
 
-    public string DatasetConfigSchema => """
+    public string DatasetConfigSchema => $$"""
         { "type": "object", "required": ["path"], "properties": {
             "path": { "type": "string" },
             "query": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
@@ -103,7 +150,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "strategy": { "enum": ["page", "offset", "link_header", "cursor", "next_url"] },
                 "param": { "type": "string" }, "start": { "type": "integer" },
                 "size_param": { "type": "string" }, "size": { "type": "integer" },
-                "pointer": { "type": "string" }, "header": { "type": "string" },
+                "pointer": { "type": "string" }, "header": {{HeaderName}},
                 "stop_on_short_page": { "type": "boolean" },
                 "location": { "enum": ["query", "body", "header"] },
                 "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 } },
@@ -111,7 +158,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "items": { "type": "string" },
             "columns": { "type": "object", "minProperties": 1, "additionalProperties": {
                 "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } },
-            "column_pointers": { "type": "object", "additionalProperties": { "type": "string" } },
+            "column_pointers": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^(/([^~]|~[01])*)+$" } },
             "epoch_unit": { "enum": ["s", "ms"] },
             "watermark_format": { "type": "string", "minLength": 1 },
             "watermark_time_zone": { "type": "string", "minLength": 1 },
@@ -125,12 +172,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "body_format": { "enum": ["json", "form"] },
             "content_type": { "type": "string" },
             "error_pointer": { "type": "string" },
-            "on_status": { "type": "array", "minItems": 1, "items": { "type": "object", "properties": {
-                    "status": { "type": ["integer", "string", "array"] },
-                    "body_contains": { "type": "string", "minLength": 1 },
-                    "action": { "enum": ["transient", "permanent", "skip"] },
-                    "retry_after": { "type": "string" } },
-                    "required": ["status", "action"], "additionalProperties": false } },
+            "on_status": {{StatusRules}},
             "max_pages": { "type": "integer", "minimum": 1 },
             "run_date": { "type": "object", "properties": {
                 "offset_days": { "type": "integer", "minimum": -36500, "maximum": 36500 }, "timezone": { "type": "string" },
@@ -158,10 +200,12 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "download_pointer": { "type": "string" }, "download_path": { "type": "string" },
                 "poll_interval_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
                 "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 1440 },
-                "cancel_path": { "type": "string" },
+                "cancel_path": { "type": "string", "pattern": "^/.*\\{job_id\\}",
+                    "not": { "pattern": "\\{job_id\\}.*\\{job_id\\}" } },
                 "cancel_method": { "type": "string",
                     "pattern": "^([Dd][Ee][Ll][Ee][Tt][Ee]|[Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh])$" } },
                 "required": ["job_id", "status_path", "status_pointer", "ready"],
+                "dependentRequired": { "cancel_method": ["cancel_path"] },
                 "additionalProperties": false },
             "for_each": { "type": "object", "properties": {
                 "path": { "type": "string" },
@@ -175,18 +219,13 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                     "strategy": { "enum": ["page", "offset", "link_header", "cursor", "next_url"] },
                     "param": { "type": "string" }, "start": { "type": "integer" },
                     "size_param": { "type": "string" }, "size": { "type": "integer" },
-                    "pointer": { "type": "string" }, "header": { "type": "string" },
+                    "pointer": { "type": "string" }, "header": {{HeaderName}},
                     "stop_on_short_page": { "type": "boolean" },
                     "location": { "enum": ["query", "body", "header"] },
                 "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 } },
                     "required": ["strategy"], "additionalProperties": false },
                 "error_pointer": { "type": "string" },
-                "on_status": { "type": "array", "minItems": 1, "items": { "type": "object", "properties": {
-                    "status": { "type": ["integer", "string", "array"] },
-                    "body_contains": { "type": "string", "minLength": 1 },
-                    "action": { "enum": ["transient", "permanent", "skip"] },
-                    "retry_after": { "type": "string" } },
-                    "required": ["status", "action"], "additionalProperties": false } },
+                "on_status": {{StatusRules}},
                 "max_pages": { "type": "integer", "minimum": 1 },
                 "fields": { "type": "object", "minProperties": 1,
                     "additionalProperties": { "type": "string" } },
@@ -194,6 +233,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "on_missing": { "enum": ["error", "skip"] },
                 "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 },
                 "values": { "type": "array", "minItems": 1, "items": { "type": "object", "minProperties": 1,
+                    "propertyNames": { "pattern": "^[a-z_][a-z0-9_]*$", "not": { "pattern": "^pz_" } },
                     "additionalProperties": { "type": ["string", "number", "boolean", "null"] } } },
                 "dedupe": { "type": "boolean" } },
                 "anyOf": [ { "required": ["path", "fields"] }, { "required": ["values"] } ],
