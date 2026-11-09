@@ -193,17 +193,32 @@ public class CompileWarningsTests
         Assert.DoesNotContain(dag.Warnings, x => x.Code == PzErrorCode.RunIdentityInRenderedSql);
     }
 
-    private static Pz.Core.Model.PzProject CoarseFormat(string format, string strategy) => Project(
-        [Pipe("events", Into("out", strategy: strategy, keys: strategy == "merge" ? ["id"] : null) +
-                        "select 1 as id from {{ source('api', 'events') }}")],
-        sources: [new Pz.Core.Model.ConnectionDef("api", "http",
-            new Dictionary<string, object?> { ["base_url"] = "https://api.example.com/" },
-            [new Pz.Core.Model.DatasetDef("events", new Dictionary<string, object?>
-            {
-                ["path"] = "/events",
-                ["watermark_format"] = format,
-            }, null)], "connections.yml")],
-        sinks: [Sink()]);
+    /// <summary>An http dataset (or <paramref name="connector"/>) with a `watermark_format`, incremental on
+    /// `updated_at` unless <paramref name="incremental"/> is false, feeding one output.</summary>
+    private static Pz.Core.Model.PzProject CoarseFormat(string format, string strategy, string connector = "http",
+        bool incremental = true, string cursorType = "timestamp", bool contract = false)
+    {
+        var options = new Dictionary<string, object?> { ["path"] = "/events", ["watermark_format"] = format };
+        if (!contract)
+        {
+            options["cursor"] = "updated_at";
+            options["cursor_type"] = cursorType;
+        }
+
+        var dataset = new Pz.Core.Model.DatasetDef("events", options,
+            contract ? new Dictionary<string, string> { ["id"] = "bigint", ["updated_at"] = cursorType } : null,
+            incremental
+                ? new Pz.Core.Model.SyncModeDef(Pz.Core.Model.SyncMode.Incremental, new Pz.Core.Model.IncrementalDef("updated_at"))
+                : null);
+        return Project(
+            [Pipe("events", Into("out", strategy: strategy, keys: strategy == "merge" ? ["id"] : null,
+                                 duplicates: strategy == "append" && incremental ? "accept" : null) +
+                            "select 1 as id from {{ source('api', 'events') }}")],
+            sources: [new Pz.Core.Model.ConnectionDef("api", connector,
+                new Dictionary<string, object?> { ["base_url"] = "https://api.example.com/" }, [dataset],
+                "connections.yml")],
+            sinks: [Sink()]);
+    }
 
     [Theory]
     [InlineData("date")]
@@ -221,16 +236,54 @@ public class CompileWarningsTests
         Assert.Contains("re-read", w.Message, StringComparison.Ordinal);
     }
 
-    [Theory]
-    [InlineData("epoch_s", "append")]
-    [InlineData("iso8601", "append")]
-    [InlineData("yyyy-MM-dd HH", "append")]
-    [InlineData("yyyy-MM-dd'T'HH:mm", "append")]
-    [InlineData("date", "replace")]
-    [InlineData("date", "merge")]
-    public void Fine_formats_or_idempotent_sinks_are_silent(string format, string strategy)
+    [Fact]
+    public void A_contract_timestamp_cursor_warns_too()
     {
-        var p = CoarseFormat(format, strategy);
+        var p = CoarseFormat("date", "append", contract: true);
+        Assert.Single(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
+    }
+
+    [Theory]
+    [InlineData("epoch_s")]
+    [InlineData("iso8601")]
+    [InlineData("yyyy-MM-dd HH")]
+    [InlineData("yyyy-MM-dd'T'HH:mm")]
+    public void Fine_formats_are_silent(string format)
+    {
+        var p = CoarseFormat(format, "append");
+        Assert.DoesNotContain(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
+    }
+
+    [Fact]
+    public void A_merge_sink_is_silent()
+    {
+        var p = CoarseFormat("date", "merge");
+        Assert.DoesNotContain(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
+    }
+
+    // A date cursor already renders as a date: the format adds no re-read.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_date_cursor_is_silent(bool contract)
+    {
+        var p = CoarseFormat("date", "append", cursorType: "date", contract: contract);
+        Assert.DoesNotContain(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
+    }
+
+    // The option and its meaning are http's; another connector's same-named option is not ours to judge.
+    [Fact]
+    public void Another_connector_is_silent()
+    {
+        var p = CoarseFormat("date", "append", connector: "acme");
+        Assert.DoesNotContain(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
+    }
+
+    // Without an incremental read nothing is floored per run; the format renders no watermark.
+    [Fact]
+    public void A_non_incremental_dataset_is_silent()
+    {
+        var p = CoarseFormat("date", "append", incremental: false);
         Assert.DoesNotContain(DagCompiler.Compile(p, Ctx(p)).Warnings, x => x.Code == PzErrorCode.ConnectorConfigWarning);
     }
 }
