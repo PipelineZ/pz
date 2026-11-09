@@ -10,16 +10,18 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 ### Added
 
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
-  `{url, user, password, bypass}`; it supports basic auth only, and credentials go in `user`/`password` (a `url` with
-  userinfo is refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The
-  system roots stay trusted, and expiry and hostname checks always apply. There is no switch that disables
-  validation. `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented only to the
-  connection's own hosts: not to other hosts, not to the bare client, and not to an OAuth2 token endpoint on another
-  origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For `auth.type: azure_ad`,
-  `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined with `proxy` or `tls`
-  is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a proxy `407` is
-  permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is configured is
-  a transient error with a `tls.client_certificate` hint.
+  `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
+  end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is
+  refused). `tls.ca_file` adds trust anchors from a PEM file; the anchor may be an intermediate CA. The system roots
+  stay trusted, and expiry and hostname checks always apply. There is no switch that disables validation.
+  `tls.client_certificate` is PKCS#12 (`.pfx`/`.p12`) or PEM plus `key_path`. It is presented to `base_url`'s origin and
+  to the `allow_hosts` hosts the connection's own client reaches (for example a next-page link), the same way connection
+  headers travel; it is not presented by the bare client (credential-free file downloads from other hosts) or to an
+  OAuth2 token endpoint on another origin. Both settings apply to dataset, sink, check and OAuth2 token requests. For
+  `auth.type: azure_ad`, `service_principal` uses them, `managed_identity` ignores them, and `credential_chain` combined
+  with `proxy` or `tls` is refused. Failures are explicit: a TLS trust failure is permanent and names `tls.ca_file`; a
+  proxy `407` is permanent and names `proxy.user`/`proxy.password`; a dropped connection while a client certificate is
+  configured is a transient error with a `tls.client_certificate` hint.
 - **http: parallel fetching.** Two opt-in keys, each an integer 1-16 (default 1, which behaves exactly as before).
   `pagination.concurrency` reads up to N pages at once; it needs `strategy: page`, applies only to datasets without
   `for_each`, and cannot be combined with `delta_pointer`. Pages still land in order. `for_each.concurrency` runs up
