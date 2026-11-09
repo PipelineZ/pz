@@ -20,6 +20,9 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     private readonly ManualClock _clock = new();
     private Task<TimeSpan>? _nextTimer;
 
+    /// <summary>Every notice the sources these tests build emitted, in order.</summary>
+    private readonly List<string> _notices = [];
+
     /// <summary>The connection timeout these tests configure. The download arms an idle-read timer of
     /// this length per read; the clock keeps those out of <see cref="ManualClock.NextTimerAsync"/>, so
     /// advancing past a poll wait never fires a stall.</summary>
@@ -59,15 +62,22 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         }
     }
 
-    private HttpSource Source(Dictionary<string, object?>? auth = null, bool allowFiles = true)
+    private HttpSource Source(Dictionary<string, object?>? auth = null, bool allowFiles = true,
+        string? maxDownloadMb = null, string? timeoutSeconds = null)
     {
         var values = new Dictionary<string, object?>
         {
             ["base_url"] = _server.BaseUrl.ToString(),
             ["auth"] = auth ?? new Dictionary<string, object?> { ["type"] = "bearer", ["token"] = "secret-token" },
             ["headers"] = new Dictionary<string, object?> { ["X-Conn"] = "header-secret" },
-            ["timeout_seconds"] = IdleTimeout.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ["timeout_seconds"] = timeoutSeconds
+                ?? IdleTimeout.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
         };
+        if (maxDownloadMb is not null)
+        {
+            values["max_download_mb"] = maxDownloadMb;
+        }
+
         if (allowFiles)
         {
             values["allow_hosts"] = new List<object?> { _files.BaseUrl.Host };
@@ -76,7 +86,15 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         var errors = new List<string>();
         var connection = HttpConnectionConfig.Parse(new ConnectorConfig(values), errors);
         Assert.Empty(errors);
-        return new HttpSource(connection!, _clock);
+        var source = new HttpSource(connection!, _clock);
+        source.UseNotice(n =>
+        {
+            lock (_notices)
+            {
+                _notices.Add(n);
+            }
+        });
+        return source;
     }
 
     private static DatasetSpec Spec(Dictionary<string, object?> export, Action<Dictionary<string, object?>>? edit = null)
@@ -181,6 +199,41 @@ public sealed class HttpExportJobTests : IAsyncLifetime
                 if (done == work)
                 {
                     return (await work, waits);
+                }
+
+                _nextTimer = null;
+                var due = await next;
+                waits.Add(due);
+                _clock.Advance(due);
+            }
+        }
+        finally
+        {
+            if (owned)
+            {
+                await source.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>Like <see cref="Read"/> for a read that must fail: the failure and the waits it parked on.</summary>
+    private async Task<(PzConnectorException Error, List<TimeSpan> Waits)> ReadFailing(DatasetSpec spec,
+        HttpSource? source = null)
+    {
+        var waits = new List<TimeSpan>();
+        var owned = source is null;
+        source ??= Source();
+        try
+        {
+            var partition = Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
+            var work = Collect(partition);
+            while (true)
+            {
+                var next = _nextTimer ??= _clock.NextTimerAsync();
+                var done = await Task.WhenAny(work, next).WaitAsync(TimeSpan.FromSeconds(30));
+                if (done == work)
+                {
+                    return (await Assert.ThrowsAsync<PzConnectorException>(() => work), waits);
                 }
 
                 _nextTimer = null;
@@ -381,17 +434,102 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     [Fact]
     public async Task Job_id_is_flattened_and_capped_in_messages()
     {
-        var id = "a\r\nb" + new string('x', 150);
-        // Fixed status_path: the id never reaches the URL (http.sys rejects encoded CR/LF in paths).
+        var id = "x" + new string('y', 150) + "\r\nz";
         MapJob("/reports/status", System.Text.Json.JsonSerializer.Serialize(id), """{"state":"failed"}""");
 
         var ex = await Assert.ThrowsAsync<PzConnectorException>(
             () => Read(Spec(Export(("status_path", "/reports/status")))));
 
-        var shown = ("a b" + new string('x', 150))[..100] + "…";
-        Assert.Contains($"export job {shown} failed with status 'failed'", ex.Message);
+        var shown = ("x" + new string('y', 150))[..100] + "…";
+        Assert.Contains($"export job id '{shown}'", ex.Message);
         Assert.DoesNotContain("\n", ex.Message);
-        Assert.DoesNotContain(new string('x', 98), ex.Message);
+        Assert.DoesNotContain(new string('y', 100), ex.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("../admin")]
+    [InlineData("./x")]
+    [InlineData("x/..")]
+    [InlineData("x/./y")]
+    [InlineData("projects/../jobs")]
+    [InlineData("a\\b")]
+    [InlineData("a\u0001b")]
+    [InlineData("a\tb")]
+    [InlineData("a\u007fb")]
+    public async Task Unsafe_job_id_is_refused_before_any_poll_or_cancel(string id)
+    {
+        _server.Map("/reports/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/status", System.Text.Json.JsonSerializer.Serialize(id), """{"state":"running"}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(
+            ("status_path", "/reports/status"), CancelPath("/reports/{job_id}")))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("http source 'stub.traffic': export start: export job id", ex.Message);
+        Assert.Contains("cannot be used in a URL path", ex.Message);
+        Assert.Contains("has a '.' or '..' segment", ex.Message);
+        Assert.Single(_server.Requests);
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Resource_name_job_id_still_polls_and_cancels()
+    {
+        // A slash-separated id is inserted escaped, as before: one path segment.
+        _server.MapPrefix("/reports/projects", r => r.Method == "DELETE"
+            ? new StubResponse(204, "")
+            : Json("""{"state":"failed"}"""));
+        _server.Map("/reports", _ => Json("""{"id":"projects/1/jobs/2"}""", 202));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => Read(Spec(CancellingExport(CancelPath("/reports/{job_id}")))));
+
+        Assert.Contains("export job projects/1/jobs/2 failed with status 'failed'", ex.Message);
+        var poll = Assert.Single(_server.Requests, r => r.Method == "GET");
+        Assert.Equal("/reports/projects%2F1%2Fjobs%2F2", poll.Url.AbsolutePath);
+        var cancel = Assert.Single(_server.Requests, r => r.Method == "DELETE");
+        Assert.Equal("/reports/projects%2F1%2Fjobs%2F2", cancel.Url.AbsolutePath);
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job projects/1/jobs/2 " +
+            "(reported failure)"], Notices());
+    }
+
+    [Fact]
+    public async Task Base64_job_id_with_empty_segments_polls_as_one_escaped_segment()
+    {
+        // Standard base64 ids can start with '/' or hold '//' (bytes FF FF); escaped, they stay one segment.
+        _server.Map("/files/abc.csv", _ => File(Csv));
+        _server.Map("/reports", _ => Json("""{"id":"//8A/w=="}""", 202));
+        _server.MapPrefix("/reports/", _ => Json("""{"state":"done","result":{"url":"/files/abc.csv"}}"""));
+
+        var (rows, _) = await Read(Spec(Export()));
+
+        Assert.Equal(2, rows.Count);
+        var poll = Assert.Single(_server.Requests, r => r.Url.AbsolutePath.StartsWith("/reports/", StringComparison.Ordinal));
+        Assert.Equal("/reports/%2F%2F8A%2Fw%3D%3D", poll.Url.AbsolutePath);
+    }
+
+    [Theory]
+    [InlineData("job-1.csv")]
+    [InlineData("...")]
+    [InlineData("a b")]
+    [InlineData("é")]
+    [InlineData("a//b")]
+    [InlineData("/a")]
+    [InlineData("a/")]
+    [InlineData("/")]
+    [InlineData("//+/")]
+    public async Task Ordinary_job_ids_are_accepted(string id)
+    {
+        _server.Map("/files/abc.csv", _ => File(Csv));
+        MapJob("/reports/status", System.Text.Json.JsonSerializer.Serialize(id),
+            """{"state":"done","result":{"url":"/files/abc.csv"}}""");
+
+        var (rows, _) = await Read(Spec(Export(("status_path", "/reports/status"))));
+
+        Assert.Equal(2, rows.Count);
     }
 
     [Fact]
@@ -619,5 +757,887 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         Assert.False(ex.IsTransient);
         Assert.Contains("download: HTTP 410 from", ex.Message);
         Assert.EndsWith("(on_status[0]: permanent)", ex.Message);
+    }
+
+    // ---- export.cancel_path: the clean-up of a job the read abandons ----
+
+    private static (string, object?) CancelPath(string path = "/reports/{job_id}/cancel") => ("cancel_path", path);
+
+    /// <summary>An export with <c>cancel_path</c> whose cancel call the read helpers must not time out: the
+    /// cancel's 10 s cap is kept out of <see cref="ManualClock.NextTimerAsync"/>, so polls wait 7 s instead
+    /// of the default 10 s.</summary>
+    private Dictionary<string, object?> CancellingExport(params (string Key, object? Value)[] extra)
+    {
+        _clock.Unannounce(TimeSpan.FromSeconds(10));
+        return Export([CancelPath(), ("poll_interval_seconds", "7"), .. extra]);
+    }
+
+    private IEnumerable<StubRequest> Cancels(string path = "/reports/j1/cancel")
+        => _server.Requests.Where(r => r.Url.AbsolutePath == path && r.Method != "GET");
+
+    private List<string> Notices()
+    {
+        lock (_notices)
+        {
+            return [.. _notices];
+        }
+    }
+
+    [Fact]
+    public async Task Timeout_cancels_the_job_once_with_delete()
+    {
+        // Status and cancel share a path; the cancel is the only DELETE.
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", r => r.Method == "DELETE" ? new StubResponse(204, "") : Json("""{"state":"running"}"""));
+        var gate = new RecordingGate();
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(
+            Spec(CancellingExport(("timeout_minutes", "1"), ("poll_interval_seconds", "30"), CancelPath("/reports/{job_id}"))),
+            gate: gate));
+
+        Assert.True(ex.IsTransient);
+        Assert.Contains("export job j1 not ready after 1 minutes", ex.Message);
+        var cancel = Assert.Single(_server.Requests, r => r.Method == "DELETE");
+        Assert.Equal("/reports/j1", cancel.Url.AbsolutePath);
+        Assert.Equal("Bearer secret-token", cancel.Headers["Authorization"]);
+        Assert.Equal("header-secret", cancel.Headers["X-Conn"]);
+        Assert.Equal("", cancel.Body);
+        Assert.Single(gate.Calls, c => c.Label == "http.export_cancel");
+        Assert.Contains(("http.export_cancel", false), gate.Calls);
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (timed out)"], Notices());
+    }
+
+    [Fact]
+    public async Task Failed_status_cancels_with_the_configured_method()
+    {
+        _server.Map("/reports/j1/cancel", _ => Json("{}"));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => Read(Spec(CancellingExport(("cancel_method", "POST")))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("failed with status 'failed'", ex.Message);
+        var cancel = Assert.Single(Cancels());
+        Assert.Equal("POST", cancel.Method);
+        Assert.Equal("", cancel.Body);
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (reported failure)"],
+            Notices());
+    }
+
+    [Fact]
+    public async Task Failed_cancel_is_a_notice_and_never_retried()
+    {
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(500, "cancel broke"));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+        var gate = new RetryingGate();
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), gate: gate));
+
+        // The read's own failure is what surfaces, not the cancel's.
+        Assert.Contains("failed with status 'failed'", ex.Message);
+        Assert.Single(Cancels());
+        var notice = Assert.Single(Notices());
+        Assert.StartsWith("http source 'stub.traffic': export cancel: could not cancel export job j1 " +
+            "(reported failure): ", notice);
+        Assert.Contains("HTTP 500", notice);
+    }
+
+    [Fact]
+    public async Task Rejected_cancel_reports_the_status_only()
+    {
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(409, "job j1 already finished"));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+        await using var source = Source(new Dictionary<string, object?>
+            { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" });
+
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
+
+        var cancel = Assert.Single(Cancels());
+        Assert.Contains("api_key=TOPSECRET", cancel.Url.Query);
+        var notice = Assert.Single(Notices());
+        Assert.StartsWith("http source 'stub.traffic': export cancel: could not cancel export job j1 " +
+            "(reported failure): HTTP 409 from DELETE ", notice);
+        Assert.Contains("/reports/j1/cancel", notice);
+        // The body is never read, so it is never quoted.
+        Assert.DoesNotContain("already finished", notice);
+        Assert.DoesNotContain("TOPSECRET", notice);
+    }
+
+    [Fact]
+    public async Task Poll_failure_cancels_the_job()
+    {
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => new StubResponse(400, "bad"));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(202, ""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport())));
+
+        Assert.Contains("export poll: HTTP 400", ex.Message);
+        Assert.Single(Cancels());
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (poll failed)"], Notices());
+    }
+
+    [Fact]
+    public async Task Download_failure_never_cancels_a_ready_job()
+    {
+        _server.Map("/files/abc.csv", _ => new StubResponse(403, "denied"));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"url":"/files/abc.csv"}}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath()))));
+
+        Assert.Contains("download: HTTP 403", ex.Message);
+        Assert.Empty(Cancels());
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Ready_job_without_a_download_url_is_not_cancelled()
+    {
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{}}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath()))));
+
+        Assert.Contains("does not resolve to a URL", ex.Message);
+        Assert.Empty(Cancels());
+    }
+
+    [Fact]
+    public async Task Cancelled_read_during_download_does_not_cancel_a_ready_job()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        _server.Map("/files/abc.csv", _ =>
+        {
+            entered.TrySetResult();
+            release.Wait(TimeSpan.FromSeconds(30));
+            return File(Csv);
+        });
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"url":"/files/abc.csv"}}""");
+        await using var source = Source();
+        var partition = Assert.Single(await source.PlanReadAsync(Spec(Export(CancelPath())), ReadHints.None,
+            CancellationToken.None));
+        using var cts = new CancellationTokenSource();
+
+        try
+        {
+            var reading = Task.Run(async () =>
+            {
+                await foreach (var batch in partition.ReadAsync(new BatchOptions(), cts.Token))
+                {
+                    batch.Dispose();
+                }
+            });
+            _clock.Advance(await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30)));
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            cts.Cancel();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading.WaitAsync(TimeSpan.FromSeconds(30)));
+            Assert.Empty(Cancels());
+            Assert.Empty(Notices());
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task Successful_read_never_cancels()
+    {
+        _server.Map("/files/abc.csv", _ => File(Csv));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"url":"/files/abc.csv"}}""");
+
+        var (rows, _) = await Read(Spec(Export(CancelPath())));
+
+        Assert.Equal(2, rows.Count);
+        Assert.Empty(Cancels());
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task No_cancel_path_sends_no_cancel()
+    {
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export())));
+
+        Assert.Equal(["POST /reports", "GET /reports/j1"],
+            _server.Requests.Select(r => $"{r.Method} {r.Url.AbsolutePath}"));
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task No_job_id_means_nothing_to_cancel()
+    {
+        _server.Map("/reports", _ => new StubResponse(500, "down"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(CancelPath()))));
+
+        Assert.True(ex.IsTransient);
+        Assert.Single(_server.Requests);
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Cancelled_read_still_cancels_the_job()
+    {
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"running"}""");
+        await using var source = Source();
+        var partition = Assert.Single(await source.PlanReadAsync(Spec(Export(CancelPath())), ReadHints.None,
+            CancellationToken.None));
+        using var cts = new CancellationTokenSource();
+
+        var reading = Task.Run(async () =>
+        {
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(), cts.Token))
+            {
+                batch.Dispose();
+            }
+        });
+        // The read parks on its first poll wait; cancel it there.
+        await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        cts.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading.WaitAsync(TimeSpan.FromSeconds(30)));
+        Assert.Single(Cancels());
+        Assert.Empty(Polls("/reports/j1"));
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (read was cancelled)"],
+            Notices());
+    }
+
+    [Fact]
+    public async Task Cancel_that_hangs_is_capped_at_ten_seconds()
+    {
+        using var release = new ManualResetEventSlim();
+        _server.Map("/reports/j1/cancel", _ =>
+        {
+            release.Wait(TimeSpan.FromSeconds(30));
+            return new StubResponse(204, "");
+        });
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+
+        try
+        {
+            // timeout_seconds is 77 here; the cancel's own cap (10 s) is the timer the read parks on.
+            var (ex, waits) = await ReadFailing(Spec(Export(CancelPath())));
+
+            Assert.Contains("failed with status 'failed'", ex.Message);
+            Assert.Equal([TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10)], waits);
+            Assert.Equal(["http source 'stub.traffic': export cancel: could not cancel export job j1 " +
+                "(reported failure): no response within 10 s"], Notices());
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_is_capped_by_a_lower_timeout_seconds()
+    {
+        using var release = new ManualResetEventSlim();
+        _server.Map("/reports/j1/cancel", _ =>
+        {
+            release.Wait(TimeSpan.FromSeconds(30));
+            return new StubResponse(204, "");
+        });
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+        await using var source = Source(timeoutSeconds: "3");
+
+        try
+        {
+            var (_, waits) = await ReadFailing(Spec(Export(CancelPath())), source);
+
+            Assert.Equal([TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(3)], waits);
+            Assert.EndsWith("no response within 3 s", Assert.Single(Notices()));
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_that_hangs_after_a_node_timeout_ends_within_five_seconds()
+    {
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _server.Map("/reports/j1/cancel", _ =>
+        {
+            entered.TrySetResult();
+            release.Wait(TimeSpan.FromSeconds(30));
+            return new StubResponse(204, "");
+        });
+        MapJob("/reports/j1", "\"j1\"", """{"state":"running"}""");
+        await using var source = Source();
+        var partition = Assert.Single(await source.PlanReadAsync(Spec(Export(CancelPath())), ReadHints.None,
+            CancellationToken.None));
+        // The engine's node timeout: the attempt token is cancelled while the job is still running.
+        using var nodeTimeout = new CancellationTokenSource();
+
+        try
+        {
+            var reading = Task.Run(async () =>
+            {
+                await foreach (var batch in partition.ReadAsync(new BatchOptions(), nodeTimeout.Token))
+                {
+                    batch.Dispose();
+                }
+            });
+            await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            nodeTimeout.Cancel();
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            var cap = await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.Equal(TimeSpan.FromSeconds(5), cap);
+            _clock.Advance(cap);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading.WaitAsync(TimeSpan.FromSeconds(30)));
+            Assert.Equal(["http source 'stub.traffic': export cancel: could not cancel export job j1 " +
+                "(read was cancelled): no response within 5 s"], Notices());
+        }
+        finally
+        {
+            release.Set();
+        }
+    }
+
+    [Fact]
+    public async Task Early_stop_never_cancels_a_ready_job()
+    {
+        _server.Map("/files/a.csv", _ => File(Csv));
+        _server.Map("/files/b.csv", _ => File(Csv));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"urls":["/files/a.csv","/files/b.csv"]}}""");
+        await using var source = Source();
+        var partition = Assert.Single(await source.PlanReadAsync(
+            Spec(Export(CancelPath(), ("download_pointer", "/result/urls"))), ReadHints.None, CancellationToken.None));
+
+        var reading = Task.Run(async () =>
+        {
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(), CancellationToken.None))
+            {
+                batch.Dispose();
+                break;
+            }
+        });
+        var due = await _clock.NextTimerAsync().WaitAsync(TimeSpan.FromSeconds(30));
+        _clock.Advance(due);
+        await reading.WaitAsync(TimeSpan.FromSeconds(30));
+
+        Assert.Empty(Cancels());
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath == "/files/b.csv");
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public void Unknown_binding_in_cancel_path_is_a_validation_error()
+    {
+        var ex = Assert.Throws<PzConnectorException>(
+            () => HttpDatasetConfig.Parse(Spec(Export(CancelPath("/reports/{{ nope }}/{job_id}")))));
+
+        Assert.Contains("export.cancel_path: unknown binding 'nope'", ex.Message);
+    }
+
+    [Fact]
+    public async Task Cancel_path_expands_bindings_then_job_id()
+    {
+        _server.Map("/jobs/2026-11-08/j1", _ => new StubResponse(204, ""));
+        MapJob("/reports/status", "\"j1\"", """{"state":"failed"}""");
+
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(("status_path", "/reports/status"),
+            CancelPath("/jobs/{{ run_date }}/{job_id}")))));
+
+        var cancel = Assert.Single(_server.Requests, r => r.Method == "DELETE");
+        Assert.Equal("/jobs/2026-11-08/j1", cancel.Url.AbsolutePath);
+    }
+
+    /// <summary>A gate that retries an idempotent op on a transient failure, like the engine's: proves the
+    /// cancel is never offered for a retry.</summary>
+    private sealed class RetryingGate : IOperationGate
+    {
+        public async Task<T> ExecuteAsync<T>(string opLabel, bool idempotent, Func<CancellationToken, Task<T>> op,
+            CancellationToken ct)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    return await op(ct);
+                }
+                catch (PzConnectorException ex) when (idempotent && ex.IsTransient && attempt < 3)
+                {
+                }
+            }
+        }
+
+        public void ReportBudget(int remaining, DateTimeOffset resetAt)
+        {
+        }
+    }
+
+    // ---- several result files ----
+
+    private static (string, object?) Urls => ("download_pointer", "/result/urls");
+
+    private static string ReadyFiles(params string[] urls)
+        => "{\"state\":\"done\",\"result\":{\"urls\":[" + string.Join(",", urls.Select(u => $"\"{u}\"")) + "]}}";
+
+    [Fact]
+    public async Task Array_of_urls_reads_every_file_in_order()
+    {
+        _server.Map("/files/a.csv", _ => File("id,name\n1,a\n"));
+        _files.Map("/bucket/b.csv", _ => File("id,name\n2,b\n3,c\n"));
+        _server.Map("/files/c.csv", _ => File("id,name\n4,d\n"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", FilesUrl("/bucket/b.csv?sig=S"), "/files/c.csv"));
+        var gate = new RecordingGate();
+
+        var (rows, _) = await Read(Spec(Export(Urls)), gate: gate);
+
+        Assert.Equal([[1, "a"], [2, "b"], [3, "c"], [4, "d"]], rows);
+        Assert.Equal(3, gate.Calls.Count(c => c == ("http.download", true)));
+        Assert.False(Assert.Single(_files.Requests).Headers.ContainsKey("Authorization"));
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Single_element_array_is_one_file()
+    {
+        _server.Map("/files/a.csv", _ => File(Csv));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv"));
+
+        var (rows, _) = await Read(Spec(Export(Urls)));
+
+        Assert.Equal([[1, "a"], [2, "b"]], rows);
+    }
+
+    [Fact]
+    public async Task Empty_array_reads_empty_with_a_notice()
+    {
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles());
+
+        var (rows, _) = await Read(Spec(Export(Urls)));
+
+        Assert.Empty(rows);
+        Assert.Equal(["http source 'stub.traffic': export poll: export job j1's ready response lists no result " +
+            "files at '/result/urls'; read as empty"], Notices());
+    }
+
+    [Fact]
+    public async Task Bad_entry_fails_before_any_download()
+    {
+        _server.Map("/files/a.csv", _ => File(Csv));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"urls":["/files/a.csv",5]}}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("export.download_pointer '/result/urls' entry [1] is not a URL string", ex.Message);
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath == "/files/a.csv");
+    }
+
+    [Fact]
+    public async Task Empty_string_entry_is_refused()
+    {
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", ""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls))));
+
+        Assert.Contains("entry [1] is not a URL string", ex.Message);
+    }
+
+    [Fact]
+    public async Task Disallowed_host_entry_fails_before_any_download()
+    {
+        _server.Map("/files/a.csv", _ => File(Csv));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", FilesUrl("/bucket/b.csv?sig=SECRET")));
+        await using var source = Source(allowFiles: false);
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls)), source));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("allow_hosts", ex.Message);
+        Assert.Contains("[1]", ex.Message);
+        Assert.DoesNotContain("SECRET", ex.Message);
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath == "/files/a.csv");
+        Assert.Empty(_files.Requests);
+    }
+
+    [Fact]
+    public async Task Object_at_pointer_is_still_refused()
+    {
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"urls":{"a":"/files/a.csv"}}}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls))));
+
+        Assert.Contains("does not resolve to a URL or a list of URLs", ex.Message);
+    }
+
+    [Fact]
+    public async Task Each_file_gets_its_own_download_budget()
+    {
+        // Two files of 0.75 MiB each pass a 1 MiB max_download_mb; together they would not.
+        var body = "id,name\n" + string.Concat(Enumerable.Repeat("1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", 16384));
+        Assert.InRange(body.Length, 700_000, 1_000_000);
+        _server.Map("/files/a.csv", _ => File(body));
+        _server.Map("/files/b.csv", _ => File(body));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+        await using var source = Source(maxDownloadMb: "1");
+
+        var (rows, _) = await Read(Spec(Export(Urls)), source);
+
+        Assert.Equal(2 * 16384, rows.Count);
+    }
+
+    [Fact]
+    public async Task Oversized_second_file_fails_the_read()
+    {
+        var big = "id,name\n" + string.Concat(Enumerable.Repeat("1,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", 30000));
+        _server.Map("/files/a.csv", _ => File(Csv));
+        _server.Map("/files/b.csv", _ => File(big));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+        await using var source = Source(maxDownloadMb: "1");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls)), source));
+
+        Assert.Contains("max_download_mb", ex.Message);
+    }
+
+    [Fact]
+    public async Task File_column_names_each_rows_own_file()
+    {
+        _server.Map("/files/a.csv", _ => File("id,name\n1,a\n"));
+        _server.Map("/files/b.csv", _ => File("id,name\n2,b\n"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+
+        var (rows, _) = await Read(Spec(Export(Urls), o =>
+            o["file"] = new Dictionary<string, object?> { ["format"] = "csv", ["file_column"] = "src" }));
+
+        Assert.Equal([[1, "a", "a.csv"], [2, "b", "b.csv"]], rows);
+    }
+
+    [Fact]
+    public async Task Second_file_failure_never_cancels_a_ready_job()
+    {
+        _server.Map("/files/a.csv", _ => File(Csv));
+        _server.Map("/files/b.csv", _ => new StubResponse(404, "gone"));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls, CancelPath()))));
+
+        Assert.Contains("download: HTTP 404", ex.Message);
+        Assert.Contains("/files/b.csv", ex.Message);
+        Assert.Empty(Cancels());
+    }
+
+    [Fact]
+    public async Task Unmatched_members_notice_counts_files()
+    {
+        _server.Map("/files/a.zip", _ => ZipFile(("x.csv", "id,name\n1,a\n")));
+        _server.Map("/files/b.zip", _ => ZipFile(("readme.txt", "nothing")));
+        _server.Map("/files/c.zip", _ => ZipFile(("other.txt", "nothing")));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.zip", "/files/b.zip", "/files/c.zip"));
+
+        var (rows, _) = await Read(Spec(Export(Urls), o => o["file"] = new Dictionary<string, object?>
+            { ["format"] = "csv", ["members"] = "*.csv", ["if_missing"] = "empty" }));
+
+        Assert.Equal([[1, "a"]], rows);
+        Assert.Equal(["http source 'stub.traffic': no zip entry matches file.members '*.csv' in 2 of 3 result " +
+            "files; read those as empty (if_missing: empty)"], Notices());
+    }
+
+    [Fact]
+    public async Task Single_file_unmatched_members_notice_is_unchanged()
+    {
+        _server.Map("/files/a.zip", _ => ZipFile(("readme.txt", "nothing")));
+        MapJob("/reports/j1", "\"j1\"", """{"state":"done","result":{"url":"/files/a.zip"}}""");
+
+        var (rows, _) = await Read(Spec(Export(), o => o["file"] = new Dictionary<string, object?>
+            { ["format"] = "csv", ["members"] = "*.csv", ["if_missing"] = "empty" }));
+
+        Assert.Empty(rows);
+        Assert.Equal(["http source 'stub.traffic': no zip entry matches file.members '*.csv'; " +
+            "read as empty (if_missing: empty)"], Notices());
+    }
+
+    [Fact]
+    public async Task Duplicate_urls_are_read_once_with_a_notice()
+    {
+        _server.Map("/files/a.csv", _ => File("id,name\n1,a\n"));
+        _server.Map("/files/b.csv", _ => File("id,name\n2,b\n"));
+        var absolute = new Uri(_server.BaseUrl, "/files/a.csv").ToString();
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", absolute, "/files/b.csv", "/files/a.csv"));
+
+        var (rows, _) = await Read(Spec(Export(Urls)));
+
+        Assert.Equal([[1, "a"], [2, "b"]], rows);
+        Assert.Single(_server.Requests, r => r.Url.AbsolutePath == "/files/a.csv");
+        Assert.Equal(["http source 'stub.traffic': export poll: export job j1's ready response lists 2 duplicate " +
+            "result file URLs at '/result/urls'; each file is read once"], Notices());
+    }
+
+    [Fact]
+    public async Task Urls_differing_only_in_query_are_distinct()
+    {
+        _files.Map("/bucket/a.csv", _ => File("id,name\n1,a\n"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles(FilesUrl("/bucket/a.csv?part=1"), FilesUrl("/bucket/a.csv?part=2")));
+
+        var (rows, _) = await Read(Spec(Export(Urls)));
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(2, _files.Requests.Count);
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task More_than_1000_files_is_refused_before_any_download()
+    {
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles(Enumerable.Range(0, 1001).Select(i => $"/files/{i}.csv").ToArray()));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(Urls))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("export job j1's ready response lists 1001 result files at '/result/urls'; at most 1000 " +
+            "are read per job", ex.Message);
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath.StartsWith("/files/", StringComparison.Ordinal));
+    }
+
+    /// <summary>A partition built by hand with <c>SkipMissing</c> (set only by for_each, which export refuses
+    /// today), read while advancing the clock past each poll wait.</summary>
+    private async Task<List<object?[]>> ReadSkippingMissing(DatasetSpec spec, Func<HttpFilePartition, Task>? after = null)
+    {
+        var errors = new List<string>();
+        var connection = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = _server.BaseUrl.ToString(),
+            ["timeout_seconds"] = IdleTimeout.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        }), errors);
+        Assert.Empty(errors);
+        using var client = HttpSource.CreateClient(connection!);
+        using var bare = HttpSource.CreateBareClient(connection!);
+        var partition = new HttpFilePartition(client, bare, connection!, HttpDatasetConfig.Parse(spec), spec, _clock,
+            gate: null) { SkipMissing = true, Notice = _notices.Add };
+        var work = Collect(partition);
+        while (true)
+        {
+            var next = _nextTimer ??= _clock.NextTimerAsync();
+            if (await Task.WhenAny(work, next).WaitAsync(TimeSpan.FromSeconds(30)) == work)
+            {
+                var rows = await work;
+                if (after is not null)
+                {
+                    await after(partition);
+                }
+
+                return rows;
+            }
+
+            _nextTimer = null;
+            _clock.Advance(await next);
+        }
+    }
+
+    [Fact]
+    public async Task Missing_later_file_is_always_an_error()
+    {
+        _server.Map("/files/a.csv", _ => File(Csv));
+        _server.Map("/files/b.csv", _ => new StubResponse(404, "gone"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadSkippingMissing(Spec(Export(Urls))));
+
+        Assert.Contains("download: HTTP 404", ex.Message);
+        Assert.Contains("/files/b.csv", ex.Message);
+    }
+
+    [Fact]
+    public async Task Missing_first_of_several_files_is_an_error_too()
+    {
+        _server.Map("/files/a.csv", _ => new StubResponse(410, "gone"));
+        _server.Map("/files/b.csv", _ => File(Csv));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", "/files/b.csv"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadSkippingMissing(Spec(Export(Urls))));
+
+        Assert.Contains("download: HTTP 410", ex.Message);
+    }
+
+    [Fact]
+    public async Task Missing_single_file_still_skips()
+    {
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv"));
+
+        var rows = await ReadSkippingMissing(Spec(Export(Urls)), p =>
+        {
+            Assert.True(p.Missing);
+            return Task.CompletedTask;
+        });
+
+        Assert.Empty(rows);
+    }
+
+    // ---- cancel_path and result lists against on_status rules and sign-in (parts 10 and 11) ----
+
+    [Fact]
+    public async Task Permanent_rule_on_a_poll_cancels_the_unfinished_job()
+    {
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json("""{"error":"job corrupt"}""", 500));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 500), ("body_contains", "corrupt"), ("action", "permanent")))), gate: new RetryingGate()));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("on_status[0]", ex.Message);
+        Assert.Single(Polls("/reports/j1"));
+        Assert.Single(Cancels());
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (poll failed)"], Notices());
+    }
+
+    [Fact]
+    public async Task Transient_rule_on_a_poll_cancels_once_after_the_gate_gives_up()
+    {
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json("""{"error":"busy"}""", 409));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 409), ("action", "transient")))), gate: new RetryingGate()));
+
+        Assert.True(ex.IsTransient);
+        Assert.Equal(3, Polls("/reports/j1").Count());
+        Assert.Single(Cancels());
+    }
+
+    [Fact]
+    public async Task Transient_rule_on_the_start_has_no_job_to_cancel()
+    {
+        _server.Map("/reports", _ => Json("""{"error":"try later"}""", 403));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 403), ("action", "transient"))))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Single(_server.Requests);
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Rules_never_turn_a_failed_cancel_into_an_error()
+    {
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+        _server.Map("/reports/j1/cancel", _ => Json("""{"error":"busy"}""", 409));
+        var gate = new RecordingGate();
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 409), ("action", "transient"), ("retry_after", "30s")))), gate: gate));
+
+        Assert.Contains("failed with status 'failed'", ex.Message);
+        Assert.Single(Cancels());
+        Assert.Single(gate.Calls, c => c.Label == "http.export_cancel");
+        Assert.Equal(["http source 'stub.traffic': export cancel: could not cancel export job j1 (reported failure): " +
+            $"HTTP 409 from DELETE {_server.BaseUrl}reports/j1/cancel"], Notices());
+    }
+
+    [Fact]
+    public async Task Refused_sign_in_during_the_cancel_is_a_notice_and_is_not_repeated()
+    {
+        // A unique refresh token: a refused sign-in is latched for the process, keyed by its credentials.
+        var refresh = "rt-" + Guid.NewGuid().ToString("N");
+        var tokens = 0;
+        _server.Map("/token", _ => ++tokens == 1
+            ? Json("""{"access_token":"acc1","expires_in":3600}""")
+            : Json("""{"error":"invalid_grant"}""", 400));
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        // The 401 drops the cached token, so the cancel has to sign in again, and that sign-in is refused.
+        _server.Map("/reports/j1", _ => new StubResponse(401, "{}"));
+        await using var source = Source(new Dictionary<string, object?>
+        {
+            ["type"] = "oauth2_refresh_token",
+            ["token_url"] = new Uri(_server.BaseUrl, "token").ToString(),
+            ["client_id"] = "c",
+            ["client_secret"] = "s3cret",
+            ["refresh_token"] = refresh,
+        });
+
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
+
+        Assert.Equal(2, tokens);
+        Assert.Empty(Cancels());
+        var notice = Assert.Single(Notices(), n => n.Contains("export cancel", StringComparison.Ordinal));
+        Assert.StartsWith("http source 'stub.traffic': export cancel: could not cancel export job j1 (poll failed): ",
+            notice);
+        Assert.DoesNotContain(refresh, notice);
+        Assert.DoesNotContain("s3cret", notice);
+
+        // The refusal is latched: a later read fails without asking the token endpoint again.
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
+        Assert.Equal(2, tokens);
+    }
+
+    [Fact]
+    public async Task Session_sign_in_covers_the_cancel_and_same_origin_files_only()
+    {
+        var logins = 0;
+        _server.Map("/auth/login", _ =>
+        {
+            logins++;
+            return Json("""{"session":{"token":"sess-tok"}}""");
+        });
+        _server.Map("/files/a.csv", _ => File("id,name\n1,a\n"));
+        _files.Map("/bucket/b.csv", _ => File("id,name\n2,b\n"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", FilesUrl("/bucket/b.csv?sig=S")));
+        await using var source = Source(new Dictionary<string, object?>
+        {
+            ["type"] = "session",
+            ["login"] = new Dictionary<string, object?>
+            {
+                ["path"] = "/auth/login",
+                ["body"] = new Dictionary<string, object?> { ["user"] = "me", ["password"] = "pw" },
+            },
+            ["token_pointer"] = "/session/token",
+            ["ttl"] = "30m",
+            ["inject"] = new Dictionary<string, object?> { ["header"] = "X-Session" },
+        });
+
+        var (rows, _) = await Read(Spec(Export(Urls)), source);
+
+        Assert.Equal([[1, "a"], [2, "b"]], rows);
+        Assert.Equal(1, logins);
+        Assert.Equal("sess-tok", Assert.Single(_server.Requests, r => r.Url.AbsolutePath == "/files/a.csv").Headers["X-Session"]);
+        Assert.False(Assert.Single(_files.Requests).Headers.ContainsKey("X-Session"));
+
+        // A failed job on the same signed-in source: the cancel carries the session token too.
+        _server.Map("/reports/j1", _ => Json("""{"state":"failed"}"""));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
+        Assert.Equal("sess-tok", Assert.Single(Cancels()).Headers["X-Session"]);
+        Assert.Equal(1, logins);
+    }
+
+    private static StubResponse ZipFile(params (string Name, string Text)[] entries)
+    {
+        using var buffer = new MemoryStream();
+        using (var zip = new System.IO.Compression.ZipArchive(buffer, System.IO.Compression.ZipArchiveMode.Create,
+                   leaveOpen: true))
+        {
+            foreach (var (name, text) in entries)
+            {
+                using var writer = new StreamWriter(zip.CreateEntry(name).Open());
+                writer.Write(text);
+            }
+        }
+
+        return new StubResponse(200, "", new Dictionary<string, string> { ["Content-Type"] = "application/zip" })
+        {
+            RawBody = buffer.ToArray(),
+        };
     }
 }

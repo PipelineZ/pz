@@ -1,4 +1,5 @@
 using System.Globalization;
+using Pz.Connectors.Toolkit.Http;
 
 namespace Pz.Connector.Http;
 
@@ -77,6 +78,21 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
         return MaxWait;
     }
 
+    /// <summary>The wait a non-2xx response states: its own <c>Retry-After</c>; when that is missing or unusable
+    /// and <paramref name="useConfigured"/>, the wait <paramref name="configured"/> (the connection's
+    /// <c>retry_after</c> header) states. Every request the connector sends, the session login included, resolves
+    /// its wait here. <paramref name="note"/> says when the configured header was present but unusable.</summary>
+    public static TimeSpan? Resolve(HttpResponseMessage response, HttpRetryAfterHeader? configured, bool useConfigured,
+        DateTimeOffset now, out string note)
+    {
+        note = "";
+        var standard = TransientClassifier.ParseRetryAfter(
+            response.Headers.TryGetValues("Retry-After", out var values) ? values.FirstOrDefault() : null, now);
+        return standard is null && useConfigured && configured is not null
+            ? configured.Read(response, now, out note)
+            : standard;
+    }
+
     /// <summary>Parses the <c>retry_after</c> map; null when absent. Problems go to <paramref name="errors"/>.</summary>
     public static HttpRetryAfterHeader? Parse(object? raw, List<string> errors)
     {
@@ -98,7 +114,7 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
         }
 
         var header = map.TryGetValue("header", out var h) ? YamlScalarText.Of(h) : null;
-        if (string.IsNullOrEmpty(header) || YamlScalarText.NonScalarKind(h) is not null || !IsToken(header))
+        if (string.IsNullOrEmpty(header) || YamlScalarText.NonScalarKind(h) is not null || !HttpHeaderNames.IsToken(header))
         {
             errors.Add($"retry_after.header must be a header name, got '{header}'");
         }
@@ -120,8 +136,4 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
 
         return errors.Count > before ? null : new HttpRetryAfterHeader(header!, kind!.Value);
     }
-
-    // RFC 9110 token characters.
-    private static bool IsToken(string name)
-        => name.All(c => char.IsAsciiLetterOrDigit(c) || "!#$%&'*+-.^_`|~".Contains(c));
 }

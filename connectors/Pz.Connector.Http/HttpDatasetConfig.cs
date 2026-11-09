@@ -478,6 +478,11 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             {
                 ValidateBindingTemplate(downloadPath, "export.download_path", knownBindings, errors);
             }
+
+            if (export.CancelPath is { } cancelPath)
+            {
+                ValidateBindingTemplate(cancelPath, "export.cancel_path", knownBindings, errors);
+            }
         }
 
         ValidateFileMode(options, rawFile is not null, rawExport is not null, file, columns, errors);
@@ -962,7 +967,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         var stopsOnShort = stopOnShortPage;
         // An unknown location is not an error here: GET reads ignored the key before header paging existed, and
         // configs that ran then must keep running. The dataset schema reports it at `pz validate`, and the read
-        // gives a notice (IgnoredLocation).
+        // gives a notice (IgnoredLocation). POST reads refuse it in BodyPaging.Parse.
         var location = Get("location");
 
         if (location == "header")
@@ -974,7 +979,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
             else if (Get("param") is { } headerParam)
             {
-                if (!HeaderTokenPaging.IsHeaderName(headerParam))
+                if (!HttpHeaderNames.IsToken(headerParam))
                 {
                     errors.Add($"pagination 'param' '{headerParam}' is not a valid HTTP header name");
                 }
@@ -983,7 +988,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                     errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (pz or the HTTP " +
                         "stack sets that header); name the header the API reads the token from");
                 }
-                else if (!HeaderTokenPaging.IsRequestHeader(headerParam))
+                else if (!HttpHeaderNames.IsRequestHeader(headerParam))
                 {
                     errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (HTTP treats it as a " +
                         "content header, which a request without a body never sends); name the header the API reads " +
@@ -998,7 +1003,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             {
                 errors.Add($"pagination 'header' is only valid with strategy 'cursor' (got strategy '{strategy}')");
             }
-            else if (!HeaderTokenPaging.IsHeaderName(responseHeader))
+            else if (!HttpHeaderNames.IsToken(responseHeader))
             {
                 errors.Add($"pagination 'header' '{responseHeader}' is not a valid HTTP header name");
             }

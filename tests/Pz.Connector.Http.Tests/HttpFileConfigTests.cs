@@ -274,6 +274,43 @@ public class HttpFileConfigTests
     }
 
     [Fact]
+    public void Export_cancel_path_rules()
+    {
+        var file = Map(("format", "csv"));
+        string Err(params (string, object?)[] o) => FailFile(file, new() { ["export"] = ValidExport(o) });
+
+        Assert.Contains("export.cancel_path must start with '/'", Err(("cancel_path", "reports/{job_id}")));
+        Assert.Contains("export.cancel_path must contain {job_id} exactly once",
+            Err(("cancel_path", "/reports/cancel")));
+        Assert.Contains("export.cancel_path must contain {job_id} exactly once",
+            Err(("cancel_path", "/r/{job_id}/{job_id}")));
+        Assert.Contains("export.cancel_method must be one of delete, post, put, patch, got 'get'",
+            Err(("cancel_path", "/r/{job_id}"), ("cancel_method", "get")));
+        Assert.Contains("export.cancel_method requires export.cancel_path", Err(("cancel_method", "post")));
+        Assert.Contains("export.cancel_path must be a string, got a list",
+            Err(("cancel_path", new List<object?> { "/a" })));
+
+        // Every error at once.
+        var both = Err(("cancel_path", "r"), ("timeout_minutes", 0L));
+        Assert.Contains("export.cancel_path", both);
+        Assert.Contains("export.timeout_minutes", both);
+
+        var none = Parse(file, export: ValidExport()).Export!;
+        Assert.Null(none.CancelPath);
+
+        var byDefault = Parse(file, export: ValidExport(("cancel_path", "/r/{job_id}"))).Export!;
+        Assert.Equal("/r/{job_id}", byDefault.CancelPath);
+        Assert.Equal(HttpMethod.Delete, byDefault.CancelMethod);
+
+        foreach (var (text, method) in new[] { ("POST", HttpMethod.Post), ("put", HttpMethod.Put),
+                     ("Patch", HttpMethod.Patch), ("delete", HttpMethod.Delete) })
+        {
+            Assert.Equal(method, Parse(file, export: ValidExport(("cancel_path", "/r/{job_id}"),
+                ("cancel_method", text))).Export!.CancelMethod);
+        }
+    }
+
+    [Fact]
     public void Empty_status_path_is_a_config_error_not_a_crash()
         => Assert.Contains("export.status_path must start with '/'", FailFile(Map(("format", "csv")),
             new() { ["export"] = ValidExport(("status_path", "")) }));
@@ -394,6 +431,26 @@ public class HttpFileConfigTests
         Assert.False(Valid("""{"path":"/p","file":{"format":"csv","bogus":1}}"""));
         Assert.False(Valid("""{"path":"/p","file":{}}"""));
         Assert.False(Valid("""{"path":"/p","export":{"job_id":"/id"}}"""));
+        Assert.True(Valid("""
+            {"path":"/p","file":{"format":"csv"},"export":{"job_id":"/id","status_path":"/s/{job_id}",
+              "status_pointer":"/state","ready":["done"],"download_pointer":"/u","cancel_path":"/s/{job_id}",
+              "cancel_method":"post"}}
+            """));
+        bool CancelMethodValid(string method) => Valid($$$"""
+            {"path":"/p","file":{"format":"csv"},"export":{"job_id":"/id","status_path":"/s/{job_id}",
+              "status_pointer":"/state","ready":["done"],"download_pointer":"/u","cancel_path":"/s/{job_id}",
+              "cancel_method":"{{{method}}}"}}
+            """);
+        // Parse accepts any case, so the schema must too.
+        foreach (var method in new[] { "delete", "DELETE", "post", "POST", "Put", "pAtCh" })
+        {
+            Assert.True(CancelMethodValid(method), method);
+        }
+
+        foreach (var method in new[] { "get", "GET", "head", "", "deletee", "xpost" })
+        {
+            Assert.False(CancelMethodValid(method), method);
+        }
         Assert.False(Valid("""{"path":"/p","file":{"format":"csv"},"export":{"job_id":"/id","status_path":"/s","status_pointer":"/s","ready":["d"],"timeout_minutes":1441}}"""));
 
         var connectionSchema = JsonSchema.FromText(connection);

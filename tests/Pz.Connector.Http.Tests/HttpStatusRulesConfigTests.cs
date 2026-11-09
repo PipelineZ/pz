@@ -345,13 +345,16 @@ public class HttpStatusRulesConfigTests
 
         Assert.True(dataset.Evaluate(JsonSerializer.Deserialize<JsonElement>("""
             {"path":"/r","on_status":[{"status":403,"body_contains":"limit","action":"transient","retry_after":"60s"},
-             {"status":[400,"5xx"],"action":"skip"}],
+             {"status":[400,404],"action":"skip"},{"status":[400,"5xx"],"action":"skip","body_contains":"gone"}],
              "for_each":{"path":"/o","fields":{"id":"/id"},"on_status":[{"status":"4xx","action":"permanent"}]}}
             """)).IsValid);
         Assert.False(dataset.Evaluate(JsonSerializer.Deserialize<JsonElement>(
             """{"path":"/r","on_status":[{"status":403,"action":"ignore"}]}""")).IsValid);
         Assert.False(dataset.Evaluate(JsonSerializer.Deserialize<JsonElement>(
             """{"path":"/r","on_status":[{"action":"skip"}]}""")).IsValid);
+        // A skip with nothing but a status names exact codes, as the parser requires.
+        Assert.False(dataset.Evaluate(JsonSerializer.Deserialize<JsonElement>(
+            """{"path":"/r","on_status":[{"status":[400,"5xx"],"action":"skip"}]}""")).IsValid);
         Assert.True(connection.Evaluate(JsonSerializer.Deserialize<JsonElement>(
             """{"base_url":"https://x","retry_after":{"header":"X-RateLimit-Reset","kind":"epoch"}}""")).IsValid);
         Assert.False(connection.Evaluate(JsonSerializer.Deserialize<JsonElement>(

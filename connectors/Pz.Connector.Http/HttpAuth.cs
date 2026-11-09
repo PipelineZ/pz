@@ -51,11 +51,13 @@ internal static class HttpAuth
         Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? Factory,
         string? CertificatePath,
         IReadOnlyList<string>? Warnings = null,
-        Uri? LoginUrl = null);
+        Uri? LoginUrl = null,
+        SessionInject? Inject = null);
 
     /// <param name="baseUrl">The connection's base URL (null when it is invalid): a session login path resolves against it.</param>
+    /// <param name="retryAfter">The connection's <c>retry_after</c> header, used by a session login that is throttled.</param>
     internal static Parsed Parse(IReadOnlyDictionary<string, object?>? auth, string? baseDir, TimeSpan timeout, List<string> errors,
-        bool hasTransport = false, Uri? baseUrl = null)
+        bool hasTransport = false, Uri? baseUrl = null, HttpRetryAfterHeader? retryAfter = null)
     {
         var none = new Parsed(null, null, null);
         if (auth is null || auth.Count == 0)
@@ -83,7 +85,7 @@ internal static class HttpAuth
             case Session:
                 return SessionOptions.TryParse(auth, baseUrl, errors) is { } session
                     ? new Parsed(null, (time, handlers) => new SessionAuthenticator(session, timeout, time,
-                        handlers?.Invoke(session.LoginUrl)), null, LoginUrl: session.LoginUrl)
+                        handlers?.Invoke(session.LoginUrl), retryAfter), null, LoginUrl: session.LoginUrl, Inject: session.Inject)
                     : none;
             case "api_key" or "bearer" or "basic":
                 if (!Authenticators.TryCreate(auth, out var authenticator, out var error))

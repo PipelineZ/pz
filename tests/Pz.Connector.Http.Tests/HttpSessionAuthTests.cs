@@ -492,6 +492,42 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
         Assert.Equal(TimeSpan.FromSeconds(12), ex.RetryAfter);
     }
 
+    [Theory]
+    [InlineData(429, 30)]
+    [InlineData(503, 30)]
+    [InlineData(408, null)]
+    public async Task A_throttled_login_falls_back_to_the_connections_retry_after_header(int status, int? seconds)
+    {
+        // Like any other request: the configured header applies to a 429/503 without a usable Retry-After.
+        MapLogin(_ => new StubResponse(status, "{}", new Dictionary<string, string> { ["X-RateLimit-Reset"] = "30" }));
+        await using var source = Open(Session(), extra: new()
+        {
+            ["retry_after"] = new Dictionary<string, object?> { ["header"] = "X-RateLimit-Reset", ["kind"] = "seconds" },
+        });
+
+        var ex = await FailsAsync(source);
+        Assert.True(ex.IsTransient);
+        Assert.Equal(seconds is { } s ? TimeSpan.FromSeconds(s) : null, ex.RetryAfter);
+    }
+
+    [Fact]
+    public async Task A_throttled_login_prefers_its_own_retry_after_and_notes_an_unreadable_configured_header()
+    {
+        MapLogin(issued => issued == 1
+            ? new StubResponse(429, "{}", new Dictionary<string, string> { ["Retry-After"] = "12", ["X-Reset"] = "30" })
+            : new StubResponse(429, "{}", new Dictionary<string, string> { ["X-Reset"] = "soon" }));
+        await using var first = Open(Session(), extra: new()
+        {
+            ["retry_after"] = new Dictionary<string, object?> { ["header"] = "X-Reset", ["kind"] = "seconds" },
+        });
+
+        var standard = await FailsAsync(first);
+        Assert.Equal(TimeSpan.FromSeconds(12), standard.RetryAfter);
+        var unreadable = await FailsAsync(first);
+        Assert.Null(unreadable.RetryAfter);
+        Assert.Contains("retry_after header 'X-Reset' value is not a non-negative number; ignored", unreadable.Message);
+    }
+
     [Fact]
     public async Task A_redirected_login_is_permanent_and_not_followed()
     {

@@ -101,7 +101,7 @@ internal sealed record SessionOptions(
 
         if (ttlText is not null)
         {
-            if (TryParseDuration(ttlText, out var parsed) && parsed >= MinTtl && parsed <= MaxTtl)
+            if (HttpDuration.TryParse(ttlText, out var parsed) && parsed >= MinTtl && parsed <= MaxTtl)
             {
                 ttl = parsed;
             }
@@ -323,7 +323,7 @@ internal sealed record SessionOptions(
             {
                 errors.Add($"auth.login.headers.{name}: set the body's type with auth.login.content_type");
             }
-            else if (!IsRequestHeaderName(name))
+            else if (!HttpHeaderNames.IsRequestHeader(name))
             {
                 errors.Add($"auth.login.headers has an invalid header name '{name}'");
             }
@@ -379,7 +379,7 @@ internal sealed record SessionOptions(
             errors.Add("auth.inject.prefix applies only with auth.inject.header");
         }
 
-        if (header is not null && (IsContentHeader(header) || !IsRequestHeaderName(header)))
+        if (header is not null && (IsContentHeader(header) || !HttpHeaderNames.IsRequestHeader(header)))
         {
             errors.Add($"auth.inject.header '{header}' is not a request header name");
         }
@@ -401,12 +401,6 @@ internal sealed record SessionOptions(
 
     private static bool IsContentHeader(string name)
         => name.StartsWith("Content-", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsRequestHeaderName(string name)
-    {
-        using var probe = new HttpRequestMessage();
-        return name.Length > 0 && probe.Headers.TryAddWithoutValidation(name, "x");
-    }
 
     private static string? LoginText(IReadOnlyDictionary<string, object?> login, string key, List<string> errors)
     {
@@ -442,41 +436,6 @@ internal sealed record SessionOptions(
         catch (ArgumentException)
         {
             errors.Add($"auth.{key} is not a valid JSON pointer: '{pointer}' (it must start with '/')");
-        }
-    }
-
-    /// <summary>pz's one duration grammar for config: a non-negative integer and one of <c>ms|s|m|h|d</c>,
-    /// lowercase, no spaces, signs, fractions or compounds.</summary>
-    internal static bool TryParseDuration(string text, out TimeSpan value)
-    {
-        value = default;
-        var unitStart = 0;
-        while (unitStart < text.Length && char.IsAsciiDigit(text[unitStart]))
-        {
-            unitStart++;
-        }
-
-        if (unitStart == 0
-            || !long.TryParse(text.AsSpan(0, unitStart), NumberStyles.None, CultureInfo.InvariantCulture, out var magnitude))
-        {
-            return false;
-        }
-
-        try
-        {
-            switch (text[unitStart..])
-            {
-                case "ms": value = TimeSpan.FromMilliseconds(magnitude); return true;
-                case "s": value = TimeSpan.FromSeconds(magnitude); return true;
-                case "m": value = TimeSpan.FromMinutes(magnitude); return true;
-                case "h": value = TimeSpan.FromHours(magnitude); return true;
-                case "d": value = TimeSpan.FromDays(magnitude); return true;
-                default: return false;
-            }
-        }
-        catch (OverflowException)
-        {
-            return false;
         }
     }
 
@@ -546,13 +505,18 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
     private readonly HttpClient _http;
     private readonly string _endpoint;
     private readonly string _signInKey;
+    private readonly HttpRetryAfterHeader? _retryAfter;
 
     /// <param name="handler">The login transport (the connection's proxy and TLS); owned here. It must not
     /// follow redirects. Null builds the default handler, which follows none.</param>
-    public SessionAuthenticator(SessionOptions options, TimeSpan timeout, TimeProvider time, HttpMessageHandler? handler)
+    /// <param name="retryAfter">The connection's <c>retry_after</c> header, the wait of a throttled login without
+    /// a usable <c>Retry-After</c>.</param>
+    public SessionAuthenticator(SessionOptions options, TimeSpan timeout, TimeProvider time, HttpMessageHandler? handler,
+        HttpRetryAfterHeader? retryAfter = null)
         : base(time)
     {
         _options = options;
+        _retryAfter = retryAfter;
         _time = time;
         _endpoint = options.LoginUrl.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped);
         _http = new HttpClient(handler ?? new HttpClientHandler
@@ -672,10 +636,9 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
 
         if (status is 408 or 429 or (>= 500 and <= 599))
         {
-            TimeSpan? retryAfter = response.Headers.TryGetValues("Retry-After", out var values)
-                ? TransientClassifier.ParseRetryAfter(values.FirstOrDefault(), _time.GetUtcNow())
-                : null;
-            return new PzConnectorException($"{Label} failed temporarily (HTTP {status}); it will be retried",
+            var retryAfter = HttpRetryAfterHeader.Resolve(response, _retryAfter, useConfigured: status is 429 or 503,
+                _time.GetUtcNow(), out var note);
+            return new PzConnectorException($"{Label} failed temporarily (HTTP {status}); it will be retried{note}",
                 isTransient: true, retryAfter);
         }
 

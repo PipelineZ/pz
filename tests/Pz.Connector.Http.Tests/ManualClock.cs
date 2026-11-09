@@ -44,6 +44,17 @@ internal sealed class ManualClock : TimeProvider
     /// <see cref="NextTimerAsync"/> — for timers a test must not advance to on purpose.</summary>
     public TimeSpan? Unannounced { get; set; }
 
+    private readonly HashSet<TimeSpan> _quiet = [];
+
+    /// <summary>Adds another due delay that <see cref="NextTimerAsync"/> never reports.</summary>
+    public void Unannounce(TimeSpan dueTime)
+    {
+        lock (_lock)
+        {
+            _quiet.Add(dueTime);
+        }
+    }
+
     /// <summary>The due delay of the next timer created (in creation order).</summary>
     public Task<TimeSpan> NextTimerAsync() => _created.Reader.ReadAsync().AsTask();
 
@@ -68,7 +79,13 @@ internal sealed class ManualClock : TimeProvider
             _timers.Add(timer);
         }
 
-        if (dueTime != Unannounced)
+        bool quiet;
+        lock (_lock)
+        {
+            quiet = _quiet.Contains(dueTime);
+        }
+
+        if (dueTime != Unannounced && !quiet)
         {
             _created.Writer.TryWrite(dueTime);
         }

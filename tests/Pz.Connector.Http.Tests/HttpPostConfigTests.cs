@@ -249,6 +249,41 @@ public class HttpPostConfigTests
         Assert.Contains(failures, f => f.Contains($"'{expected}'") && f.Contains("'method: post'"));
     }
 
+    [Theory]
+    [InlineData("bdy")]
+    [InlineData("Body")]
+    [InlineData("cookie")]
+    public void Post_with_an_unknown_pagination_location_is_refused(string location)
+    {
+        // A POST API that reads paging only from the body would answer page 1 forever if the typo were ignored.
+        var failures = Failures(Post(new Dictionary<string, object?> { ["q"] = "x" }, new()
+        {
+            ["pagination"] = new Dictionary<string, object?>
+            {
+                ["strategy"] = "page", ["location"] = location, ["param"] = "/page",
+            },
+        }));
+
+        Assert.Contains(failures,
+            f => f.Contains($"pagination 'location' must be 'query', 'body' or 'header', got '{location}'"));
+    }
+
+    [Theory]
+    [InlineData("bdy")]
+    [InlineData("Body")]
+    public void Get_with_an_unknown_pagination_location_parses_and_is_ignored(string location)
+    {
+        // GET reads ignored the key before header paging existed; configs that ran then keep running, with a notice.
+        var config = HttpDatasetConfig.Parse(Spec(new Dictionary<string, object?>
+        {
+            ["path"] = "/x",
+            ["pagination"] = new Dictionary<string, object?> { ["strategy"] = "page", ["location"] = location },
+        }));
+
+        Assert.Equal(location, config.IgnoredLocation);
+        Assert.Null(config.BodyPaging);
+    }
+
     [Fact]
     public void Post_with_delta_pointer_is_refused()
     {

@@ -8,16 +8,17 @@ namespace Pz.Connector.Http;
 
 /// <summary>One file-mode dataset read: download the response body to a per-partition temp
 /// directory, open it as zip, gzip or plain, and parse each selected file with the dataset's format
-/// reader. The whole download is one gated, idempotent operation (`http.download`); a retry starts
-/// it over. Never retries, and never sleeps except to wait out the read's shared <c>Retry-After</c>
-/// pause when it can run requests concurrently. Emits no checkpoint: a file has no resumable position.</summary>
+/// reader. An export job's result may be several files, downloaded and read one after another. Each
+/// download is one gated, idempotent operation (`http.download`); a retry starts that download over. Never retries, and never sleeps except to wait out the read's shared <c>Retry-After</c>
+/// pause when it can run requests concurrently. Emits no checkpoint: a file has no resumable position,
+/// and an export's result files belong to a job that a retried read replaces with a new one.</summary>
 internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
     ThrottlePause? pause = null)
     : ICheckpointingPartition
 {
-    /// <summary>The most decompressed bytes one partition may read, as a multiple of
-    /// `max_download_mb`.</summary>
+    /// <summary>The most decompressed bytes one downloaded file (each result file of an export) may yield,
+    /// as a multiple of `max_download_mb`.</summary>
     private const int DecompressionFactor = 20;
 
     /// <summary>How much of a refused response body is quoted (before redaction and trimming).</summary>
@@ -98,57 +99,76 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         var bindings = Bindings ?? HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
         var first = BuildFirstRequest(bindings);
 
-        var download = first;
+        IReadOnlyList<HttpPageRequest> downloads = [first];
         var sender = _sender;
         if (config.Export is { } export)
         {
             // Same-origin needs no handling here: the send strips credentials from any request to
             // another origin.
-            download = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings)
+            downloads = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings, Notice)
                 .RunAsync(first, ct).ConfigureAwait(false);
             sender = _exportDownloadSender;
         }
 
         var reader = ReaderFor(file.Format);
-        var budget = new DecompressionBudget(DecompressionFactor * connection.MaxDownloadBytes, Label);
-        using var scratch = new DownloadScratch(ScratchRoot);
-        var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
-            token => DownloadAsync(sender, download, scratch, token), ct).ConfigureAwait(false);
-        // DownloadAsync returns a null path only for a 404/410 under SkipMissing or an on_status skip.
-        if (path is null)
+        var unmatched = 0;
+        // One result file at a time, each with the budgets of a single download, and each file's scratch
+        // deleted before the next download starts, so disk use stays at one file.
+        // A 404/410 may end the read only when it answers the one and only download: on a later file of
+        // several it would drop the rest of the result after rows already landed.
+        var skipMissing = SkipMissing && downloads.Count == 1;
+        foreach (var download in downloads)
         {
-            Missing = true;
-            if (Item is null && _skipNotice is not null)
+            var budget = new DecompressionBudget(DecompressionFactor * connection.MaxDownloadBytes, Label);
+            using var scratch = new DownloadScratch(ScratchRoot);
+            var (path, fallbackName) = await sender.RunAsync("http.download", idempotent: true,
+                token => DownloadAsync(sender, download, scratch, skipMissing, token), ct).ConfigureAwait(false);
+            // DownloadAsync returns a null path only for a 404/410 under SkipMissing or an on_status skip.
+            if (path is null)
             {
-                Notice?.Invoke(_skipNotice);
-            }
-
-            yield break;
-        }
-
-        // Open is lazy: a bad, encrypted or non-matching zip throws on the first MoveNext, inside the
-        // scratch's using. Each file's stream is opened by the enumerator and disposed here once its
-        // reader is done, on success, failure and cancellation alike (readers leave it open).
-        var any = false;
-        foreach (var source in ArchiveReader.Open(path, file, fallbackName, budget, Label))
-        {
-            any = true;
-            using (source)
-            {
-                await foreach (var batch in reader.ReadAsync(source, config, now, options, Label, ct)
-                                   .ConfigureAwait(false))
+                Missing = true;
+                if (Item is null && _skipNotice is not null)
                 {
-                    yield return batch;
+                    Notice?.Invoke(_skipNotice);
                 }
+
+                yield break;
             }
 
-            ct.ThrowIfCancellationRequested();
+            // Open is lazy: a bad, encrypted or non-matching zip throws on the first MoveNext, inside the
+            // scratch's using. Each file's stream is opened by the enumerator and disposed here once its
+            // reader is done, on success, failure and cancellation alike (readers leave it open).
+            var any = false;
+            foreach (var source in ArchiveReader.Open(path, file, fallbackName, budget, Label))
+            {
+                any = true;
+                using (source)
+                {
+                    await foreach (var batch in reader.ReadAsync(source, config, now, options, Label, ct)
+                                       .ConfigureAwait(false))
+                    {
+                        yield return batch;
+                    }
+                }
+
+                ct.ThrowIfCancellationRequested();
+            }
+
+            if (!any)
+            {
+                unmatched++;
+            }
         }
 
-        if (!any)
+        if (unmatched > 0 && downloads.Count == 1)
         {
             Notice?.Invoke($"{Label}: no zip entry matches file.members '{file.Members}'; " +
                 "read as empty (if_missing: empty)");
+        }
+        else if (unmatched > 0)
+        {
+            Notice?.Invoke($"{Label}: no zip entry matches file.members '{file.Members}' in {unmatched} of " +
+                $"{downloads.Count} result files; read those as empty (if_missing: empty)");
         }
     }
 
@@ -175,9 +195,9 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
     /// <summary>Sends the download, refuses a non-2xx or error-page response, and saves the body
     /// within `max_download_mb`. Returns the saved file and the name a non-zip file goes by, or a null
-    /// path for a 404/410 under <see cref="SkipMissing"/>.</summary>
+    /// path for a 404/410 when <paramref name="skipMissing"/>.</summary>
     private async Task<(string? Path, string FallbackName)> DownloadAsync(HttpRequestSender sender,
-        HttpPageRequest request, DownloadScratch scratch, CancellationToken ct)
+        HttpPageRequest request, DownloadScratch scratch, bool skipMissing, CancellationToken ct)
     {
         using var sent = await sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true,
             DownloadStage, ct).ConfigureAwait(false);
@@ -192,7 +212,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
             {
                 // No rule can match this status: exactly the order this read always had, so an item skipped
                 // under on_missing never waits for its error body.
-                if (SkipMissing && status is 404 or 410)
+                if (skipMissing && status is 404 or 410)
                 {
                     return (null, "");
                 }
@@ -219,7 +239,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
                 return (null, "");
             }
 
-            if (rule is null && SkipMissing && status is 404 or 410)
+            if (rule is null && skipMissing && status is 404 or 410)
             {
                 return (null, "");
             }

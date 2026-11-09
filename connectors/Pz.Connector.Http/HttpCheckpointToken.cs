@@ -72,9 +72,14 @@ internal static class HttpCheckpointToken
         return new UriBuilder(url) { Query = string.Join('&', kept) }.Uri;
     }
 
-    private static string DecodedName(string pair)
+    private static string DecodedName(string pair) => DecodedQueryName(pair.Split('=', 2)[0]);
+
+    /// <summary>A query parameter name as the query string compares it: <c>+</c> as a space, percent-escapes
+    /// decoded (left as written when malformed). The one decoder for every comparison of query names, so a
+    /// session token the checkpoint strips is the same one the plan checks against pagination.</summary>
+    internal static string DecodedQueryName(string name)
     {
-        var name = pair.Split('=', 2)[0].Replace('+', ' ');
+        name = name.Replace('+', ' ');
         try
         {
             return Uri.UnescapeDataString(name);

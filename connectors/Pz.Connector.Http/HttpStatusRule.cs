@@ -184,7 +184,7 @@ internal sealed record HttpStatusRule(string Label, IReadOnlySet<int> Codes, IRe
             {
                 errors.Add($"{name}.retry_after only applies to action: transient");
             }
-            else if (!TryParseDuration(YamlScalarText.Of(ra), out var wait) || wait <= TimeSpan.Zero
+            else if (!HttpDuration.TryParse(YamlScalarText.Of(ra), out var wait) || wait <= TimeSpan.Zero
                      || wait > MaxRetryAfter)
             {
                 errors.Add($"{name}.retry_after must be a duration above 0 and at most 600s, like 500ms, 30s " +
@@ -237,45 +237,5 @@ internal sealed record HttpStatusRule(string Label, IReadOnlySet<int> Codes, IRe
         }
 
         codes.Add(code);
-    }
-
-    /// <summary>The pz duration grammar (<c>&lt;digits&gt;&lt;unit&gt;</c>, unit <c>ms|s|m|h|d</c>,
-    /// lowercase, no sign, fraction or compound), the same one retry delays and windows use.</summary>
-    internal static bool TryParseDuration(string? text, out TimeSpan value)
-    {
-        value = default;
-        if (string.IsNullOrEmpty(text))
-        {
-            return false;
-        }
-
-        var unitStart = 0;
-        while (unitStart < text.Length && char.IsAsciiDigit(text[unitStart]))
-        {
-            unitStart++;
-        }
-
-        if (unitStart == 0 || !long.TryParse(text.AsSpan(0, unitStart), NumberStyles.None,
-                CultureInfo.InvariantCulture, out var magnitude))
-        {
-            return false;
-        }
-
-        try
-        {
-            switch (text[unitStart..])
-            {
-                case "ms": value = TimeSpan.FromMilliseconds(magnitude); return true;
-                case "s": value = TimeSpan.FromSeconds(magnitude); return true;
-                case "m": value = TimeSpan.FromMinutes(magnitude); return true;
-                case "h": value = TimeSpan.FromHours(magnitude); return true;
-                case "d": value = TimeSpan.FromDays(magnitude); return true;
-                default: return false;
-            }
-        }
-        catch (OverflowException)
-        {
-            return false;
-        }
     }
 }

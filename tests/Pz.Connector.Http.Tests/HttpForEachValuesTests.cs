@@ -248,6 +248,17 @@ public sealed class HttpForEachValuesTests : IAsyncLifetime
         Assert.Contains("for_each.dedupe must be a boolean", message);
     }
 
+    [Fact]
+    public void Values_refuse_list_request_status_rules()
+    {
+        // The rules would govern a list request that values replace; dropping them silently hides the mistake.
+        var message = Message(Map(("path", "/r/{{ item.region }}"), ("for_each", Map(
+            ("values", List(Map(("region", "eu")))),
+            ("on_status", List(Map(("status", 503L), ("action", "transient"))))))));
+
+        Assert.Contains("for_each.on_status cannot be combined with for_each.values", message);
+    }
+
     [Theory]
     [InlineData("empty")]
     [InlineData("scalar")]

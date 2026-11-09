@@ -99,10 +99,16 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
-        CheckPagination(config, spec, "");
+        var label = $"http source '{spec.Source}.{spec.Dataset}'";
+        if (PaginationClashes(_connection, config) is { Count: > 0 } clashes)
+        {
+            throw new PzConnectorException($"{label}: {string.Join("; ", clashes)}", isTransient: false);
+        }
+
+        NoticeIgnoredLocation(config, label, "");
         if (config.ForEach?.List is { } listRequest)
         {
-            CheckPagination(listRequest, spec, "for_each.");
+            NoticeIgnoredLocation(listRequest, label, "for_each.");
         }
 
         // One Retry-After pause per read, shared by every request the partition makes (pages, the
@@ -124,46 +130,50 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 
-    /// <summary>Plan-time checks of one request's pagination against this connection: a page token header the
-    /// connection also sets would be sent twice (refused), and an unknown `location` is ignored with a
-    /// notice.</summary>
-    private void CheckPagination(HttpDatasetConfig request, DatasetSpec spec, string prefix)
+    /// <summary>Every way the dataset's pagination, or its `for_each` list's, clashes with what the connection
+    /// sends: a page token header the connection also sets would be sent twice, and a session query token named
+    /// like a pagination parameter would overwrite the page position (or be overwritten). Known from the
+    /// configs alone, so the plan refuses them all at once and `pz validate` reports them
+    /// (<see cref="HttpConnector.ValidateDatasetAsync"/>).</summary>
+    internal static List<string> PaginationClashes(HttpConnectionConfig connection, HttpDatasetConfig config)
     {
-        var label = $"http source '{spec.Source}.{spec.Dataset}'";
-        if (request.HeaderPaging is { } paging && paging.CollisionWith(_connection) is { } owner)
+        var clashes = new List<string>();
+        AddClashes(connection, config, "", clashes);
+        if (config.ForEach?.List is { } listRequest)
         {
-            throw new PzConnectorException(
-                $"{label}: {prefix}pagination header '{paging.Header}' is also set by {owner}; the page token " +
-                "header must be sent by pagination alone (rename one of them)", isTransient: false);
+            AddClashes(connection, listRequest, "for_each.", clashes);
+        }
+
+        return clashes;
+    }
+
+    private static void AddClashes(HttpConnectionConfig connection, HttpDatasetConfig request, string prefix,
+        List<string> clashes)
+    {
+        if (request.HeaderPaging is { } paging && paging.CollisionWith(connection) is { } owner)
+        {
+            clashes.Add($"{prefix}pagination header '{paging.Header}' is also set by {owner}; the page token " +
+                "header must be sent by pagination alone (rename one of them)");
         }
 
         // Compared as the query string compares them: decoded, in any case.
-        if (_connection.Authenticator is SessionAuthenticator { SecretQueryParams: { Count: > 0 } secret }
-            && request.QueryPagingParams.FirstOrDefault(p => secret.Any(q => string.Equals(Decoded(q), Decoded(p),
-                StringComparison.OrdinalIgnoreCase))) is { } clash)
+        if (connection.SessionInject?.Query is { } secret
+            && request.QueryPagingParams.FirstOrDefault(p => string.Equals(HttpCheckpointToken.DecodedQueryName(secret), HttpCheckpointToken.DecodedQueryName(p),
+                StringComparison.OrdinalIgnoreCase)) is { } clash)
         {
-            throw new PzConnectorException(
-                $"{label}: {prefix}pagination query parameter '{clash}' is also the session sign-in's query token " +
+            clashes.Add($"{prefix}pagination query parameter '{clash}' is also the session sign-in's query token " +
                 "('auth.inject.query'); each would overwrite the other on every page request (rename one of them, or " +
-                "send the session token in a header)", isTransient: false);
+                "send the session token in a header)");
         }
+    }
 
+    /// <summary>An unknown `location` on a GET read is ignored, with a notice.</summary>
+    private void NoticeIgnoredLocation(HttpDatasetConfig request, string label, string prefix)
+    {
         if (request.IgnoredLocation is { } location)
         {
             _notice?.Invoke($"{label}: {prefix}pagination 'location' '{location}' is not one of query, body, header; " +
                 "it is ignored and the token goes in the query string (fix it: `pz validate` reports it)");
-        }
-    }
-
-    private static string Decoded(string name)
-    {
-        try
-        {
-            return Uri.UnescapeDataString(name.Replace('+', ' '));
-        }
-        catch (UriFormatException)
-        {
-            return name;
         }
     }
 

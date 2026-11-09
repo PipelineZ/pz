@@ -36,6 +36,10 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// states its wait. Null when unset.</summary>
     public HttpRetryAfterHeader? RetryAfter { get; init; }
 
+    /// <summary>Where a session sign-in sends its token (`auth.inject`); null for every other auth. Known when
+    /// the connection is parsed, before the sign-in is built, so validation can check datasets against it.</summary>
+    public SessionInject? SessionInject { get; init; }
+
     /// <summary>Highest legal 'max_response_mb'. HttpClient.MaxResponseContentBufferSize refuses any
     /// value above int.MaxValue bytes (2147483647); 2048 MiB (2147483648 bytes) already overflows
     /// that ceiling, so 2047 is the largest whole-MiB value that stays under it.</summary>
@@ -214,6 +218,10 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         var transport = HttpTransportOptions.Parse(config.Values, baseDir, errors);
         var hasTransport = !transport.IsDefault;
 
+        // Parsed before auth (a throttled session login uses it), but reported in its usual place below.
+        var retryAfterErrors = new List<string>();
+        var retryAfter = HttpRetryAfterHeader.Parse(config.Values.GetValueOrDefault("retry_after"), retryAfterErrors);
+
         HttpAuth.Parsed auth = new(null, null, null);
         var authBlock = config.Values.TryGetValue("auth", out var a)
             ? a as IReadOnlyDictionary<string, object?>
@@ -224,7 +232,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         }
         else
         {
-            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport, baseUri);
+            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport, baseUri, retryAfter);
         }
 
         var maxResponseBytes = DefaultMaxResponseBytes;
@@ -285,7 +293,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             }
         }
 
-        var retryAfter = HttpRetryAfterHeader.Parse(config.Values.GetValueOrDefault("retry_after"), errors);
+        errors.AddRange(retryAfterErrors);
 
         if (baseUri is null)
         {
@@ -298,6 +306,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             MaxDownloadBytes = maxDownloadBytes,
             Transport = transport,
             RetryAfter = retryAfter,
+            SessionInject = auth.Inject,
             AuthHeader = authBlock is not null && YamlScalarText.Of(authBlock.GetValueOrDefault("type")) == "api_key"
                 ? YamlScalarText.Of(authBlock.GetValueOrDefault("header"))
                 : null,

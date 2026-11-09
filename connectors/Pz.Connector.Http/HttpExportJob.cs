@@ -8,13 +8,18 @@ using Pz.Connectors.Toolkit.Json;
 namespace Pz.Connector.Http;
 
 /// <summary>Runs one export job: sends the start request, polls the status endpoint until the job is
-/// ready, failed or past its deadline, and returns the request that downloads the result. The start
-/// goes through the gate as non-idempotent (a retry could create a second job on the vendor); polls
-/// are idempotent GETs. Waits are timer waits on <paramref name="time"/>, never holding a gate slot.
-/// Path templates expand the read's <paramref name="bindings"/> (rendered once per partition, so
-/// start, polls and download agree on <c>{{ run_date }}</c>), then <c>{job_id}</c>.</summary>
+/// ready, failed or past its deadline, and returns the requests that download the result (one per
+/// result file). The start goes through the gate as non-idempotent (a retry could create a second job on
+/// the vendor); polls are idempotent GETs. Waits are timer waits on <paramref name="time"/>, never holding
+/// a gate slot. Path templates expand the read's <paramref name="bindings"/> (rendered once per partition,
+/// so start, polls, download and cancel agree on <c>{{ run_date }}</c>), then <c>{job_id}</c>.
+///
+/// With `cancel_path`, a job that never became ready is cancelled once when it times out, reports
+/// failure, a poll fails or the read is cancelled while polling. The call is never retried, and its
+/// outcome is a notice, never an error. A job that reached its ready state is never cancelled.</summary>
 internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender sender, HttpConnectionConfig connection,
-    HttpDatasetConfig config, TimeProvider time, string label, IReadOnlyDictionary<string, BindingValue> bindings)
+    HttpDatasetConfig config, TimeProvider time, string label, IReadOnlyDictionary<string, BindingValue> bindings,
+    Action<string>? notice = null)
 {
     /// <summary>The bounds a poll response's <c>Retry-After</c> is held to: at most 10 minutes, and at
     /// least the smallest `poll_interval_seconds`, so a `Retry-After: 0` cannot turn polling into a
@@ -26,11 +31,30 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     /// <summary>How much of a failed job's message is quoted.</summary>
     private const int MaxMessageChars = 200;
 
+    /// <summary>The most result files one job's ready response may list.</summary>
+    private const int MaxResultFiles = 1000;
+
     /// <summary>How much of a job id a message shows.</summary>
     private const int MaxJobIdChars = 100;
 
     private const string StartStage = "export start";
     private const string PollStage = "export poll";
+    private const string CancelStage = "export cancel";
+
+    /// <summary>The reasons a cancel notice names.</summary>
+    private const string TimedOut = "timed out";
+    private const string ReportedFailure = "reported failure";
+    private const string PollFailed = "poll failed";
+    private const string ReadCancelled = "read was cancelled";
+
+    /// <summary>The longest a cancel call may take, and the shorter bound once the read itself was
+    /// cancelled: both well inside the engine's stop grace for a cancelled node.</summary>
+    private static readonly TimeSpan MaxCancelWait = TimeSpan.FromSeconds(10);
+
+    private static readonly TimeSpan MaxCancelWaitCancelled = TimeSpan.FromSeconds(5);
+
+    /// <summary>Why the poll loop is about to throw, when the job itself said so (timed out, failed).</summary>
+    private string? _stopReason;
 
     /// <summary>Every message about the start request names this stage after the label.</summary>
     private string StartLabel => $"{label}: {StartStage}";
@@ -39,10 +63,34 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     /// label.</summary>
     private string PollLabel => $"{label}: {PollStage}";
 
-    public async Task<HttpPageRequest> RunAsync(HttpPageRequest start, CancellationToken ct)
+    private string CancelLabel => $"{label}: {CancelStage}";
+
+    public async Task<IReadOnlyList<HttpPageRequest>> RunAsync(HttpPageRequest start, CancellationToken ct)
     {
         var jobId = await sender.RunAsync("http.export_start", idempotent: false,
             token => StartAsync(start, token), ct).ConfigureAwait(false);
+        JsonNode? ready;
+        try
+        {
+            ready = await PollAsync(jobId, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            // Only a job that never became ready is cancelled: a ready job is left alone whatever happens to
+            // its download, since a vendor may hand the same finished job to the next attempt.
+            var cancelled = ex is OperationCanceledException && ct.IsCancellationRequested;
+            await CancelAsync(jobId, cancelled ? ReadCancelled : _stopReason ?? PollFailed, cancelled)
+                .ConfigureAwait(false);
+            throw;
+        }
+
+        return Downloads(ready, jobId);
+    }
+
+    /// <summary>Polls until the job is ready and returns the ready response; throws when it fails, times
+    /// out or a poll fails.</summary>
+    private async Task<JsonNode?> PollAsync(string jobId, CancellationToken ct)
+    {
         var deadline = time.GetUtcNow() + export.Timeout;
         var statusUrl = Resolve(export.StatusPath, "export.status_path", jobId);
         var poll = new HttpPageRequest(HttpMethod.Get, statusUrl, null, null);
@@ -60,10 +108,10 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
             await Task.Delay(wait < left ? wait : left, time, ct).ConfigureAwait(false);
 
             var (ready, body, retryAfter) = await sender.RunAsync("http.export_poll", idempotent: true,
-                token => PollAsync(poll, jobId, token), ct).ConfigureAwait(false);
+                token => PollOnceAsync(poll, jobId, token), ct).ConfigureAwait(false);
             if (ready)
             {
-                return new HttpPageRequest(HttpMethod.Get, DownloadUrl(body, jobId), null, null);
+                return body;
             }
 
             if (time.GetUtcNow() >= deadline)
@@ -76,9 +124,63 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         }
     }
 
+    /// <summary>Cancels a job that never became ready through `cancel_path`, best effort: once, through the
+    /// gate as non-idempotent (paced, never retried), on a token of its own so it still runs after the read
+    /// was cancelled. That token is capped at <see cref="MaxCancelWait"/>, or <see cref="MaxCancelWaitCancelled"/>
+    /// once the read itself is cancelled (a node timeout or Ctrl-C), and never above <c>timeout_seconds</c>, so
+    /// the call always ends well inside the engine's stop grace. Never throws: success and failure are both
+    /// notices. The response body is never read: only the status counts.</summary>
+    private async Task CancelAsync(string jobId, string reason, bool readCancelled)
+    {
+        if (export.CancelPath is not { } path)
+        {
+            return;
+        }
+
+        var cap = readCancelled ? MaxCancelWaitCancelled : MaxCancelWait;
+        var bound = connection.Timeout < cap ? connection.Timeout : cap;
+        using var limit = new CancellationTokenSource(bound, time);
+        try
+        {
+            var url = Resolve(path, "export.cancel_path", jobId);
+            var request = new HttpPageRequest(export.CancelMethod, url, null, null);
+            await sender.RunAsync("http.export_cancel", idempotent: false, async token =>
+            {
+                using var sent = await sender.SendAsync(request, streamBody: true, credentialsOnlyToOrigin: true,
+                    CancelStage, token).ConfigureAwait(false);
+                if (!sent.Response.IsSuccessStatusCode)
+                {
+                    throw new PzConnectorException(
+                        $"{CancelLabel}: HTTP {(int)sent.Response.StatusCode} from {sender.Target(sent)}",
+                        isTransient: false);
+                }
+
+                return true;
+            }, limit.Token).ConfigureAwait(false);
+            notice?.Invoke($"{CancelLabel}: cancelled export job {Shown(jobId)} ({reason})");
+        }
+        catch (OperationCanceledException) when (limit.IsCancellationRequested)
+        {
+            notice?.Invoke($"{CancelLabel}: could not cancel export job {Shown(jobId)} ({reason}): no response " +
+                $"within {bound.TotalSeconds:0.###} s");
+        }
+        catch (Exception ex)
+        {
+            // Sender messages are already redacted and start with this stage's own label; anything else
+            // is masked here, since a notice is shown as is.
+            var detail = ex is PzConnectorException && ex.Message.StartsWith(CancelLabel + ": ", StringComparison.Ordinal)
+                ? ex.Message[(CancelLabel.Length + 2)..]
+                : connection.RedactSecretParams(ex.Message);
+            notice?.Invoke($"{CancelLabel}: could not cancel export job {Shown(jobId)} ({reason}): {detail}");
+        }
+    }
+
     private PzConnectorException NotReady(string jobId)
-        => new($"{PollLabel}: export job {Shown(jobId)} not ready after {(int)export.Timeout.TotalMinutes} minutes",
+    {
+        _stopReason = TimedOut;
+        return new($"{PollLabel}: export job {Shown(jobId)} not ready after {(int)export.Timeout.TotalMinutes} minutes",
             isTransient: true);
+    }
 
     private async Task<string> StartAsync(HttpPageRequest start, CancellationToken ct)
     {
@@ -98,8 +200,20 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
                 JsonValueKind.Number => value.ToJsonString(),
                 _ => null,
             };
-            if (!string.IsNullOrEmpty(id))
+            if (id is not null)
             {
+                // Escaping keeps a job id inside one path segment ('/' becomes %2F), but '.' and '..' stay dot
+                // segments that URL resolution removes, and a server or proxy that decodes %2F would see the same
+                // segments inside a slash-separated id, so a cancel or poll could reach another resource. Such an
+                // id, and one no path segment can carry faithfully, is refused before any request uses it. Empty
+                // segments are harmless once escaped, and standard base64 ids hold them ('//', a leading '/').
+                if (!UsableInPath(id))
+                {
+                    throw new PzConnectorException(
+                        $"{StartLabel}: export job id '{Shown(id)}' from {target} cannot be used in a URL path (it is " +
+                        "empty, has a '.' or '..' segment between '/', or contains '\\' or a control character)", isTransient: false);
+                }
+
                 return id;
             }
         }
@@ -112,7 +226,7 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
     /// <summary>One poll: whether the job is ready, the response body (where a download pointer is
     /// read) and the response's <c>Retry-After</c>. A failed status throws; any other status, or a
     /// JSON null, means still running.</summary>
-    private async Task<(bool Ready, JsonNode? Body, TimeSpan? RetryAfter)> PollAsync(
+    private async Task<(bool Ready, JsonNode? Body, TimeSpan? RetryAfter)> PollOnceAsync(
         HttpPageRequest poll, string jobId, CancellationToken ct)
     {
         var (body, target, retryAfter) = await GetJsonAsync(poll, PollStage, ct).ConfigureAwait(false);
@@ -135,6 +249,7 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
 
         if (status is not null && Matches(export.Failed, status))
         {
+            _stopReason = ReportedFailure;
             throw new PzConnectorException(
                 $"{PollLabel}: export job {Shown(jobId)} failed with status '{status}'{FailureMessage(body)}", isTransient: false);
         }
@@ -208,32 +323,98 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         return (body, target, retryAfter);
     }
 
-    private Uri DownloadUrl(JsonNode? ready, string jobId)
+    /// <summary>The download requests of a ready job: `download_path`, or what `download_pointer` names in
+    /// the ready response: one URL, or a list of URLs read in order. Every URL is checked before the first
+    /// download, so one bad entry fails the read before any rows land. An empty list is a notice and no
+    /// files.</summary>
+    private IReadOnlyList<HttpPageRequest> Downloads(JsonNode? ready, string jobId)
     {
         if (export.DownloadPath is { } path)
         {
-            return Resolve(path, "export.download_path", jobId);
+            return [Get(Resolve(path, "export.download_path", jobId))];
         }
 
         var pointer = export.DownloadPointer!;
-        if (!JsonPointer.TryResolve(ready, pointer, out var node)
-            || node is not JsonValue value || value.GetValueKind() != JsonValueKind.String
-            || value.GetValue<string>() is not { Length: > 0 } text)
+        JsonPointer.TryResolve(ready, pointer, out var node);
+        if (node is JsonArray list)
         {
-            throw new PzConnectorException(
-                $"{PollLabel}: export.download_pointer '{pointer}' does not resolve to a URL in export job " +
-                $"{Shown(jobId)}'s " +
-                "ready response", isTransient: false);
+            if (list.Count == 0)
+            {
+                notice?.Invoke($"{PollLabel}: export job {Shown(jobId)}'s ready response lists no result files at " +
+                    $"'{pointer}'; read as empty");
+                return [];
+            }
+
+            if (list.Count > MaxResultFiles)
+            {
+                throw new PzConnectorException(
+                    $"{PollLabel}: export job {Shown(jobId)}'s ready response lists {list.Count} result files at " +
+                    $"'{pointer}'; at most {MaxResultFiles} are read per job (narrow the export, e.g. a shorter " +
+                    "date range)", isTransient: false);
+            }
+
+            var downloads = new List<HttpPageRequest>(list.Count);
+            // Compared after resolution, query included: a repeated URL is one file listed twice, and reading
+            // it twice would land every row twice. Different signatures make different URLs.
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            var duplicates = 0;
+            for (var i = 0; i < list.Count; i++)
+            {
+                if (UrlText(list[i]) is not { } entry)
+                {
+                    throw new PzConnectorException(
+                        $"{PollLabel}: export.download_pointer '{pointer}' entry [{i}] is not a URL string in export " +
+                        $"job {Shown(jobId)}'s ready response", isTransient: false);
+                }
+
+                var url = DownloadUrl(entry, $"download URL [{i}] at '{pointer}'", jobId);
+                if (seen.Add(url.AbsoluteUri))
+                {
+                    downloads.Add(Get(url));
+                }
+                else
+                {
+                    duplicates++;
+                }
+            }
+
+            if (duplicates > 0)
+            {
+                notice?.Invoke($"{PollLabel}: export job {Shown(jobId)}'s ready response lists {duplicates} duplicate " +
+                    $"result file URLs at '{pointer}'; each file is read once");
+            }
+
+            return downloads;
         }
 
+        if (UrlText(node) is not { } text)
+        {
+            throw new PzConnectorException(
+                $"{PollLabel}: export.download_pointer '{pointer}' does not resolve to a URL or a list of URLs in " +
+                $"export job {Shown(jobId)}'s ready response", isTransient: false);
+        }
+
+        return [Get(DownloadUrl(text, $"download URL at '{pointer}'", jobId))];
+
+        static HttpPageRequest Get(Uri url) => new(HttpMethod.Get, url, null, null);
+    }
+
+    private static string? UrlText(JsonNode? node)
+        => node is JsonValue value && value.GetValueKind() == JsonValueKind.String
+            && value.GetValue<string>() is { Length: > 0 } text ? text : null;
+
+    /// <summary>One result URL, resolved against <c>base_url</c> and checked against <c>allow_hosts</c>;
+    /// <paramref name="what"/> names it in messages (never its query).</summary>
+    private Uri DownloadUrl(string text, string what, string jobId)
+    {
         if (!Uri.TryCreate(connection.BaseUrl, text, out var url))
         {
             throw new PzConnectorException(
-                $"{PollLabel}: export job {Shown(jobId)}'s download URL at '{pointer}' is not a valid URL",
+                $"{PollLabel}: export job {Shown(jobId)}'s {what} is not a valid URL",
                 isTransient: false);
         }
 
-        sender.EnsureAllowedTarget(url, $"export job {Shown(jobId)}'s download URL", PollStage);
+        sender.EnsureAllowedTarget(url, $"export job {Shown(jobId)}'s {what}", PollStage);
         return url;
     }
 
@@ -247,11 +428,17 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         return new Uri(connection.BaseUrl, expanded[1..]);
     }
 
+    private static bool UsableInPath(string id)
+        => id.Length > 0
+            && id.Split('/').All(segment => segment is not ("." or ".."))
+            && !id.Any(c => c == '\\' || char.IsControl(c));
+
     /// <summary>A job id as messages show it: on one line, and at most <see cref="MaxJobIdChars"/>
     /// characters (a server can return anything as an id).</summary>
     private static string Shown(string jobId)
     {
-        var flat = jobId.Replace("\r\n", " ", StringComparison.Ordinal).Replace('\r', ' ').Replace('\n', ' ');
+        var flat = string.Concat(jobId.Replace("\r\n", " ", StringComparison.Ordinal)
+            .Select(c => char.IsControl(c) ? ' ' : c));
         return flat.Length <= MaxJobIdChars ? flat : flat[..MaxJobIdChars] + "…";
     }
 }

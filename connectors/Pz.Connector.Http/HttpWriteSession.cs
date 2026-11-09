@@ -187,14 +187,8 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
 
             if (TransientClassifier.IsTransientStatus(status))
             {
-                var retryAfter = TransientClassifier.ParseRetryAfter(
-                    response.Headers.TryGetValues("Retry-After", out var values) ? values.FirstOrDefault() : null,
-                    time.GetUtcNow());
-                var note = "";
-                if (retryAfter is null && status is 429 or 503 && connection.RetryAfter is { } configured)
-                {
-                    retryAfter = configured.Read(response, time.GetUtcNow(), out note);
-                }
+                var retryAfter = HttpRetryAfterHeader.Resolve(response, connection.RetryAfter,
+                    useConfigured: status is 429 or 503, time.GetUtcNow(), out var note);
 
                 throw new PzConnectorException($"{Label}: HTTP {status} from {safeUri}{note}",
                     isTransient: true, retryAfter);
