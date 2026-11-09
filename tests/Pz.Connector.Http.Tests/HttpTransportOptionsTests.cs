@@ -73,8 +73,15 @@ public class HttpTransportOptionsTests
         Assert.Single(Parse(Proxy("http://p.corp/#frag")).Errors);
         Assert.Single(Parse(Proxy("not a url")).Errors);
 
-        Assert.Empty(Parse(Proxy("https://p.corp/")).Errors);
-        Assert.Empty(Parse(Proxy("https://p.corp")).Errors);
+        Assert.Empty(Parse(Proxy("http://p.corp/")).Errors);
+        Assert.Empty(Parse(Proxy("http://p.corp")).Errors);
+
+        // A TLS connection to the proxy itself is not supported: the target's TLS still runs end to end.
+        foreach (var https in new[] { "https://p.corp/", "https://p.corp:8443" })
+        {
+            Assert.Equal(["proxy.url must be an http:// URL (the TLS connection to the target still runs end to end through the proxy)"],
+                Parse(Proxy(https)).Errors);
+        }
 
         var (_, missing) = Parse(Map(("proxy", Map(("bypass", new List<object?> { "a.example" })))));
         Assert.Contains(missing, e => e.Contains("proxy.url", StringComparison.Ordinal));
@@ -188,6 +195,7 @@ public class HttpTransportOptionsTests
         {
             ("proxy", (object?)"none"),
             ("tls", Map(("ca_file", "ca.pem"))),
+            ("tls", Map(("client_certificate", Map(("path", "client.pfx"))))),
         })
         {
             var refused = await new HttpConnector().ValidateAsync(new ConnectorConfig(
@@ -199,9 +207,16 @@ public class HttpTransportOptionsTests
             Assert.True(allowed.IsValid, string.Join("; ", allowed.Errors));
         }
 
-        var plain = await new HttpConnector().ValidateAsync(new ConnectorConfig(
-            Map(("base_url", "https://api.example.com"), ("auth", chain))), CancellationToken.None);
-        Assert.True(plain.IsValid);
+        // An empty 'tls: {}' configures nothing, so it is not refused (the same rule that leaves the handler untouched).
+        foreach (var plainConfig in new[]
+        {
+            Map(("base_url", "https://api.example.com"), ("auth", chain)),
+            Map(("base_url", "https://api.example.com"), ("auth", chain), ("tls", Map())),
+        })
+        {
+            var plain = await new HttpConnector().ValidateAsync(new ConnectorConfig(plainConfig), CancellationToken.None);
+            Assert.True(plain.IsValid, string.Join("; ", plain.Errors));
+        }
     }
 
     [Fact]

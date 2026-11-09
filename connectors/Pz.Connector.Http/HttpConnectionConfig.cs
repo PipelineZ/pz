@@ -101,12 +101,20 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// <see cref="IDisposable"/>.</summary>
     /// <remarks>Binding also loads the 'tls:' files into <see cref="Bound"/>, which the caller owns and
     /// disposes with the clients built from this copy.</remarks>
-    public HttpConnectionConfig Bind(TimeProvider time)
+    public HttpConnectionConfig Bind(TimeProvider time) => Bind(time, BoundTransport.Load(Transport));
+
+    /// <summary>Binds with TLS material the caller already loaded; the authenticator gets the handler source
+    /// for its token endpoint. On success the caller keeps owning <paramref name="bound"/>; if binding throws
+    /// (anything), <paramref name="bound"/> is disposed before the exception propagates.</summary>
+    internal HttpConnectionConfig Bind(TimeProvider time, BoundTransport? bound)
     {
-        var bound = BoundTransport.Load(Transport);
         try
         {
-            return Bind(time, bound);
+            return this with
+            {
+                Bound = bound,
+                Authenticator = AuthFactory?.Invoke(time, HttpHandlerFactory.TokenEndpointHandlers(this, bound)) ?? Authenticator,
+            };
         }
         catch
         {
@@ -114,15 +122,6 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             throw;
         }
     }
-
-    /// <summary>Binds with TLS material the caller already loaded (and keeps owning); the authenticator
-    /// gets the handler source for its token endpoint.</summary>
-    internal HttpConnectionConfig Bind(TimeProvider time, BoundTransport? bound)
-        => this with
-        {
-            Bound = bound,
-            Authenticator = AuthFactory?.Invoke(time, HttpHandlerFactory.TokenEndpointHandlers(this, bound)) ?? Authenticator,
-        };
 
     /// <summary>The loaded 'tls:' material of a bound copy; null before binding and when neither 'proxy'
     /// nor 'tls' is set.</summary>
@@ -200,8 +199,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         }
 
         var transport = HttpTransportOptions.Parse(config.Values, baseDir, errors);
-        var hasTransport = config.Values.TryGetValue("proxy", out var rawProxy) && rawProxy is not null
-            || config.Values.TryGetValue("tls", out var rawTls) && rawTls is not null;
+        var hasTransport = !transport.IsDefault;
 
         HttpAuth.Parsed auth = new(null, null, null);
         var authBlock = config.Values.TryGetValue("auth", out var a)

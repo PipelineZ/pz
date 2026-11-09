@@ -139,9 +139,14 @@ internal sealed class BoundTransport : IDisposable
         }
         catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException or ArgumentException)
         {
-            // The framework text can echo key details; only the setting and the path are named.
+            // The framework text can echo key details; only the setting, the path and the exception's type
+            // (and HResult) are named, never its message.
+            var cause = ex.HResult != 0
+                ? $"{ex.GetType().Name}, HResult 0x{ex.HResult:X8}"
+                : ex.GetType().Name;
             throw Permanent($"tls.client_certificate '{path}' could not be loaded (an unreadable or malformed file, " +
-                "a wrong tls.client_certificate.password, or a key_path that does not match the certificate)");
+                "a wrong tls.client_certificate.password, a key_path that does not match the certificate, " +
+                $"or the account cannot store private keys (Windows: the user profile must be loaded)) (cause: {cause})");
         }
 
         if (!certificate.HasPrivateKey)

@@ -136,9 +136,11 @@ internal sealed record HttpTransportOptions(ProxyMode Mode, Uri? ProxyUrl, strin
             return null;
         }
 
-        if (!Uri.TryCreate(text, UriKind.Absolute, out var url) || url.Scheme is not ("http" or "https"))
+        if (!Uri.TryCreate(text, UriKind.Absolute, out var url) || url.Scheme != Uri.UriSchemeHttp)
         {
-            errors.Add("proxy.url must be an absolute http or https URL");
+            // A TLS connection to the proxy would be handed the target's TLS settings (client certificate,
+            // ca_file trust), so only a plain-http proxy is accepted; CONNECT still tunnels TLS end to end.
+            errors.Add("proxy.url must be an http:// URL (the TLS connection to the target still runs end to end through the proxy)");
             return null;
         }
 

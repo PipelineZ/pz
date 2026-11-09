@@ -199,6 +199,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         }
 
         // Binding builds the credential (and loads a certificate), so its failures are sign-in failures too.
+        // A failed Bind disposes the transport itself, whatever it throws.
         HttpConnectionConfig bound;
         try
         {
@@ -206,7 +207,6 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         }
         catch (PzConnectorException ex)
         {
-            transport?.Dispose();
             return new ConnectionCheck(false, "sign-in failed: " + ex.Message);
         }
 

@@ -355,6 +355,9 @@ public sealed class HttpTlsTests : IDisposable
             var ex = Assert.Throws<PzConnectorException>(() => Parse(Config(url, Tls(client: client))).Bind(TimeProvider.System));
             Assert.False(ex.IsTransient);
             Assert.Contains("tls.client_certificate", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("or the account cannot store private keys (Windows: the user profile must be loaded)",
+                ex.Message, StringComparison.Ordinal);
+            Assert.Contains("(cause: CryptographicException", ex.Message, StringComparison.Ordinal);
             Assert.DoesNotContain("wrong-pw-1234", ex.Message, StringComparison.Ordinal);
             Assert.DoesNotContain(TestPki.ClientPassword, ex.Message, StringComparison.Ordinal);
 
@@ -373,6 +376,19 @@ public sealed class HttpTlsTests : IDisposable
         var missing = Assert.Throws<PzConnectorException>(
             () => Parse(Config(url, Tls(client: Pfx("absent.pfx")))).Bind(TimeProvider.System));
         Assert.Contains("was not found", missing.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Failed_bind_disposes_the_loaded_transport()
+    {
+        var connection = Parse(Config(new Uri("https://localhost/"), Tls(client: Pfx())))
+            with { AuthFactory = (_, _) => throw new InvalidOperationException("boom") };
+        var transport = BoundTransport.Load(connection.Transport);
+        Assert.NotNull(transport?.ClientCert);
+        Assert.NotEqual(IntPtr.Zero, transport.ClientCert.Handle);
+
+        Assert.Throws<InvalidOperationException>(() => connection.Bind(TimeProvider.System, transport));
+        Assert.Equal(IntPtr.Zero, transport.ClientCert.Handle);
     }
 
     [Fact]
