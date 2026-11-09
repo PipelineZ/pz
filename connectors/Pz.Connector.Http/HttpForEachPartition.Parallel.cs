@@ -248,9 +248,11 @@ internal sealed partial class HttpForEachPartition
                 {
                     await ReadItemAsync(index, _stop.Token).ConfigureAwait(false);
                 }
-                catch (Exception ex) when (_stop.IsCancellationRequested && IsCancellation(ex))
+                catch (OperationCanceledException) when (_stop.IsCancellationRequested)
                 {
-                    // Stopped by another item's failure or by the read itself: not a failure of this item.
+                    // Stopped by another item's failure or by the read itself: not a failure of this item. Only
+                    // a bare cancellation counts: a PzConnectorException is the item's own failure even when it
+                    // wraps one (a request timeout), and Fail keeps the lowest record's.
                     return;
                 }
                 catch (Exception ex)
@@ -313,19 +315,6 @@ internal sealed partial class HttpForEachPartition
             }
 
             _stop.Cancel();
-        }
-
-        private static bool IsCancellation(Exception ex)
-        {
-            for (Exception? e = ex; e is not null; e = e.InnerException)
-            {
-                if (e is OperationCanceledException)
-                {
-                    return true;
-                }
-            }
-
-            return false;
         }
 
         /// <summary>Waits for every worker, releases whatever the read did not take, and throws the failure

@@ -53,6 +53,10 @@ public sealed class HttpParallelItemsTests : IDisposable
         public Func<string, (int Status, string Body, string MediaType)> Item { get; init; } =
             id => (200, $$"""{"lines":[{"sku":"{{id}}-a"}]}""", "application/json");
 
+        /// <summary>Items whose request times out (the client's own timeout, a TaskCanceledException while
+        /// the read's token is not cancelled) once their gate opens.</summary>
+        public Func<string, bool> TimesOut { get; init; } = _ => false;
+
         /// <summary>How many item requests must observe cancellation before <see cref="CancelledEnough"/>
         /// completes.</summary>
         public int CancelledTarget { get; init; } = int.MaxValue;
@@ -140,6 +144,11 @@ public sealed class HttpParallelItemsTests : IDisposable
                     }
 
                     throw;
+                }
+
+                if (TimesOut(id))
+                {
+                    throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout");
                 }
 
                 var (status, body, mediaType) = Item(id);
@@ -447,6 +456,56 @@ public sealed class HttpParallelItemsTests : IDisposable
         Assert.DoesNotContain(Identity("o6"), ex.Message);
         Assert.True(ex.IsTransient);
         Assert.Equal(["o4", "o5"], Sorted(handler.Cancelled));
+    }
+
+    /// <summary>Holds a timed-out request's failure until its item has been stopped, so it is recorded
+    /// only after a higher record's failure has cancelled the page.</summary>
+    private sealed class TimeoutAfterStopGate : IOperationGate
+    {
+        public async Task<T> ExecuteAsync<T>(string opLabel, bool idempotent, Func<CancellationToken, Task<T>> op,
+            CancellationToken ct)
+        {
+            try
+            {
+                return await op(ct);
+            }
+            catch (PzConnectorException ex) when (ex.InnerException is TaskCanceledException)
+            {
+                var stopped = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                await using (ct.Register(() => stopped.TrySetResult()))
+                {
+                    await stopped.Task.WaitAsync(Bound);
+                }
+
+                throw;
+            }
+        }
+
+        public void ReportBudget(int remaining, DateTimeOffset resetAt)
+        {
+        }
+    }
+
+    [Fact]
+    public async Task Lower_record_timeout_after_stop_is_reported()
+    {
+        // o2 (record 1) fails first and stops the page; o1 (record 0) then fails with a timeout, a transient
+        // PzConnectorException wrapping a TaskCanceledException. That is o1's own failure, not the stop.
+        var handler = new ItemsHandler
+        {
+            List = Paged(Ids(1, 2)),
+            Item = id => id == "o2"
+                ? (500, """{"error":"boom"}""", "application/json")
+                : (200, $$"""{"lines":[{"sku":"{{id}}-a"}]}""", "application/json"),
+            TimesOut = id => id == "o1",
+        }.OpenAll();
+        var partition = Partition(Options(2), handler, new TimeoutAfterStopGate());
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Drain(partition).WaitAsync(Bound));
+
+        Assert.Contains("timed out", ex.Message);
+        Assert.EndsWith($"({Identity("o1")})", ex.Message);
+        Assert.True(ex.IsTransient);
     }
 
     [Fact]
