@@ -42,7 +42,8 @@ public static class CredentialGuard
     private static readonly HashSet<string> NotASecretSuffixes = new(StringComparer.OrdinalIgnoreCase)
     {
         "url", "uri", "pointer", "path", "file", "fingerprint", "header", "param", "name", "type", "ttl", "status",
-        "method", "id", "prefix", "format", "location", "kind", "mode", "scope", "rotation", "inject",
+        "method", "id", "prefix", "format", "location", "kind", "mode", "scope", "rotation", "inject", "user",
+        "username", "email",
     };
 
     /// <summary>What a <c>key</c> segment means when one of these comes right before it: a column, not a
@@ -56,7 +57,22 @@ public static class CredentialGuard
 
     /// <summary>Header-name segments that carry a credential in a <c>headers:</c> map (<c>X-Auth</c>,
     /// <c>X-Session</c>), on top of <see cref="SecretWords"/>.</summary>
-    private static readonly HashSet<string> SecretHeaderWords = new(StringComparer.OrdinalIgnoreCase) { "auth", "session", "key" };
+    private static readonly HashSet<string> SecretHeaderWords = new(StringComparer.OrdinalIgnoreCase) { "auth", "session" };
+
+    /// <summary>Maps whose keys are names of data (contract columns, their pointers, a for_each item's fields), not
+    /// options: a column called <c>key</c> or <c>password_hash</c> is not a credential.</summary>
+    private static readonly HashSet<string> NameMaps = new(StringComparer.Ordinal) { "columns", "column_pointers", "fields" };
+
+    /// <summary>A pz template binding (<c>{{ watermark }}</c>, <c>{{ run_date }}</c>): rendered by pz, never a
+    /// literal secret.</summary>
+    private static readonly Regex Binding = new(@"\{\{[^}]*\}\}", RegexOptions.Compiled);
+
+    // A name=value pair inside a value: an identifier name and a value that is not only base64 padding.
+    private static readonly Regex Pair = new(@"^\s*(?<name>[A-Za-z0-9_.\-]+)\s*=(?<value>(?!=*\s*$).*)$", RegexOptions.Compiled);
+
+    // name=value settings separated by whitespace or ';' in a free-form string (a libpq or ADO connection string).
+    private static readonly Regex Setting = new(@"(?:^|[\s;:])(?<name>[A-Za-z][A-Za-z0-9_]*)\s*=\s*(?<value>[^\s;]+)",
+        RegexOptions.Compiled);
 
     private static readonly Regex EnvRef = new(@"\$\{[^}]+\}", RegexOptions.Compiled);
 
@@ -100,18 +116,30 @@ public static class CredentialGuard
     /// them: <c>name=${VAR}</c> pairs separated by <c>&amp;</c> or <c>;</c> (<c>session=${S}</c>), separators between
     /// references (<c>${USER}:${PASSWORD}</c>) and one leading scheme word (<c>Bearer ${TOKEN}</c>); a literal value
     /// anywhere in it (<c>session=abc</c>, <c>Bearer ${X} abc</c>, <c>${P}hunter2</c>) is a literal secret.</summary>
-    internal static bool HasLiteral(string text)
+    internal static bool HasLiteral(string text, string? key = null)
     {
-        if (!EnvRef.IsMatch(text))
+        var templated = EnvRef.IsMatch(text) || Binding.IsMatch(text);
+        var cookie = key is not null && Segments(key).Contains("cookie");
+        if (!templated && !cookie)
         {
             return text.Any(char.IsLetterOrDigit);
         }
 
         foreach (var part in text.Split(['&', ';'], StringSplitOptions.RemoveEmptyEntries))
         {
-            var eq = part.IndexOf('=');
-            var value = eq < 0 ? StripSchemeWord(EnvRef.Replace(part, " ").Trim()) : EnvRef.Replace(part[(eq + 1)..], " ");
-            if (value.Any(char.IsLetterOrDigit))
+            // name=value: the name is structure; a literal value is a secret only under a secret-bearing name
+            // (theme=dark is a preference, session=abc a credential).
+            if (Pair.Match(part) is { Success: true } pair)
+            {
+                if (IsSecretKey(pair.Groups["name"].Value, "headers") && Unreferenced(pair.Groups["value"].Value).Any(char.IsLetterOrDigit))
+                {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if (StripSchemeWord(Unreferenced(part).Trim()).Any(char.IsLetterOrDigit))
             {
                 return true;
             }
@@ -119,6 +147,8 @@ public static class CredentialGuard
 
         return false;
     }
+
+    private static string Unreferenced(string text) => Binding.Replace(EnvRef.Replace(text, " "), " ");
 
     private static string StripSchemeWord(string rest)
     {
@@ -210,16 +240,18 @@ public static class CredentialGuard
     /// top-level connection properties only, where the schema names them.</summary>
     private sealed class Walker(string label, HashSet<string> schemaFlagged, List<PzError> errors)
     {
-        public void Map(Dictionary<string, object?> map, string prefix, string? parentKey, bool root)
+        public void Map(Dictionary<string, object?> map, string prefix, string? parentKey, bool root,
+            bool keysAreNames = false)
         {
             foreach (var (key, value) in map)
             {
                 var path = prefix.Length == 0 ? key : $"{prefix}.{key}";
-                var secret = IsSecretKey(key, parentKey) || (root && schemaFlagged.Contains(key));
+                // A name map's keys are data names; only its values are checked (for a URL carrying a secret).
+                var secret = !keysAreNames && (IsSecretKey(key, parentKey) || (root && schemaFlagged.Contains(key)));
                 switch (value)
                 {
                     case Dictionary<string, object?> nested:
-                        Map(nested, path, key, root: false);
+                        Map(nested, path, key, root: false, keysAreNames: !keysAreNames && NameMaps.Contains(key));
                         break;
                     case List<object?> list:
                         List(list, path, key, secret);
@@ -262,7 +294,7 @@ public static class CredentialGuard
 
         private void Scalar(string text, string path, string key, bool secret)
         {
-            if (secret ? HasLiteral(text) : CarriesLiteralSecret(text))
+            if (secret ? HasLiteral(text, key) : CarriesLiteralSecret(text))
             {
                 errors.Add(Refusal(label, path, key));
             }
@@ -312,6 +344,15 @@ public static class CredentialGuard
             var authority = authorityEnd < 0 ? text[authorityStart..] : text[authorityStart..authorityEnd];
             var at = authority.LastIndexOf('@');
             if (at > 0 && authority[..at].Split(':', 2) is [_, var password] && HasLiteral(Decode(password)))
+            {
+                return true;
+            }
+        }
+
+        // A connection string's settings (libpq password=..., ADO AccountKey=...), anywhere in the value.
+        foreach (System.Text.RegularExpressions.Match setting in Setting.Matches(text))
+        {
+            if (IsSecretKey(setting.Groups["name"].Value) && HasLiteral(setting.Groups["value"].Value))
             {
                 return true;
             }

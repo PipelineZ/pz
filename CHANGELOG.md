@@ -377,9 +377,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   credential, authorization, cookie, apikey, sig, connection string) or a `key` that is not a column (`primary_key`,
   merge `keys` are not), unless its last segment says where or what a thing is (`_url`, `_pointer`, `_path`, `_file`,
   `_header`, `_type`, ...): proxy `bypass` and `idempotency_key_header` pass. Inside `headers:`, auth and session
-  headers (`X-Auth`) count. Under a secret-bearing key a number is refused, and a string is refused when it holds a
-  literal: `${...}` references with structure around them (`Bearer ${TOKEN}`, `session=${S}`, `${USER}:${PASSWORD}`)
-  are accepted. Request `body` strings (login or dataset, form or JSON) are read field by field, and any URL-shaped
+  headers (`X-Auth`) count; a user-name header (`X-Auth-User`) and `Idempotency-Key` do not. The keys of `columns:`,
+  `column_pointers:` and `for_each.fields` are data names and are never matched. Under a secret-bearing key a number
+  is refused, and a string is refused when it holds a literal secret: `${...}` references and pz bindings
+  (`{{ watermark }}`) with structure around them (`Bearer ${TOKEN}`, `theme=dark; session=${S}`,
+  `${USER}:${PASSWORD}`) are accepted. A connection-string setting (`password=hunter2` in a DuckLake libpq catalog,
+  `AccountKey=...`) is checked in any value. Request `body` strings (login or dataset, form or JSON) are read field by field, and any URL-shaped
   value is checked for a typed `user:password@` or a literal secret query parameter (`path: /r?api_key=...`, an
   Azure SAS `sig=`). Errors name the dotted path (`auth.login.body.password`, `entities.orders.read.query.api_key`).
 - **A `${VAR}` inside a YAML flow map gets a quoting hint.** `auth: { token: ${X} }` failed with a bare PZ0101
