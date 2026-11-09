@@ -43,6 +43,11 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     /// for_each read. Null means each page is stamped with the time it was fetched.</summary>
     internal DateTimeOffset? FetchedAt { get; init; }
 
+    /// <summary>When the run started (<see cref="ConnectorRunContext.StartedAt"/>): <c>{{ run_date }}</c> renders from it,
+    /// so every attempt of the run sends the same dated request. Null renders from the clock at read time.</summary>
+    internal DateTimeOffset? RunStartedAt { get; init; }
+
+
     /// <summary>Where <see cref="Item"/> came from (the list page and record index), appended to an
     /// error building the item's first request, so a bad field value can be found in the list.</summary>
     internal string? ItemOrigin { get; init; }
@@ -400,7 +405,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         var strategy = config.PageStrategyFactory?.Invoke();
         // Read once: every request this partition builds renders the same {{ run_date }}, even
         // across midnight. Bindings handed in already carry it.
-        var runDate = Bindings is null ? config.RunDate.Render(time.GetUtcNow()) : null;
+        var runDate = Bindings is null ? config.RunDate.Render(RunStartedAt ?? time.GetUtcNow()) : null;
         // A resume link wins over sync-token replay -- it is a LATER position inside the same
         // crawl, whereas PriorSyncState (inside BuildFirstRequest) replays a
         // whole-feed delta token from a PRIOR run. _syncCandidate capture from the terminal page

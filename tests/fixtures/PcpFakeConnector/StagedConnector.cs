@@ -15,7 +15,9 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
 {
     /// <summary>What <c>--report-run-context</c> says about a context: <c>run/node</c>, or <c>none</c>.</summary>
     internal static string Describe(ConnectorRunContext? context) =>
-        context is null ? "none" : $"{context.Run}/{context.Node ?? "-"}";
+        context is null
+            ? "none"
+            : $"{context.Run}/{context.Node ?? "-"}" + (context.StartedAt is { } at ? $"@{at.ToUniversalTime():O}" : "");
 
     public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext runContext,
         CancellationToken ct)

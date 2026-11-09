@@ -241,6 +241,11 @@ public static class MessageMapping
             msg.Node = context.Node;
         }
 
+        if (context.StartedAt is { } startedAt)
+        {
+            msg.StartedAt = startedAt.ToString("O", System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         return msg;
     }
 

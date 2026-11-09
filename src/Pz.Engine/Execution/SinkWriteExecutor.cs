@@ -46,7 +46,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
         // sign-in) is scoped to this run, and a key a retried attempt must reproduce can use the node id.
         if (sink is IRunContextAware runAware)
         {
-            runAware.UseRunContext(new ConnectorRunContext(ctx.Paths.RunId, node.Id.Value));
+            runAware.UseRunContext(new ConnectorRunContext(ctx.Paths.RunId, node.Id.Value) { StartedAt = ctx.StartedAt });
         }
 
         // Called once per open, like UseOperationGate above. The callback itself delivers each distinct

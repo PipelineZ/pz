@@ -73,6 +73,11 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     /// items. Null means this partition reads the clock itself.</summary>
     internal DateTimeOffset? FetchedAt { get; init; }
 
+    /// <summary>When the run started (<see cref="ConnectorRunContext.StartedAt"/>): <c>{{ run_date }}</c> renders from it,
+    /// so every attempt of the run sends the same dated request. Null renders from the clock at read time.</summary>
+    internal DateTimeOffset? RunStartedAt { get; init; }
+
+
     /// <summary>Where <see cref="Item"/> came from (the list page and record index), appended to an
     /// error building the download request.</summary>
     internal string? ItemOrigin { get; init; }
@@ -107,7 +112,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         var file = config.File!;
         // Read once: every row of this read shares one fetch time and one {{ run_date }}.
         var now = FetchedAt ?? time.GetUtcNow();
-        var bindings = Bindings ?? HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
+        var bindings = Bindings ?? HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(RunStartedAt ?? now), Label);
         var first = BuildFirstRequest(bindings);
 
         IReadOnlyList<HttpPageRequest> downloads = [first];
@@ -120,7 +125,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
                 ? first with
                 {
                     IdempotencyKey = (keyHeader,
-                        HttpExportJob.IdempotencyKey(IdempotencyScope ?? _ownScope, PartitionId, Item?.ToJsonString(), first)),
+                        HttpExportJob.IdempotencyKey(IdempotencyScope ?? _ownScope, PartitionId, first)),
                 }
                 : first;
             downloads = await new HttpExportJob(export, _sender, connection, config, time, Label, bindings, Notice)

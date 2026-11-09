@@ -11,7 +11,14 @@ namespace Pz.Connectors.Abstractions;
 /// sign-in that no other node of the run should repeat), or to derive a key that a retried attempt of the
 /// same node must reproduce (an idempotency key). It promises nothing across runs: <c>pz retry</c> is a
 /// new run.</para></summary>
-public sealed record ConnectorRunContext(string Run, string? Node);
+public sealed record ConnectorRunContext(string Run, string? Node)
+{
+    /// <summary>When the run started, on the engine's clock; null when the host has no run start (a validation
+    /// pass, a direct test). The same for every attempt of every node in the run, so a value derived from "today"
+    /// (an http <c>run_date</c>, and an idempotency key over the request it renders into) does not change when a
+    /// retried attempt runs after midnight.</summary>
+    public DateTimeOffset? StartedAt { get; init; }
+}
 
 /// <summary>Implemented by an ISource/ISink that wants to know the run it is opened for. The engine calls
 /// UseRunContext at most once per opened ISource/ISink, after OpenAsync returns and before any

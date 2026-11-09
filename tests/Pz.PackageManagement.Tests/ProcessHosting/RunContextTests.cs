@@ -48,6 +48,24 @@ public sealed class RunContextTests : IDisposable
     }
 
     [Fact]
+    public async Task The_run_start_crosses_with_the_run_context()
+    {
+        var (process, client, config) = await SpawnAsync();
+        await using var _ = process;
+        await using var __ = client;
+        await using var source = await new ProcessSourceConnector(client, process).OpenAsync(config, CancellationToken.None);
+        ((IRunContextAware)source).UseRunContext(new ConnectorRunContext("run-1", "node-a")
+        {
+            StartedAt = new DateTimeOffset(2026, 11, 7, 23, 59, 58, TimeSpan.Zero),
+        });
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await source.GetSchemaAsync(Spec, CancellationToken.None));
+
+        Assert.Contains("fixture: source run context run-1/node-a@2026-11-07T23:59:58.0000000+00:00", ex.Message);
+    }
+
+    [Fact]
     public async Task A_source_the_host_names_no_run_for_behaves_as_before()
     {
         var (process, client, config) = await SpawnAsync();

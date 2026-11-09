@@ -184,11 +184,16 @@ public sealed class NoticeAwareWiringTests : IAsyncLifetime
         var source = new NoticeAwareFakeSource();
         var sink = new NoticeAwareFakeSink();
 
-        await new SourceLoadExecutor().ExecuteAsync(SourceNode(), SourceContext(new NoticeStubConnector(source), null), default);
-        await new SinkWriteExecutor().ExecuteAsync(SinkNode(), SinkContext(sink, null), default);
+        var sourceCtx = SourceContext(new NoticeStubConnector(source), null);
+        var sinkCtx = SinkContext(sink, null);
+        await new SourceLoadExecutor().ExecuteAsync(SourceNode(), sourceCtx, default);
+        await new SinkWriteExecutor().ExecuteAsync(SinkNode(), sinkCtx, default);
 
-        Assert.Equal([new ConnectorRunContext("test-run", "eeeeeeeeeeeeeeee")], source.RunContexts);
-        Assert.Equal([new ConnectorRunContext("test-run", "eeeeeeeeeeeeeeee")], sink.RunContexts);
+        // The run's start rides along, the same for every attempt of every node.
+        Assert.Equal([new ConnectorRunContext("test-run", "eeeeeeeeeeeeeeee") { StartedAt = sourceCtx.StartedAt }],
+            source.RunContexts);
+        Assert.Equal([new ConnectorRunContext("test-run", "eeeeeeeeeeeeeeee") { StartedAt = sinkCtx.StartedAt }],
+            sink.RunContexts);
     }
 
     /// <summary>A source/sink that does not implement <see cref="INoticeAware"/> at all is untouched --

@@ -53,6 +53,11 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// <summary>Handed to each file-mode item (<see cref="HttpFilePartition.IdempotencyScope"/>).</summary>
     internal string? IdempotencyScope { get; init; }
 
+    /// <summary>When the run started (<see cref="ConnectorRunContext.StartedAt"/>): <c>{{ run_date }}</c> renders from it,
+    /// so every attempt of the run sends the same dated request. Null renders from the clock at read time.</summary>
+    internal DateTimeOffset? RunStartedAt { get; init; }
+
+
     /// <summary>Where JSON items' batch buffers come from; null means the shared native pool. Tests count
     /// with it.</summary>
     internal MemoryAllocator? Allocator { get; set; }
@@ -112,7 +117,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         var now = time.GetUtcNow();
         // The dataset's bindings serve both requests: the list formats the watermark by the dataset's
         // cursor type, and both render the same {{ run_date }}.
-        var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
+        var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(RunStartedAt ?? now), Label);
         // The list crawl and every item share this read's Retry-After pause: a throttle on any of them
         // holds back the others.
         var list = forEach.List is { } listRequest

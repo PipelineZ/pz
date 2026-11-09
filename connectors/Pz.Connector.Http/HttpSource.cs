@@ -115,12 +115,12 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         // for_each comes first: its items may themselves be file downloads.
         IDatasetPartition partition = config.IsForEach
             ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                { Notice = _notice, IdempotencyScope = IdempotencyScope }
+                { Notice = _notice, IdempotencyScope = IdempotencyScope, RunStartedAt = RunContext?.StartedAt }
             : config.IsFileMode
                 ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                    { Notice = _notice, IdempotencyScope = IdempotencyScope }
+                    { Notice = _notice, IdempotencyScope = IdempotencyScope, RunStartedAt = RunContext?.StartedAt }
                 : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
-                    { Notice = _notice };
+                    { Notice = _notice, RunStartedAt = RunContext?.StartedAt };
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 

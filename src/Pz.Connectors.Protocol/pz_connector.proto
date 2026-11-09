@@ -134,6 +134,7 @@ message ValidationResultMsg {
 message RunContextMsg {
   string run = 1;
   optional string node = 2;
+  optional string started_at = 3; // ISO 8601 round-trip ("O") form; absent when the host has no run start
 }
 message CheckRequest { google.protobuf.Struct config = 1; optional RunContextMsg run_context = 2; }
 message ConnectionCheckMsg { bool ok = 1; optional string message = 2; }

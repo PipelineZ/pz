@@ -1734,4 +1734,35 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         Assert.Contains(errors, e => e.StartsWith("export.idempotency_key_header", StringComparison.Ordinal)
             && e.Contains(expected, StringComparison.Ordinal));
     }
+
+    [Fact]
+    public async Task A_retry_after_midnight_sends_the_same_dated_start_and_the_same_key()
+    {
+        var starts = 0;
+        _server.Map("/reports", _ => ++starts == 1 ? Json("{}", 503) : Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json(Ready(FilesUrl("out.csv"))));
+        _files.Map("/out.csv", _ => File(Csv));
+        var spec = Spec(Export(("idempotency_key_header", "Idempotency-Key")),
+            o => o["body"] = new Dictionary<string, object?> { ["metric"] = "visits", ["day"] = "{{ run_date }}" });
+        var run = new ConnectorRunContext("run-1", "node-a") { StartedAt = Now };
+
+        await using (var first = Source())
+        {
+            first.UseRunContext(run);
+            Assert.True((await ReadFailing(spec, first)).Error.IsTransient);
+        }
+
+        _clock.Advance(TimeSpan.FromDays(1));
+        await using (var retry = Source())
+        {
+            retry.UseRunContext(run);
+            await Read(spec, retry);
+        }
+
+        var startRequests = _server.Requests.Where(r => r.Method == "POST" && r.Url.AbsolutePath == "/reports").ToList();
+        Assert.Equal(2, startRequests.Count);
+        Assert.Contains("2026-11-08", startRequests[1].Body);
+        Assert.Equal(startRequests[0].Body, startRequests[1].Body);
+        Assert.Equal(StartKeys()[0], StartKeys()[1]);
+    }
 }

@@ -18,7 +18,7 @@ public sealed class HttpDatedUrlTests : IAsyncLifetime
 
     private static DatasetSpec Spec(Dictionary<string, object?> options) => new("stub", "dated", options);
 
-    private async Task ReadAll(DatasetSpec spec)
+    private async Task ReadAll(DatasetSpec spec, ConnectorRunContext? run = null)
     {
         var errors = new List<string>();
         var connection = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
@@ -28,6 +28,11 @@ public sealed class HttpDatedUrlTests : IAsyncLifetime
         Assert.Empty(errors);
 
         await using var source = new HttpSource(connection!, _clock);
+        if (run is not null)
+        {
+            source.UseRunContext(run);
+        }
+
         var partitions = await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None);
         foreach (var partition in partitions)
         {
@@ -40,6 +45,38 @@ public sealed class HttpDatedUrlTests : IAsyncLifetime
 
     private static string QueryDate(StubRequest request)
         => request.Url.Query.TrimStart('?').Split('&').Single(p => p.StartsWith("date=", StringComparison.Ordinal))[5..];
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Every_attempt_of_a_run_renders_the_run_date_of_the_runs_start(bool file)
+    {
+        // An attempt retried after midnight must send what the first sent: the same dated URL, and so the same
+        // export idempotency key.
+        _server.MapPrefix("/exports/", _ => file
+            ? new StubResponse(200, "id\n1\n", new Dictionary<string, string> { ["Content-Type"] = "text/csv" })
+            : new StubResponse(200, "[]"));
+        var run = new ConnectorRunContext("run-1", "node-a") { StartedAt = DateTimeOffset.Parse("2026-11-07T23:59:58Z") };
+        var options = new Dictionary<string, object?>
+        {
+            ["path"] = "/exports/{{ run_date }}/x",
+            ["run_date"] = new Dictionary<string, object?> { ["format"] = "yyyy-MM-dd" },
+        };
+        if (file)
+        {
+            options["file"] = new Dictionary<string, object?> { ["format"] = "csv" };
+            options["columns"] = new Dictionary<string, string> { ["id"] = "int" };
+        }
+
+        SetClock("2026-11-07T23:59:59Z");
+        await ReadAll(Spec(options), run);
+        SetClock("2026-11-08T00:00:05Z");
+        await ReadAll(Spec(options), run);
+        await ReadAll(Spec(options));
+
+        Assert.Equal(["/exports/2026-11-07/x", "/exports/2026-11-07/x", "/exports/2026-11-08/x"],
+            _server.Requests.Select(r => r.Url.AbsolutePath));
+    }
 
     [Fact]
     public async Task Path_binding_expands_and_escapes()
