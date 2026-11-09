@@ -268,37 +268,28 @@ public sealed class HttpTlsTests : IDisposable
         // just because some store on this machine happens to hold it.
         const SslPolicyErrors chainErrors = SslPolicyErrors.RemoteCertificateChainErrors;
         X509Certificate2Collection rootOnly = [_pki.Root];
-        using var store = new X509Store(StoreName.CertificateAuthority, StoreLocation.CurrentUser);
-        store.Open(OpenFlags.ReadWrite);
-        var added = !store.Certificates.Contains(_pki.Intermediate);
-        try
+        // Held through the shared lease, so a test server running in parallel keeps its intermediate.
+        using var lease = CaStoreLease.Acquire([_pki.Intermediate], () =>
         {
-            store.Add(_pki.Intermediate);
-        }
-        catch (System.Security.Cryptography.CryptographicException)
+            try
+            {
+                using var store = new X509Store(StoreName.CertificateAuthority, StoreLocation.CurrentUser);
+                store.Open(OpenFlags.ReadWrite);
+                store.Add(_pki.Intermediate);
+            }
+            catch (System.Security.Cryptography.CryptographicException)
+            {
+                // Some accounts may not write the user store (a CI runner on Windows); the rule must hold
+                // either way.
+            }
+        });
+        using (var omitted = Presented(_pki.Leaf))
         {
-            // Some accounts may not write the user store (a CI runner on Windows); the rule must hold
-            // either way.
-            added = false;
+            Assert.False(HttpHandlerFactory.Trusts(rootOnly, _pki.Leaf, omitted, chainErrors));
         }
 
-        try
-        {
-            using (var omitted = Presented(_pki.Leaf))
-            {
-                Assert.False(HttpHandlerFactory.Trusts(rootOnly, _pki.Leaf, omitted, chainErrors));
-            }
-
-            using var sent = Presented(_pki.Leaf, _pki.Intermediate);
-            Assert.True(HttpHandlerFactory.Trusts(rootOnly, _pki.Leaf, sent, chainErrors));
-        }
-        finally
-        {
-            if (added)
-            {
-                store.Remove(_pki.Intermediate);
-            }
-        }
+        using var sent = Presented(_pki.Leaf, _pki.Intermediate);
+        Assert.True(HttpHandlerFactory.Trusts(rootOnly, _pki.Leaf, sent, chainErrors));
     }
 
     [Fact]

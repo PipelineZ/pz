@@ -191,7 +191,7 @@ internal sealed class TestTlsServer : IAsyncDisposable
     private readonly bool _rejectClientCertificates;
     private readonly SslProtocols _protocols;
     private readonly Func<string, string> _respond;
-    private readonly List<(StoreLocation Location, X509Certificate2 Certificate)> _storeAdditions;
+    private readonly CaStoreLease _storeLease;
 
     /// <param name="requestClientCertificate">Ask for a client certificate but accept a handshake without one.</param>
     /// <param name="requireClientCertificate">Refuse a handshake without a client certificate.</param>
@@ -205,9 +205,10 @@ internal sealed class TestTlsServer : IAsyncDisposable
     {
         _respond = respond ?? (_ => Body);
         _rejectClientCertificates = rejectClientCertificates;
-        var absent = AbsentFromCaStores(chain ?? []);
-        _context = leaf is null ? null : SslStreamCertificateContext.Create(leaf, chain ?? [], offline: true);
-        _storeAdditions = absent.Where(a => CaStoreHolds(a.Location, a.Certificate)).ToList();
+        SslStreamCertificateContext? context = null;
+        _storeLease = CaStoreLease.Acquire(chain ?? [],
+            () => context = leaf is null ? null : SslStreamCertificateContext.Create(leaf, chain ?? [], offline: true));
+        _context = context;
         _requestClientCertificate = requestClientCertificate || requireClientCertificate;
         _requireClientCertificate = requireClientCertificate;
         _protocols = protocols;
@@ -299,43 +300,9 @@ internal sealed class TestTlsServer : IAsyncDisposable
         await stream.FlushAsync(_stop.Token);
     }
 
-    // On Windows, SslStreamCertificateContext.Create adds the intermediates it is given to the user or machine
-    // CA store when the OS cannot build the chain by itself. A server takes back what its creation added.
-    private static List<(StoreLocation Location, X509Certificate2 Certificate)> AbsentFromCaStores(X509Certificate2Collection chain)
-        => !OperatingSystem.IsWindows()
-            ? []
-            : [.. from location in new[] { StoreLocation.CurrentUser, StoreLocation.LocalMachine }
-                from certificate in chain
-                where !CaStoreHolds(location, certificate)
-                select (location, certificate)];
-
-    private static bool CaStoreHolds(StoreLocation location, X509Certificate2 certificate)
-    {
-        using var store = new X509Store(StoreName.CertificateAuthority, location);
-        store.Open(OpenFlags.ReadOnly);
-        return store.Certificates.Contains(certificate);
-    }
-
-    private void RemoveStoreAdditions()
-    {
-        foreach (var (location, certificate) in _storeAdditions)
-        {
-            try
-            {
-                using var store = new X509Store(StoreName.CertificateAuthority, location);
-                store.Open(OpenFlags.ReadWrite);
-                store.Remove(certificate);
-            }
-            catch (CryptographicException)
-            {
-                // An account that may not write that store; nothing more this server can undo.
-            }
-        }
-    }
-
     public async ValueTask DisposeAsync()
     {
-        RemoveStoreAdditions();
+        _storeLease.Dispose();
         await _stop.CancelAsync();
         _listener.Stop();
         await _accepting.WaitAsync(TimeSpan.FromSeconds(30));
@@ -378,5 +345,117 @@ internal static class TestHttp
         var body = new byte[length];
         await stream.ReadExactlyAsync(body, ct);
         return body;
+    }
+}
+
+/// <summary>Process-wide bookkeeping for the CA store entries the tests cause. On Windows,
+/// <see cref="SslStreamCertificateContext.Create(X509Certificate2, X509Certificate2Collection?, bool, SslCertificateTrust?)"/>
+/// adds the intermediates it is given to the user or machine CA store when the OS cannot build the chain by
+/// itself, and Schannel sends a server's chain from those stores at handshake time. Test classes run in
+/// parallel over one shared PKI, so a certificate is removed only when the last holder releases it: removing it
+/// while another server still runs makes that server send its leaf alone, and its client refuse it.</summary>
+internal sealed class CaStoreLease : IDisposable
+{
+    private static readonly Lock Gate = new();
+    private static readonly Dictionary<(StoreLocation, string), Entry> Held = [];
+    private readonly List<(StoreLocation Location, string Thumbprint)> _keys;
+    private bool _disposed;
+
+    private sealed class Entry(X509Certificate2 certificate)
+    {
+        public X509Certificate2 Certificate { get; } = certificate;
+        public int Holders { get; set; }
+        public bool AddedByTests { get; set; }
+    }
+
+    private CaStoreLease(List<(StoreLocation, string)> keys) => _keys = keys;
+
+    /// <summary>Holds <paramref name="certificates"/>' CA store entries while <paramref name="addsToStores"/>
+    /// runs (it may add them) and until the lease is disposed; whatever was absent before and present after is
+    /// removed when its last holder lets go. Off Windows nothing is tracked.</summary>
+    public static CaStoreLease Acquire(X509Certificate2Collection certificates, Action addsToStores)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            addsToStores();
+            return new CaStoreLease([]);
+        }
+
+        lock (Gate)
+        {
+            var locations = new[] { StoreLocation.CurrentUser, StoreLocation.LocalMachine };
+            var absent = (from location in locations
+                from certificate in certificates
+                where !CaStoreHolds(location, certificate)
+                select (location, certificate)).ToList();
+            addsToStores();
+            var keys = new List<(StoreLocation, string)>();
+            foreach (var location in locations)
+            {
+                foreach (var certificate in certificates)
+                {
+                    var key = (location, certificate.Thumbprint);
+                    if (!Held.TryGetValue(key, out var entry))
+                    {
+                        Held[key] = entry = new Entry(certificate);
+                    }
+
+                    entry.Holders++;
+                    if (absent.Contains((location, certificate)) && CaStoreHolds(location, certificate))
+                    {
+                        entry.AddedByTests = true;
+                    }
+
+                    keys.Add(key);
+                }
+            }
+
+            return new CaStoreLease(keys);
+        }
+    }
+
+    private static bool CaStoreHolds(StoreLocation location, X509Certificate2 certificate)
+    {
+        using var store = new X509Store(StoreName.CertificateAuthority, location);
+        store.Open(OpenFlags.ReadOnly);
+        return store.Certificates.Contains(certificate);
+    }
+
+    public void Dispose()
+    {
+        lock (Gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            foreach (var key in _keys)
+            {
+                var entry = Held[key];
+                if (--entry.Holders > 0)
+                {
+                    continue;
+                }
+
+                Held.Remove(key);
+                if (!entry.AddedByTests)
+                {
+                    continue;
+                }
+
+                try
+                {
+                    using var store = new X509Store(StoreName.CertificateAuthority, key.Item1);
+                    store.Open(OpenFlags.ReadWrite);
+                    store.Remove(entry.Certificate);
+                }
+                catch (CryptographicException)
+                {
+                    // An account that may not write that store; nothing more the tests can undo.
+                }
+            }
+        }
     }
 }
