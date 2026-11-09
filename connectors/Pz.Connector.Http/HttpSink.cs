@@ -45,7 +45,7 @@ internal sealed class HttpSink : ISink, IOperationGateAware, INoticeAware, IRunC
         {
             throw new PzConnectorException(
                 $"output '{spec.Output}': http sink supports only 'append'/'merge' write modes (got '{spec.Mode}')",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         var config = HttpSinkOutputConfig.Parse(spec);

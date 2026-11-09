@@ -57,7 +57,7 @@ mod ticket;
 mod transport;
 
 pub use config::Config;
-pub use error::PzError;
+pub use error::{PzError, CONFIG_CODE};
 pub use hostlog::log_layer;
 pub use server::{
     serve_sink, AbortSemantics, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink,

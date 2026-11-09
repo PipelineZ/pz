@@ -82,10 +82,12 @@ public sealed class PostgresConnector : ISourceConnector, ISinkConnector, IOutpu
         var builder = new NpgsqlConnectionStringBuilder
         {
             Host = config.GetString("host") ??
-                throw new PzConnectorException("postgres connection requires 'host'", isTransient: false),
+                throw new PzConnectorException("postgres connection requires 'host'", isTransient: false,
+                    code: PzConnectorErrorCodes.Config),
             Port = (int)(config.GetInt("port") ?? 5432),
             Database = config.GetString("database") ??
-                throw new PzConnectorException("postgres connection requires 'database'", isTransient: false),
+                throw new PzConnectorException("postgres connection requires 'database'", isTransient: false,
+                    code: PzConnectorErrorCodes.Config),
             // Pin the session to UTC. pz canonicalizes every watermark/window value to a UTC wall-clock
             // string with NO offset (WindowMath: "every pz timestamp is UTC by convention"), and pushes it
             // as an untyped literal (BuildSelect). Postgres coerces an offset-less literal against a
@@ -112,7 +114,13 @@ public sealed class PostgresConnector : ISourceConnector, ISinkConnector, IOutpu
         var sslMode = config.GetString("ssl_mode");
         if (sslMode is not null)
         {
-            builder.SslMode = Enum.Parse<SslMode>(sslMode, ignoreCase: true);
+            builder.SslMode = Enum.TryParse<SslMode>(sslMode, ignoreCase: true, out var mode) && Enum.IsDefined(mode)
+                && !int.TryParse(sslMode, out _)
+                ? mode
+                : throw new PzConnectorException(
+                    $"postgres connection 'ssl_mode' value '{sslMode}' is not recognized (accepted: " +
+                    $"{string.Join(", ", Enum.GetNames<SslMode>().Select(n => n.ToLowerInvariant()))})",
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         // Absent -> Npgsql's own defaults (15s connect, 30s command), unchanged behaviour. `Command

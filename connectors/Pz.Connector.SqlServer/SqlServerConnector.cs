@@ -71,13 +71,15 @@ public sealed class SqlServerConnector : ISourceConnector, ISinkConnector, IOutp
     public static string BuildConnectionString(ConnectorConfig config)
     {
         var host = config.GetString("host") ??
-            throw new PzConnectorException("sqlserver connection requires 'host'", isTransient: false);
+            throw new PzConnectorException("sqlserver connection requires 'host'", isTransient: false,
+                code: PzConnectorErrorCodes.Config);
         var port = config.GetInt("port");
         var builder = new SqlConnectionStringBuilder
         {
             DataSource = port is null ? host : $"{host},{port}",
             InitialCatalog = config.GetString("database") ??
-                throw new PzConnectorException("sqlserver connection requires 'database'", isTransient: false),
+                throw new PzConnectorException("sqlserver connection requires 'database'", isTransient: false,
+                    code: PzConnectorErrorCodes.Config),
             ApplicationName = "pz",
         };
 
@@ -107,7 +109,7 @@ public sealed class SqlServerConnector : ISourceConnector, ISinkConnector, IOutp
                 throw new PzConnectorException(
                     $"sqlserver connection 'authentication' value '{authentication}' is not recognized " +
                     "by SqlClient -- hint: use a documented mode such as 'Active Directory Default'",
-                    isTransient: false, innerException: ex);
+                    isTransient: false, innerException: ex, code: PzConnectorErrorCodes.Config);
             }
         }
 

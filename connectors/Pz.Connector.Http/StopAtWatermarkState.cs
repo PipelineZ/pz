@@ -45,7 +45,7 @@ internal sealed class StopAtWatermarkState
             throw new PzConnectorException(
                 $"{label}: stop_at_watermark compares the watermark of incremental cursor '{engineCursor}' but the " +
                 $"'cursor' option names '{cursor}'; align the two (the option must name the incremental cursor)",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         // A stop_at_watermark dataset has no for_each, so a raw row's cursor is in slot 3.

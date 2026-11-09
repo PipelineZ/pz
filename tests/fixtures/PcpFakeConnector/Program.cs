@@ -94,6 +94,9 @@ internal static class Program
 /// <c>CheckConnectionAsync</c> instead of a <see cref="Pz.Connectors.Abstractions.PzConnectorException"/>
 /// -- a connector bug the SDK never anticipated, not an operational failure it reported on
 /// purpose.
+/// <c>--throw-unhandled-at-plan</c> raises a plain <see cref="InvalidOperationException"/> from the source's
+/// <c>TryGetNativeScan</c>, the probe the planner makes -- a connector defect while planning, which the SDK codes
+/// <c>unhandled</c>.
 /// <c>--native-only</c> declares <see cref="Pz.Connectors.Abstractions.ConnectorCapabilities.NativeOnlyRead"/>
 /// and makes every <c>PlanReadAsync</c> call refuse with the same PZ0312 shape a real native-only
 /// connector's stub raises.
@@ -134,7 +137,8 @@ internal sealed record FixtureOptions(
     bool FailReadStats = false,
     bool UnimplementedReadStats = false,
     bool ExitOnReadStats = false,
-    bool PatientTelemetry = false)
+    bool PatientTelemetry = false,
+    bool ThrowUnhandledAtPlan = false)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -161,6 +165,7 @@ internal sealed record FixtureOptions(
         bool unimplementedReadStats = false;
         bool exitOnReadStats = false;
         bool patientTelemetry = false;
+        bool throwUnhandledAtPlan = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -272,6 +277,9 @@ internal sealed record FixtureOptions(
                 case "--patient-telemetry":
                     patientTelemetry = true;
                     break;
+                case "--throw-unhandled-at-plan":
+                    throwUnhandledAtPlan = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -287,7 +295,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats, unimplementedReadStats, exitOnReadStats, patientTelemetry),
+            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats, unimplementedReadStats, exitOnReadStats, patientTelemetry, throwUnhandledAtPlan),
             passthrough.ToArray());
     }
 }

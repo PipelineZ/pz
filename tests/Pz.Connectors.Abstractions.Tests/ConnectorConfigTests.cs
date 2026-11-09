@@ -103,4 +103,22 @@ public sealed class ConnectorConfigTests
     {
         Assert.Equal(long.MinValue, Config(-9223372036854775808d).GetInt("k"));
     }
+
+    // A value of the wrong kind is the author's config to fix: refused coded Config, never a raw FormatException
+    // escaping as "a bug in pz".
+    [Fact]
+    public void GetInt_and_GetBool_refuse_a_value_of_the_wrong_kind_as_config()
+    {
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["port"] = "eighty", ["tls"] = "maybe" });
+
+        var notInt = Assert.Throws<PzConnectorException>(() => config.GetInt("port"));
+        Assert.Equal(PzConnectorErrorCodes.Config, notInt.Code);
+        Assert.Equal("connector option 'port' is not a whole number", notInt.Message);
+
+        var notBool = Assert.Throws<PzConnectorException>(() => config.GetBool("tls"));
+        Assert.Equal(PzConnectorErrorCodes.Config, notBool.Code);
+        Assert.Equal("connector option 'tls' is not true or false", notBool.Message);
+        Assert.Equal(PzConnectorErrorCodes.Config,
+            Assert.Throws<PzConnectorException>(() => Config(2.5).GetInt("k")).Code);
+    }
 }

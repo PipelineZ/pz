@@ -75,7 +75,8 @@ public sealed class GcsConnector : ISourceConnector, ISinkConnector, INativeOnly
             : throw new PzConnectorException(
                 "gcs sources require 'auth: hmac' -- DuckDB's native gs:// scan authenticates with HMAC " +
                 "interop keys only; create HMAC keys for the service account (Cloud Storage -> Settings -> " +
-                "Interoperability) or keep this connection write-only", isTransient: false);
+                "Interoperability) or keep this connection write-only", isTransient: false,
+                code: PzConnectorErrorCodes.Config);
 
     ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
         new(new GcsSink(config));

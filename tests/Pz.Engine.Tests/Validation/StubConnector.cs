@@ -3,8 +3,8 @@ using Pz.Connectors.Abstractions;
 namespace Pz.Engine.Tests.Validation;
 
 /// <summary>A minimal connector double for <see cref="ConnectorConfigValidatorTests"/>: publishes
-/// whatever schemas/cross-field behavior a test configures, and never actually opens a source/sink
-/// (tier-3 validation never calls OpenAsync).</summary>
+/// whatever schemas/cross-field behavior a test configures. Tier 3 opens a builtin connection offline to probe
+/// it the way the plan will, so opening succeeds with a source/sink that does nothing.</summary>
 internal sealed class StubConnector : ISourceConnector, ISinkConnector
 {
     public string ConnectionConfigSchema { get; init; } = """{"type":"object","additionalProperties":false}""";
@@ -20,11 +20,9 @@ internal sealed class StubConnector : ISourceConnector, ISinkConnector
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
         new(new ConnectionCheck(true));
 
-    ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        throw new NotSupportedException("StubConnector never opens a source in tier-3 validator tests");
+    ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) => new(new NoopSource());
 
-    ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        throw new NotSupportedException("StubConnector never opens a sink in tier-3 validator tests");
+    ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) => new(new NoopSink());
 }
 
 /// <summary>The same double, but also offering <see cref="IOutputConfigSchema"/> -- a separate type
@@ -47,11 +45,9 @@ internal sealed class StubOutputSchemaConnector : ISourceConnector, ISinkConnect
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
         new(new ConnectionCheck(true));
 
-    ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        throw new NotSupportedException("StubOutputSchemaConnector never opens a source in tier-3 validator tests");
+    ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) => new(new NoopSource());
 
-    ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        throw new NotSupportedException("StubOutputSchemaConnector never opens a sink in tier-3 validator tests");
+    ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) => new(new NoopSink());
 }
 
 /// <summary>The same double, also offering <see cref="IDatasetConfigValidator"/>: a separate type for the same
@@ -63,7 +59,20 @@ internal sealed class StubDatasetValidatorConnector : ISourceConnector, IDataset
     public Func<ConnectorConfig, DatasetSpec, ValidationResult> ValidateDatasetFunc { get; init; } =
         (_, _) => ValidationResult.Success;
 
+    /// <summary>Thrown by the read-shape probe tier 3 runs on the opened source, when set.</summary>
+    public Func<DatasetSpec, Exception?>? ShapeThrows { get; init; }
+
+    /// <summary>The source's natural read shape (Full unless set).</summary>
+    public NaturalReadShape Shape { get; init; } = NaturalReadShape.Full;
+
+    /// <summary>Thrown by the source's native-scan probe, when set.</summary>
+    public Func<DatasetSpec, Exception?>? NativeScanThrows { get; init; }
+
+    /// <summary>Thrown by OpenAsync, when set.</summary>
+    public Func<Exception>? OpenThrows { get; init; }
+
     public List<DatasetSpec> Seen { get; } = [];
+    public List<string> ShapeProbed { get; } = [];
 
     public ConnectorInfo Info => new("stub-dataset-validator", "0.1.0", ProtocolVersion.Major);
     public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
@@ -75,7 +84,7 @@ internal sealed class StubDatasetValidatorConnector : ISourceConnector, IDataset
         new(new ConnectionCheck(true));
 
     public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        throw new NotSupportedException("never opened in tier-3 validator tests");
+        OpenThrows is { } open ? throw open() : new(new ShapeSource(this));
 
     public ValueTask<ValidationResult> ValidateDatasetAsync(ConnectorConfig connection, DatasetSpec dataset,
         CancellationToken ct)
@@ -83,4 +92,52 @@ internal sealed class StubDatasetValidatorConnector : ISourceConnector, IDataset
         Seen.Add(dataset);
         return new(ValidateDatasetFunc(connection, dataset));
     }
+}
+
+internal sealed class ShapeSource(StubDatasetValidatorConnector owner) : NoopSource, INaturalReadShapeSource
+{
+    public NaturalReadShape GetNaturalReadShape(DatasetSpec spec)
+    {
+        owner.ShapeProbed.Add(spec.Dataset);
+        return owner.ShapeThrows?.Invoke(spec) is { } refusal ? throw refusal : owner.Shape;
+    }
+
+    public override bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = null;
+        return owner.NativeScanThrows?.Invoke(spec) is { } refusal ? throw refusal : false;
+    }
+}
+
+/// <summary>A source that is never read: tier 3 only opens it.</summary>
+internal class NoopSource : ISource
+{
+    public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+        throw new InvalidOperationException("tier 3 never reads a schema");
+
+    public virtual bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = null;
+        return false;
+    }
+
+    public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+        throw new InvalidOperationException("tier 3 never plans a read");
+
+    public ValueTask DisposeAsync() => default;
+}
+
+/// <summary>A sink that is never written: tier 3 only opens it.</summary>
+internal sealed class NoopSink : ISink
+{
+    public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
+    {
+        copy = null;
+        return false;
+    }
+
+    public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Apache.Arrow.Schema schema, CancellationToken ct) =>
+        throw new InvalidOperationException("tier 3 never writes");
+
+    public ValueTask DisposeAsync() => default;
 }

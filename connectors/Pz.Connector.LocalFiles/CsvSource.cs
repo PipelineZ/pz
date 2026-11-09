@@ -347,7 +347,7 @@ internal sealed class CsvSource(string baseDir, bool rootDeclared) : ISource
     private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec) =>
         ExtractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': localfiles csv requires a declared columns: contract in v0",
-            isTransient: false);
+            isTransient: false, code: PzConnectorErrorCodes.Config);
 
     /// <summary>Same lookup as <see cref="GetColumnsContract"/> but returns null instead of throwing —
     /// used by <see cref="TryGetNativeScan"/> to tell no-contract-at-all from partial-or-full, since

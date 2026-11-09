@@ -41,7 +41,7 @@ internal sealed class MySqlSink(ConnectorConfig config) : ISink
     public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
         throw new PzConnectorException(
             $"PZ0312: output '{spec.Output}': mysql writes are native-copy only; they cannot run on the " +
-            "universal tier (remove engine.force_universal)", isTransient: false);
+            "universal tier (remove engine.force_universal)", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     public ValueTask DisposeAsync() => default;
 }

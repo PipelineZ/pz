@@ -118,4 +118,16 @@ public sealed class GcsReviewFixTests
         await sink.DisposeAsync();
         Assert.True(client.Disposed);
     }
+
+    // Only hmac authenticates DuckDB's gs:// scan, so a source on any other auth is the author's config to fix.
+    [Fact]
+    public async Task A_source_without_hmac_auth_is_refused_coded_config()
+    {
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () =>
+            await ((ISourceConnector)new GcsConnector()).OpenAsync(
+                new ConnectorConfig(new Dictionary<string, object?> { ["auth"] = "adc", ["root"] = "b" }),
+                CancellationToken.None));
+        Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
+        Assert.False(ex.IsTransient);
+    }
 }

@@ -71,4 +71,31 @@ public class VerifyToolsTests
         Assert.True(doc.RootElement.GetProperty("ok").GetBoolean());
         Assert.DoesNotContain("SELECT", json); // secret/SQL hygiene: plan results carry no SQL text
     }
+
+    // pz_validate opens connectors the way pz_plan does, anchored to the project: a relative path in the connection
+    // resolves against the project, never the server's working directory.
+    [Fact]
+    public async Task Validate_resolves_relative_connection_paths_against_the_project_like_plan()
+    {
+        using var p = new TempProject();
+        Directory.CreateDirectory(Path.Combine(p.Dir, "certs"));
+        using (var key = System.Security.Cryptography.RSA.Create(2048))
+        {
+            var request = new System.Security.Cryptography.X509Certificates.CertificateRequest("CN=pz-test-ca", key,
+                System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+            using var cert = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            File.WriteAllText(Path.Combine(p.Dir, "certs", "ca.pem"), cert.ExportCertificatePem());
+        }
+
+        File.AppendAllText(Path.Combine(p.Dir, "connections.yml"),
+            "\napi:\n  connector: http\n  base_url: https://api.example.com\n  tls: { ca_file: certs/ca.pem }\n" +
+            "  entities:\n    items:\n      read:\n        path: /items\n");
+        p.WritePipeline("items_copy", "select * from {{ source('api', 'items') }}\n");
+
+        var validate = await VerifyTools.ValidateAsync(p.Dir, connect: false, RealServices(), CancellationToken.None);
+        var plan = await VerifyTools.PlanAsync(p.Dir, RealServices(), CancellationToken.None);
+
+        Assert.True(JsonDocument.Parse(plan).RootElement.GetProperty("ok").GetBoolean(), plan);
+        Assert.True(JsonDocument.Parse(validate).RootElement.GetProperty("ok").GetBoolean(), validate);
+    }
 }

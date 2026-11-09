@@ -239,7 +239,7 @@ internal sealed record AzureAdOptions(
             throw new PzConnectorException(
                 "auth.certificate_path could not be loaded (a missing file, an unreadable file or a wrong certificate_password; "
                 + "a password-protected certificate must be PKCS#12 or an encrypted PEM)",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
     }
 }

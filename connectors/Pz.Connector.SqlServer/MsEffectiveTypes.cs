@@ -71,7 +71,7 @@ internal static class MsEffectiveTypes
         {
             throw new PzConnectorException(
                 $"output '{spec.Output}': 'columns' must be a map of column name to type " +
-                "(e.g. columns: { status: 'nvarchar(20)' })", isTransient: false);
+                "(e.g. columns: { status: 'nvarchar(20)' })", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         var known = schema.FieldsList.Select(f => f.Name).ToHashSet(StringComparer.Ordinal);

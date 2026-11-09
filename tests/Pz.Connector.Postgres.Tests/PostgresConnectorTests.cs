@@ -45,4 +45,17 @@ public sealed class PostgresConnectorTests
         Assert.Equal(15, b.Timeout); // Npgsql's own default, unchanged
         Assert.Equal(30, b.CommandTimeout); // Npgsql's own default, unchanged
     }
+
+    [Fact]
+    public void Config_refusals_are_coded_config()
+    {
+        var noHost = Assert.Throws<PzConnectorException>(() => PostgresConnector.BuildConnectionString(
+            new ConnectorConfig(new Dictionary<string, object?> { ["database"] = "d" })));
+        Assert.Equal(PzConnectorErrorCodes.Config, noHost.Code);
+
+        var badSsl = Assert.Throws<PzConnectorException>(() => PostgresConnector.BuildConnectionString(
+            new ConnectorConfig(new Dictionary<string, object?> { ["host"] = "h", ["database"] = "d", ["ssl_mode"] = "sometimes" })));
+        Assert.Equal(PzConnectorErrorCodes.Config, badSsl.Code);
+        Assert.StartsWith("postgres connection 'ssl_mode' value 'sometimes' is not recognized (accepted: disable, ", badSsl.Message);
+    }
 }

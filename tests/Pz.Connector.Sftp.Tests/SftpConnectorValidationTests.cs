@@ -90,6 +90,7 @@ public class SftpConnectorValidationTests
             async () => await new SftpConnector().CheckConnectionAsync(config, CancellationToken.None));
 
         Assert.Contains("cannot load private key", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
     }
 
     // Same config-shape-before-network-attempt guarantee for the neither-password-nor-key case, which

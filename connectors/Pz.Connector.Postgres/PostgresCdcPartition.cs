@@ -564,7 +564,7 @@ internal sealed class PostgresCdcPartition(string connectionString, DatasetSpec 
         {
             throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': 'poll_idle_timeout' must be a positive duration " +
-                $"(<integer><ms|s|m|h>, e.g. 5s), got '{text}'", isTransient: false);
+                $"(<integer><ms|s|m|h>, e.g. 5s), got '{text}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return value;

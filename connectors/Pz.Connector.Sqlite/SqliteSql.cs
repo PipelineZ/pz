@@ -23,7 +23,7 @@ internal static class SqliteSql
     internal static string ResolvePath(ConnectorConfig config)
     {
         var path = config.GetString("path") ??
-            throw new PzConnectorException("sqlite connection requires 'path'", isTransient: false);
+            throw new PzConnectorException("sqlite connection requires 'path'", isTransient: false, code: PzConnectorErrorCodes.Config);
         if (Path.IsPathRooted(path))
         {
             return Path.GetFullPath(path);

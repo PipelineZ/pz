@@ -33,7 +33,7 @@ internal sealed class SqlServerSink(string connectionString) : ISink
             throw new PzConnectorException(
                 $"output '{spec.Output}': sqlserver sink supports only 'append'/'replace'/'merge' write " +
                 $"modes (got '{spec.Mode}')",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (string.Equals(spec.Mode, "merge", StringComparison.Ordinal))
@@ -53,7 +53,7 @@ internal sealed class SqlServerSink(string connectionString) : ISink
                 throw new PzConnectorException(
                     $"output '{spec.Output}': column name '{MsDdl.StagingSequenceColumn}' is reserved by " +
                     "the sqlserver sink's merge staging -- hint: rename the column in the pipeline SQL",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
         }
 
@@ -153,7 +153,7 @@ internal sealed class SqlServerSink(string connectionString) : ISink
         catch (Exception ex) when (ex is FormatException or InvalidCastException)
         {
             throw new PzConnectorException(
-                $"output '{spec.Output}': 'tablock' must be a boolean, got '{tl}'", isTransient: false);
+                $"output '{spec.Output}': 'tablock' must be a boolean, got '{tl}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
     }
 

@@ -156,7 +156,7 @@ internal abstract class BodyPaging
 
         throw new PzConnectorException(
             $"pagination.param '{pointer}' in the request body is not an integer " +
-            "(fix the 'body' template so the paged position is a whole number)", isTransient: false);
+            "(fix the 'body' template so the paged position is a whole number)", isTransient: false, code: PzConnectorErrorCodes.Config);
     }
 
     protected static JsonNode WriteSize(JsonNode body, string? sizeParam, int? size)

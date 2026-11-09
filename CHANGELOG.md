@@ -48,6 +48,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   decoded name matches in any letter case.
 - **Toolkit: `CachedTokenAuthenticator.RunScope`** (additive). A refused sign-in is remembered for authenticators
   with the same credential and the same run scope; null shares one scope for the process, as before.
+- **Connector ABI: `PzConnectorErrorCodes`.** Two well-known values of `PzConnectorException.Code` (additive; the code
+  already crosses PCP). `config` marks a refusal of the config: the engine reports it as PZ0301 naming the connection
+  and dataset or output. `unhandled` marks a connector's own unhandled exception, which the C# SDK now codes so: a
+  defect, never a config error. The Rust SDK gains `CONFIG_CODE` and `PzError::config`. Every builtin codes its
+  config refusals `config`.
+
 - **Connector ABI: `IDatasetConfigValidator`.** An optional source capability that checks one dataset against its
   connection, offline. `pz validate` calls it once per dataset after the connection's own check and reports every
   error with the dataset named. A connector that does not implement it is validated as before; process-hosted
@@ -339,6 +345,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- **`pz validate` runs the plan's offline connector probes on builtin connections.** It opens each connection, resolves
+  each dataset's read shape and probes the native scan or copy, as `pz plan` does. A config `pz plan` would refuse now
+  fails validation too: a gcs source without `auth: hmac`, an unknown postgres `ssl_mode`, a three-part duckdb output
+  entity, an `on_status` `skip` on an incremental http dataset. A native-path refusal that depends on what is on disk
+  (a database file not written yet) stays the plan's. Process-hosted connectors are not probed.
+- **A connector that fails while the plan probes it exits 3, not 2.** A refusal coded `config` is PZ0301 and exits 2.
+  Any other connector failure while planning, transient or not, is PZ0330 "connector '<x>' failed while planning"
+  and exits 3 (fatal), as does a connector process that broke protocol or died (PZ0357, PZ0358). A connector that
+  would not spawn or handshake (PZ0355, PZ0356) exits 2, as it does when the registry is built. A refused connection
+  is one error naming the connection, however many datasets and outputs use it. None of these is PZ0500 any more.
 - **A JSON number in a contract `timestamp` column has a clearer error.** It used to be "value is not a valid
   timestamp". The http connector now says it is a JSON number and names `epoch_unit`; sftp's JSON reader says it
   "does not read epoch numbers as timestamps".
@@ -389,6 +405,24 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   "Malformed YAML" (the `{` of the reference opens another map). When the failing lines hold a `${` written unquoted
   inside a `{ }` or `[ ]` collection, the hint now says to quote it, `token: "${X}"`, or to use block style, also
   when the parser fails without a line number.
+- **A connector's config refusal during `pz plan`/`pz run` is no longer PZ0500 "a bug in pz".** An http dataset the
+  connector refuses (`on_status` `skip` on an incremental dataset, `stop_at_watermark` without a cursor,
+  `for_each.values` with `max_items`, `watermark_time_zone` without `watermark_format`, `for_each` caps on an
+  incremental dataset) was not reported by `pz validate` and failed the plan with exit 3. `pz validate` now reports
+  each one as PZ0301 naming the dataset and option, every dataset at once, and the plan refuses it the same way.
+- **`pz validate` checks the outputs of connections that also read.** Only write-only connections' `write:` options
+  were checked against the connector's output schema; an http, localfiles, s3 or duckdb output's typo went unreported.
+- **MCP `pz_plan` resolves relative connection paths against the project.** It anchored the project only after
+  compiling, so the planner opened connections with paths resolved against the server's working directory (a
+  relative http `tls.ca_file`, a sqlite or duckdb `path`). It now anchors before compiling, as `pz plan` does.
+- **An unusable credential or TLS file is a config error.** A missing or unreadable http `tls.ca_file` or
+  `tls.client_certificate`, azure_ad `certificate_path`, gcs `key_file`/`key_json` or sftp `private_key_path` is PZ0301
+  (exit 2), naming the setting.
+- **http: a PKCS#12 client certificate's key stays in memory on Linux.** It used to be imported with the default key
+  storage. Windows keeps it, because SChannel presents only a persisted key, and the key lives only as long as the
+  connection. macOS keeps it too, because it cannot import an ephemeral key.
+- **A wrongly-typed connector option is a config error.** `ConnectorConfig.GetInt`/`GetBool` and postgres's
+  `ssl_mode` threw raw .NET exceptions (PZ0500) on a value of the wrong kind; they now refuse it as config.
 - **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
   rounded to the 100 ns tick, which could carry into the next second and skip that second's rows; the extra digits
   are now dropped.

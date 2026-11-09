@@ -87,7 +87,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
                     throw new PzConnectorException(
                         $"dataset '{spec.Dataset}': option '{forbidden}' is not allowed with change capture " +
                         "-- a cdc dataset reads its 'table' directly; remove it",
-                        isTransient: false);
+                        isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
             }
 
@@ -151,14 +151,14 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         if (!TryParseInt32(raw, out var n))
         {
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false);
+                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (n < MinPartitions || n > MaxPartitions)
         {
             throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': 'partitions' must be between {MinPartitions} and {MaxPartitions}, got {n}",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return n;

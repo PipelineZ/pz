@@ -66,7 +66,7 @@ internal static class AzureAuth
             "managed_identity" => "provider managed_identity" +
                 $", account_name '{E(config.GetString("account_name"))}'" +
                 (config.GetString("client_id") is { Length: > 0 } cid ? $", client_id '{E(cid)}'" : ""),
-            _ => throw new PzConnectorException($"azure: unsupported auth '{auth}'", isTransient: false),
+            _ => throw new PzConnectorException($"azure: unsupported auth '{auth}'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
 
         return $"create or replace secret {secretName} (type azure, {body})";
@@ -104,13 +104,13 @@ internal static class AzureAuth
                 "service_principal" => new BlobServiceClient(BlobServiceUri(config), ClientSecret(config)),
                 "credential_chain" => new BlobServiceClient(BlobServiceUri(config), new DefaultAzureCredential()),
                 "managed_identity" => new BlobServiceClient(BlobServiceUri(config), ManagedIdentity(config)),
-                _ => throw new PzConnectorException($"azure: unsupported auth '{auth}'", isTransient: false),
+                _ => throw new PzConnectorException($"azure: unsupported auth '{auth}'", isTransient: false, code: PzConnectorErrorCodes.Config),
             };
         }
         catch (Exception ex) when (ex is FormatException or UriFormatException)
         {
             throw new PzConnectorException(
-                $"azure '{MalformedField(config, auth)}' is malformed: {ex.Message}", isTransient: false, innerException: ex);
+                $"azure '{MalformedField(config, auth)}' is malformed: {ex.Message}", isTransient: false, innerException: ex, code: PzConnectorErrorCodes.Config);
         }
     }
 
@@ -139,13 +139,13 @@ internal static class AzureAuth
                     new DataLakeServiceClient(DfsServiceUri(config), new DefaultAzureCredential()).GetFileSystemClient(fileSystem),
                 "managed_identity" =>
                     new DataLakeServiceClient(DfsServiceUri(config), ManagedIdentity(config)).GetFileSystemClient(fileSystem),
-                _ => throw new PzConnectorException($"azure: unsupported auth '{auth}'", isTransient: false),
+                _ => throw new PzConnectorException($"azure: unsupported auth '{auth}'", isTransient: false, code: PzConnectorErrorCodes.Config),
             };
         }
         catch (Exception ex) when (ex is FormatException or UriFormatException)
         {
             throw new PzConnectorException(
-                $"azure '{MalformedField(config, auth)}' is malformed: {ex.Message}", isTransient: false, innerException: ex);
+                $"azure '{MalformedField(config, auth)}' is malformed: {ex.Message}", isTransient: false, innerException: ex, code: PzConnectorErrorCodes.Config);
         }
     }
 

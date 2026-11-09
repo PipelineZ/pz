@@ -23,7 +23,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
         if (query is not null && procedure is not null)
         {
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'query' and 'procedure' are mutually exclusive", isTransient: false);
+                $"dataset '{spec.Dataset}': 'query' and 'procedure' are mutually exclusive", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (procedure is not null)
@@ -31,7 +31,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
             // Unreachable via GetSchemaAsync/PlanReadAsync: SqlServerSource branches to ProcedureDataset
             // before ever calling BuildSelect. Reachable only from a direct unit test of this pure guard.
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': procedure mode does not build a SELECT statement", isTransient: false);
+                $"dataset '{spec.Dataset}': procedure mode does not build a SELECT statement", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (query is not null)
@@ -171,7 +171,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
                     throw new PzConnectorException(
                         $"dataset '{spec.Dataset}': option '{forbidden}' is not allowed with change capture " +
                         "-- a cdc dataset reads its 'table' directly; remove it",
-                        isTransient: false);
+                        isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
             }
 
@@ -190,7 +190,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
                 throw new PzConnectorException(
                     $"dataset '{spec.Dataset}': partitioned reads are not supported for procedure datasets -- " +
                     "hint: expose the underlying query via 'table' or 'query', or remove 'partition_column'",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             return [new SqlServerProcedurePartition(connectionString, spec)];
@@ -255,14 +255,14 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
         catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
         {
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false);
+                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (n < MinPartitions || n > MaxPartitions)
         {
             throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': 'partitions' must be between {MinPartitions} and {MaxPartitions}, got {n}",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return n;

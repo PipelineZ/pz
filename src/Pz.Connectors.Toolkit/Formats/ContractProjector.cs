@@ -29,7 +29,7 @@ public static class ContractProjector
         "boolean" => BooleanType.Default,
         "date" => Date32Type.Default,
         "timestamp" => new TimestampType(TimeUnit.Microsecond, "+00:00"),
-        _ => throw new PzConnectorException($"column '{columnName}': unknown columns: contract type '{typeName}' — supported types: int, bigint, double, decimal, varchar, boolean, date, timestamp", isTransient: false),
+        _ => throw new PzConnectorException($"column '{columnName}': unknown columns: contract type '{typeName}' — supported types: int, bigint, double, decimal, varchar, boolean, date, timestamp", isTransient: false, code: PzConnectorErrorCodes.Config),
     };
 
     public static object?[] ProjectRow(JsonNode? record, IReadOnlyDictionary<string, string> columns, string context)
@@ -117,7 +117,7 @@ public static class ContractProjector
                 "timestamp" => ParseTimestamp(node.GetValue<string>(), columnName, context),
                 _ => throw new PzConnectorException(
                     $"{context}: column '{columnName}': unknown columns: contract type '{typeName}'",
-                    isTransient: false),
+                    isTransient: false, code: PzConnectorErrorCodes.Config),
             };
         }
         catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException)

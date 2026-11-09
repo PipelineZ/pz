@@ -216,4 +216,44 @@ public sealed class ConnectorRegistryFactoryTests(CliLocalFeedFixture feed) : ID
 
         Assert.Equal("read failed", ConnectorRegistryFactory.FoldException("read failed", fields));
     }
+
+    // A connector host failing during a connector call (planning opens a hosted connector, which spawns it) keeps
+    // the host's own code and hint, exactly as one while the registry is built does -- never PZ0500.
+    [Fact]
+    public async Task Registry_describes_a_host_failure_with_its_own_code_and_hint()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-registry-host-failure", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var project = new Pz.Core.Model.PzProject("p", "0.1.0", new Pz.Core.Model.EngineConfig(),
+                new Dictionary<string, object?>(), [], [], []);
+            var (registry, hosts) = await ConnectorRegistryFactory.CreateAsync(project, dir, noLockCheck: true, CancellationToken.None);
+            await using var _ = hosts;
+
+            var described = registry.DescribeHostFailure!(new Pz.PackageManagement.Hosting.ConnectorHostException(
+                "PZ0355", "could not start connector 'acme'", "check the executable"));
+
+            Assert.Equal(new Pz.Engine.Execution.ConnectorHostFailure("PZ0355", "could not start connector 'acme'",
+                "check the executable"), described);
+            Assert.Null(registry.DescribeHostFailure(new InvalidOperationException("engine bug")));
+
+            // The one place a host failure's code decides whether it is fatal: a connector process that broke
+            // protocol or died while it was in use stops pz on its own terms; one that never started or
+            // handshook, or a missing package, is an install problem the author fixes.
+            foreach (var (code, fatal) in new[]
+            {
+                ("PZ0304", false), ("PZ0305", false), ("PZ0306", false), ("PZ0307", false),
+                ("PZ0355", false), ("PZ0356", false), ("PZ0357", true), ("PZ0358", true),
+            })
+            {
+                Assert.Equal(fatal, registry.DescribeHostFailure(
+                    new Pz.PackageManagement.Hosting.ConnectorHostException(code, "m"))!.IsFatal);
+            }
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }

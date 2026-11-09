@@ -84,4 +84,13 @@ public class SftpConnectionSettingsTests
 
         Assert.DoesNotContain("super-secret-passphrase", text, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void A_missing_required_option_is_refused_coded_config()
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => SftpConnectionSettings.Parse(
+            new ConnectorConfig(new Dictionary<string, object?> { ["username"] = "u" })));
+        Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
+        Assert.Equal("sftp connection requires 'host'", ex.Message);
+    }
 }

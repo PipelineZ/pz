@@ -497,7 +497,7 @@ internal static class RunCommand
                 Console.Error.WriteLine($"error {error}");
             }
 
-            return ExitCodes.ConfigError;
+            return ExitCodes.ForPlanFailure(ex);
         }
 
         PlanWriter.Write(plan, Path.Combine(projectDir, ".pz", "target"));

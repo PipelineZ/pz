@@ -48,7 +48,8 @@ internal sealed record SftpConnectionSettings(
     private static string Require(ConnectorConfig config, string key) =>
         config.GetString(key) is { Length: > 0 } s
             ? s
-            : throw new PzConnectorException($"sftp connection requires '{key}'", isTransient: false);
+            : throw new PzConnectorException($"sftp connection requires '{key}'", isTransient: false,
+                code: PzConnectorErrorCodes.Config);
 
     // The compiler-synthesized record ToString() prints every property, Password and
     // PrivateKeyPassphrase included -- nothing may ever let those reach a log line or exception

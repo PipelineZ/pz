@@ -31,4 +31,11 @@ public static class ExitCodes
     /// exception that escaped every verb's own handling (generic PZ0500, or one of <see
     /// cref="Pz.Cli.Commands.EngineFailureMapper"/>'s more specific codes).</summary>
     public const int Fatal = 3;
+
+    /// <summary>The exit code for a plan that failed: <see cref="Fatal"/> when the planner found something that is
+    /// not the project's to fix (<see cref="Pz.Core.Validation.PzValidationException.IsFatal"/>: a connector that
+    /// failed rather than refused while it was probed), <see cref="ConfigError"/> otherwise -- the same split a run
+    /// makes between a config error and one that stops it on its own terms.</summary>
+    public static int ForPlanFailure(Pz.Core.Validation.PzValidationException failure) =>
+        failure.IsFatal ? Fatal : ConfigError;
 }

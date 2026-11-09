@@ -279,7 +279,7 @@ public static partial class NdjsonCodec
         "date" => Date32Type.Default,
         "timestamp" => new TimestampType(TimeUnit.Microsecond, "+00:00"),
         _ => throw new PzConnectorException(
-            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false),
+            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
     };
 
     /// <summary>Extracts and types one declared column's value from a parsed JSON line: a JSON key absent
@@ -311,7 +311,7 @@ public static partial class NdjsonCodec
                 "date" => DateOnly.ParseExact(element.GetString()!, "yyyy-MM-dd", CultureInfo.InvariantCulture),
                 "timestamp" => ParseTimestamp(element.GetString()!, columnName, lineNumber),
                 _ => throw new PzConnectorException(
-                    $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false),
+                    $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
             };
         }
         catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException or SqlTypeException)

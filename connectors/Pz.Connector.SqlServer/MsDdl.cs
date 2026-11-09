@@ -35,7 +35,7 @@ internal static class MsDdl
             1 => (defaultSchema, parts[0]),
             2 => (parts[0], parts[1]),
             _ => throw new PzConnectorException(
-                $"entity '{entity}': expected '<table>' or '<schema>.<table>'", isTransient: false),
+                $"entity '{entity}': expected '<table>' or '<schema>.<table>'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
     }
 

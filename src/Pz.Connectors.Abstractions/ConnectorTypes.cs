@@ -42,16 +42,43 @@ public sealed record ConnectorConfig(IReadOnlyDictionary<string, object?> Values
             {
                 throw new PzConnectorException(
                     $"connector option '{key}' is {d.ToString(System.Globalization.CultureInfo.InvariantCulture)}, not a whole number",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             return (long)d;
         }
 
-        return Convert.ToInt64(v, System.Globalization.CultureInfo.InvariantCulture);
+        try
+        {
+            return Convert.ToInt64(v, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException)
+        {
+            // The value is not echoed: an option read as a number may still hold something private.
+            throw new PzConnectorException($"connector option '{key}' is not a whole number", isTransient: false,
+                innerException: ex, code: PzConnectorErrorCodes.Config);
+        }
     }
-    public bool GetBool(string key, bool defaultValue = false) => Values.TryGetValue(key, out var v) && v is not null
-        ? Convert.ToBoolean(v, System.Globalization.CultureInfo.InvariantCulture) : defaultValue;
+
+    /// <summary>A boolean option; <paramref name="defaultValue"/> when absent. A value that is not a boolean is
+    /// refused as config (<see cref="PzConnectorErrorCodes.Config"/>), never converted by guesswork.</summary>
+    public bool GetBool(string key, bool defaultValue = false)
+    {
+        if (!Values.TryGetValue(key, out var v) || v is null)
+        {
+            return defaultValue;
+        }
+
+        try
+        {
+            return Convert.ToBoolean(v, System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch (Exception ex) when (ex is FormatException or InvalidCastException)
+        {
+            throw new PzConnectorException($"connector option '{key}' is not true or false", isTransient: false,
+                innerException: ex, code: PzConnectorErrorCodes.Config);
+        }
+    }
 }
 
 /// <summary>Names one dataset of one source plus its dataset-level options.</summary>

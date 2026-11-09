@@ -76,7 +76,7 @@ internal static class IcebergSql
             {
                 throw new PzConnectorException(
                     $"entity '{entity}': expected 'namespace.table' (an Iceberg table always lives in a namespace)",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             return (null, entity);
@@ -87,14 +87,14 @@ internal static class IcebergSql
         if (ns.Length == 0 || table.Length == 0 || table.Contains('.'))
         {
             throw new PzConnectorException(
-                $"entity '{entity}': expected 'namespace.table' (nested namespaces are not supported)", isTransient: false);
+                $"entity '{entity}': expected 'namespace.table' (nested namespaces are not supported)", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (ns == "main" && namespaceRequired)
         {
             throw new PzConnectorException(
                 $"entity '{entity}': namespace 'main' cannot be addressed through DuckDB's iceberg extension -- " +
-                "DuckDB reserves that name for its own default schema; use another namespace", isTransient: false);
+                "DuckDB reserves that name for its own default schema; use another namespace", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return (ns, table);
@@ -278,7 +278,7 @@ internal static class IcebergSql
             case IcebergCatalog.Files:
                 break;
             default:
-                throw new PzConnectorException($"iceberg connection: unknown catalog '{catalog}'", isTransient: false);
+                throw new PzConnectorException($"iceberg connection: unknown catalog '{catalog}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return statements;
@@ -363,7 +363,7 @@ internal static class IcebergSql
             "credential_chain" => "provider credential_chain" +
                 (config.GetString("storage_chain") is { Length: > 0 } chain ? $", chain '{EscapeLiteral(chain)}'" : "") +
                 $", account_name '{EscapeLiteral(Require(config, "storage_account_name"))}'",
-            _ => throw new PzConnectorException($"iceberg connection: unsupported storage_auth '{auth}'", isTransient: false),
+            _ => throw new PzConnectorException($"iceberg connection: unsupported storage_auth '{auth}'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
 
         var scoped = scope is null ? "" : $", scope '{EscapeLiteral(scope.TrimEnd('/') + "/")}'";
@@ -402,7 +402,7 @@ internal static class IcebergSql
         {
             throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': metadata_version: applies to catalog 'files' only -- a catalog resolves the current metadata itself",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         var table = QualifiedTable(alias, spec.Dataset) + TimeTravelClause(spec);
@@ -489,7 +489,7 @@ internal static class IcebergSql
         if (hasVersion && hasTimestamp)
         {
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': declare either version: or timestamp:, not both", isTransient: false);
+                $"dataset '{spec.Dataset}': declare either version: or timestamp:, not both", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (hasVersion)
@@ -499,7 +499,7 @@ internal static class IcebergSql
             {
                 throw new PzConnectorException(
                     $"dataset '{spec.Dataset}': version: must be a non-negative snapshot id (got '{versionValue}')",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             return (snapshot, null);
@@ -550,7 +550,7 @@ internal static class IcebergSql
                 if (keys.Count == 0)
                 {
                     throw new PzConnectorException(
-                        $"output '{entity}': merge requires at least one key column", isTransient: false);
+                        $"output '{entity}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
@@ -577,7 +577,7 @@ internal static class IcebergSql
     private static string Require(ConnectorConfig config, string key) =>
         config.GetString(key) is { Length: > 0 } s
             ? s
-            : throw new PzConnectorException($"iceberg connection requires '{key}'", isTransient: false);
+            : throw new PzConnectorException($"iceberg connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
 

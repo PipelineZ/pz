@@ -128,7 +128,8 @@ internal static class SftpClientFactory
         if (s.PrivateKeyPath is null)
         {
             throw new PzConnectorException(
-                "sftp connection requires 'password' or 'private_key_path'", isTransient: false);
+                "sftp connection requires 'password' or 'private_key_path'", isTransient: false,
+                code: PzConnectorErrorCodes.Config);
         }
 
         try
@@ -144,7 +145,8 @@ internal static class SftpClientFactory
             // message names the path, never anything from the file's contents.
             throw new PzConnectorException(
                 $"sftp connection: cannot load private key '{s.PrivateKeyPath}' " +
-                "(unreadable file or wrong passphrase)", isTransient: false, innerException: ex);
+                "(unreadable file or wrong passphrase)", isTransient: false, innerException: ex,
+                code: PzConnectorErrorCodes.Config);
         }
     }
 }

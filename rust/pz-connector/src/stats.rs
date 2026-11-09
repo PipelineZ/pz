@@ -155,12 +155,25 @@ impl Stats {
         let Some(inner) = &self.inner else {
             return true;
         };
-        inner
-            .spans_opened
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n < SPAN_BUDGET).then_some(n + 1)
-            })
-            .is_ok()
+        // A compare-exchange loop rather than `fetch_update`, which newer toolchains deprecate in favour of
+        // `try_update` -- a name the pinned toolchain does not have yet.
+        let spans = &inner.spans_opened;
+        let mut opened = spans.load(Ordering::Relaxed);
+        loop {
+            if opened >= SPAN_BUDGET {
+                return false;
+            }
+
+            match spans.compare_exchange_weak(
+                opened,
+                opened + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(current) => opened = current,
+            }
+        }
     }
 
     /// The wire message for what was reported, or `None` when nothing was and no rule fired. A message
@@ -250,6 +263,16 @@ mod tests {
 
     fn snapshot(s: &Stats) -> pb::ConnectorStats {
         s.to_proto().expect("non-empty")
+    }
+
+    #[test]
+    fn the_span_budget_allows_exactly_its_size() {
+        let stats = Stats::new();
+        let taken = (0..SPAN_BUDGET + 5)
+            .filter(|_| stats.try_take_span())
+            .count();
+        assert_eq!(taken, SPAN_BUDGET as usize);
+        assert!(!stats.try_take_span());
     }
 
     fn assert_nothing_but_drops(s: &Stats) {

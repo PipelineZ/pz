@@ -38,7 +38,7 @@ internal static class PgDdl
             1 => (defaultSchema, parts[0]),
             2 => (parts[0], parts[1]),
             _ => throw new PzConnectorException(
-                $"entity '{entity}': expected '<table>' or '<schema>.<table>'", isTransient: false),
+                $"entity '{entity}': expected '<table>' or '<schema>.<table>'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
     }
 
@@ -118,7 +118,7 @@ internal static class PgDdl
             throw new PzConnectorException(
                 $"output '{outputName}': schema_policy 'evolve' is not supported by the postgres sink in " +
                 "v0 -- hint: use 'fail_on_change' (the default) and align the target schema by hand",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         var exists = await TableExistsAsync(connection, tx, pgSchema, table, ct).ConfigureAwait(false);
