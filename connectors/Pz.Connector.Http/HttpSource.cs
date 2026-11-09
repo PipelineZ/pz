@@ -99,6 +99,12 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
+        CheckPagination(config, spec, "");
+        if (config.ForEach?.List is { } listRequest)
+        {
+            CheckPagination(listRequest, spec, "for_each.");
+        }
+
         // One Retry-After pause per read, shared by every request the partition makes (pages, the
         // for_each list, items, downloads), and only for a read that can have requests in flight
         // together: at concurrency 1 the gate's retry policy alone paces a throttled request, exactly as
@@ -116,6 +122,26 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
                 : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
                     { Notice = _notice };
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
+    }
+
+    /// <summary>Plan-time checks of one request's pagination against this connection: a page token header the
+    /// connection also sets would be sent twice (refused), and an unknown `location` is ignored with a
+    /// notice.</summary>
+    private void CheckPagination(HttpDatasetConfig request, DatasetSpec spec, string prefix)
+    {
+        var label = $"http source '{spec.Source}.{spec.Dataset}'";
+        if (request.HeaderPaging is { } paging && paging.CollisionWith(_connection) is { } owner)
+        {
+            throw new PzConnectorException(
+                $"{label}: {prefix}pagination header '{paging.Header}' is also set by {owner}; the page token " +
+                "header must be sent by pagination alone (rename one of them)", isTransient: false);
+        }
+
+        if (request.IgnoredLocation is { } location)
+        {
+            _notice?.Invoke($"{label}: {prefix}pagination 'location' '{location}' is not one of query, body, header; " +
+                "it is ignored and the token goes in the query string (fix it: `pz validate` reports it)");
+        }
     }
 
     /// <summary>The engine calls this exactly once per opened source, after OpenAsync returns and

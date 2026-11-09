@@ -83,6 +83,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// record at or below the watermark, and those records are dropped (<see cref="HttpPartition"/>).</summary>
     public bool StopAtWatermark { get; init; }
 
+    /// <summary>A `pagination.location` that is none of query, body, header: ignored, as GET reads always did,
+    /// with a notice at plan time. Null when the location is known or absent.</summary>
+    internal string? IgnoredLocation { get; init; }
+
     /// <summary>`pagination.location: header`: the cursor token goes in a request header. Null otherwise.</summary>
     internal HeaderTokenPaging? HeaderPaging { get; init; }
 
@@ -253,6 +257,14 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             bodyPaging = BodyPaging.Parse(pgBlock,
                 pgBlock.TryGetValue("strategy", out var st) ? YamlScalarText.Of(st) ?? "" : "",
                 body?.Template, items, errors);
+        }
+
+        string? ignoredLocation = null;
+        if (options.TryGetValue("pagination", out var lp) && lp is IReadOnlyDictionary<string, object?> lpBlock
+            && YamlScalarText.Of(lpBlock.GetValueOrDefault("location")) is { } loc
+            && loc is not ("query" or "body" or "header"))
+        {
+            ignoredLocation = loc;
         }
 
         HeaderTokenPaging? headerPaging = null;
@@ -481,6 +493,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             PageNumbering = bodyPaging is null ? pageNumbering : null,
             OnStatus = onStatus is { Count: > 0 } ? onStatus : null,
             HeaderPaging = headerPaging,
+            IgnoredLocation = ignoredLocation,
             StopAtWatermark = stopAtWatermark,
         };
     }
@@ -915,11 +928,10 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var stopsOnShort = stopOnShortPage;
+        // An unknown location is not an error here: GET reads ignored the key before header paging existed, and
+        // configs that ran then must keep running. The dataset schema reports it at `pz validate`, and the read
+        // gives a notice (IgnoredLocation).
         var location = Get("location");
-        if (location is not (null or "query" or "body" or "header"))
-        {
-            errors.Add($"pagination 'location' must be 'query', 'body' or 'header', got '{location}'");
-        }
 
         if (location == "header")
         {
@@ -938,6 +950,12 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 {
                     errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (pz or the HTTP " +
                         "stack sets that header); name the header the API reads the token from");
+                }
+                else if (!HeaderTokenPaging.IsRequestHeader(headerParam))
+                {
+                    errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (HTTP treats it as a " +
+                        "content header, which a request without a body never sends); name the header the API reads " +
+                        "the token from");
                 }
             }
         }

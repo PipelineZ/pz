@@ -43,13 +43,38 @@ internal sealed record PageTokenSource(string? Pointer, string? Header)
 /// that header set to the latest token.</summary>
 internal sealed record HeaderTokenPaging(string Header, PageTokenSource Source)
 {
-    /// <summary>Header names pz or the HTTP stack owns: credentials, cookies, framing and the body's
-    /// description. An endpoint-chosen value in any of them would replace or corrupt what pz sends.</summary>
+    /// <summary>Request header names pz or the HTTP stack owns: credentials, cookies and framing. An
+    /// endpoint-chosen value in any of them would replace or corrupt what pz sends. Content headers
+    /// (<c>Content-*</c>, <c>Expires</c>, <c>Allow</c>, ...) are refused separately by
+    /// <see cref="IsRequestHeader"/>, which asks the HTTP stack itself.</summary>
     internal static readonly HashSet<string> ReservedHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
-        "Authorization", "Proxy-Authorization", "Cookie", "Host", "Content-Length", "Content-Type",
-        "Content-Encoding", "Transfer-Encoding", "Connection", "Expect", "TE", "Upgrade",
+        "Authorization", "Proxy-Authorization", "Cookie", "Host", "Transfer-Encoding", "Connection", "Expect", "TE",
+        "Upgrade",
     };
+
+    /// <summary>Whether <paramref name="name"/> can go on a request's own headers. The HTTP stack refuses the
+    /// names it treats as content headers there, so a page token in one would never be sent.</summary>
+    public static bool IsRequestHeader(string name)
+    {
+        using var probe = new HttpRequestMessage();
+        return probe.Headers.TryAddWithoutValidation(name, "probe");
+    }
+
+    /// <summary>The page header a request would not send: <see cref="ReservedHeaders"/> or one of
+    /// the connection's own (<c>headers:</c> or the <c>api_key</c> auth header), or null. Known before the first
+    /// request, so the read is refused at plan time.</summary>
+    public string? CollisionWith(HttpConnectionConfig connection)
+    {
+        if (connection.Headers.Keys.Any(k => string.Equals(k, Header, StringComparison.OrdinalIgnoreCase)))
+        {
+            return "the connection's 'headers:'";
+        }
+
+        return string.Equals(connection.AuthHeader, Header, StringComparison.OrdinalIgnoreCase)
+            ? "the connection's api_key auth ('auth.header')"
+            : null;
+    }
 
     /// <summary>The next request, or null when the response carries no token. A token a header cannot carry
     /// (a control character such as CR or LF, or anything outside ASCII) fails permanently rather than being
@@ -59,6 +84,14 @@ internal sealed record HeaderTokenPaging(string Header, PageTokenSource Source)
         if (Source.ReadText(response, body) is not { } token)
         {
             return null;
+        }
+
+        if (HasEdgeWhitespace(token))
+        {
+            throw new PzConnectorException(
+                $"{label}: the next-page token cannot be sent in header '{Header}': it has leading or trailing " +
+                "whitespace, which HTTP strips from a header value; read the token from another field, or send it " +
+                "with 'location: query'", isTransient: false);
         }
 
         if (!IsHeaderValue(token))
@@ -72,9 +105,13 @@ internal sealed record HeaderTokenPaging(string Header, PageTokenSource Source)
         return current with { PageHeader = (Header, token) };
     }
 
-    /// <summary>Visible ASCII, space and tab: what a header value can carry without encoding.</summary>
+    /// <summary>Visible ASCII, with space and tab inside but not at either end: what a header value carries
+    /// unchanged (HTTP strips whitespace at the ends).</summary>
     public static bool IsHeaderValue(string value)
-        => value.All(c => c == '\t' || c is >= ' ' and <= '~');
+        => !HasEdgeWhitespace(value) && value.All(c => c == '\t' || c is >= ' ' and <= '~');
+
+    private static bool HasEdgeWhitespace(string value)
+        => value.Length > 0 && (value[0] is ' ' or '\t' || value[^1] is ' ' or '\t');
 
     /// <summary>An RFC 9110 token: what a header field name may contain.</summary>
     public static bool IsHeaderName(string name)

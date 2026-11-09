@@ -47,9 +47,14 @@ internal sealed record HttpPageRequest(HttpMethod Method, Uri Url, JsonNode? Jso
     public HttpRequestMessage ToMessage(HttpBody? body)
     {
         var message = new HttpRequestMessage(Method, Url);
-        if (PageHeader is { } header)
+        // Validation refuses names the request headers do not take; a token that still did not go on the wire
+        // would make the crawl re-read the first page.
+        if (PageHeader is { } header && !message.Headers.TryAddWithoutValidation(header.Name, header.Value))
         {
-            message.Headers.TryAddWithoutValidation(header.Name, header.Value);
+            message.Dispose();
+            throw new Pz.Connectors.Abstractions.PzConnectorException(
+                $"the page token header '{header.Name}' could not be added to the request; name the header the API " +
+                "reads the token from in 'pagination.param'", isTransient: false);
         }
 
         if (body is not null && (JsonBody is not null || TextBody is not null))

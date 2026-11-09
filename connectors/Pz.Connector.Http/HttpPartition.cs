@@ -393,7 +393,6 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     /// short page, and targets off the allowed hosts. Rows, batches and checkpoints are the caller's.</summary>
     internal async IAsyncEnumerable<HttpPage> PagesAsync([EnumeratorCancellation] CancellationToken ct)
     {
-        EnsurePageHeaderIsOurs();
         var strategy = config.PageStrategyFactory?.Invoke();
         // Read once: every request this partition builds renders the same {{ run_date }}, even
         // across midnight. Bindings handed in already carry it.
@@ -506,18 +505,6 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         };
     }
 
-    /// <summary>A page token header must be the request's own: one the connection's <c>headers:</c> also set
-    /// would be sent twice, with the API picking either value. Checked before the first request.</summary>
-    private void EnsurePageHeaderIsOurs()
-    {
-        if (config.HeaderPaging is { } paging
-            && connection.Headers.Keys.Any(k => string.Equals(k, paging.Header, StringComparison.OrdinalIgnoreCase)))
-        {
-            throw new PzConnectorException(
-                $"{Label}: pagination header '{paging.Header}' is also set in the connection's 'headers:'; the " +
-                "page token header must be sent by pagination alone (remove it from 'headers:')", isTransient: false);
-        }
-    }
 
     private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy, string? runDate)
     {

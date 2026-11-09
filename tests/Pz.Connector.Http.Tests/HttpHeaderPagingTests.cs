@@ -234,10 +234,174 @@ public sealed class HttpHeaderPagingTests : IAsyncLifetime
             new() { ["auth"] = Map(("type", "api_key"), ("key", "k3y-secret"), ("header", "X-Page-Token")) }));
 
         Assert.False(ex.IsTransient, ex.Message);
-        Assert.Single(_server.Requests);
+        Assert.Empty(_server.Requests);
         Assert.Contains("X-Page-Token", ex.Message);
         Assert.Contains("auth", ex.Message);
         Assert.DoesNotContain("k3y-secret", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_page_header_a_for_each_list_shares_with_the_connection_is_refused_at_plan()
+    {
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadAllAsync(Map(
+            ("path", "/orders/{{ item.id }}"),
+            ("for_each", Map(("path", "/orders"), ("fields", Map(("id", "/id"))),
+                ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("location", "header"),
+                    ("param", "X-Page-Token")))))),
+            new() { ["headers"] = Map(("x-page-token", "fixed")) }));
+
+        Assert.Contains("for_each", ex.Message);
+        Assert.Empty(_server.Requests);
+    }
+
+    [Theory]
+    [InlineData(" t1")]
+    [InlineData("t1 ")]
+    [InlineData("\tt1")]
+    public async Task A_token_with_edge_whitespace_fails_instead_of_being_trimmed_on_the_wire(string token)
+    {
+        _server.Map("/items", _ => new StubResponse(200,
+            new JsonObject { ["data"] = new JsonArray(new JsonObject { ["id"] = 1 }), ["next"] = token }.ToJsonString()));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadAllAsync(Map(("path", "/items"),
+            ("items", "/data"),
+            ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("location", "header"),
+                ("param", "X-Page-Token"))))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("leading or trailing whitespace", ex.Message);
+        Assert.Contains("X-Page-Token", ex.Message);
+        Assert.Single(_server.Requests);
+    }
+
+    [Fact]
+    public void A_v4_token_with_edge_whitespace_is_refused()
+    {
+        var token = "v4:" + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(
+            """{"url":"https://h.example/s","body":null,"header":{"name":"X-Page-Token","value":"t1 "}}"""));
+
+        Assert.False(HttpCheckpointToken.TryDecode(token, false, HttpMethod.Get, HttpCheckpointToken.BodyKind.None,
+            out _, pageHeader: "X-Page-Token"));
+    }
+
+    [Fact]
+    public void A_page_header_the_request_headers_refuse_fails_instead_of_going_unsent()
+    {
+        var request = new HttpPageRequest(HttpMethod.Get, new Uri("https://h.example/items"), null, null)
+        {
+            PageHeader = ("Expires", "t1"),
+        };
+
+        var ex = Assert.Throws<PzConnectorException>(() => request.ToMessage(null));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("'Expires'", ex.Message);
+        Assert.DoesNotContain("t1", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_header_paged_get_resumes_from_a_plain_url_token()
+    {
+        MapThreePages(r => Header(r, "X-Page-Token") ?? "");
+        var (source, partition) = await OpenAsync(Map(("path", "/items"), ("items", "/data"),
+            ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("location", "header"),
+                ("param", "X-Page-Token")))));
+        await using (source)
+        {
+            Assert.True(partition.TryResumeFrom(new Uri(_server.BaseUrl, "/items").ToString()));
+            Assert.Equal(4, (await DrainAsync(partition)).Rows);
+        }
+
+        Assert.Equal([null, "t1", "t2"], _server.Requests.Select(r => Header(r, "X-Page-Token")));
+    }
+
+    [Fact]
+    public async Task A_header_paged_post_resumes_from_a_v2_token()
+    {
+        MapThreePages(r => Header(r, "X-Page-Token") ?? "");
+        var v2 = HttpCheckpointToken.Encode(new HttpPageRequest(HttpMethod.Post, new Uri(_server.BaseUrl, "/items"),
+            JsonNode.Parse("""{"q":"resumed"}"""), null), isPost: true);
+        Assert.StartsWith("v2:", v2);
+        var (source, partition) = await OpenAsync(Map(("path", "/items"), ("method", "post"), ("body", Map(("q", "x"))),
+            ("items", "/data"),
+            ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("location", "header"),
+                ("param", "X-Page-Token")))));
+        await using (source)
+        {
+            Assert.True(partition.TryResumeFrom(v2));
+            Assert.Equal(4, (await DrainAsync(partition)).Rows);
+        }
+
+        Assert.All(_server.Requests, r => Assert.Equal("""{"q":"resumed"}""", r.Body));
+        Assert.Equal([null, "t1", "t2"], _server.Requests.Select(r => Header(r, "X-Page-Token")));
+    }
+
+    [Theory]
+    [InlineData(301)]
+    [InlineData(302)]
+    [InlineData(307)]
+    public async Task A_redirected_page_request_keeps_its_page_header(int status)
+    {
+        _server.Map("/items", r => (Header(r, "X-Page-Token") ?? "") switch
+        {
+            "" => new StubResponse(200, """{"data":[{"id":1}],"next":"t1"}"""),
+            _ => new StubResponse(status, "", H("Location", new Uri(_server.BaseUrl, "/moved").ToString())),
+        });
+        _server.Map("/moved", r => Header(r, "X-Page-Token") == "t1"
+            ? new StubResponse(200, """{"data":[{"id":2}]}""")
+            : new StubResponse(400, "page header lost"));
+
+        var rows = await ReadAllAsync(Map(("path", "/items"), ("items", "/data"),
+            ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("location", "header"),
+                ("param", "X-Page-Token")))));
+
+        Assert.Equal(2, rows);
+    }
+
+    [Fact]
+    public async Task A_header_paged_for_each_item_nests_a_v4_token_in_v3_and_resumes_from_it()
+    {
+        _server.Map("/orders", _ => new StubResponse(200, """{"data":[{"id":"o1"},{"id":"o2"}]}"""));
+        _server.MapPrefix("/orders/", r =>
+        {
+            var id = r.Url.AbsolutePath.Split('/')[2];
+            return (Header(r, "X-Page-Token") ?? "") switch
+            {
+                "" => new StubResponse(200, $$"""{"lines":[{"sku":"{{id}}-1"}],"next":"p2"}"""),
+                "p2" => new StubResponse(200, $$"""{"lines":[{"sku":"{{id}}-2"}]}"""),
+                _ => new StubResponse(500, "unexpected"),
+            };
+        });
+        var options = Map(("path", "/orders/{{ item.id }}/lines"), ("items", "/lines"),
+            ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("location", "header"),
+                ("param", "X-Page-Token"))),
+            ("for_each", Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("id", "/id"))))));
+
+        var (source, partition) = await OpenAsync(options);
+        List<string> tokens;
+        await using (source)
+        {
+            var (rows, all) = await DrainAsync(partition);
+            Assert.Equal(4, rows);
+            tokens = all;
+        }
+
+        var inner = tokens.Select(t => HttpCheckpointToken.TryDecodeForEach(t, out var p) ? p : null)
+            .First(p => p?.Item is not null)!;
+        Assert.StartsWith("v4:", inner.Item);
+        Assert.Equal(0, inner.Index);
+
+        var before = _server.Requests.Count;
+        var (again, resumed) = await OpenAsync(options);
+        await using (again)
+        {
+            Assert.True(resumed.TryResumeFrom(HttpCheckpointToken.EncodeForEach(inner)));
+            Assert.Equal(3, (await DrainAsync(resumed)).Rows);
+        }
+
+        Assert.Equal(["/orders", "/orders/o1/lines", "/orders/o2/lines", "/orders/o2/lines"],
+            _server.Requests.Skip(before).Select(r => r.Url.AbsolutePath));
+        Assert.Equal("p2", Header(_server.Requests[before + 1], "X-Page-Token"));
     }
 
     [Fact]
@@ -397,12 +561,34 @@ public sealed class HttpHeaderPagingTests : IAsyncLifetime
     }
 
     [Fact]
-    public void Location_is_checked_on_get_reads_too()
+    public async Task An_unknown_location_on_a_get_read_still_runs_with_a_notice()
     {
-        var ex = ParseError(Map(("path", "/items"),
-            ("pagination", Map(("strategy", "cursor"), ("pointer", "/n"), ("param", "c"), ("location", "cookie")))));
+        // Configs like this loaded before header paging existed (the connector ignored the key on GET), so they
+        // must keep running; `pz validate` still reports the value through the dataset schema.
+        MapThreePages(r => Query(r, "cursor"));
+        var notices = new List<string>();
+        var errors = new List<string>();
+        var connection = HttpConnectionConfig.Parse(new ConnectorConfig(
+            new Dictionary<string, object?> { ["base_url"] = _server.BaseUrl.ToString() }), errors);
+        await using var source = new HttpSource(connection!, TimeProvider.System);
+        source.UseNotice(notices.Add);
+        var options = Map(("path", "/items"), ("items", "/data"),
+            ("pagination", Map(("strategy", "cursor"), ("pointer", "/next"), ("param", "cursor"), ("location", "cookie"))));
 
-        Assert.Contains("'location' must be 'query', 'body' or 'header'", ex.Message);
+        var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(Assert.Single(await source.PlanReadAsync(
+            new DatasetSpec("s", "d", options), ReadHints.None, CancellationToken.None)));
+
+        Assert.Equal(4, (await DrainAsync(partition)).Rows);
+        Assert.Equal(["", "t1", "t2"], _server.Requests.Select(r => Query(r, "cursor")));
+        var notice = Assert.Single(notices);
+        Assert.Contains("pagination 'location' 'cookie' is not one of query, body, header", notice);
+        Assert.Contains("ignored", notice);
+        var schema = Json.Schema.JsonSchema.FromText(new HttpConnector().DatasetConfigSchema);
+        Assert.False(schema.Evaluate(System.Text.Json.JsonSerializer.SerializeToElement(new Dictionary<string, object>
+        {
+            ["path"] = "/items",
+            ["pagination"] = new Dictionary<string, object> { ["strategy"] = "page", ["location"] = "cookie" },
+        })).IsValid);
     }
 
     [Theory]
@@ -410,6 +596,12 @@ public sealed class HttpHeaderPagingTests : IAsyncLifetime
     [InlineData("content-type")]
     [InlineData("Host")]
     [InlineData("Cookie")]
+    [InlineData("Expires")]
+    [InlineData("Last-Modified")]
+    [InlineData("Allow")]
+    [InlineData("Content-Language")]
+    [InlineData("Content-Disposition")]
+    [InlineData("content-range")]
     public void A_header_pz_owns_cannot_carry_the_token(string name)
     {
         var ex = ParseError(Map(("path", "/items"),
