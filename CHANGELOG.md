@@ -79,24 +79,31 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   usual request keys (`path`, `query`, `method`, `body`, `body_format`, `content_type`, `items`, `pagination`,
   `error_pointer`, `max_pages`), so it can page, POST and use `{{ watermark }}`, `{{ window_upper }}` and
   `{{ run_date }}` (`run_date:` stays at dataset level and is shared). `fields` maps a name to a JSON pointer into
-  each list record, and `{{ item.<name> }}` uses it in the item request's `path`, `query` and `body`. Each item
-  crawl pages to its last page before the next item starts, and in file mode the item request is a download, so
-  "list the exports, then download each one" works. A value from the API is escaped by position (a path segment, a
-  query value, a typed JSON value, or form-encoded text), is never expanded again, and `.` or `..` in a path is
-  refused. Numbers are sent with their JSON text, and a referenced field that is missing, null, an object or an array
-  fails the read, naming the list page, the record and the field.
-  In contract mode a `columns:` entry named like a field is filled from the item. In raw mode a `pz_item` column
-  (a JSON object of every declared field, a field missing from the record as null) follows the envelope columns,
-  and the cursor may be an item field in either mode. `on_missing: skip` moves on after a 404 or 410 on an item's
-  first request (a 404 on a later page still fails) and reports the count in a notice at the end of the read;
-  the default `error` fails. `max_items` stops after that many list records, with a notice. On an incremental
-  dataset `max_items`, `for_each.max_pages` and the item-level `max_pages` are refused at validation, because an item
-  cut short would be skipped for good once the watermark passes it; the 50,000-page ceiling stays an error
-  everywhere. A read resumes from a checkpoint at the item and page it reached. The list page is fetched again, so
-  if the list changed or was reordered in between, an item may be read twice or missed: delivery is at-least-once,
-  and a merge sink removes duplicates. The skip notice and `max_items` count per attempt, so a resumed read does not
-  carry them over. A file-mode item checkpoints only between items. `for_each` cannot be combined with
-  `delta_pointer` or `export:`. Datasets without `for_each` are unchanged.
+  each list record, and `{{ item.<name> }}` uses it in the item request's `path`, `query` and `body`. In a string
+  `body:` whose content type is JSON (`application/json`, the default, or any `+json`), an item reference is refused
+  at validation, since a value spliced into JSON text could change its structure: write the body as a map, where the
+  reference is a typed JSON value. Each item crawl pages to its last page before the next item starts, and in file
+  mode the item request is a download, so "list the exports, then download each one" works. A value from the API is
+  escaped by position (a path segment, a query value, a typed JSON value, or form-encoded text), is never expanded
+  again, and a path segment that item values turn into `.`, `..` or nothing is refused. Numbers are sent with their
+  JSON text, and a referenced field that is missing, null, an object or an array fails the read, naming the list page,
+  the record and the field.
+  In contract mode a `columns:` entry named like a field is filled from the item. In raw mode a `pz_item` column (a
+  JSON object of every declared field, a field missing from the record as null) follows the envelope columns, and the
+  cursor may be an item field in either mode. `for_each.on_missing: skip` moves on after a 404 or 410 on an item's
+  first request (a 404 on a later page still fails) and reports the count in a notice at the end of the read; the
+  default `error` fails. `for_each.max_items` stops after that many list records, with a notice, and does not fetch a
+  further list page once it is reached. An item-level `max_pages` that stops items before their last page is reported
+  in one notice at the end of the read. On an incremental dataset (a declared watermark, a raw `cursor:`, or a
+  `{{ watermark }}`/`{{ window_upper }}` reference in either request) `for_each.max_items`, `for_each.max_pages` and
+  the item-level `max_pages` are refused at validation, because an item cut short would be skipped for good once the
+  watermark passes it; the 50,000-page ceiling stays an error everywhere. A read resumes from a checkpoint at the item
+  and page it reached. The list page is fetched again, and if the record the checkpoint was taken at is no longer
+  where it was (the list shifted), the list page is read again from its first record rather than mislabelling items or
+  skipping records at the old index: duplicates are possible, and a merge sink removes them. Skips are carried in the
+  checkpoint, so they are reported across retries; `max_items` counts per attempt. A file-mode item checkpoints only
+  between items. `for_each` cannot be combined with `delta_pointer` or `export:`. Datasets without `for_each` are
+  unchanged.
 
 ### Changed
 
