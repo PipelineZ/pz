@@ -15,7 +15,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   to N items of one list page at once, with a barrier before the next list page; rows from different items
   interleave. Checkpoints are taken only at list-page barriers, so a retry re-fetches the current list page's items.
   A list page whose items yield no rows gets no checkpoint of its own. When concurrency is above 1, a `429` or `503`
-  response with `Retry-After` pauses every request of the connection until that time, capped at 600 seconds (with
+  response with `Retry-After` pauses every request of that read until that time, capped at 600 seconds (with
   concurrency 1 there is no shared pause). Set `rate_limit:` on the connection when using concurrency. File items
   use one scratch directory per worker, so disk use can reach N times the size of one download.
 - **http: read with POST.** `method: post` on a dataset sends a request body, so APIs that take their query in the
