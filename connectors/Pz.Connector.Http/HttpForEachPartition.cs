@@ -13,7 +13,8 @@ namespace Pz.Connector.Http;
 /// the record index and the item crawl's position (see <see cref="HttpCheckpointToken"/>). Never retries,
 /// never sleeps.</summary>
 internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
-    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate)
+    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate,
+    ThrottlePause? pause = null)
     : ICheckpointingPartition
 {
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
@@ -84,7 +85,9 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
         // The dataset's bindings serve both requests: the list formats the watermark by the dataset's
         // cursor type, and both render the same {{ run_date }}.
         var bindings = HttpFirstRequest.Bindings(spec, config, config.RunDate.Render(now), Label);
-        var list = new HttpPartition(client, bareClient, connection, forEach.List, spec, time, gate)
+        // The list crawl and every item share this read's Retry-After pause: a throttle on any of them
+        // holds back the others.
+        var list = new HttpPartition(client, bareClient, connection, forEach.List, spec, time, gate, pause)
         {
             Bindings = bindings,
         };
@@ -245,7 +248,7 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
         var skipMissing = config.ForEach!.OnMissingSkip;
         if (config.IsFileMode)
         {
-            var file = new HttpFilePartition(client, bareClient, connection, config, spec, time, gate)
+            var file = new HttpFilePartition(client, bareClient, connection, config, spec, time, gate, pause)
             {
                 Item = values,
                 Bindings = bindings,
@@ -258,7 +261,7 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
             return (file, () => file.Missing, () => false);
         }
 
-        var pages = new HttpPartition(client, bareClient, connection, config, spec, time, gate)
+        var pages = new HttpPartition(client, bareClient, connection, config, spec, time, gate, pause)
         {
             Item = values,
             Bindings = bindings,

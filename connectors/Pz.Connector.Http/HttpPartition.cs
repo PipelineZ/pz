@@ -17,7 +17,8 @@ namespace Pz.Connector.Http;
 /// class's whole resilience duty (the engine owns policy). Batches yielded become
 /// engine-owned; nothing here retains them.</summary>
 internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
-    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate = null)
+    HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate = null,
+    ThrottlePause? pause = null)
     : IDatasetPartition, ISyncStatePartition, ICheckpointingPartition
 {
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
@@ -57,7 +58,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     // In sync mode the query IS the sync token, whose param name is server-defined, so messages drop
     // the whole query rather than masking the authenticator's params by name.
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
-        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: config.IsSyncMode);
+        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: config.IsSyncMode, pause);
 
     // Set inside FetchPageCoreAsync when config.IsSyncMode: the delta pointer is resolved against
     // every page's body, and since only the terminal page of a Graph-style feed carries a
