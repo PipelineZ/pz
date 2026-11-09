@@ -35,8 +35,8 @@ internal sealed record ItemValues(IReadOnlyList<string> Order, IReadOnlyDictiona
 
     /// <summary>The field as a value of contract type <paramref name="typeName"/>: a JSON string follows the
     /// text rules (<see cref="TextValueParser"/>, so "" is NULL), any other value converts as a JSON
-    /// page's column does, and a missing or null field is NULL.</summary>
-    public object? ValueAs(string name, string typeName, string context)
+    /// page's column does (under <paramref name="options"/>' epoch rule), and a missing or null field is NULL.</summary>
+    public object? ValueAs(string name, string typeName, string context, ContractReadOptions? options = null)
     {
         if (!Fields.TryGetValue(name, out var node) || node is null)
         {
@@ -45,7 +45,7 @@ internal sealed record ItemValues(IReadOnlyList<string> Order, IReadOnlyDictiona
 
         return node is JsonValue value && value.GetValueKind() == JsonValueKind.String
             ? TextValueParser.Parse(value.GetValue<string>(), typeName, $"{context}: column '{name}'")
-            : ContractProjector.ConvertScalar(node, typeName, name, context);
+            : ContractProjector.ConvertScalar(node, typeName, name, context, options ?? ContractReadOptions.Default);
     }
 
     /// <summary>A JSON object of every declared field in declaration order, so downstream SQL sees one key

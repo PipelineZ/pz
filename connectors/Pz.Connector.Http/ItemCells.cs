@@ -51,7 +51,7 @@ internal sealed class ItemCells
             {
                 if (item.Declares(name))
                 {
-                    columns.Add((i, item.ValueAs(name, typeName, label)));
+                    columns.Add((i, item.ValueAs(name, typeName, label, config.ReadOptions)));
                 }
                 else
                 {
@@ -63,7 +63,7 @@ internal sealed class ItemCells
         }
 
         var cursorFromItem = !config.IsContractMode && config.Cursor is { } cursor && item.Declares(cursor);
-        var cursorValue = cursorFromItem ? item.ValueAs(config.Cursor!, config.CursorType!, label) : null;
+        var cursorValue = cursorFromItem ? item.ValueAs(config.Cursor!, config.CursorType!, label, config.ReadOptions) : null;
         return new ItemCells(item.ToJsonString(), cursorFromItem, cursorValue, record, columns,
             config.Columns?.Count ?? 0);
     }

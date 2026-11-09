@@ -47,14 +47,51 @@ internal static class HttpFirstRequest
         }
         var bindings = new Dictionary<string, BindingValue>
         {
-            ["watermark"] = new(spec.WatermarkValue, cursorType),
+            ["watermark"] = Bound(spec.WatermarkValue, cursorType, config.WatermarkFormat, upper: false, label),
             // Upper bound of the engine-resolved (lower, upper] window; null when the dataset is
             // not windowed, in which case TryExpand omits the param.
-            ["window_upper"] = new(spec.WatermarkUpperBound, cursorType),
+            ["window_upper"] = Bound(spec.WatermarkUpperBound, cursorType, config.WatermarkFormat, upper: true, label),
             // Never null: already rendered text, so it passes through FormatBinding untouched.
             ["run_date"] = new(runDate, null),
         };
         return bindings;
+    }
+
+    /// <summary>One window bound. Without `watermark_format` it stays typed and is rendered by
+    /// <see cref="FormatBinding"/> where it is used, exactly as before the option existed. With one it is
+    /// rendered here, once, where the bound's direction is known; the result is typed `bigint` for an epoch
+    /// format (so a whole-value JSON body binding sends a number) and untyped text otherwise, which
+    /// FormatBinding passes through.</summary>
+    private static BindingValue Bound(string? value, string? cursorType, WatermarkFormat? format, bool upper,
+        string label)
+    {
+        if (format is null)
+        {
+            return new BindingValue(value, cursorType);
+        }
+
+        // The offline check cannot know a SQL-declared incremental's type; this is where it is known.
+        if (HttpDatasetConfig.CheckFormatForCursor(format, cursorType) is { } error)
+        {
+            throw new PzConnectorException($"{label}: {error}", isTransient: false);
+        }
+
+        if (value is null)
+        {
+            return new BindingValue(null, null);
+        }
+
+        // The stored value is never echoed: rendered binding values stay out of messages.
+        if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var ts))
+        {
+            throw new PzConnectorException(
+                $"{label}: 'watermark_format: {format.Name}' cannot render the stored {(upper ? "window upper bound" : "watermark")}: " +
+                "it is not a timestamp or date; re-run with --full-refresh if the cursor's type changed",
+                isTransient: false);
+        }
+
+        return new BindingValue(format.Render(ts, upper), format.IsNumeric ? "bigint" : null);
     }
 
     public static HttpPageRequest Build(HttpConnectionConfig connection, HttpDatasetConfig config,
@@ -269,8 +306,6 @@ internal static class HttpFirstRequest
             return value.Value!;
         }
 
-        var floored = new DateTimeOffset(ts.Year, ts.Month, ts.Day, ts.Hour, ts.Minute, ts.Second, TimeSpan.Zero);
-        var rendered = name == "window_upper" && ts > floored ? floored.AddSeconds(1) : floored;
-        return rendered.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+        return WatermarkFormat.Iso8601.Render(ts, upper: name == "window_upper");
     }
 }
