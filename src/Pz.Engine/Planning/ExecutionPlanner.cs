@@ -61,18 +61,25 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         foreach (var node in dag.TopologicalOrder())
         {
-            planned.Add(node.Kind switch
+            try
             {
-                NodeKind.SourceLoad => WithPushdown(
-                    await PlanSourceLoadAsync(node, forceUniversal, errors, pacingRefused, identityRefused, changeCaptureRefused, shapeByNode, Executes(executing, node), ct).ConfigureAwait(false),
-                    node),
-                NodeKind.SinkWrite => await PlanSinkWriteAsync(node, forceUniversal, errors, pacingRefused, modeRefused, Executes(executing, node), ct).ConfigureAwait(false),
-                NodeKind.Pipeline => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
-                    "duckdb sql: executes in-engine"),
-                NodeKind.Check => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
-                    "check: not executed in this version"),
-                _ => throw new ArgumentOutOfRangeException(nameof(node), node.Kind, "unknown node kind"),
-            });
+                planned.Add(node.Kind switch
+                {
+                    NodeKind.SourceLoad => WithPushdown(
+                        await PlanSourceLoadAsync(node, forceUniversal, errors, pacingRefused, identityRefused, changeCaptureRefused, shapeByNode, Executes(executing, node), ct).ConfigureAwait(false),
+                        node),
+                    NodeKind.SinkWrite => await PlanSinkWriteAsync(node, forceUniversal, errors, pacingRefused, modeRefused, Executes(executing, node), ct).ConfigureAwait(false),
+                    NodeKind.Pipeline => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
+                        "duckdb sql: executes in-engine"),
+                    NodeKind.Check => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
+                        "check: not executed in this version"),
+                    _ => throw new ArgumentOutOfRangeException(nameof(node), node.Kind, "unknown node kind"),
+                });
+            }
+            catch (PzConnectorException ex) when (!ex.IsTransient)
+            {
+                planned.Add(ConfigRefused(node, ex, errors, Executes(executing, node)));
+            }
         }
 
         // Feed-side delivery-guarantee pass -- the planner's half of the (read x write) matrix, the
@@ -783,6 +790,33 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,
             $"native copy: connector '{def.Sink.Connector}' provides {copy.Mechanism}");
+    }
+
+    /// <summary>A connector refusing a node's config while it is planned -- opening the connection, resolving the
+    /// dataset's read shape -- is offline and non-transient, so it is a config error the author fixes: PZ0301,
+    /// aggregated with every other plan error and exit-2-coded, never an escaped exception rendered as PZ0500.
+    /// The more specific refusals (a native path the config cannot produce, PZ0353) are caught nearer their call.
+    /// A node outside this run's effective set only records the deferral, without the connector's message (it may
+    /// name a path or a value), so a selection that does not touch the node still runs.</summary>
+    private static PlannedNode ConfigRefused(DagNode node, PzConnectorException ex, List<PzError> errors, bool executes)
+    {
+        var (connector, subject, file) = node.Definition switch
+        {
+            SourceDatasetDef d => (d.Source.Connector, $"connection '{d.Source.Name}' dataset '{d.Dataset.Name}'", d.Source.FilePath),
+            SinkOutputDef o => (o.Sink.Connector, $"connection '{o.Sink.Name}' output '{o.Output.Name}'", o.Sink.FilePath),
+            _ => throw new InvalidOperationException($"node '{node.Name}' has no connector to refuse it", ex),
+        };
+
+        if (executes)
+        {
+            errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid, $"{subject}: {ex.Message}", file, null,
+                "fix the options the connector names; `pz validate` reports every such refusal at once"));
+        }
+
+        return Universal(node, executes
+            ? $"arrow stream: connector '{connector}' refused the config"
+            : $"arrow stream: connector '{connector}' refused the config; {PzErrorCode.ConnectorConfigInvalid} deferred " +
+              "because this node is not part of the run");
     }
 
     private static PlannedNode Universal(DagNode node, string reason, int partitions = 1, string? readToken = null)

@@ -469,3 +469,35 @@ internal sealed class StubRefusingNativeSink : ISinkConnector, ISink
 
     public ValueTask DisposeAsync() => default;
 }
+
+/// <summary>Source connector that refuses the dataset's config when the planner resolves its read shape -- the
+/// shape of an http dataset whose cross-field rules fail to parse (e.g. on_status skip on an incremental
+/// dataset). Transient only when asked, to prove the planner does not classify a transient failure as config.</summary>
+internal sealed class StubConfigRefusingSource(bool transient = false) : ISourceConnector, ISource, INaturalReadShapeSource
+{
+    public ConnectorInfo Info => new("stub", "0.1.0", ProtocolVersion.Major);
+    public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+    public string ConnectionConfigSchema => "{}";
+    public string DatasetConfigSchema => "{}";
+
+    public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) => new(ValidationResult.Success);
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) => new(new ConnectionCheck(true));
+    public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) => new(this);
+
+    public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call GetSchemaAsync");
+
+    public bool TryGetNativeScan(DatasetSpec spec, [NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = null;
+        return false;
+    }
+
+    public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
+        throw new InvalidOperationException("planner must never call PlanReadAsync");
+
+    public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
+        throw new PzConnectorException($"dataset '{spec.Dataset}': option 'x' clashes with option 'y'", transient);
+
+    public ValueTask DisposeAsync() => default;
+}

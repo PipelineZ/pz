@@ -3,7 +3,8 @@ using Pz.Cli;
 namespace Pz.Cli.Tests;
 
 /// <summary>An http dataset the connector refuses to parse -- a cross-field rule no JSON Schema can state --
-/// is a config error: `pz validate` reports it as PZ0301 naming the connection, dataset and option.</summary>
+/// is a config error: `pz validate` reports it as PZ0301 naming the connection, dataset and option, and
+/// `pz plan` refuses it the same way (exit 2), never as the PZ0500 "bug in pz" catch-all.</summary>
 // See the "console-and-env-serialized" collection definition in RestoreCommandTests.cs: this class redirects
 // Console.Out/Error to assert on CLI output.
 [Collection("console-and-env-serialized")]
@@ -78,6 +79,21 @@ public sealed class HttpDatasetRefusalTests : IDisposable
         Assert.Contains("connection 'api' dataset 'items': 'stop_at_watermark' requires 'cursor'", stderr);
         Assert.Contains("connection 'api' dataset 'items': 'watermark_time_zone' needs a 'watermark_format'", stderr);
         Assert.Contains("connection 'api' dataset 'other': 'watermark_time_zone' needs a 'watermark_format'", stderr);
+    }
+
+    [Theory]
+    [MemberData(nameof(Refusals))]
+    public void Plan_refuses_the_dataset_as_PZ0301_not_PZ0500(string _, string read, string expected)
+    {
+        WriteProject(read);
+
+        var (exit, stderr) = Invoke("plan");
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        Assert.DoesNotContain("PZ0500", stderr);
+        Assert.DoesNotContain("bug in pz", stderr);
+        var line = Assert.Single(stderr.Split('\n'), l => l.Contains(expected, StringComparison.Ordinal));
+        Assert.StartsWith("error PZ0301: connection 'api' dataset 'items': ", line);
     }
 
     private void WriteProject(string itemsRead, string? otherRead = null)
