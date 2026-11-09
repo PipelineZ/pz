@@ -108,7 +108,29 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "poll_interval_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
                 "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 1440 } },
                 "required": ["job_id", "status_path", "status_pointer", "ready"],
-                "additionalProperties": false } },
+                "additionalProperties": false },
+            "for_each": { "type": "object", "properties": {
+                "path": { "type": "string" },
+                "query": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+                "method": { "enum": ["get", "post"] },
+                "body": { "type": ["object", "string"] },
+                "body_format": { "enum": ["json", "form"] },
+                "content_type": { "type": "string" },
+                "items": { "type": "string" },
+                "pagination": { "type": "object", "properties": {
+                    "strategy": { "enum": ["page", "offset", "link_header", "cursor", "next_url"] },
+                    "param": { "type": "string" }, "start": { "type": "integer" },
+                    "size_param": { "type": "string" }, "size": { "type": "integer" },
+                    "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" },
+                    "location": { "enum": ["query", "body"] } },
+                    "required": ["strategy"], "additionalProperties": false },
+                "error_pointer": { "type": "string" },
+                "max_pages": { "type": "integer", "minimum": 1 },
+                "fields": { "type": "object", "minProperties": 1,
+                    "additionalProperties": { "type": "string" } },
+                "max_items": { "type": "integer", "minimum": 1 },
+                "on_missing": { "enum": ["error", "skip"] } },
+                "required": ["path", "fields"], "additionalProperties": false } },
           "additionalProperties": false }
         """;
 
