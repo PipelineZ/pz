@@ -4,7 +4,7 @@ using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Http;
 
-internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, INaturalReadShapeSource
+internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, IRunContextAware, INaturalReadShapeSource
 {
     private readonly HttpConnectionConfig _connection;
     private readonly TimeProvider _time;
@@ -206,6 +206,17 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         _notice = notice;
         HttpAuth.UseNotice(_connection.Authenticator, notice);
     }
+
+    /// <summary>Called at most once per open, before any plan/read call: the sign-in remembers a refusal for this
+    /// run only.</summary>
+    public void UseRunContext(ConnectorRunContext context)
+    {
+        RunContext = context;
+        HttpAuth.UseRunContext(_connection.Authenticator, context);
+    }
+
+    /// <summary>The run and node this source reads for; null when the host named none.</summary>
+    internal ConnectorRunContext? RunContext { get; private set; }
 
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
         HttpDatasetConfig.Parse(spec).IsSyncMode ? NaturalReadShape.Feed : NaturalReadShape.Full;

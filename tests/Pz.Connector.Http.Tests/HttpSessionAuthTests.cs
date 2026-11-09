@@ -643,6 +643,45 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
     // ---- fix round ----
 
     [Fact]
+    public async Task Two_runs_in_one_process_each_get_one_login_attempt()
+    {
+        // A long-lived pz mcp server: an admin unlocks the account between runs, and the next run must try.
+        MapLogin(_ => new StubResponse(401, "{}"));
+        var outcomes = new List<PzConnectorException>();
+        foreach (var run in new[] { "run-a", "run-b" })
+        {
+            foreach (var node in new[] { "n1", "n2" })
+            {
+                await using var source = Open(Session());
+                ((IRunContextAware)source).UseRunContext(new ConnectorRunContext(run, node));
+                outcomes.Add(await FailsAsync(source));
+            }
+        }
+
+        Assert.Equal(2, Logins);
+        Assert.DoesNotContain("pz did not try again", outcomes[0].Message);
+        Assert.Contains("pz did not try again", outcomes[1].Message);
+        Assert.DoesNotContain("pz did not try again", outcomes[2].Message);
+        Assert.Contains("pz did not try again", outcomes[3].Message);
+    }
+
+    [Fact]
+    public async Task Each_connection_check_gets_its_own_login_attempt()
+    {
+        // pz validate --connect in a long-lived pz mcp server: a refused check must not stop the next one.
+        MapLogin(_ => new StubResponse(401, "{}"));
+        var config = Config(_server.BaseUrl.ToString(), Session(), null);
+
+        var first = await new HttpConnector().CheckConnectionAsync(config, CancellationToken.None);
+        var second = await new HttpConnector().CheckConnectionAsync(config, CancellationToken.None);
+
+        Assert.False(first.Ok);
+        Assert.False(second.Ok);
+        Assert.DoesNotContain("pz did not try again", second.Message);
+        Assert.Equal(2, Logins);
+    }
+
+    [Fact]
     public async Task A_refused_login_is_not_repeated_by_later_reads_or_other_nodes()
     {
         MapLogin(_ => new StubResponse(401, "{}"));

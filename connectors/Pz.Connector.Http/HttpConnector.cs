@@ -328,6 +328,10 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         // Resolve check_path the same way dataset paths resolve (HttpFirstRequest.Build):
         // a relative segment against the slash-terminated base, not root-relative to the host —
         // otherwise a base_url path prefix (e.g. '/api/v2') is silently dropped.
+        // A check is a scope of its own: a refused sign-in here must not stop a later check or run in the same
+        // process from trying.
+        HttpAuth.UseRunContext(bound.Authenticator, new ConnectorRunContext("check-" + Guid.NewGuid().ToString("N"), null));
+
         var target = connection.CheckPath is { } checkPath
             ? new Uri(connection.BaseUrl, checkPath.TrimStart('/'))
             : connection.BaseUrl;

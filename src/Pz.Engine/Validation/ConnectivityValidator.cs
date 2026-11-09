@@ -73,6 +73,9 @@ public static class ConnectivityValidator
         errors.AddRange(connectionResults.Select(r => r.Error).Where(e => e is not null)!);
         var notes = connectionResults.Select(r => r.Note).Where(n => n is not null).Cast<string>().ToList();
 
+        // One validation pass is one scope for state a connector keeps past an open (a refused sign-in): the
+        // pass's sources share it, and the next pass in a long-lived process (pz mcp) does not inherit it.
+        var pass = new ConnectorRunContext("validate-" + Guid.NewGuid().ToString("N"), Node: null);
         var fetchedSchemas = new Dictionary<string, string>(StringComparer.Ordinal);
         var extraColumns = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         foreach (var source in project.Connections)
@@ -82,7 +85,7 @@ public static class ConnectivityValidator
                 continue;
             }
 
-            await ProbeSourceSchemasAsync(connector, registry.ConfigFor(source), source, errors, fetchedSchemas,
+            await ProbeSourceSchemasAsync(connector, registry.ConfigFor(source), source, pass, errors, fetchedSchemas,
                 extraColumns, ct).ConfigureAwait(false);
         }
 
@@ -129,7 +132,7 @@ public static class ConnectivityValidator
     /// dataset's schema through it; any failure while opening or fetching is caught and reported as one
     /// PZ0330 naming the source, without aborting probing of any OTHER source.</summary>
     private static async Task ProbeSourceSchemasAsync(ISourceConnector connector, ConnectorConfig config,
-        ConnectionDef source, List<PzError> errors, Dictionary<string, string> fetchedSchemas,
+        ConnectionDef source, ConnectorRunContext pass, List<PzError> errors, Dictionary<string, string> fetchedSchemas,
         Dictionary<string, IReadOnlyList<string>> extraColumns, CancellationToken ct)
     {
         ISource? opened = null;
@@ -137,6 +140,7 @@ public static class ConnectivityValidator
         {
             opened = await WithTimeoutAsync(
                 t => connector.OpenAsync(config, t), ct).ConfigureAwait(false);
+            (opened as IRunContextAware)?.UseRunContext(pass);
             foreach (var dataset in source.Datasets)
             {
                 await ProbeDatasetSchemaAsync(opened, source, dataset, errors, fetchedSchemas, extraColumns, ct)
