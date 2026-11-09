@@ -277,6 +277,66 @@ public class HttpItemBindingTests
         Assert.Equal($"item e={new string('z', 40)}", capped.Identity());
     }
 
+    [Theory]
+    [InlineData("/o/{{ item.a }}{{ item.b }}", """{"a":".","b":"."}""")]
+    [InlineData("/o/.{{ item.a }}", """{"a":".","b":"x"}""")]
+    [InlineData("/o/{{ item.a }}/x", """{"a":"","b":"x"}""")]
+    [InlineData("/o/{{ item.a }}{{ item.b }}/x", """{"a":"","b":""}""")]
+    [InlineData("/o/.{{ item.a }}", """{"a":"","b":"x"}""")]
+    [InlineData("/o/{{ item.a }}.{{ item.b }}/x", """{"a":"","b":""}""")]
+    public void Segments_made_by_item_values_cannot_be_dot_or_empty(string path, string record)
+    {
+        var ex = Assert.Throws<PzConnectorException>(() => BuildItem(ItemConfig(path, fields: ["a", "b"]),
+            Item(record, "a", "b")));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("item field", ex.Message);
+        Assert.Contains("'a'", ex.Message);
+    }
+
+    [Fact]
+    public void Literal_template_segments_are_not_judged()
+    {
+        var request = BuildItem(ItemConfig("/o/./{{ item.a }}x", fields: ["a"]), Item("""{"a":""}""", "a"));
+
+        Assert.Equal("https://api.example.com/v1/o/x", request.Url.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("application/json")]
+    [InlineData("application/vnd.api+json; charset=utf-8")]
+    public void Json_string_body_cannot_reference_items(string? contentType)
+    {
+        var errors = new List<string>();
+        Assert.Null(HttpBody.Parse("""{"id":"{{ item.id }}"}""", null, contentType, Known, errors, ["id"]));
+
+        var error = Assert.Single(errors);
+        Assert.Contains("{{ item.* }}", error);
+        Assert.Contains("map", error);
+    }
+
+    [Fact]
+    public void Json_string_body_without_item_references_is_unchanged()
+    {
+        var errors = new List<string>();
+        Assert.NotNull(HttpBody.Parse("""{"since":"{{ watermark }}"}""", null, null, Known, errors, ["id"]));
+        Assert.Empty(errors);
+    }
+
+    [Fact]
+    public void Identity_replaces_every_control_character_and_keeps_surrogate_pairs()
+    {
+        var item = Item("""{"a":"x\ty\u0000z\u001bw\u0085v"}""", "a");
+        Assert.Equal("item a=x y z w v", item.Identity());
+
+        // 39 characters, then an emoji (a surrogate pair) straddling the 40-character cut.
+        var straddling = Item($$"""{"a":"{{new string('z', 39)}}😀tail"}""", "a");
+        var text = straddling.Identity()["item a=".Length..];
+        Assert.Equal(new string('z', 39), text);
+        Assert.False(char.IsSurrogate(text[^1]));
+    }
+
     [Fact]
     public void Form_body_item_value_is_encoded_once()
     {
@@ -298,7 +358,7 @@ public class HttpItemBindingTests
         var options = new Dictionary<string, object?> { ["path"] = "/x", ["method"] = "post", ["body"] = "p" };
         var config = HttpDatasetConfig.Parse(Spec(options));
         var errors = new List<string>();
-        var body = HttpBody.Parse("id={{ item.id }}&wm={{ watermark }}", null, null, Known, errors, ["id"]);
+        var body = HttpBody.Parse("id={{ item.id }}&wm={{ watermark }}", null, "text/plain", Known, errors, ["id"]);
         Assert.Empty(errors);
 
         var request = BuildItem(config with { Body = body }, Item("""{"id":"{{ watermark }}"}""", "id"), "42");

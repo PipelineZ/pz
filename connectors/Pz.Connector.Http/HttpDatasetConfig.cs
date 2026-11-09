@@ -284,12 +284,18 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             errors.Add("'for_each' cannot be combined with 'export'");
         }
 
-        if (spec.WatermarkCursor is null)
+        // A SQL-declared incremental has no WatermarkCursor on its first run or a full refresh, so a raw
+        // cursor or a watermark reference in either request marks the dataset incremental too.
+        var block = options["for_each"] as IReadOnlyDictionary<string, object?>;
+        var incremental = spec.WatermarkCursor is not null
+            || options.GetValueOrDefault("cursor") is not null
+            || ReferencesWatermark(options)
+            || (block is not null && ReferencesWatermark(block));
+        if (!incremental)
         {
             return;
         }
 
-        var block = options["for_each"] as IReadOnlyDictionary<string, object?>;
         foreach (var (present, key) in new[]
         {
             (block?.GetValueOrDefault("max_items") is not null, "max_items"),
@@ -304,6 +310,21 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
     }
+
+    /// <summary>Whether a request's path, query or body references {{ watermark }} or {{ window_upper }}.</summary>
+    private static bool ReferencesWatermark(IReadOnlyDictionary<string, object?> request)
+        => new[] { "path", "query", "body" }
+            .SelectMany(key => Strings(request.GetValueOrDefault(key)))
+            .SelectMany(HttpTemplate.EngineReferences)
+            .Any(name => name is "watermark" or "window_upper");
+
+    private static IEnumerable<string> Strings(object? value) => value switch
+    {
+        string text => [text],
+        IReadOnlyDictionary<string, object?> map => map.Values.SelectMany(Strings),
+        System.Collections.IEnumerable list => list.Cast<object?>().SelectMany(Strings),
+        _ => [],
+    };
 
     private static void ValidateFileMode(IReadOnlyDictionary<string, object?> options, bool hasFile,
         bool hasExport, HttpFileConfig? file, IReadOnlyDictionary<string, string>? columns, List<string> errors)

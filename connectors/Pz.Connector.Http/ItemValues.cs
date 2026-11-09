@@ -62,8 +62,8 @@ internal sealed record ItemValues(IReadOnlyList<string> Order, IReadOnlyDictiona
         return obj.ToJsonString();
     }
 
-    /// <summary>`item name=value[, …]` for messages: the first three fields, each value on one line and
-    /// at most 40 characters, so an API value cannot flood or forge a log line.</summary>
+    /// <summary>`item name=value[, …]` for messages: the first three fields, each value with every control
+    /// character as a space and at most 40 characters, so an API value cannot flood or forge a log line.</summary>
     public string Identity()
     {
         var parts = Order.Take(MaxIdentityFields).Select(name =>
@@ -71,8 +71,14 @@ internal sealed record ItemValues(IReadOnlyList<string> Order, IReadOnlyDictiona
             var text = !Fields.TryGetValue(name, out var node) ? "(missing)"
                 : node is null ? "null"
                 : HttpTemplate.ItemText(node);
-            text = text.Replace('\r', ' ').Replace('\n', ' ');
-            return $"{name}={(text.Length > MaxIdentityValue ? text[..MaxIdentityValue] : text)}";
+            text = new string([.. text.Select(c => char.IsControl(c) ? ' ' : c)]);
+            if (text.Length > MaxIdentityValue)
+            {
+                // Never keep half of a surrogate pair.
+                text = text[..(char.IsHighSurrogate(text[MaxIdentityValue - 1]) ? MaxIdentityValue - 1 : MaxIdentityValue)];
+            }
+
+            return $"{name}={text}";
         });
         return "item " + string.Join(", ", parts);
     }

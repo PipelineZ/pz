@@ -40,7 +40,8 @@ internal sealed class ItemCells
             return null;
         }
 
-        var context = $"{label}: {item.Identity()}";
+        // Conversion errors name the column only: the for_each read appends the item's identity to any
+        // failure of the item's read.
         var record = new Dictionary<string, string>();
         var columns = new List<(int Index, object? Value)>();
         if (config.IsContractMode)
@@ -50,7 +51,7 @@ internal sealed class ItemCells
             {
                 if (item.Declares(name))
                 {
-                    columns.Add((i, item.ValueAs(name, typeName, context)));
+                    columns.Add((i, item.ValueAs(name, typeName, label)));
                 }
                 else
                 {
@@ -62,7 +63,7 @@ internal sealed class ItemCells
         }
 
         var cursorFromItem = !config.IsContractMode && config.Cursor is { } cursor && item.Declares(cursor);
-        var cursorValue = cursorFromItem ? item.ValueAs(config.Cursor!, config.CursorType!, context) : null;
+        var cursorValue = cursorFromItem ? item.ValueAs(config.Cursor!, config.CursorType!, label) : null;
         return new ItemCells(item.ToJsonString(), cursorFromItem, cursorValue, record, columns,
             config.Columns?.Count ?? 0);
     }

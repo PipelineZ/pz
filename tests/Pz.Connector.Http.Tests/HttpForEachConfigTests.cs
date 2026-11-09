@@ -178,6 +178,39 @@ public class HttpForEachConfigTests
         }
     }
 
+    [Theory]
+    [InlineData("list_query")]
+    [InlineData("item_path")]
+    [InlineData("item_body")]
+    [InlineData("cursor")]
+    public void Sql_declared_incremental_refuses_caps(string where)
+    {
+        // A SQL-declared incremental has no WatermarkCursor on its first run or a full refresh; a watermark
+        // reference or a raw cursor still marks it incremental.
+        var forEach = new Dictionary<string, object?> { ["max_items"] = 5L };
+        var extra = new Dictionary<string, object?>();
+        switch (where)
+        {
+            case "list_query":
+                forEach["query"] = new Dictionary<string, object?> { ["since"] = "{{ watermark }}" };
+                break;
+            case "item_path":
+                extra["path"] = "/orders/{{ item.id }}/lines/{{ window_upper }}";
+                break;
+            case "item_body":
+                extra["method"] = "post";
+                extra["body"] = new Dictionary<string, object?>
+                    { ["filter"] = new Dictionary<string, object?> { ["after"] = "{{watermark}}" } };
+                break;
+            default:
+                extra["cursor"] = "updated_at";
+                extra["cursor_type"] = "timestamp";
+                break;
+        }
+
+        Assert.Contains(string.Format(IncrementalMessage, "max_items"), Message(Dataset(forEach, extra)));
+    }
+
     [Fact]
     public void Non_incremental_allows_caps()
     {

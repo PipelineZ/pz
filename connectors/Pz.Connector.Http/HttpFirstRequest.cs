@@ -200,7 +200,35 @@ internal static class HttpFirstRequest
                 "has a lower bound, or use '{{ run_date }}'", isTransient: false);
         }
 
+        if (hasItemReferences)
+        {
+            EnsureItemSegments(template, path, label, option);
+        }
+
         return path;
+    }
+
+    // Substituted values are escaped, so a '/' never comes from one and the template's segments line up
+    // with the expanded path's. A segment holding an item reference may not expand to '.' or '..' (a dot
+    // segment moves the request to another resource) nor to nothing (an empty segment): together with
+    // the template's literal text, values that pass one by one can still make either.
+    private static void EnsureItemSegments(string template, string path, string label, string option)
+    {
+        var templateSegments = template.Split('/');
+        var pathSegments = path.Split('/');
+        for (var i = 0; i < templateSegments.Length && i < pathSegments.Length; i++)
+        {
+            if (!HttpTemplate.HasItemReferences(templateSegments[i]) || pathSegments[i] is not ("" or "." or ".."))
+            {
+                continue;
+            }
+
+            var fields = string.Join(", ", HttpTemplate.ItemReferences(templateSegments[i]).Select(f => $"'{f}'"));
+            var made = pathSegments[i].Length == 0 ? "an empty path segment" : $"the path segment '{pathSegments[i]}'";
+            throw new PzConnectorException(
+                $"{label}: option '{option}': item field(s) {fields} make {made}, which cannot be a path segment",
+                isTransient: false);
+        }
     }
 
     // Escaping keeps an item value inside its segment, but '.' or '..' as the whole value would still

@@ -69,6 +69,15 @@ internal sealed class HttpBody
             }
 
             CheckTemplate(s, "body", knownBindings, itemFields, errors);
+            // A value spliced into JSON text as plain text could close the string and add keys of its own.
+            if (itemFields is not null && HttpTemplate.HasItemReferences(s) && IsJsonMediaType(mediaType))
+            {
+                errors.Add("a string 'body' with a JSON content type cannot reference '{{ item.* }}' (a value " +
+                    "could change the JSON structure); write the body as a map, where '{{ item.<name> }}' is a " +
+                    "typed JSON value");
+                return null;
+            }
+
             return new HttpBody(null, s, false, mediaType);
         }
 
@@ -163,6 +172,12 @@ internal sealed class HttpBody
 
         return result;
     }
+
+    /// <summary>application/json or any `+json` type, parameters aside.</summary>
+    private static bool IsJsonMediaType(string mediaType)
+        => MediaTypeHeaderValue.TryParse(mediaType, out var parsed) && parsed.MediaType is { } type
+           && (type.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+               || type.EndsWith("+json", StringComparison.OrdinalIgnoreCase));
 
     public static HttpContent ToContent(JsonNode? json, string? text, HttpBody body)
     {

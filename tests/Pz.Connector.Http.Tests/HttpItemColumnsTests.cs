@@ -202,7 +202,7 @@ public class HttpItemColumnsTests
     }
 
     [Fact]
-    public async Task Item_value_that_does_not_convert_names_the_item_and_column()
+    public async Task Item_value_that_does_not_convert_names_the_column()
     {
         var options = ItemOptions(["order_id"], new()
         {
@@ -213,7 +213,8 @@ public class HttpItemColumnsTests
             ReadPages(options, Item("""{"order_id":"o1"}""", "order_id"), "[{}]"));
 
         Assert.False(ex.IsTransient);
-        Assert.Contains("item order_id=o1", ex.Message);
+        // The for_each read appends the item's identity to every item failure, this one included.
+        Assert.DoesNotContain("item order_id=o1", ex.Message);
         Assert.Contains("column 'order_id'", ex.Message);
     }
 
