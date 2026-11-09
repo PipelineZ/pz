@@ -22,6 +22,12 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
 {
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
+    /// <summary>The for_each item this read fetches for: its fields expand into the request and land on
+    /// every row. Null for a dataset without for_each.</summary>
+    public ItemValues? Item { get; init; }
+
+    private ItemCells? _itemCells;
+
     // In sync mode the query IS the sync token, whose param name is server-defined, so messages drop
     // the whole query rather than masking the authenticator's params by name.
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
@@ -94,7 +100,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     internal static int UnboundedPageCeiling = 50_000;
 
     // Per-attempt truncation-guard state. Ordinal of the incremental cursor within ProjectRow's
-    // output (raw envelope: fixed slot 3; contract mode:
+    // output (raw envelope: fixed slot 3, or 4 after a for_each dataset's pz_item; contract mode:
     // the cursor column's position in the Columns key order), or -1 when the read is not
     // incremental / has no cursor -- guard disabled.
     private bool _truncatedWithMore;
@@ -126,7 +132,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
             return -1;
         }
 
-        return config.Cursor is null ? -1 : 3;
+        return config.Cursor is null ? -1 : config.IsForEach ? 4 : 3;
     }
 
     private void TrackCursorOrder(object? value)
@@ -207,6 +213,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
         var builder = new ArrowBatchBuilder(ContractProjector.BuildSchema(columns),
             options.TargetBatchBytes, maxRowsPerBatch: options.MaxRowsPerBatch);
         var strategy = config.PageStrategyFactory?.Invoke();
+        _itemCells = ItemCells.For(config, Item, Label);
         // Read once: every request this partition builds renders the same {{ run_date }}, even
         // across midnight.
         var runDate = config.RunDate.Render(time.GetUtcNow());
@@ -396,7 +403,7 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
         }
 
         var bindings = HttpFirstRequest.Bindings(spec, config, runDate, Label);
-        return HttpFirstRequest.Build(connection, config, strategy, bindings, Label);
+        return HttpFirstRequest.Build(connection, config, strategy, bindings, Label, Item);
     }
 
     private Uri? TryGetSyncReplay()
@@ -429,17 +436,29 @@ internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, Ht
     {
         if (config.IsContractMode)
         {
-            return ContractProjector.ProjectRow(record, config.Columns!, Label);
+            return _itemCells is { } cells
+                ? cells.Place(ContractProjector.ProjectRow(record, cells.RecordColumns, Label), 0)
+                : ContractProjector.ProjectRow(record, config.Columns!, Label);
         }
 
-        var row = new object?[config.Cursor is null ? 3 : 4];
+        var cursorSlot = config.IsForEach ? 4 : 3;
+        var row = new object?[config.Cursor is null ? cursorSlot : cursorSlot + 1];
         row[0] = record?.ToJsonString() ?? "null";
         row[1] = page;
         row[2] = fetchedAt;
-        if (config.Cursor is { } cursor)
+        if (config.IsForEach)
+        {
+            row[3] = _itemCells?.Json;
+        }
+
+        if (_itemCells is { CursorFromItem: true })
+        {
+            row[cursorSlot] = _itemCells.Cursor;
+        }
+        else if (config.Cursor is { } cursor)
         {
             JsonPointer.TryResolve(record, config.CursorPointer, out var node);
-            row[3] = ContractProjector.ConvertScalar(node, config.CursorType!, cursor, Label);
+            row[cursorSlot] = ContractProjector.ConvertScalar(node, config.CursorType!, cursor, Label);
         }
 
         return row;

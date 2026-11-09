@@ -17,6 +17,9 @@ namespace Pz.Connector.Http;
 /// mode lands each record as its payload, a non-object record wrapped as `{"value": record}`.</summary>
 internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatReader
 {
+    /// <summary>The for_each item this file was downloaded for; its fields land on every row.</summary>
+    public ItemValues? Item { get; init; }
+
     public IAsyncEnumerable<RecordBatch> ReadAsync(FileSource file, HttpDatasetConfig config,
         DateTimeOffset fetchedAt, BatchOptions options, string label, CancellationToken ct) =>
         FileReaderErrors.WrapAsync(ReadCoreAsync(file, config, fetchedAt, options, label, ct), label, file.Name, ct);
@@ -30,6 +33,7 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
         var builder = new ArrowBatchBuilder(FileOutput.Schema(config), options.TargetBatchBytes,
             maxRowsPerBatch: options.MaxRowsPerBatch);
         var hasFileColumn = config.File.FileColumn is not null;
+        var item = ItemCells.For(config, Item, label);
 
         long row = 0;
         await foreach (var (record, context) in records.ConfigureAwait(false))
@@ -37,10 +41,23 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
             row++;
             if (config.IsContractMode)
             {
-                var values = ContractProjector.ProjectRow(record, config.Columns!, context);
+                object?[] values;
+                if (item is null)
+                {
+                    values = ContractProjector.ProjectRow(record, config.Columns!, context);
+                    if (hasFileColumn)
+                    {
+                        System.Array.Resize(ref values, values.Length + 1);
+                    }
+                }
+                else
+                {
+                    values = item.Place(ContractProjector.ProjectRow(record, item.RecordColumns, context),
+                        hasFileColumn ? 1 : 0);
+                }
+
                 if (hasFileColumn)
                 {
-                    System.Array.Resize(ref values, values.Length + 1);
                     values[^1] = file.Name;
                 }
 
@@ -50,7 +67,7 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
             {
                 // A node has one parent: a wrapped array element is copied, not moved.
                 var payload = record as JsonObject ?? new JsonObject { ["value"] = record?.DeepClone() };
-                builder.AppendRow(FileOutput.RawRow(payload, file.Name, row, fetchedAt, config, context));
+                builder.AppendRow(FileOutput.RawRow(payload, file.Name, row, fetchedAt, config, context, item));
             }
 
             if (builder.TryTakeBatch(out var batch))

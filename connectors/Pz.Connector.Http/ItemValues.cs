@@ -1,4 +1,6 @@
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using Pz.Connectors.Toolkit.Formats;
 using Pz.Connectors.Toolkit.Json;
 
 namespace Pz.Connector.Http;
@@ -26,6 +28,40 @@ internal sealed record ItemValues(IReadOnlyList<string> Order, IReadOnlyDictiona
         }
 
         return new ItemValues(order, values);
+    }
+
+    /// <summary>Whether <paramref name="name"/> is a declared field, resolved or not.</summary>
+    public bool Declares(string name) => Order.Contains(name);
+
+    /// <summary>The field as a value of contract type <paramref name="typeName"/>: a JSON string follows the
+    /// text rules (<see cref="TextValueParser"/>, so "" is NULL), any other value converts as a JSON
+    /// page's column does, and a missing or null field is NULL.</summary>
+    public object? ValueAs(string name, string typeName, string context)
+    {
+        if (!Fields.TryGetValue(name, out var node) || node is null)
+        {
+            return null;
+        }
+
+        return node is JsonValue value && value.GetValueKind() == JsonValueKind.String
+            ? TextValueParser.Parse(value.GetValue<string>(), typeName, $"{context}: column '{name}'")
+            : ContractProjector.ConvertScalar(node, typeName, name, context);
+    }
+
+    /// <summary>A JSON object of the resolved fields in declaration order; a missing field is absent.</summary>
+    public string ToJsonString()
+    {
+        var obj = new JsonObject();
+        foreach (var name in Order)
+        {
+            if (Fields.TryGetValue(name, out var node))
+            {
+                // A node has one parent: the list record keeps its own.
+                obj[name] = node?.DeepClone();
+            }
+        }
+
+        return obj.ToJsonString();
     }
 
     /// <summary>`item name=value[, …]` for messages: the first three fields, each value on one line and
