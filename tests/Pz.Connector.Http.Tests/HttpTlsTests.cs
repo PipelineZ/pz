@@ -174,9 +174,71 @@ public sealed class HttpTlsTests : IDisposable
 
         // A root-only file cannot bridge a missing intermediate.
         await using var partial = new TestTlsServer(_pki.Leaf, _pki.ServerChain(withIntermediate: false));
-        var ex = await ReadFailsAsync(Config(partial.Url(), Tls()));
+        var diag = OperatingSystem.IsWindows() ? await DiagnoseAsync(partial) : "";
+        PzConnectorException ex;
+        try
+        {
+            ex = await ReadFailsAsync(Config(partial.Url(), Tls()));
+        }
+        catch (Exception failure)
+        {
+            throw new Xunit.Sdk.XunitException("DIAG " + diag + "\n" + failure.Message);
+        }
+
         Assert.False(ex.IsTransient);
         Assert.Contains("tls.ca_file", ex.Message, StringComparison.Ordinal);
+    }
+
+    // DIAGNOSTIC (temporary, Windows CI): what the trust callback sees for a server that omits its intermediate.
+    private async Task<string> DiagnoseAsync(TestTlsServer server)
+    {
+        var log = new System.Text.StringBuilder();
+        log.Append($"serverSends=[{string.Join("; ", server.SentIntermediates.Select(c => c.Subject))}] ");
+        foreach (var location in new[] { StoreLocation.CurrentUser, StoreLocation.LocalMachine })
+        {
+            using var store = new X509Store(StoreName.CertificateAuthority, location);
+            store.Open(OpenFlags.ReadOnly);
+            log.Append($"{location}\\CA has intermediate={store.Certificates.Contains(_pki.Intermediate)} ");
+        }
+
+        foreach (var location in new[] { StoreLocation.CurrentUser, StoreLocation.LocalMachine })
+        {
+            using var store = new X509Store(StoreName.Root, location);
+            store.Open(OpenFlags.ReadOnly);
+            log.Append($"{location}\\Root has root={store.Certificates.Contains(_pki.Root)} ");
+        }
+
+        using var handler = new HttpClientHandler();
+        handler.ServerCertificateCustomValidationCallback = (_, certificate, chain, errors) =>
+        {
+            log.Append($"errors={errors} ");
+            if (chain is not null)
+            {
+                log.Append($"chainStatus=[{string.Join(",", chain.ChainStatus.Select(s => s.Status))}] ");
+                foreach (var element in chain.ChainElements)
+                {
+                    log.Append($"element {element.Certificate.Subject}: [{string.Join(",", element.ChainElementStatus.Select(s => s.Status))}] ");
+                }
+
+                log.Append($"extraStore=[{string.Join("; ", chain.ChainPolicy.ExtraStore.Select(c => c.Subject))}] ");
+            }
+
+            var verdict = HttpHandlerFactory.Trusts([_pki.Root], certificate, chain, errors);
+            log.Append($"trusts={verdict} ");
+            return verdict;
+        };
+        using var client = new HttpClient(handler);
+        try
+        {
+            using var response = await client.GetAsync(server.Url());
+            log.Append($"status={(int)response.StatusCode}");
+        }
+        catch (Exception e)
+        {
+            log.Append($"failed={e.GetType().Name}");
+        }
+
+        return log.ToString();
     }
 
     [Fact]

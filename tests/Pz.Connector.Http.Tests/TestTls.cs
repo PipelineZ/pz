@@ -202,6 +202,9 @@ internal sealed class TestTlsServer : IAsyncDisposable
 
     public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
 
+    // DIAGNOSTIC (temporary): the intermediates this server's context will send.
+    public IReadOnlyList<X509Certificate2> SentIntermediates => _context?.IntermediateCertificates ?? (IReadOnlyList<X509Certificate2>)[];
+
     public Uri Url(string host = "localhost") => new($"{(_context is null ? "http" : "https")}://{host}:{Port}/");
 
     /// <summary>One entry per completed handshake: the client certificate's thumbprint, or null when none.</summary>
