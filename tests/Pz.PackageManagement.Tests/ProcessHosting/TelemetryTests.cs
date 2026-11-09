@@ -88,9 +88,12 @@ public sealed class TelemetryTests : IDisposable
         }
         // `client` disposed above: Shutdown RPC -> the child flushed before exiting.
 
+        // Wait for every span asserted below, not just two: the child's exporter may deliver them in several
+        // batches, in any order, so the first batch to hold read_stream and CommitWrite need not hold PlanRead.
+        string[] expected = ["pcp.PlanRead", "pcp.OpenReadStream", "pcp.read_stream", "pcp.BeginWrite", "pcp.write_stream",
+            "pcp.CommitWrite"];
         var spans = await receiver.WaitForSpansAsync(
-            s => s.Any(x => x.Name == "pcp.read_stream") && s.Any(x => x.Name == "pcp.CommitWrite"), WaitTimeout,
-            () => process.StderrTail);
+            s => expected.All(name => s.Any(x => x.Name == name)), WaitTimeout, () => process.StderrTail);
 
         var planRead = Assert.Single(spans, s => s.Name == "pcp.PlanRead");
         Assert.Equal(traceId, Hex(planRead.TraceId));
