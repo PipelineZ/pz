@@ -109,12 +109,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **http: `for_each.values` and `for_each.dedupe`.** `for_each.values` is a literal list of maps used instead of a list
   request, for "the same endpoint per region / account / metric": each map's keys are the item fields (every entry
   must have the same keys; values are strings, numbers, booleans or null), and the item request, escaping, `pz_item`,
-  `on_missing`, `concurrency` and checkpoints work as with a list request. The list-request keys (`path`, `query`,
-  `fields`, `pagination`, `max_items`, ...) are refused next to it. `for_each.dedupe: true` skips a list record whose
-  fields tuple an earlier record of the same read already had (first occurrence wins; fields compare as JSON values,
-  so `"1"` and `1` differ), and reports the count and the first duplicate in a notice. Duplicates do not count toward
-  `max_items`. Dedupe is per attempt: a retry resumed mid-list may read again an item first seen before its resume
-  page.
+  `on_missing` and `concurrency` work as with a list request. Checkpoints fall after every item at concurrency 1; with
+  `for_each.concurrency` N above 1 the values are read in pages of 4×N with a checkpoint at each page's barrier, so a
+  retry re-reads at most one such page. The list-request keys (`path`, `query`, `fields`, `pagination`, `max_items`,
+  ...) are refused next to it. `for_each.dedupe: true` skips a list record whose fields tuple an earlier record of the
+  same read already had (first occurrence wins; fields compare as JSON values, so `"1"` and `1` differ, and a missing
+  field equals a null one), and reports the count and the first duplicate in a notice. Duplicates do not count toward
+  `max_items`. Dedupe is per attempt: a retry resumed mid-list remembers only the records before its position on the
+  resumed list page, so it may read again an item first seen on an earlier page. The set of seen items costs roughly
+  30–60 bytes per distinct item and has no cap.
 - **http: cursor tokens in headers.** `strategy: cursor` can read its next-page token from a response header with
   `header: <name>` instead of `pointer:` (exactly one of the two), and send it in a request header with
   `location: header`, where `param` is the request header name. Both combine with each other, with `location: body`

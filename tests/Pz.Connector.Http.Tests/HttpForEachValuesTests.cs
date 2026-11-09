@@ -291,4 +291,94 @@ public sealed class HttpForEachValuesTests : IAsyncLifetime
         Assert.False(schema.Evaluate(JsonSerializer.Deserialize<JsonElement>(
             """{"path":"/x","for_each":{"values":[{"a":{"b":1}}]}}""")).IsValid);
     }
+
+    [Fact]
+    public async Task Parallel_values_checkpoint_at_barriers_of_four_times_the_concurrency()
+    {
+        MapSales();
+        var regions = Enumerable.Range(1, 10).Select(i => $"r{i}").ToArray();
+        var options = RegionOptions(Map(("concurrency", 2L)), regions);
+
+        var (rows, tokens) = await Read(options);
+
+        Assert.Equal(10, rows.Count);
+        // Chunks of 8 items: one barrier after r1..r8 names the rest; the last chunk ends the read.
+        var position = Assert.Single(tokens.Select(t => HttpCheckpointToken.TryDecodeForEach(t, out var p) ? p : null));
+        Assert.Equal("values@8", position!.List);
+        Assert.Equal(0, position.Index);
+
+        var before = _server.Requests.Count;
+        var (resumed, _) = await Read(options, resumeFrom: tokens[0]);
+
+        Assert.Equal(2, resumed.Count);
+        Assert.Equal(["/regions/r10/sales", "/regions/r9/sales"], Paths().Skip(before).Order());
+    }
+
+    [Fact]
+    public async Task A_values_offset_token_is_accepted_only_within_the_list()
+    {
+        await using var source = Source();
+        var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(Assert.Single(await source.PlanReadAsync(
+            new DatasetSpec("s", "d", RegionOptions(null, "eu", "us")), ReadHints.None, CancellationToken.None)));
+
+        Assert.True(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach("values@2", 0, null)));
+        Assert.False(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach("values@3", 0, null)));
+        Assert.False(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach("values@-1", 0, null)));
+        Assert.False(partition.TryResumeFrom(HttpCheckpointToken.EncodeForEach("values@x", 0, null)));
+    }
+
+    [Fact]
+    public async Task A_sequential_resume_offset_token_reads_from_that_offset()
+    {
+        MapSales();
+
+        var (rows, _) = await Read(RegionOptions(null, "eu", "us", "apac"),
+            resumeFrom: HttpCheckpointToken.EncodeForEach("values@1", 1, null));
+
+        Assert.Equal(["/regions/apac/sales"], Paths());
+        Assert.Single(rows);
+    }
+
+    /// <summary>/orders lists o1, o2, o1, o3 on one page; items have one line each.</summary>
+    private void MapDuplicatedOrders()
+    {
+        _server.Map("/orders", _ => new StubResponse(200, """{"data":[{"id":"o1"},{"id":"o2"},{"id":"o1"},{"id":"o3"}]}"""));
+        _server.MapPrefix("/orders/", r => new StubResponse(200,
+            $$"""{"lines":[{"sku":"{{r.Url.AbsolutePath.Split('/')[2]}}"}]}"""));
+    }
+
+    private static Dictionary<string, object?> DedupedOrders(long concurrency)
+        => Map(("path", "/orders/{{ item.order_id }}/lines"), ("items", "/lines"),
+            ("for_each", Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("order_id", "/id"))),
+                ("dedupe", true), ("concurrency", concurrency))));
+
+    [Theory]
+    [InlineData(1L)]
+    [InlineData(2L)]
+    public async Task A_resume_seeds_dedupe_with_the_records_before_its_position(long concurrency)
+    {
+        MapDuplicatedOrders();
+        var listUrl = new Uri(_server.BaseUrl, "/orders").ToString();
+        // Resume at record 2 (the second o1): o1 was read before the resume position on this list page.
+        var token = HttpCheckpointToken.EncodeForEach(listUrl, 2, null);
+
+        var (rows, _) = await Read(DedupedOrders(concurrency), resumeFrom: token);
+
+        Assert.Equal(["/orders", "/orders/o3/lines"], Paths());
+        Assert.Single(rows);
+        Assert.Contains(_notices, n => n.Contains("for_each.dedupe skipped 1 duplicate list records (first: item order_id=o1)"));
+    }
+
+    [Fact]
+    public async Task Values_with_dedupe_resume_and_skip_a_duplicate_of_a_value_before_the_position()
+    {
+        MapSales();
+
+        var (rows, _) = await Read(RegionOptions(Map(("dedupe", true)), "eu", "us", "eu", "apac"),
+            resumeFrom: HttpCheckpointToken.EncodeForEach("values", 2, null));
+
+        Assert.Equal(["/regions/apac/sales"], Paths());
+        Assert.Single(rows);
+        Assert.Contains(_notices, n => n.Contains("skipped 1 duplicate"));
+    }
 }

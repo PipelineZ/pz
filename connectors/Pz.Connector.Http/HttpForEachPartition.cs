@@ -56,7 +56,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         if (!HttpCheckpointToken.TryDecodeForEach(checkpoint, out var position)
             || (config.ForEach!.List is { } listRequest
                 ? !Fits(position.List, listRequest)
-                : position.List != HttpForEachConfig.ValuesToken)
+                : !config.ForEach.TryValuesOffset(position.List, out _))
             || (position.Item is not null && (config.IsFileMode || !Fits(position.Item, config))))
         {
             return false;
@@ -133,7 +133,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
         var capped = false;
         var firstPage = true;
 
-        await foreach (var page in ListPagesAsync(list, ct).ConfigureAwait(false))
+        await foreach (var page in ListPagesAsync(list, resume, ct).ConfigureAwait(false))
         {
             var listToken = page.Token;
             var (start, resumeItem) = firstPage && resume is not null ? ResumeAt(resume, page) : (0, null);
@@ -254,14 +254,33 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     /// <see cref="NextToken"/> is the next list page's position (null on the last page).</summary>
     private sealed record ListPage(IReadOnlyList<JsonNode?> Records, string Token, string Where, string? NextToken);
 
-    /// <summary>The list crawl's pages, or the literal values as one page.</summary>
+    /// <summary>The list crawl's pages, or the literal values cut into pages of
+    /// <see cref="HttpForEachConfig.ValuesPageSize"/>, from the resume position's page on.</summary>
     private async IAsyncEnumerable<ListPage> ListPagesAsync(HttpPartition? list,
-        [EnumeratorCancellation] CancellationToken ct)
+        HttpCheckpointToken.ForEachToken? resume, [EnumeratorCancellation] CancellationToken ct)
     {
         var forEach = config.ForEach!;
         if (list is null)
         {
-            yield return new ListPage(forEach.Values!, HttpForEachConfig.ValuesToken, "for_each.values", null);
+            var values = forEach.Values!;
+            var offset = 0;
+            if (resume is not null)
+            {
+                forEach.TryValuesOffset(resume.List, out offset);
+            }
+
+            // An offset at the end (a token naming the page after the last) has nothing left to read.
+            var size = forEach.ValuesPageSize;
+            while (offset < values.Count)
+            {
+                var take = Math.Min(size, values.Count - offset);
+                var next = offset + take;
+                yield return new ListPage([.. values.Skip(offset).Take(take)], HttpForEachConfig.ValuesTokenAt(offset),
+                    offset == 0 ? "for_each.values" : $"for_each.values from {offset}",
+                    next < values.Count ? HttpForEachConfig.ValuesTokenAt(next) : null);
+                offset = next;
+            }
+
             yield break;
         }
 
@@ -277,7 +296,9 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     }
 
     /// <summary>The fields tuples (<see cref="ItemValues.ToJsonString"/>) already read in this attempt, kept as
-    /// 128-bit prefixes of their SHA-256 so a long list costs 16 bytes per distinct item.</summary>
+    /// 128-bit prefixes of their SHA-256. A HashSet entry is about 24 bytes plus its bucket, and the set grows by
+    /// doubling, so a list costs roughly 30 to 60 bytes per distinct item (about 0.5 GB for ten million). There
+    /// is no cap: every distinct item is also a request, which bounds a real list long before memory does.</summary>
     private sealed class SeenItems
     {
         private readonly HashSet<UInt128> _seen = [];

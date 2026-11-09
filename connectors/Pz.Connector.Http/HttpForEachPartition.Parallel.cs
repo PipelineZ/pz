@@ -45,7 +45,7 @@ internal sealed partial class HttpForEachPartition
             }
             : null;
 
-        await foreach (var page in ListPagesAsync(list, ct).ConfigureAwait(false))
+        await foreach (var page in ListPagesAsync(list, resume, ct).ConfigureAwait(false))
         {
             var (start, resumeItem) = firstPage && resume is not null ? ResumeAt(resume, page) : (0, null);
             if (firstPage)

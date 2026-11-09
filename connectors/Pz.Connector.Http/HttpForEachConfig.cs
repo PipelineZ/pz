@@ -21,8 +21,33 @@ internal sealed partial record HttpForEachConfig(HttpDatasetConfig? List,
     /// <summary>`for_each.dedupe`: skip a record whose fields tuple an earlier record of this read had.</summary>
     public bool Dedupe { get; init; }
 
-    /// <summary>The list token a `values` read's checkpoints carry: the literal list has one "page".</summary>
+    /// <summary>The list token a `values` read's checkpoints carry for the page starting at the first value;
+    /// a page starting at offset N is <c>values@N</c> (see <see cref="ValuesPageSize"/>).</summary>
     internal const string ValuesToken = "values";
+
+    /// <summary>How many values make one page: all of them sequentially (checkpoints fall after every item),
+    /// and four times the concurrency in parallel, where checkpoints are taken only at a page's barrier. A
+    /// larger page waits less often on its slowest item; a smaller one loses less work to a retry.</summary>
+    internal int ValuesPageSize => Concurrency > 1 ? Concurrency * 4 : int.MaxValue;
+
+    /// <summary>The list token of the values page starting at <paramref name="offset"/>.</summary>
+    internal static string ValuesTokenAt(int offset)
+        => offset == 0 ? ValuesToken : $"{ValuesToken}@{offset.ToString(CultureInfo.InvariantCulture)}";
+
+    /// <summary>Reads a values list token back: <c>values</c> or <c>values@N</c> with N from 0 to the number of
+    /// values.</summary>
+    internal bool TryValuesOffset(string token, out int offset)
+    {
+        offset = 0;
+        if (token == ValuesToken)
+        {
+            return true;
+        }
+
+        return token.StartsWith(ValuesToken + "@", StringComparison.Ordinal)
+            && int.TryParse(token.AsSpan(ValuesToken.Length + 1), NumberStyles.None, CultureInfo.InvariantCulture, out offset)
+            && offset <= Values!.Count;
+    }
 
     /// <summary>The keys of a list request, which `values` replaces.</summary>
     private static readonly string[] ListRequestKeys =
