@@ -124,7 +124,7 @@ internal static class GcsAuth
                 // loader's own reason is enough to act on.
                 throw new PzConnectorException(
                     $"gcs 'key_file' could not be loaded from '{keyFile}': {ex.Message}",
-                    isTransient: false, innerException: ex);
+                    isTransient: false, innerException: ex, code: PzConnectorErrorCodes.Config);
             }
         }
 
@@ -139,7 +139,8 @@ internal static class GcsAuth
             // neither the raw json nor the parser's own wording ever reaches the user-facing error.
             throw new PzConnectorException(
                 "gcs 'key_json' is not a valid service-account key (it must be the unmodified JSON " +
-                "key file downloaded from the Cloud Console)", isTransient: false, innerException: ex);
+                "key file downloaded from the Cloud Console)", isTransient: false, innerException: ex,
+                code: PzConnectorErrorCodes.Config);
         }
     }
 }

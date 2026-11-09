@@ -107,8 +107,16 @@ internal sealed class BoundTransport : IDisposable
         return certificates.Count > 0 ? certificates : throw Permanent($"tls.ca_file '{path}' has no PEM certificates");
     }
 
-    // The key must be a persisted one, never EphemeralKeySet: Windows SChannel cannot present a certificate
-    // whose key lives only in memory. A PEM certificate and key are therefore re-imported through PKCS#12.
+    /// <summary>How a client certificate's private key is held. Windows SChannel can present only a persisted key,
+    /// and macOS cannot import an ephemeral one, so both keep <see cref="X509KeyStorageFlags.DefaultKeySet"/>: the
+    /// key lives as long as the certificate, which the source, sink or check that bound it disposes. Everywhere
+    /// else the key stays in memory and nothing reaches a key store, at plan, validate or run.</summary>
+    internal static X509KeyStorageFlags ClientKeyStorage =>
+        OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? X509KeyStorageFlags.DefaultKeySet
+            : X509KeyStorageFlags.EphemeralKeySet;
+
+    // A PEM certificate and key are re-imported through PKCS#12 so the key is held as ClientKeyStorage says.
     private static X509Certificate2 LoadClientCertificate(string path, string? keyPath, string? password)
     {
         if (!File.Exists(path))
@@ -126,15 +134,14 @@ internal sealed class BoundTransport : IDisposable
         {
             if (keyPath is null)
             {
-                certificate = X509CertificateLoader.LoadPkcs12FromFile(path, password, X509KeyStorageFlags.DefaultKeySet);
+                certificate = X509CertificateLoader.LoadPkcs12FromFile(path, password, ClientKeyStorage);
             }
             else
             {
                 using var pem = password is null
                     ? X509Certificate2.CreateFromPemFile(path, keyPath)
                     : X509Certificate2.CreateFromEncryptedPemFile(path, password, keyPath);
-                certificate = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null,
-                    X509KeyStorageFlags.DefaultKeySet);
+                certificate = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null, ClientKeyStorage);
             }
         }
         catch (Exception ex) when (ex is CryptographicException or IOException or UnauthorizedAccessException or ArgumentException)
@@ -159,7 +166,9 @@ internal sealed class BoundTransport : IDisposable
         return certificate;
     }
 
-    private static PzConnectorException Permanent(string message) => new(message, isTransient: false);
+    // A file the connection's 'tls:' names that cannot be used is the author's config to fix.
+    private static PzConnectorException Permanent(string message) =>
+        new(message, isTransient: false, code: PzConnectorErrorCodes.Config);
 }
 
 /// <summary>Builds every connector <see cref="HttpClientHandler"/> from the connection's 'proxy:' and 'tls:'

@@ -189,6 +189,22 @@ public sealed class HttpDatasetRefusalTests : IDisposable
         }
     }
 
+    // A TLS file the connection names that is missing is the author's config to fix: PZ0301 and exit 2 at
+    // validate and plan alike, never "connector failed" (PZ0330, exit 3).
+    [Theory]
+    [InlineData("validate")]
+    [InlineData("plan")]
+    public void A_missing_tls_file_is_a_config_refusal_at_validate_and_plan(string verb)
+    {
+        WriteProject("        path: /items\n", tls: "  tls: { ca_file: certs/absent.pem }\n");
+
+        var (exit, stderr) = Invoke(verb);
+
+        Assert.Equal(ExitCodes.ConfigError, exit);
+        var line = Assert.Single(stderr.Split('\n'), l => l.Contains("tls.ca_file", StringComparison.Ordinal));
+        Assert.StartsWith("error PZ0301: connection 'api': ", line);
+    }
+
     private void WriteProject(string itemsRead, string? otherRead = null, string baseUrl = "https://api.example.com",
         string tls = "")
     {
