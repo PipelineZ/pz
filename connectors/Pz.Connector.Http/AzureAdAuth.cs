@@ -115,7 +115,6 @@ internal sealed record AzureAdOptions(
     private static bool IsValidTenantId(string tenantId)
         => tenantId.All(c => c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '.');
 
-    /// <summary>Non-blocking <c>pz validate</c> diagnostics for these options.</summary>
     /// <summary>What a refused service-principal sign-in is remembered under for the run (endpoint, tenant, client and
     /// secret or certificate, fingerprinted, never stored); null for managed identity and the credential chain, whose
     /// failures are about the machine they run on, and send no secret an identity provider could count against an
@@ -125,6 +124,7 @@ internal sealed record AzureAdOptions(
             CertificatePassword, Scope]
         : null;
 
+    /// <summary>Non-blocking <c>pz validate</c> diagnostics for these options.</summary>
     public IReadOnlyList<string> Warnings()
         => Scope.EndsWith("/.default", StringComparison.OrdinalIgnoreCase)
             ? []
