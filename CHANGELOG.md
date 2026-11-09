@@ -9,6 +9,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **http: parallel fetching.** Two opt-in keys, each an integer 1-16 (default 1, which behaves exactly as before).
+  `pagination.concurrency` reads up to N pages at once; it needs `strategy: page`, applies only to datasets without
+  `for_each`, and cannot be combined with `delta_pointer`. Pages still land in order. `for_each.concurrency` runs up
+  to N items of one list page at once, with a barrier before the next list page; rows from different items
+  interleave. Checkpoints are taken only at list-page barriers, so a retry re-fetches the current list page's items.
+  A list page whose items yield no rows gets no checkpoint of its own. When concurrency is above 1, a `429` or `503`
+  response with `Retry-After` pauses every request of the connection until that time, capped at 600 seconds (with
+  concurrency 1 there is no shared pause). Set `rate_limit:` on the connection when using concurrency. File items
+  use one scratch directory per worker, so disk use can reach N times the size of one download.
 - **http: read with POST.** `method: post` on a dataset sends a request body, so APIs that take their query in the
   body work: Elasticsearch/OpenSearch `_search`, GraphQL, and report endpoints. `body` is a map (sent as JSON, or as a
   form with `body_format: form`) or a string. A string body has its bindings expanded and is sent with `content_type`
