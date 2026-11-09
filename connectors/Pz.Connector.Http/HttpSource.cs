@@ -90,10 +90,11 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         CancellationToken ct)
     {
         var config = HttpDatasetConfig.Parse(spec);
-        IDatasetPartition partition = config.IsFileMode
-            ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
-            : config.IsForEach
-                ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
+        // for_each comes first: its items may themselves be file downloads.
+        IDatasetPartition partition = config.IsForEach
+            ? new HttpForEachPartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
+            : config.IsFileMode
+                ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate) { Notice = _notice }
                 : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate);
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }

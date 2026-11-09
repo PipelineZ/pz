@@ -1,13 +1,14 @@
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Bindings;
 
 namespace Pz.Connector.Http;
 
-/// <summary>A for_each dataset read over JSON pages: crawl the list request page by page and, for each
-/// list record in order, crawl the item request built from that record's fields to its last page before
-/// the next record starts. The clock is read once, so the list and every item share one
-/// {{ run_date }} and one <c>pz_fetched_at</c>. Never retries, never sleeps.</summary>
+/// <summary>A for_each dataset read: crawl the list request page by page and, for each list record in
+/// order, read the item request built from that record's fields (its JSON pages to the last one, or in
+/// file mode its one download) before the next record starts. The clock is read once, so the list and
+/// every item share one {{ run_date }} and one <c>pz_fetched_at</c>. Never retries, never sleeps.</summary>
 internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate)
     : ICheckpointingPartition
@@ -17,6 +18,10 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
     /// <summary>Where a non-fatal notice goes (a cap that stopped the read, items skipped under
     /// `on_missing: skip`); null when the engine subscribed none.</summary>
     public Action<string>? Notice { get; init; }
+
+    /// <summary>The parent of each file-mode item's scratch directory; null means `Path.GetTempPath()`.
+    /// Tests point it at a directory of their own.</summary>
+    internal string? ScratchRoot { get; set; }
 
     public string PartitionId => $"{spec.Source}.{spec.Dataset}";
 
@@ -59,16 +64,10 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
 
                 items++;
                 var values = ItemValues.From(page.Records[index], forEach.Fields);
-                var item = new HttpPartition(client, bareClient, connection, config, spec, time, gate)
-                {
-                    Item = values,
-                    Bindings = bindings,
-                    FetchedAt = now,
-                    SkipMissing = forEach.OnMissingSkip,
-                    ItemOrigin = $"list page '{list.RedactUrl(page.Request.Url)}', record {index}",
-                };
+                var item = ItemRead(values, bindings, now,
+                    $"list page '{list.RedactUrl(page.Request.Url)}', record {index}");
 
-                await using var batches = item.ReadAsync(options, ct).GetAsyncEnumerator(ct);
+                await using var batches = item.Partition.ReadAsync(options, ct).GetAsyncEnumerator(ct);
                 while (true)
                 {
                     try
@@ -86,7 +85,7 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
                     yield return batches.Current;
                 }
 
-                if (item.Missing)
+                if (item.Missing())
                 {
                     skipped++;
                     firstSkipped ??= values.Identity();
@@ -109,6 +108,39 @@ internal sealed class HttpForEachPartition(HttpClient client, HttpClient bareCli
         {
             Notice?.Invoke($"{Label}: skipped {skipped} items that returned 404/410 (first: {firstSkipped})");
         }
+    }
+
+    /// <summary>One item's read: its JSON pages, or in file mode its download (with its own scratch
+    /// directory and decompression budget, released when the read ends however it ends). Missing turns
+    /// true once the item's first request was answered 404/410 under `on_missing: skip`.</summary>
+    private (IDatasetPartition Partition, Func<bool> Missing) ItemRead(ItemValues values,
+        IReadOnlyDictionary<string, BindingValue> bindings, DateTimeOffset now, string origin)
+    {
+        var skipMissing = config.ForEach!.OnMissingSkip;
+        if (config.IsFileMode)
+        {
+            var file = new HttpFilePartition(client, bareClient, connection, config, spec, time, gate)
+            {
+                Item = values,
+                Bindings = bindings,
+                FetchedAt = now,
+                SkipMissing = skipMissing,
+                ItemOrigin = origin,
+                Notice = Notice,
+                ScratchRoot = ScratchRoot,
+            };
+            return (file, () => file.Missing);
+        }
+
+        var pages = new HttpPartition(client, bareClient, connection, config, spec, time, gate)
+        {
+            Item = values,
+            Bindings = bindings,
+            FetchedAt = now,
+            SkipMissing = skipMissing,
+            ItemOrigin = origin,
+        };
+        return (pages, () => pages.Missing);
     }
 
     /// <summary>The item's failure with its identity appended, classified exactly as before.</summary>
