@@ -9,6 +9,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **http: watermark formats, epoch timestamps and nested contract columns.** Three dataset `read:` options.
+  `watermark_format` sets how a timestamp cursor renders in `{{ watermark }}` and `{{ window_upper }}`: `iso8601` (the
+  default, unchanged), `epoch_s`, `epoch_ms`, `date`, or a custom format of the letters `y M d H m s f` (for example
+  `yyyy-MM-dd HH:mm:ss`, always UTC). The lower bound is floored to the format's unit and the upper bound is rounded up
+  to the next one, so a window is never under-covered; an epoch value that is a whole JSON body value is sent as a
+  number. A `date` cursor takes only `date` or a date-only custom format; numeric and text cursors refuse the option.
+  `epoch_unit: s | ms` reads JSON numbers in `timestamp` contract columns and raw `cursor_type: timestamp` cursors as
+  epoch time; strings are still parsed as text. Without it, an epoch number now fails with a message naming
+  `epoch_unit` instead of "value is not a valid timestamp". A contract column's long form takes `pointer`, a JSON
+  pointer into the record: `status: { type: varchar, pointer: /fields/status/name }`. It works for JSON pages and JSON
+  files, with `redact`, and on the incremental cursor column. It is refused on a column filled from a `for_each`
+  field, with csv/tsv/xml files, and, at validation (PZ0301), on connectors other than `http`. Changing a pointer
+  changes the SourceLoad node id.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is
