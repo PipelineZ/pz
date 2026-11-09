@@ -35,10 +35,19 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "base_url": { "type": "string" },
             "check_path": { "type": "string" },
             "auth": { "type": "object", "properties": {
-                "type": { "enum": ["api_key", "bearer", "basic"] },
+                "type": { "enum": ["api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials"] },
                 "token": { "type": "string" }, "user": { "type": "string" },
                 "password": { "type": "string" }, "key": { "type": "string" },
-                "header": { "type": "string" }, "param": { "type": "string" } },
+                "header": { "type": "string" }, "param": { "type": "string" },
+                "method": { "enum": ["service_principal", "managed_identity", "credential_chain"] },
+                "tenant_id": { "type": "string" }, "client_id": { "type": "string" },
+                "client_secret": { "type": "string", "writeOnly": true },
+                "certificate_path": { "type": "string" },
+                "certificate_password": { "type": "string", "writeOnly": true },
+                "scope": { "type": "string" }, "authority_host": { "type": "string" },
+                "token_url": { "type": "string" },
+                "client_auth": { "enum": ["body", "basic"] },
+                "params": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } } },
                 "required": ["type"], "additionalProperties": false },
             "headers": { "type": "object", "additionalProperties": { "type": "string" } },
             "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 3600 },
@@ -104,6 +113,17 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             return new ConnectionCheck(false, string.Join("; ", errors));
         }
 
+        // Binding builds the credential (and loads a certificate), so its failures are sign-in failures too.
+        HttpConnectionConfig bound;
+        try
+        {
+            bound = connection.Bind(TimeProvider.System);
+        }
+        catch (PzConnectorException ex)
+        {
+            return new ConnectionCheck(false, "sign-in failed: " + ex.Message);
+        }
+
         try
         {
             using var client = HttpSource.CreateClient(connection);
@@ -120,8 +140,22 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             for (var hop = 0; ; hop++)
             {
                 using var request = new HttpRequestMessage(HttpMethod.Get, target);
-                connection.Authenticator?.Apply(request);
+                if (bound.Authenticator is { } authenticator)
+                {
+                    // Sign-in is its own failure: "the credentials don't work" and "the API said no"
+                    // need different fixes, so the first request's sign-in is reported separately.
+                    try
+                    {
+                        await authenticator.ApplyAsync(request, ct).ConfigureAwait(false);
+                    }
+                    catch (PzConnectorException ex)
+                    {
+                        return new ConnectionCheck(false, "sign-in failed: " + ex.Message);
+                    }
+                }
+
                 using var response = await client.SendAsync(request, ct).ConfigureAwait(false);
+                bound.Authenticator?.OnResponse(request, (int)response.StatusCode);
 
                 if (response.IsSuccessStatusCode)
                 {
@@ -166,6 +200,13 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             // only swallow that case. Genuine caller cancellation must propagate, not report as a
             // connection failure.
             return new ConnectionCheck(false, $"could not reach '{connection.BaseUrl}': {ex.Message}");
+        }
+        finally
+        {
+            if (connection.AuthFactory is not null)
+            {
+                (bound.Authenticator as IDisposable)?.Dispose();
+            }
         }
     }
 

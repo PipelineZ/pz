@@ -6,7 +6,9 @@ namespace Pz.Connector.Http;
 
 internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? Authenticator,
     IReadOnlyDictionary<string, string> Headers, string? CheckPath, TimeSpan Timeout,
-    long MaxResponseBytes, IReadOnlyList<string> AllowedHosts)
+    long MaxResponseBytes, IReadOnlyList<string> AllowedHosts,
+    Func<TimeProvider, IRequestAuthenticator>? AuthFactory = null, string? CertificatePathInProject = null,
+    IReadOnlyList<string>? AuthWarnings = null)
 {
     /// <summary>HttpClient's own default is 100 seconds — far too long for one page of JSON, and it
     /// is per attempt, so a black-holed endpoint holds a run for minutes before the engine even sees
@@ -77,21 +79,39 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         return false;
     }
 
+    /// <summary>True when the connection sends credentials: an authenticator (built or still to be
+    /// built by <see cref="AuthFactory"/>) or an Authorization header.</summary>
+    public bool HasCredentials => Authenticator is not null || AuthFactory is not null
+        || Headers.Keys.Any(k => string.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The live copy: token-fetching authenticators are built here, not while parsing, so
+    /// validation never creates a credential or touches the network. The caller owns the result's
+    /// authenticator when it came from <see cref="AuthFactory"/> and disposes it if it is
+    /// <see cref="IDisposable"/>.</summary>
+    public HttpConnectionConfig Bind(TimeProvider time)
+        => this with { Authenticator = AuthFactory?.Invoke(time) ?? Authenticator };
+
     /// <summary>Non-blocking validation diagnostics. Credentials (an 'auth:' block or an
     /// Authorization header) sent to a cleartext http base URL travel unencrypted; that is legal —
     /// some internal APIs are http-only — but never silent. Loopback is exempt: it never leaves the
     /// machine.</summary>
     public IReadOnlyList<string> Warnings()
     {
-        var sendsCredentials = Authenticator is not null
-            || Headers.Keys.Any(k => string.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase));
-        if (BaseUrl.Scheme != Uri.UriSchemeHttp || !sendsCredentials || BaseUrl.IsLoopback)
+        var warnings = new List<string>();
+        if (BaseUrl.Scheme == Uri.UriSchemeHttp && HasCredentials && !BaseUrl.IsLoopback)
         {
-            return [];
+            warnings.Add($"'base_url' is http://{BaseUrl.Authority}, so this connection's credentials are sent " +
+                "unencrypted on every request; use an https:// base_url unless this API really is http-only");
         }
 
-        return [$"'base_url' is http://{BaseUrl.Authority}, so this connection's credentials are sent " +
-            "unencrypted on every request; use an https:// base_url unless this API really is http-only"];
+        if (CertificatePathInProject is { } certificate)
+        {
+            warnings.Add($"auth.certificate_path '{certificate}' is inside the project directory; keep the " +
+                "private key outside the project (or out of version control) so it is not committed with it");
+        }
+
+        warnings.AddRange(AuthWarnings ?? []);
+        return warnings;
     }
 
     public static HttpConnectionConfig? Parse(ConnectorConfig config, List<string> errors)
@@ -118,19 +138,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             baseUri = new Uri(baseUri.AbsoluteUri + "/", UriKind.Absolute);
         }
 
-        IRequestAuthenticator? authenticator = null;
-        var authBlock = config.Values.TryGetValue("auth", out var a)
-            ? a as IReadOnlyDictionary<string, object?>
-            : null;
-        if (config.Values.TryGetValue("auth", out var rawAuth) && rawAuth is not null && authBlock is null)
-        {
-            errors.Add("'auth' must be a map (type + fields)");
-        }
-        else if (!Authenticators.TryCreate(authBlock, out authenticator, out var authError))
-        {
-            errors.Add(authError!);
-        }
-
+        var baseDir = config.GetString("base_dir");
         var headers = new Dictionary<string, string>();
         if (config.Values.TryGetValue("headers", out var h) && h is IReadOnlyDictionary<string, object?> map)
         {
@@ -152,6 +160,19 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             {
                 errors.Add($"'timeout_seconds' must be a positive number of seconds up to 3600, got '{t}'");
             }
+        }
+
+        HttpAuth.Parsed auth = new(null, null, null);
+        var authBlock = config.Values.TryGetValue("auth", out var a)
+            ? a as IReadOnlyDictionary<string, object?>
+            : null;
+        if (config.Values.TryGetValue("auth", out var rawAuth) && rawAuth is not null && authBlock is null)
+        {
+            errors.Add("'auth' must be a map (type + fields)");
+        }
+        else
+        {
+            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors);
         }
 
         var maxResponseBytes = DefaultMaxResponseBytes;
@@ -199,7 +220,20 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
 
         return baseUri is null
             ? null
-            : new HttpConnectionConfig(baseUri, authenticator, headers, config.GetString("check_path"),
-                timeout, maxResponseBytes, allowedHosts);
+            : new HttpConnectionConfig(baseUri, auth.Static, headers, config.GetString("check_path"),
+                timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings);
+    }
+
+    // A relative certificate_path resolves under base_dir; a path still inside it is easy to commit by accident.
+    private static string? CertificateInProject(string? certificatePath, string? baseDir)
+    {
+        if (certificatePath is null || string.IsNullOrEmpty(baseDir))
+        {
+            return null;
+        }
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(baseDir)) + Path.DirectorySeparatorChar;
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        return Path.GetFullPath(certificatePath).StartsWith(root, comparison) ? certificatePath : null;
     }
 }

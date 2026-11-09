@@ -15,6 +15,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `offset`/`limit` (rename with `param`/`size_param`, start with `start`) and advances by the rows each page actually
   returned, so an API that serves fewer than `size` rows cannot make the crawl skip any. Both work with checkpointed
   resume; `offset` also takes `stop_on_short_page`.
+- **http: sign in with OAuth2.** Two new `auth` types. `azure_ad` signs in to Microsoft Entra ID (Azure AD) as a service
+  principal (`client_secret` or `certificate_path`), a managed identity, or the default Azure credential chain
+  (`credential_chain`, which includes `az login`). Its `scope` must be the API's `<resource>/.default`
+  (for example `https://graph.microsoft.com/.default`); `pz validate` warns about any other form, a malformed
+  `tenant_id` is refused at validation, and a scope Entra refuses fails with a hint naming it. `certificate_path` is
+  resolved against the project directory and also accepts `~/` for the home directory. The generic
+  `oauth2_client_credentials` works with any token endpoint (`token_url`, `client_id`, `client_secret`, optional
+  `scope`). Both cache the access token and refresh it up to five minutes before
+  it expires (half the lifetime for short-lived tokens). `timeout_seconds` bounds each sign-in request (the Azure CLI
+  step of `credential_chain` has its own timeout), and retries are left to the engine. A `401` on a token the API had
+  never accepted fails permanently with a hint to check `scope`; a `401` on a token it had accepted drops the token and
+  is retried by the engine, which signs in again. A sign-in failure is reported without the secret or token.
+  `pz validate` warns when `certificate_path` points inside the project directory, where it is easily committed.
+  `http` now joins the connectors anchored on the project directory.
 
 ### Changed
 

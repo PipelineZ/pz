@@ -149,6 +149,52 @@ set -e
 grep -q '"status":"failed"' "${GCS_DIR}/.pz/runs"/*/run_results.json || { echo "FAIL: gcs sink node not marked failed"; exit 1; }
 grep -q 'upload failed' "${GCS_DIR}/.pz/runs"/*/run_results.json || { echo "FAIL: failure is not the classified gcs upload error"; exit 1; }
 
+echo "-- pz run with http azure_ad (certificate) and oauth2_client_credentials fails classified at sign-in (Azure.Identity + token client under AOT) --"
+# $1 = dir name, $2 = auth block, $3 = grep pattern the classified sign-in failure must contain
+run_http_signin_case() {
+  local dir="${WORK_DIR}/$1"
+  mkdir -p "${dir}/pipelines"
+  printf 'name: aot_http\nversion: 0.1.0\n\nconnectors:\n  - package: Pz.Connector.LocalFiles\n    version: 0.1.0\n  - package: Pz.Connector.Http\n    version: 0.1.0\n' \
+    > "${dir}/project.yml"
+  (cd "${dir}" && openssl req -x509 -newkey rsa:2048 -nodes -keyout k.pem -out c.pem -days 1 -subj /CN=aot 2>/dev/null \
+    && cat c.pem k.pem > app.pem)
+  cat > "${dir}/connections.yml" <<HTTPEOF
+api:
+  connector: http
+  base_url: http://127.0.0.1:1
+  timeout_seconds: 5
+  auth: $2
+  entities:
+    items:
+      read:
+        path: /items
+        columns:
+          id: bigint
+
+lake:
+  connector: localfiles
+HTTPEOF
+  printf "INSERT INTO {{ sink('lake', 'items_out', format: 'parquet', path: 'out/items/', strategy: 'replace') }}\nselect id from {{ source('api', 'items') }}\n" \
+    > "${dir}/pipelines/items_out.sql"
+  set +e
+  (cd "${dir}" && timeout 180 "${PZ}" run >"${dir}/run.log" 2>&1)
+  local code=$?
+  set -e
+  [[ "${code}" -eq 1 ]] || { echo "FAIL: $1 expected exit 1 (node failure), got ${code}"; cat "${dir}/run.log"; exit 1; }
+  grep -q '"status":"failed"' "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 source node not marked failed"; exit 1; }
+  grep -q "$3" "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 failure is not the classified sign-in error"; cat "${dir}/.pz/runs"/*/run_results.json; exit 1; }
+  # A certificate that failed to load, or a credential rejected outright, would be a different failure.
+  ! grep -q 'certificate_path could not be loaded' "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 certificate did not load"; exit 1; }
+  ! grep -q 'sign-in failed' "${dir}/.pz/runs"/*/run_results.json || { echo "FAIL: $1 sign-in failed instead of reaching the network"; exit 1; }
+}
+ZERO=00000000-0000-0000-0000-000000000000
+run_http_signin_case http-azure-ad \
+  "{ type: azure_ad, method: service_principal, tenant_id: ${ZERO}, client_id: ${ZERO}, certificate_path: app.pem, scope: 'https://example.invalid/.default', authority_host: 'https://127.0.0.1:1/' }" \
+  'azure_ad token request failed temporarily (service_principal)'
+run_http_signin_case http-oauth2 \
+  "{ type: oauth2_client_credentials, token_url: 'http://127.0.0.1:1/token', client_id: aot, client_secret: aot-secret }" \
+  'token endpoint http://127.0.0.1:1 '
+
 echo "-- pz mcp: initialize handshake + tools/list --"
 MCP_OUT="$( (printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"verify-aot","version":"0"}}}' \
@@ -160,5 +206,5 @@ grep -q 'pz_validate' <<<"${MCP_OUT}" || { echo "FAIL: tools/list missing pz_val
 
 echo
 echo "OK: native AOT pz publishes, initializes, runs a pipeline, restores, refuses PZ0360 cleanly,"
-echo "    spawns a PCP connector over gRPC, fails a gcs SDK write classified, serves MCP, and"
-echo "    writes xlsx through the excel extension."
+echo "    spawns a PCP connector over gRPC, fails a gcs SDK write classified, fails http azure_ad (certificate)"
+echo "    and oauth2_client_credentials sign-in classified, serves MCP, and writes xlsx through the excel extension."
