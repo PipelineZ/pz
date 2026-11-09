@@ -133,7 +133,7 @@ internal sealed partial class HttpForEachPartition
                         // that position, and the later page's own barrier carries these skip counts.
                         _checkpointCandidate = page.NextToken is { } nextPage && !capped
                             ? HttpCheckpointToken.EncodeForEach(new(nextPage, 0, null,
-                                list is null ? forEach.ValuesAnchor : null, skipped, firstSkipped, ReadSkipped))
+                                list is null ? forEach.ValuesAnchor : null, skipped, firstSkipped))
                             : null;
                         yield return last;
                     }
@@ -317,7 +317,7 @@ internal sealed partial class HttpForEachPartition
                 }
             }
 
-            _owner.NoteRuleSkip(item.Partition);
+            _owner.NoteRuleSkip(item.Partition, values);
             if (item.Missing())
             {
                 Skips.Add(index, values.Identity());

@@ -334,7 +334,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             ingestStage.Dispose();
 
             var (nativeWatermarkError, nativeWatermarkCandidate) =
-                await CaptureWatermarkAsync(ctx, def, nativeTable, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, readSkipped: false, ct).ConfigureAwait(false);
+                await CaptureWatermarkAsync(ctx, def, nativeTable, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
             if (nativeWatermarkError is not null)
             {
                 return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nativeWatermarkError);
@@ -456,12 +456,12 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // sized to Environment.ProcessorCount -- a bounded I/O fan-out default, no YAML knob. Determinism
         // is unaffected: partitions already funnel through the one bounded channel into the one serialized
         // DuckDB ingest, so cross-partition row order was never guaranteed either way.
-        var skipped = new SkippedReads();
+        var skipGuard = new SkippedReadGuard(def);
         var pump = streamingSource is null
-            ? PumpPartitionsAsync(partitions!, channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipped)
+            ? PumpPartitionsAsync(partitions!, channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipGuard)
             : PumpStreamingPartitionsAsync(
                 streamingSource.PlanReadStreamingAsync(spec, hints, pumpCts.Token),
-                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, Environment.ProcessorCount, skipped);
+                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, Environment.ProcessorCount, skipGuard);
         Activity.Current = nodeActivity;
 
         try
@@ -556,8 +556,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             }
 
             var (watermarkError, watermarkCandidate) =
-                await CaptureWatermarkAsync(ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp,
-                    skipped.Any, ct).ConfigureAwait(false);
+                await CaptureWatermarkAsync(ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
             if (watermarkError is not null)
             {
                 return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, watermarkError);
@@ -806,18 +805,15 @@ public sealed class SourceLoadExecutor : INodeExecutor
         PzError? loadError;
         long rows;
         PartitionStats stats;
-        // Asked once the load is done. A partition a resumed attempt found already done in the ledger is not
-        // read again, so it reports nothing in this attempt.
-        var skipped = new SkippedReads();
-        var skipReporters = new List<IDatasetPartition>();
+        var skipGuard = new SkippedReadGuard(def);
         if (streamingSource is not null)
         {
             // A streaming source's identity contract is validated AT ADMISSION, one
             // partition at a time, inside LoadStreamingAsync itself — there is no whole list to
             // pre-validate up front the way the list branch below does.
             (loadError, rows, stats) = await PartitionModeLoader.LoadStreamingAsync(node, ctx,
-                skipped.Track(streamingSource.PlanReadStreamingAsync(spec, hints, ct), skipReporters, ct), schema, tableName,
-                windowLower, windowUpper, reusedCount: 0, def, ct).ConfigureAwait(false);
+                streamingSource.PlanReadStreamingAsync(spec, hints, ct), schema, tableName,
+                windowLower, windowUpper, reusedCount: 0, def, ct, skipGuard).ConfigureAwait(false);
         }
         else
         {
@@ -878,7 +874,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // skip-reused within a run — plumbed through so PartitionModeLoader can reset-and-reread
             // it live instead of silently stalling sync-state advancement.
             (loadError, rows, stats) = await PartitionModeLoader.LoadAsync(node, ctx, identified, schema,
-                tableName, windowLower, windowUpper, reused, shape == ResolvedReadShape.Feed, ct)
+                tableName, windowLower, windowUpper, reused, shape == ResolvedReadShape.Feed, ct, skipGuard)
                 .ConfigureAwait(false);
         }
 
@@ -909,17 +905,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
             rows = await TrimToFloorAsync(ctx, def, tableName, plainFloor, ct).ConfigureAwait(false);
         }
 
-        skipped.NoteAll(partitions ?? skipReporters);
-        // A partition an earlier attempt (or the failed run pz retry reuses) completed as skipped is not read
-        // again in this one; the ledger remembers the skip.
-        if (await PartitionLedger.AnySkippedAsync(ctx.Duck, node.Id.Value, ct).ConfigureAwait(false))
-        {
-            skipped.MarkSkipped();
-        }
-
         var (watermarkError, watermarkCandidate) = await CaptureWatermarkAsync(
-            ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, skipped.Any, ct)
-            .ConfigureAwait(false);
+            ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
         if (watermarkError is not null)
         {
             return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, watermarkError);
@@ -1314,9 +1301,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// with the fault. A clean run completes the channel with no error.</summary>
     private static async Task PumpPartitionsAsync(
         IReadOnlyList<IDatasetPartition> partitions, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, SkippedReads skipped)
+        StallAccumulator stall, BatchOptions batchOptions, SkippedReadGuard skipGuard)
     {
-        var tasks = partitions.Select(partition => PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions, skipped)).ToArray();
+        var tasks = partitions.Select(partition => PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions, skipGuard)).ToArray();
 
         try
         {
@@ -1345,7 +1332,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// external cancel). A clean run completes the channel with no error.</summary>
     private static async Task PumpStreamingPartitionsAsync(
         IAsyncEnumerable<IDatasetPartition> partitions, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, int maxConcurrency, SkippedReads skipped)
+        StallAccumulator stall, BatchOptions batchOptions, int maxConcurrency, SkippedReadGuard skipGuard)
     {
         using var gate = new SemaphoreSlim(maxConcurrency);
         var tasks = new List<Task>();
@@ -1367,7 +1354,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 // a fault, retained cancelled siblings are themselves bounded by the gate (~maxConcurrency), so
                 // memory stays bounded there too.
                 tasks.RemoveAll(t => t.IsCompletedSuccessfully);
-                tasks.Add(PumpOneThenReleaseAsync(partition, writer, pumpCts, stall, batchOptions, gate, skipped));
+                tasks.Add(PumpOneThenReleaseAsync(partition, writer, pumpCts, stall, batchOptions, gate, skipGuard));
             }
 
             await Task.WhenAll(tasks).ConfigureAwait(false);
@@ -1392,11 +1379,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// or was cancelled by a sibling's fault.</summary>
     private static async Task PumpOneThenReleaseAsync(
         IDatasetPartition partition, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, SemaphoreSlim gate, SkippedReads skipped)
+        StallAccumulator stall, BatchOptions batchOptions, SemaphoreSlim gate, SkippedReadGuard skipGuard)
     {
         try
         {
-            await PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions, skipped).ConfigureAwait(false);
+            await PumpPartitionAsync(partition, writer, pumpCts, stall, batchOptions, skipGuard).ConfigureAwait(false);
         }
         finally
         {
@@ -1435,7 +1422,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
     private static async Task PumpPartitionAsync(
         IDatasetPartition partition, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, SkippedReads skipped)
+        StallAccumulator stall, BatchOptions batchOptions, SkippedReadGuard skipGuard)
     {
         try
         {
@@ -1454,7 +1441,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 }
             }
 
-            skipped.Note(partition);
+            // A skip on an incremental dataset fails the node before ingest can commit what was read.
+            skipGuard.Check(partition);
         }
         catch
         {
@@ -1598,23 +1586,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// which both narrows the scoped MAX below and forbids the empty-slice advance to the ceiling.</param>
     private static async Task<(PzError? Error, Watermark? Candidate)> CaptureWatermarkAsync(
         RunContext ctx, SourceDatasetDef def, string tableName, string? windowUpper, string? windowLower,
-        bool upperInclusive, string? declaredType, bool caughtUp, bool readSkipped, CancellationToken ct)
+        bool upperInclusive, string? declaredType, bool caughtUp, CancellationToken ct)
     {
         if (def.Dataset.SyncMode?.Incremental is not { } incremental)
         {
-            return (null, null);
-        }
-
-        // A connector rule skipped part or all of the read (ISkippedReadPartition): what it did not read may
-        // exist, so neither an empty window's advance to its ceiling nor a MAX over what did land is safe. The
-        // stored watermark stands and the next run reads the slice again. This is the only guard where the
-        // connector cannot see the window itself (a SQL-declared ceiling with no stored watermark: a first run
-        // or --full-refresh sends no bound).
-        if (readSkipped)
-        {
-            ctx.Notice?.Invoke(
-                $"source '{def.Source.Name}.{def.Dataset.Name}': a connector rule skipped part or all of this read, " +
-                "so the watermark is not advanced; the next run reads the same slice again");
             return (null, null);
         }
 

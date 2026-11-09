@@ -23,4 +23,8 @@ internal sealed class PcpServerHooks
     /// second, concurrent one proves it is blocked on the same gate (not racing the first to see
     /// <c>_config</c> as null too) until this releases.</summary>
     public Func<CancellationToken, Task>? PauseInsideConfigure { get; init; }
+
+    /// <summary>GetReadStats answers with an INTERNAL error, so a test can prove the host fails closed when it
+    /// cannot learn whether a read was skipped.</summary>
+    public bool FailReadStats { get; init; }
 }

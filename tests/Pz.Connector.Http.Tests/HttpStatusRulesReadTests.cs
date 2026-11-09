@@ -13,7 +13,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 
     /// <summary>What the last <see cref="Read"/>'s partition reported to the engine (<see cref="ISkippedReadPartition"/>);
     /// null when it does not implement the interface.</summary>
-    private bool? _readSkipped;
+    private string? _skippedBy;
     private readonly string _scratchRoot = Directory.CreateTempSubdirectory("pz-status-rules-").FullName;
 
     public Task InitializeAsync() => Task.CompletedTask;
@@ -72,7 +72,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
             batch.Dispose();
         }
 
-        _readSkipped = (partition as ISkippedReadPartition)?.ReadSkipped;
+        _skippedBy = Assert.IsAssignableFrom<ISkippedReadPartition>(partition).SkippedBy;
         return rows;
     }
 
@@ -295,20 +295,20 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
     [Fact]
     public async Task A_skip_is_reported_to_the_engine_and_a_plain_404_or_an_empty_read_is_not()
     {
-        // The engine keeps the watermark of a skipped read where it was; it must not do that for a read that
-        // merely found nothing.
+        // The engine fails an incremental node whose read was skipped, naming the rule; it must not do that for a
+        // read that merely found nothing.
         _server.Map("/r", _ => Status(400, "no data for period"));
         await Read(Paged(Rules(Map(("status", 400), ("action", "skip")))));
-        Assert.True(_readSkipped);
+        Assert.Equal($"on_status[0] (skip) matched HTTP 400 from {_server.BaseUrl}r?page=1", _skippedBy);
 
         _server.Map("/export.csv", _ => Status(400, "no data for period"));
         await Read(Map(("path", "/export.csv"), ("file", Map(("format", "csv"))),
             ("on_status", Rules(Map(("status", 400), ("action", "skip"))))));
-        Assert.True(_readSkipped);
+        Assert.Equal($"on_status[0] (skip) matched HTTP 400 from {_server.BaseUrl}export.csv", _skippedBy);
 
         _server.Map("/empty", _ => Status(200, "[]"));
         await Read(Map(("path", "/empty")));
-        Assert.False(_readSkipped);
+        Assert.Null(_skippedBy);
 
         // Prefix routes match in registration order, so one route answers by phase.
         var phase = 0;
@@ -326,106 +326,59 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 
         // on_missing: skip (a 404 item) is not a rule skip.
         Assert.Equal(1, await Read(options));
-        Assert.False(_readSkipped);
+        Assert.Null(_skippedBy);
 
         phase = 1;
         options["on_status"] = Rules(Map(("status", 400), ("action", "skip")));
         Assert.Equal(1, await Read(options));
-        Assert.True(_readSkipped);
+        Assert.Equal($"on_status[0] (skip) matched HTTP 400 from {_server.BaseUrl}o/b (item id=b)", _skippedBy);
     }
 
-    [Fact]
-    public async Task An_item_skip_before_a_checkpoint_is_still_reported_after_a_resume()
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task A_for_each_reports_an_item_skip_before_it_offers_any_checkpoint_past_it(int concurrency)
     {
-        // Attempt 1 skips item b by a rule, lands c (offering a checkpoint past b), then fails on d. The resumed
-        // attempt starts at d and never sees b again, but must still tell the engine the read skipped data.
-        var failD = true;
-        _server.Map("/orders", _ => Status(200, """{"data":[{"id":"a"},{"id":"b"},{"id":"c"},{"id":"d"}]}"""));
-        _server.MapPrefix("/o/", r => r.Url.AbsolutePath switch
-        {
-            "/o/b" => Status(400, "no data for period"),
-            "/o/d" when failD => Status(400, "boom"),
-            _ => Status(200, """{"lines":[{"sku":"x"}]}"""),
-        });
-        var options = Map(("path", "/o/{{ item.id }}"), ("items", "/lines"),
-            ("for_each", Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("id", "/id"))))),
-            ("on_status", Rules(Map(("status", 400), ("body_contains", "no data"), ("action", "skip")))));
-
-        string? token = null;
-        await using (var source = Source())
-        {
-            var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(Assert.Single(
-                await source.PlanReadAsync(new DatasetSpec("s", "d", options), ReadHints.None, CancellationToken.None)));
-            await Assert.ThrowsAsync<PzConnectorException>(async () =>
-            {
-                await foreach (var batch in partition.ReadAsync(new BatchOptions(MaxRowsPerBatch: 1), CancellationToken.None))
-                {
-                    batch.Dispose();
-                    if (partition.TryGetCheckpoint(out var offered) && offered is not null)
-                    {
-                        token = offered;
-                    }
-                }
-            });
-        }
-
-        Assert.True(HttpCheckpointToken.TryDecodeForEach(token!, out var position));
-        Assert.Equal(3, position.Index);
-        Assert.True(position.RuleSkipped);
-
-        failD = false;
-        var mark = _server.Requests.Count;
-        Assert.Equal(1, await Read(options, token));
-        Assert.DoesNotContain(_server.Requests.Skip(mark), r => r.Url.AbsolutePath == "/o/b");
-        Assert.True(_readSkipped);
-    }
-
-    [Fact]
-    public async Task A_parallel_item_skip_before_a_barrier_checkpoint_is_still_reported_after_a_resume()
-    {
-        var failC = true;
+        // The engine refuses to store a checkpoint past a skip on an incremental read, so the report must be up by
+        // the time the first such checkpoint is offered.
         _server.Map("/orders", r => System.Web.HttpUtility.ParseQueryString(r.Url.Query)["page"] switch
         {
-            "1" => Status(200, """{"data":[{"id":"a"},{"id":"b"}]}"""),
+            null or "1" => Status(200, """{"data":[{"id":"a"},{"id":"b"}]}"""),
             "2" => Status(200, """{"data":[{"id":"c"}]}"""),
             _ => Status(200, """{"data":[]}"""),
         });
-        _server.MapPrefix("/o/", r => r.Url.AbsolutePath switch
+        _server.MapPrefix("/o/", r => r.Url.AbsolutePath == "/o/b"
+            ? Status(400, "no data for period")
+            : Status(200, """{"lines":[{"sku":"x"}]}"""));
+        var forEach = Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("id", "/id"))),
+            ("pagination", Map(("strategy", "page"))));
+        if (concurrency > 1)
         {
-            "/o/b" => Status(400, "no data for period"),
-            "/o/c" when failC => Status(400, "boom"),
-            _ => Status(200, """{"lines":[{"sku":"x"}]}"""),
-        });
-        var options = Map(("path", "/o/{{ item.id }}"), ("items", "/lines"),
-            ("for_each", Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("id", "/id"))),
-                ("concurrency", 2), ("pagination", Map(("strategy", "page"))))),
-            ("on_status", Rules(Map(("status", 400), ("body_contains", "no data"), ("action", "skip")))));
-
-        string? token = null;
-        await using (var source = Source())
-        {
-            var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(Assert.Single(
-                await source.PlanReadAsync(new DatasetSpec("s", "d", options), ReadHints.None, CancellationToken.None)));
-            await Assert.ThrowsAsync<PzConnectorException>(async () =>
-            {
-                await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
-                {
-                    batch.Dispose();
-                    if (partition.TryGetCheckpoint(out var offered) && offered is not null)
-                    {
-                        token = offered;
-                    }
-                }
-            });
+            forEach["concurrency"] = concurrency;
         }
 
-        Assert.True(HttpCheckpointToken.TryDecodeForEach(token!, out var position));
-        Assert.Contains("page=2", position.List);
-        Assert.True(position.RuleSkipped);
+        var options = Map(("path", "/o/{{ item.id }}"), ("items", "/lines"), ("for_each", forEach),
+            ("on_status", Rules(Map(("status", 400), ("body_contains", "no data"), ("action", "skip")))));
 
-        failC = false;
-        Assert.Equal(1, await Read(options, token));
-        Assert.True(_readSkipped);
+        await using var source = Source();
+        var partition = Assert.Single(
+            await source.PlanReadAsync(new DatasetSpec("s", "d", options), ReadHints.None, CancellationToken.None));
+        var checkpointing = Assert.IsAssignableFrom<ICheckpointingPartition>(partition);
+        var offeredBeforeTheSkip = 0;
+        await foreach (var batch in partition.ReadAsync(new BatchOptions(MaxRowsPerBatch: 1), CancellationToken.None))
+        {
+            batch.Dispose();
+            if (checkpointing.TryGetCheckpoint(out var token) && token is not null
+                && ((ISkippedReadPartition)partition).SkippedBy is null)
+            {
+                Assert.True(HttpCheckpointToken.TryDecodeForEach(token, out var position));
+                // A position before b (index 1 of the first page) is fine; one past it is not.
+                Assert.False(position.List.Contains("page=2") || position.Index > 1, $"checkpoint past the skip: {token}");
+                offeredBeforeTheSkip++;
+            }
+        }
+
+        Assert.NotNull(((ISkippedReadPartition)partition).SkippedBy);
     }
 
     [Fact]

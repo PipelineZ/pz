@@ -17,9 +17,9 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
     ThrottlePause? pause = null)
     : ICheckpointingPartition, ISkippedReadPartition
 {
-    /// <summary>True once an `on_status` skip rule answered the download (not an `on_missing` 404): see
-    /// <see cref="ISkippedReadPartition"/>.</summary>
-    public bool ReadSkipped => _skipNotice is not null;
+    /// <summary>The `on_status` skip rule that answered the download and what it matched (not an `on_missing`
+    /// 404): see <see cref="ISkippedReadPartition"/>.</summary>
+    public string? SkippedBy { get; private set; }
 
     /// <summary>The most decompressed bytes one downloaded file (each result file of an export) may yield,
     /// as a multiple of `max_download_mb`.</summary>
@@ -254,6 +254,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
 
                 _skipNotice = $"{DownloadLabel}: skipped the read: HTTP {status} from {target} matched " +
                     $"{rule.Label} (skip); 0 rows landed";
+                SkippedBy = $"{rule.Label} (skip) matched HTTP {status} from {target}";
                 return (null, "");
             }
 

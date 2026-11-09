@@ -243,9 +243,9 @@ internal sealed class ProcessSource(PcpClient client, ConnectorProcess process)
 internal sealed class ProcessPartition(PcpClient client, ConnectorProcess process, string opId, string partitionId)
     : ISkippedReadPartition
 {
-    /// <summary>What the connector's partition reported when its stream ended (<c>ReadStatsResponse.read_skipped</c>);
-    /// false from a connector that predates the field, or when the poll failed.</summary>
-    public bool ReadSkipped { get; private set; }
+    /// <summary>What the connector's partition reported when its stream ended (<c>ReadStatsResponse.skipped_by</c>);
+    /// null when nothing was skipped, or from a connector that predates the field or has no stats call.</summary>
+    public string? SkippedBy { get; private set; }
 
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         ReadCoreAsync(options, ct);
@@ -287,7 +287,9 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
     /// timeout all mean "no stats". The poll's token is independent of the caller's: a read that failed
     /// because its caller cancelled must still be able to report what it consumed, while cancelling the
     /// caller or abandoning the read early does not poll at all.</summary>
-    private async ValueTask PollReadStatsAsync()
+    /// <returns>False when the answer could not be read (anything but a connector without the call, which can
+    /// report no skip). Stats alone never fail a read; the skip report does, because the engine must know it.</returns>
+    private async ValueTask<bool> PollReadStatsAsync()
     {
         using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
         try
@@ -296,10 +298,16 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
                 .GetReadStatsAsync(new ReadStateRequest { OpId = opId, PartitionId = partitionId }, cancellationToken: cts.Token)
                 .ConfigureAwait(false);
             HostStats.Merge(response.Stats);
-            ReadSkipped = response.ReadSkipped;
+            SkippedBy = response.HasSkippedBy ? response.SkippedBy : null;
+            return true;
+        }
+        catch (RpcException ex) when (ex.StatusCode == StatusCode.Unimplemented)
+        {
+            return true;
         }
         catch (Exception ex) when (ex is RpcException or ObjectDisposedException or OperationCanceledException)
         {
+            return false;
         }
     }
 
@@ -365,7 +373,15 @@ internal sealed class ProcessPartition(PcpClient client, ConnectorProcess proces
             yield return batch;
         }
 
-        await PollReadStatsAsync().ConfigureAwait(false);
+        // Fail closed: a read whose skip report could not be read may have skipped data the engine must not commit as
+        // complete. Transient, so the engine reads the partition again.
+        if (!await PollReadStatsAsync().ConfigureAwait(false))
+        {
+            throw new PzConnectorException(
+                "the out-of-process connector finished a partition read, but whether a rule skipped part of it could " +
+                "not be read (its read stats call failed); the read is retried rather than committed as complete",
+                isTransient: true);
+        }
 
         // Layer 2: the stream ended with a proper EOS marker, but a connector must never exit before
         // the host-initiated Shutdown RPC -- observing it already gone here means it crashed during or
@@ -387,7 +403,7 @@ internal sealed class ProcessIdentifiedPartition(PcpClient client, ConnectorProc
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
 
-    public bool ReadSkipped => _inner.ReadSkipped;
+    public string? SkippedBy => _inner.SkippedBy;
 
     public string PartitionId => partitionId;
 
@@ -419,7 +435,7 @@ internal sealed class ProcessSyncStatePartition(PcpClient client, ConnectorProce
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
 
-    public bool ReadSkipped => _inner.ReadSkipped;
+    public string? SkippedBy => _inner.SkippedBy;
 
     public IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, CancellationToken ct) =>
         _inner.ReadAsync(options, ct);
@@ -435,7 +451,7 @@ internal sealed class ProcessIdentifiedSyncStatePartition(PcpClient client, Conn
 {
     private readonly ProcessPartition _inner = new(client, process, opId, partitionId);
 
-    public bool ReadSkipped => _inner.ReadSkipped;
+    public string? SkippedBy => _inner.SkippedBy;
 
     public string PartitionId => partitionId;
 

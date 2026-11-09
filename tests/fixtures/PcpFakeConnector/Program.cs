@@ -52,6 +52,7 @@ internal static class Program
                 : null,
             IgnoreCancel = options.IgnoreCancel,
             IgnoreShutdown = options.IgnoreShutdown,
+            FailReadStats = options.FailReadStats,
             OnConfigure = () =>
             {
                 connector?.RecordConfigure();
@@ -126,7 +127,8 @@ internal sealed record FixtureOptions(
     bool NativeOnly,
     bool EmitStats,
     bool ReportRunContext = false,
-    bool SkipReads = false)
+    bool SkipReads = false,
+    bool FailReadStats = false)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -149,6 +151,7 @@ internal sealed record FixtureOptions(
         bool emitStats = false;
         bool reportRunContext = false;
         bool skipReads = false;
+        bool failReadStats = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -248,6 +251,9 @@ internal sealed record FixtureOptions(
                 case "--skip-reads":
                     skipReads = true;
                     break;
+                case "--fail-read-stats":
+                    failReadStats = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -263,7 +269,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly, emitStats, reportRunContext, skipReads),
+            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats),
             passthrough.ToArray());
     }
 }

@@ -328,6 +328,11 @@ internal sealed class PcpConnectorService(
     public override Task<ReadStatsResponse> GetReadStats(ReadStateRequest request, ServerCallContext context) =>
         Guarded(() =>
         {
+            if (hooks.FailReadStats)
+            {
+                throw new RpcException(new Status(StatusCode.Internal, "read stats refused on purpose"));
+            }
+
             // An unknown op or partition, or one never opened, simply reported nothing.
             var response = new ReadStatsResponse();
             if (_plans.TryGetValue(request.OpId, out var plan) &&
@@ -335,8 +340,10 @@ internal sealed class PcpConnectorService(
             {
                 response.Stats = ConnectorStatsMapping.ToProto(stats);
                 // Asked once the stream has ended, which is when ISkippedReadPartition answers.
-                response.ReadSkipped = ResolvePartition(plan, request.PartitionId)
-                    is ISkippedReadPartition { ReadSkipped: true };
+                if (ResolvePartition(plan, request.PartitionId) is ISkippedReadPartition { SkippedBy: { } rule })
+                {
+                    response.SkippedBy = rule;
+                }
             }
 
             return Task.FromResult(response);

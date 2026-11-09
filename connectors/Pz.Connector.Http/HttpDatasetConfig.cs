@@ -714,7 +714,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// with other errors still has this refusal reported in the same pass; the for_each list's rules are
     /// covered too. The case no refusal here can see (raw mode, a SQL-declared ceiling, a first run or
     /// --full-refresh, where no watermark reaches the connector) is closed by the engine: a skipped read reports
-    /// <see cref="ISkippedReadPartition.ReadSkipped"/>, and the engine then captures no watermark for it.</summary>
+    /// <see cref="ISkippedReadPartition.SkippedBy"/>, and the engine fails the node (PZ0540).</summary>
     private static void ValidateSkipRules(IReadOnlyDictionary<string, object?> options, DatasetSpec spec,
         bool hasExport, List<string> errors)
     {

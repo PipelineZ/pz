@@ -109,31 +109,70 @@ public sealed class RunContextTests : IDisposable
         Assert.Equal("run context none", response.Message);
     }
 
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task A_partition_reports_a_skipped_read_across_the_process_boundary(bool skip)
+    private async Task<(IDatasetPartition Partition, Func<Task> Read, IAsyncDisposable[] Owned)> PlanOneAsync(
+        params string[] args)
     {
         var dataDir = NewTempDir();
         File.WriteAllText(Path.Combine(dataDir, "x.csv"), "id\n1\n");
-        string[] args = skip ? ["--skip-reads"] : [];
-        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", args);
+        var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", args);
         var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
-        await using var client = await PcpClient.ConnectAndConfigureAsync(
+        var client = await PcpClient.ConnectAndConfigureAsync(
             process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
-        await using var source = await new ProcessSourceConnector(client, process).OpenAsync(config, CancellationToken.None);
-
+        var source = await new ProcessSourceConnector(client, process).OpenAsync(config, CancellationToken.None);
         var spec = new DatasetSpec("files", "orders", new Dictionary<string, object?>
         {
             ["path"] = "x.csv", ["format"] = "csv", ["columns"] = new Dictionary<string, object?> { ["id"] = "bigint" },
         });
         var partition = Assert.Single(await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None));
-        await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+        return (partition, async () =>
         {
-            batch.Dispose();
-        }
+            await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+            {
+                batch.Dispose();
+            }
+        }, [source, client, process]);
+    }
 
-        Assert.Equal(skip, Assert.IsAssignableFrom<ISkippedReadPartition>(partition).ReadSkipped);
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task A_partition_reports_a_skipped_read_across_the_process_boundary(bool skip)
+    {
+        var (partition, read, owned) = await PlanOneAsync(skip ? ["--skip-reads"] : []);
+        try
+        {
+            await read();
+
+            Assert.Equal(skip ? "fixture rule (skip) matched" : null,
+                Assert.IsAssignableFrom<ISkippedReadPartition>(partition).SkippedBy);
+        }
+        finally
+        {
+            foreach (var o in owned)
+            {
+                await o.DisposeAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task A_read_whose_skip_report_cannot_be_read_fails_transiently()
+    {
+        var (_, read, owned) = await PlanOneAsync("--fail-read-stats");
+        try
+        {
+            var ex = await Assert.ThrowsAsync<PzConnectorException>(read);
+
+            Assert.True(ex.IsTransient);
+            Assert.Contains("whether a rule skipped part of it could not be read", ex.Message);
+        }
+        finally
+        {
+            foreach (var o in owned)
+            {
+                await o.DisposeAsync();
+            }
+        }
     }
 
     private static ConnectorManifest LocalFilesManifest() => new(

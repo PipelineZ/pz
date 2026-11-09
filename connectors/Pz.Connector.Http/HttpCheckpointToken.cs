@@ -16,8 +16,7 @@ namespace Pz.Connector.Http;
 /// page's token (in the list request's form), the record index on that page, and the item crawl's next
 /// request token (in the item request's form) or null to start the item from its first request. Optional
 /// keys follow, each only when set: <c>anchor</c> (see <see cref="ForEachToken"/>), <c>skipped</c> and
-/// <c>first_skipped</c>, and <c>rule_skipped</c> (true once an <c>on_status</c> skip rule skipped an item, so a
-/// resumed read still reports the skip to the engine). A request that carries a page token header (<c>pagination.location: header</c>) is
+/// <c>first_skipped</c>. A request that carries a page token header (<c>pagination.location: header</c>) is
 /// <c>v4:</c> + base64url(UTF-8 JSON <c>{"url":...,"body":...,"header":{"name":...,"value":...}}</c>) whatever
 /// its method, the body as in v2 (null for a GET). Only that one header is stored: connection headers and
 /// auth are never part of a request until it is sent.</summary>
@@ -184,7 +183,7 @@ internal static class HttpCheckpointToken
     /// <paramref name="FirstSkipped"/> are the `on_missing: skip` count and first identity so far, so a
     /// retry still reports skips made before its resume position.</summary>
     internal sealed record ForEachToken(string List, int Index, string? Item, string? Anchor = null,
-        int Skipped = 0, string? FirstSkipped = null, bool RuleSkipped = false);
+        int Skipped = 0, string? FirstSkipped = null);
 
     /// <summary>A record's anchor: base64url SHA-256 of its <c>pz_item</c> JSON.</summary>
     public static string Anchor(ItemValues values)
@@ -209,11 +208,6 @@ internal static class HttpCheckpointToken
         if (token.FirstSkipped is not null)
         {
             payload["first_skipped"] = token.FirstSkipped;
-        }
-
-        if (token.RuleSkipped)
-        {
-            payload["rule_skipped"] = true;
         }
 
         return ForEachPrefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(payload.ToJsonString()));
@@ -261,14 +255,7 @@ internal static class HttpCheckpointToken
                 return false;
             }
 
-            var ruleSkipped = false;
-            if (obj["rule_skipped"] is { } ruleNode
-                && (ruleNode is not JsonValue ruleValue || !ruleValue.TryGetValue(out ruleSkipped)))
-            {
-                return false;
-            }
-
-            decoded = new ForEachToken(list, at, item, anchor, skipped, firstSkipped, ruleSkipped);
+            decoded = new ForEachToken(list, at, item, anchor, skipped, firstSkipped);
             return true;
         }
         catch (Exception e) when (e is FormatException or JsonException or ArgumentException or InvalidOperationException)

@@ -217,9 +217,11 @@ message ConnectorStats {
   uint32 drops = 9;
 }
 // Unset stats = the stream reported nothing, or the op/partition is unknown.
-// read_skipped: the partition implements ISkippedReadPartition and reported, once its stream ended, that a rule of
-// the dataset's config skipped its read in whole or in part. False from a connector that predates the field.
-message ReadStatsResponse { optional ConnectorStats stats = 1; bool read_skipped = 2; }
+// skipped_by: the partition implements ISkippedReadPartition and reported, once its stream ended, which rule of the
+// dataset's config skipped its read in whole or in part (ISkippedReadPartition.SkippedBy). Absent when nothing was
+// skipped, and from a connector that predates the field. A host that cannot read this answer (the call failed for any
+// reason but UNIMPLEMENTED) fails the read transiently rather than assume nothing was skipped.
+message ReadStatsResponse { optional ConnectorStats stats = 1; optional string skipped_by = 2; }
 
 // Names the stream the way the call that opened it did: a read by its op and partition (exactly as
 // OpenReadRequest/ReadStateRequest resolve them), a write by its session. An unknown op, partition or

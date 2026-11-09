@@ -22,9 +22,9 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     ThrottlePause? pause = null)
     : IDatasetPartition, ISyncStatePartition, ICheckpointingPartition, ISkippedReadPartition
 {
-    /// <summary>True once an `on_status` skip rule ended the read (not an `on_missing` 404): the engine then keeps
-    /// an incremental dataset's watermark where it was instead of treating the read as an empty window.</summary>
-    public bool ReadSkipped { get; private set; }
+    /// <summary>The `on_status` skip rule that ended the read and what it matched (not an `on_missing` 404); the
+    /// engine fails an incremental node that reports one.</summary>
+    public string? SkippedBy { get; private set; }
 
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
 
@@ -648,7 +648,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
                     }
 
                     Missing = true;
-                    ReadSkipped = true;
+                    SkippedBy = $"{rule.Label} (skip) matched HTTP {status} from {Target(sent, sendUri)}";
                     if (Item is null)
                     {
                         Notice?.Invoke($"{Label}: skipped the read: HTTP {status} from {Target(sent, sendUri)} " +

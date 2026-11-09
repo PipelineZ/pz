@@ -28,7 +28,7 @@ internal static class PartitionModeLoader
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadAsync(
         DagNode node, RunContext ctx, IReadOnlyList<(IIdentifiedPartition Partition, string Id)> partitions,
         Schema schema, string mainTable, string? windowLower, string? windowUpper, long reusedCount,
-        bool isSyncDataset, CancellationToken ct)
+        bool isSyncDataset, CancellationToken ct, SkippedReadGuard? skipGuard = null)
     {
         var duck = ctx.Duck;
         var nodeId = node.Id.Value;
@@ -84,7 +84,7 @@ internal static class PartitionModeLoader
         using var admission = new SemaphoreSlim(Environment.ProcessorCount);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var tasks = pending.Select(p => RunAdmittedAsync(duck, p.Partition, p.Id, nodeId, nodeKey, mainTable,
-            schema, ctx.EffectiveBatch, admission, loadCts, failures, checkpoints, OnResumed)).ToArray();
+            schema, ctx.EffectiveBatch, admission, loadCts, failures, checkpoints, OnResumed, skipGuard)).ToArray();
 
         try
         {
@@ -124,7 +124,7 @@ internal static class PartitionModeLoader
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadStreamingAsync(
         DagNode node, RunContext ctx, IAsyncEnumerable<IDatasetPartition> stream, Schema schema,
         string mainTable, string? windowLower, string? windowUpper, long reusedCount, SourceDatasetDef def,
-        CancellationToken ct)
+        CancellationToken ct, SkippedReadGuard? skipGuard = null)
     {
         var duck = ctx.Duck;
         var nodeId = node.Id.Value;
@@ -195,7 +195,7 @@ internal static class PartitionModeLoader
                 await admission.WaitAsync(loadCts.Token).ConfigureAwait(false);
                 tasks.RemoveAll(t => t.IsCompletedSuccessfully);
                 tasks.Add(RunThenReleaseAsync(duck, identified, pid, nodeId, nodeKey, mainTable, schema,
-                    ctx.EffectiveBatch, loadCts, failures, admission, checkpoints, OnResumed));
+                    ctx.EffectiveBatch, loadCts, failures, admission, checkpoints, OnResumed, skipGuard));
                 admitted++;
             }
         }
@@ -379,7 +379,6 @@ internal static class PartitionModeLoader
                 $"insert into {PartitionLedger.DoneTable} select * from {quotedAlias}.pz_meta.partitions_done " +
                 $"where node_id = '{PartitionLedger.Escape(nodeId)}'", ct).ConfigureAwait(false);
             copiedLedger = true;
-            await CopySkippedAsync(duck, nodeId, alias, quotedAlias, ct).ConfigureAwait(false);
 
             // Checkpointed prefixes ride along when intact; a torn one just restarts fresh.
             var priorCheckpoints = await PartitionLedger.ReadCheckpointsAsync(duck, nodeId, ct, quotedAlias)
@@ -439,9 +438,6 @@ internal static class PartitionModeLoader
                         CancellationToken.None).ConfigureAwait(false);
                     await duck.ExecuteAsync(
                         $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
-                        CancellationToken.None).ConfigureAwait(false);
-                    await duck.ExecuteAsync(
-                        $"delete from {PartitionLedger.SkippedTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
                         CancellationToken.None).ConfigureAwait(false);
                 }
                 catch
@@ -579,13 +575,14 @@ internal static class PartitionModeLoader
     private static async Task RunAdmittedAsync(IDuckSession duck, IIdentifiedPartition partition, string pid,
         string nodeId, string nodeKey, string mainTable, Schema schema, BatchOptions batchOptions,
         SemaphoreSlim admission, CancellationTokenSource loadCts, ConcurrentQueue<PzConnectorException> failures,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         await admission.WaitAsync(loadCts.Token).ConfigureAwait(false);
         try
         {
             await RunPartitionAsync(duck, partition, pid, nodeId, nodeKey, mainTable, schema, batchOptions,
-                loadCts, failures, checkpoints, onResumed).ConfigureAwait(false);
+                loadCts, failures, checkpoints, onResumed, skipGuard).ConfigureAwait(false);
         }
         finally
         {
@@ -599,12 +596,13 @@ internal static class PartitionModeLoader
     private static async Task RunThenReleaseAsync(IDuckSession duck, IIdentifiedPartition partition, string pid,
         string nodeId, string nodeKey, string mainTable, Schema schema, BatchOptions batchOptions,
         CancellationTokenSource loadCts, ConcurrentQueue<PzConnectorException> failures, SemaphoreSlim admission,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         try
         {
             await RunPartitionAsync(duck, partition, pid, nodeId, nodeKey, mainTable, schema, batchOptions,
-                loadCts, failures, checkpoints, onResumed).ConfigureAwait(false);
+                loadCts, failures, checkpoints, onResumed, skipGuard).ConfigureAwait(false);
         }
         finally
         {
@@ -616,14 +614,15 @@ internal static class PartitionModeLoader
         string pid, string nodeId, string nodeKey, string mainTable, Schema schema,
         BatchOptions batchOptions, CancellationTokenSource loadCts,
         ConcurrentQueue<PzConnectorException> failures,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         try
         {
             if (partition is ICheckpointingPartition checkpointing)
             {
                 await RunCheckpointingPartitionAsync(duck, checkpointing, pid, nodeId, nodeKey, mainTable,
-                    schema, batchOptions, loadCts, failures, checkpoints, onResumed).ConfigureAwait(false);
+                    schema, batchOptions, loadCts, failures, checkpoints, onResumed, skipGuard).ConfigureAwait(false);
                 return;
             }
 
@@ -672,9 +671,10 @@ internal static class PartitionModeLoader
                 rows += await duck.AppendArrowBatchAsync(partTable, batch, schema, loadCts.Token).ConfigureAwait(false);
             }
 
+            // A skip on an incremental dataset fails the node before the partition is recorded as done.
+            skipGuard?.Check(partition);
             await duck.ExecuteTransactionAsync(
-                PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, rows,
-                    partition is ISkippedReadPartition { ReadSkipped: true }), loadCts.Token)
+                PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, rows), loadCts.Token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -716,7 +716,8 @@ internal static class PartitionModeLoader
         ICheckpointingPartition partition, string pid, string nodeId, string nodeKey, string mainTable,
         Schema schema, BatchOptions batchOptions, CancellationTokenSource loadCts,
         ConcurrentQueue<PzConnectorException> failures,
-        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed)
+        IReadOnlyDictionary<string, (string Checkpoint, long Rows)> checkpoints, Action onResumed,
+        SkippedReadGuard? skipGuard)
     {
         var partTable = PartitionLedger.PartTable(nodeKey, pid);
         var segTable = PartitionLedger.SegTable(nodeKey, pid);
@@ -787,6 +788,9 @@ internal static class PartitionModeLoader
 
             if (partition.TryGetCheckpoint(out var checkpoint) && checkpoint is not null)
             {
+                // A checkpoint past a skipped part of an incremental read is never stored: no resumed attempt
+                // may start beyond the skip.
+                skipGuard?.Check(partition);
                 await duck.ExecuteTransactionAsync(
                     PartitionLedger.CheckpointStatements(nodeId, pid, segTable, partTable, checkpoint, partRows + segRows),
                     token).ConfigureAwait(false);
@@ -803,8 +807,8 @@ internal static class PartitionModeLoader
             $"insert into {partTable} select * from {segTable}",
             $"drop table {segTable}",
         };
-        statements.AddRange(PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, partRows + segRows,
-            partition is ISkippedReadPartition { ReadSkipped: true }));
+        skipGuard?.Check(partition);
+        statements.AddRange(PartitionLedger.CompleteStatements(nodeId, pid, mainTable, partTable, partRows + segRows));
         await duck.ExecuteTransactionAsync(statements, token).ConfigureAwait(false);
     }
 
@@ -849,32 +853,10 @@ internal static class PartitionModeLoader
             $"and partition_id = '{PartitionLedger.Escape(pid)}'",
             $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
             $"and partition_id = '{PartitionLedger.Escape(pid)}'",
-            $"delete from {PartitionLedger.SkippedTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-            $"and partition_id = '{PartitionLedger.Escape(pid)}'",
         ], ct).ConfigureAwait(false);
 
         await DropBestEffortAsync(duck, PartitionLedger.PartTable(nodeKey, pid)).ConfigureAwait(false);
         await DropBestEffortAsync(duck, PartitionLedger.SegTable(nodeKey, pid)).ConfigureAwait(false);
-    }
-
-    /// <summary>Carries the failed run's skipped-partition rows along with its done rows. A prior staging DB
-    /// written before the table existed has none to carry, and its partitions were never reported skipped.</summary>
-    private static async Task CopySkippedAsync(IDuckSession duck, string nodeId, string alias, string quotedAlias,
-        CancellationToken ct)
-    {
-        await duck.ExecuteAsync(
-            $"delete from {PartitionLedger.SkippedTable} where node_id = '{PartitionLedger.Escape(nodeId)}'", ct)
-            .ConfigureAwait(false);
-        var exists = await duck.ScalarAsync<long>(
-            "select count(*) from duckdb_tables() where database_name = " +
-            $"'{PartitionLedger.Escape(alias)}' and schema_name = 'pz_meta' and table_name = 'partitions_skipped'",
-            ct).ConfigureAwait(false);
-        if (exists > 0)
-        {
-            await duck.ExecuteAsync(
-                $"insert into {PartitionLedger.SkippedTable} select * from {quotedAlias}.pz_meta.partitions_skipped " +
-                $"where node_id = '{PartitionLedger.Escape(nodeId)}'", ct).ConfigureAwait(false);
-        }
     }
 
     private static async Task EnsureMainTableAsync(IDuckSession duck, string mainTable, Schema schema, CancellationToken ct)

@@ -24,18 +24,19 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
     ThrottlePause? pause = null)
     : ICheckpointingPartition, ISkippedReadPartition
 {
-    private int _ruleSkipped;
+    private string? _skippedBy;
 
-    /// <summary>True once an `on_status` skip rule skipped an item in this attempt (an `on_missing` 404 does not
-    /// count). Items skipped before a checkpoint an earlier attempt stored are not seen again.</summary>
-    public bool ReadSkipped => Volatile.Read(ref _ruleSkipped) != 0;
+    /// <summary>The first item an `on_status` skip rule skipped in this read (an `on_missing` 404 does not count),
+    /// set when that item finishes: before any checkpoint past it is offered, as
+    /// <see cref="ISkippedReadPartition"/> requires.</summary>
+    public string? SkippedBy => Volatile.Read(ref _skippedBy);
 
     /// <summary>Notes an item partition whose read an `on_status` skip rule ended.</summary>
-    private void NoteRuleSkip(IDatasetPartition item)
+    private void NoteRuleSkip(IDatasetPartition item, ItemValues values)
     {
-        if (item is ISkippedReadPartition { ReadSkipped: true })
+        if (item is ISkippedReadPartition { SkippedBy: { } rule })
         {
-            Interlocked.Exchange(ref _ruleSkipped, 1);
+            Interlocked.CompareExchange(ref _skippedBy, $"{rule} ({values.Identity()})", null);
         }
     }
 
@@ -138,12 +139,6 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
             resume = resume with { List = HttpForEachConfig.ValuesToken, Index = 0, Item = null, Anchor = null };
         }
 
-        // A skip an earlier attempt saw before its checkpoint is not seen again; the token carries it.
-        if (resume is { RuleSkipped: true })
-        {
-            Interlocked.Exchange(ref _ruleSkipped, 1);
-        }
-
         if (forEach.Concurrency > 1)
         {
             await foreach (var batch in ReadParallelAsync(list, bindings, now, resume, options, ct).ConfigureAwait(false))
@@ -227,7 +222,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                         if (item.Partition.TryGetCheckpoint(out var inner) && inner is not null)
                         {
                             _checkpointCandidate = HttpCheckpointToken.EncodeForEach(new(listToken, index, inner, anchor,
-                                skipped, firstSkipped, ReadSkipped));
+                                skipped, firstSkipped));
                             pending = null;
                             yield return batch;
                             if (await NextAsync(batches, values).ConfigureAwait(false))
@@ -244,8 +239,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                         // resume from it moves on to the next one.
                         _checkpointCandidate = more
                             ? null
-                            : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped,
-                                ReadSkipped));
+                            : HttpCheckpointToken.EncodeForEach(new(listToken, index + 1, null, anchor, skipped, firstSkipped));
                         yield return batch;
                     }
                 }
@@ -254,7 +248,7 @@ internal sealed partial class HttpForEachPartition(HttpClient client, HttpClient
                     pending?.Dispose();
                 }
 
-                NoteRuleSkip(item.Partition);
+                NoteRuleSkip(item.Partition, values);
                 if (item.Missing())
                 {
                     skipped++;

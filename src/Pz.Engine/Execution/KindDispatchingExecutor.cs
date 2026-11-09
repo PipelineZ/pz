@@ -181,6 +181,12 @@ public sealed class KindDispatchingExecutor(
                 return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed,
                     ex.Error, Delivery: delivery);
             }
+            catch (CodedNodeFailureException ex)
+            {
+                ctx.DeliveryFailures.TryRemove(node.Id, out var delivery);
+                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed,
+                    ex.Error, Delivery: delivery);
+            }
             catch (PzConnectorException ex) when (ex.IsTransient && attempt < policy.MaxAttempts)
             {
                 breaker?.RecordTransientFailure(ticket, ex.RetryAfter);

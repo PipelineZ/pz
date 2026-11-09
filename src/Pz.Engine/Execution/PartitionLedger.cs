@@ -19,11 +19,6 @@ internal static class PartitionLedger
     public const string CheckpointTable = "pz_meta.partition_checkpoints";
     public const string WindowTable = "pz_meta.node_window";
 
-    /// <summary>Done partitions whose read a connector rule skipped (<c>ISkippedReadPartition</c>). Written in
-    /// the same transaction as the done row, so a later attempt (or <c>pz retry</c>) that reuses the partition
-    /// without reading it again still knows the skip happened and keeps the watermark where it was.</summary>
-    public const string SkippedTable = "pz_meta.partitions_skipped";
-
     public static string NodeKey(DagNode node) =>
         new(node.Id.Value.Where(char.IsLetterOrDigit).ToArray());
 
@@ -49,9 +44,6 @@ internal static class PartitionLedger
             $"create table if not exists {CheckpointTable} (node_id varchar not null, " +
             "partition_id varchar not null, checkpoint varchar not null, rows bigint not null, " +
             "primary key (node_id, partition_id))", ct).ConfigureAwait(false);
-        await duck.ExecuteAsync(
-            $"create table if not exists {SkippedTable} (node_id varchar not null, " +
-            "partition_id varchar not null, primary key (node_id, partition_id))", ct).ConfigureAwait(false);
         await duck.ExecuteAsync(
             $"create table if not exists {WindowTable} (node_id varchar not null, " +
             "lower varchar not null, upper varchar not null, primary key (node_id))",
@@ -120,23 +112,14 @@ internal static class PartitionLedger
     /// and any checkpoint row for it is cleared. Delete-then-insert keeps the done row
     /// upsert-safe under a crash-and-rerun of the same completion.</summary>
     public static IReadOnlyList<string> CompleteStatements(
-        string nodeId, string partitionId, string mainTable, string partTable, long rows, bool skipped = false) =>
+        string nodeId, string partitionId, string mainTable, string partTable, long rows) =>
     [
         $"insert into {mainTable} select * from {partTable}",
         $"drop table {partTable}",
         $"delete from {DoneTable} where node_id = '{Escape(nodeId)}' and partition_id = '{Escape(partitionId)}'",
         $"insert into {DoneTable} values ('{Escape(nodeId)}', '{Escape(partitionId)}', {rows})",
         $"delete from {CheckpointTable} where node_id = '{Escape(nodeId)}' and partition_id = '{Escape(partitionId)}'",
-        $"delete from {SkippedTable} where node_id = '{Escape(nodeId)}' and partition_id = '{Escape(partitionId)}'",
-        .. skipped
-            ? new[] { $"insert into {SkippedTable} values ('{Escape(nodeId)}', '{Escape(partitionId)}')" }
-            : [],
     ];
-
-    /// <summary>True when any done partition of the node was read as skipped (<see cref="SkippedTable"/>).</summary>
-    public static async Task<bool> AnySkippedAsync(IDuckSession duck, string nodeId, CancellationToken ct) =>
-        await duck.ScalarAsync<long>(
-            $"select count(*) from {SkippedTable} where node_id = '{Escape(nodeId)}'", ct).ConfigureAwait(false) > 0;
 
     /// <summary>One transaction: a checkpoint interval's rows move segment → part and the token is
     /// upserted with the part table's new cumulative row count — the token always covers exactly
