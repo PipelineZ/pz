@@ -490,7 +490,7 @@ public sealed class HttpTlsTests : IDisposable
     }
 
     [Fact]
-    public async Task Token_endpoint_cert_only_same_host()
+    public async Task Token_endpoint_cert_only_same_origin()
     {
         // Same origin as base_url: the token request presents the client certificate too.
         await using (var same = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), requestClientCertificate: true, respond: TokenOrRows))
