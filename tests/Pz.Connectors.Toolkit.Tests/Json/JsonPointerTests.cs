@@ -39,4 +39,20 @@ public class JsonPointerTests
     {
         Assert.Throws<ArgumentException>(() => JsonPointer.TryResolve(Doc, "data", out _));
     }
+
+    [Theory]
+    [InlineData("/tags/01")]
+    [InlineData("/tags/+1")]
+    [InlineData("/tags/ 1")]
+    [InlineData("/tags/1 ")]
+    [InlineData("/tags/-1")]
+    public void Array_indexes_follow_rfc_6901(string pointer)
+    {
+        var doc = System.Text.Json.Nodes.JsonNode.Parse("""{ "tags": ["a", "b"] }""");
+        Assert.False(JsonPointer.TryResolve(doc, pointer, out _));
+        Assert.True(JsonPointer.TryResolve(doc, "/tags/0", out var first));
+        Assert.Equal("a", first!.GetValue<string>());
+        Assert.True(JsonPointer.TryResolve(doc, "/tags/1", out var second));
+        Assert.Equal("b", second!.GetValue<string>());
+    }
 }

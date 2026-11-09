@@ -163,4 +163,57 @@ public class ContractProjectorOptionsTests
         Assert.Contains("column 'n'", ex.Message);
         Assert.DoesNotContain("SECRET", ex.Message);
     }
+
+    [Theory]
+    [InlineData("1700000000")]      // seconds read as ms: 1970-01-20
+    [InlineData("99999999999")]     // just below 1e11 ms (1973-03-03)
+    [InlineData("-5000")]
+    public void Milliseconds_before_1973_look_like_seconds(string json)
+    {
+        var options = new ContractReadOptions { EpochUnit = EpochUnit.Milliseconds, EpochUnitOption = "epoch_unit" };
+        var ex = Assert.Throws<PzConnectorException>(() => Convert(json, options));
+        Assert.False(ex.IsTransient);
+        Assert.Contains("before 1973-03-03", ex.Message);
+        Assert.Contains("'epoch_unit: s'", ex.Message);
+        Assert.DoesNotContain(json, ex.Message);
+    }
+
+    [Fact]
+    public void Milliseconds_from_1973_are_accepted()
+    {
+        var options = new ContractReadOptions { EpochUnit = EpochUnit.Milliseconds };
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(100_000_000_000), Convert("100000000000", options));
+        Assert.Equal(DateTimeOffset.FromUnixTimeMilliseconds(100_000_000_000).AddTicks(5_000), Convert("100000000000.5", options));
+    }
+
+    [Theory]
+    [InlineData("32503680001")]      // just after 3000-01-01
+    [InlineData("1700000000123")]    // milliseconds read as seconds
+    public void Seconds_after_year_3000_look_like_milliseconds(string json)
+    {
+        var options = new ContractReadOptions { EpochUnit = EpochUnit.Seconds, EpochUnitOption = "epoch_unit" };
+        var ex = Assert.Throws<PzConnectorException>(() => Convert(json, options));
+        Assert.Contains("after 3000-01-01", ex.Message);
+        Assert.Contains("'epoch_unit: ms'", ex.Message);
+    }
+
+    [Fact]
+    public void Seconds_up_to_year_3000_and_before_1970_are_accepted()
+    {
+        var options = new ContractReadOptions { EpochUnit = EpochUnit.Seconds };
+        Assert.Equal(new DateTimeOffset(3000, 1, 1, 0, 0, 0, TimeSpan.Zero), Convert("32503680000", options));
+        Assert.Equal(new DateTimeOffset(1900, 1, 1, 0, 0, 0, TimeSpan.Zero), Convert("-2208988800", options));
+    }
+
+    [Theory]
+    [InlineData("1e400")]
+    [InlineData("1000000000000000000000000000000000")]
+    public void Huge_numbers_are_out_of_range_under_either_unit(string json)
+    {
+        foreach (var unit in new[] { EpochUnit.Seconds, EpochUnit.Milliseconds })
+        {
+            var ex = Assert.Throws<PzConnectorException>(() => Convert(json, new ContractReadOptions { EpochUnit = unit }));
+            Assert.False(ex.IsTransient);
+        }
+    }
 }

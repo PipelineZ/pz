@@ -135,43 +135,65 @@ public static class ContractProjector
     {
         if (options.EpochUnit is not { } unit)
         {
-            var next = options.EpochUnitOption is { } option
-                ? $"; if it is epoch time, set '{option}: s' (or '{option}: ms') on the dataset"
+            var next = options.EpochUnitOption is { } optionName
+                ? $"; if it is epoch time, set '{optionName}: s' (or '{optionName}: ms') on the dataset"
                 : "; this connector does not read epoch numbers as timestamps";
             throw new PzConnectorException(
                 $"{context}: column '{name}': value is a JSON number, not a timestamp string{next}",
                 isTransient: false);
         }
 
-        // Exact in decimal; the range check runs before the tick product can overflow.
-        var ticksPerUnit = unit == EpochUnit.Seconds ? TimeSpan.TicksPerSecond : TicksPerMillisecond;
+        // Exact in decimal; the range checks run before the tick product can overflow.
+        var seconds = unit == EpochUnit.Seconds;
+        var ticksPerUnit = seconds ? TimeSpan.TicksPerSecond : TicksPerMillisecond;
         var minUnits = (DateTimeOffset.MinValue.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks) / (decimal)ticksPerUnit;
         var maxUnits = (DateTimeOffset.MaxValue.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks) / (decimal)ticksPerUnit;
+        var where = $"{context}: column '{name}': epoch {(seconds ? "seconds" : "milliseconds")} value";
+        var option = options.EpochUnitOption;
         decimal value;
-        bool inRange;
         try
         {
             value = node.GetValue<decimal>();
-            inRange = value >= minUnits && value <= maxUnits;
         }
         catch (Exception ex) when (ex is FormatException or OverflowException or InvalidOperationException)
         {
-            value = 0;
-            inRange = false;
+            throw new PzConnectorException($"{where} is out of range for a timestamp", isTransient: false,
+                innerException: ex);
         }
 
-        if (!inRange)
+        // The unit-confusion guards come first. A seconds feed read as milliseconds lands in early 1970,
+        // and a milliseconds feed read as seconds lands centuries ahead: both would be silently wrong
+        // timestamps, and a wrong cursor would move the watermark wrongly for good.
+        if (!seconds && value < MinPlausibleMilliseconds)
         {
-            var hint = unit == EpochUnit.Seconds && options.EpochUnitOption is { } option
-                ? $" (is the value in milliseconds? then set '{option}: ms')"
-                : "";
             throw new PzConnectorException(
-                $"{context}: column '{name}': epoch {(unit == EpochUnit.Seconds ? "seconds" : "milliseconds")} " +
-                $"value is out of range for a timestamp{hint}", isTransient: false);
+                $"{where} is out of range (before 1973-03-03, below 1e11 ms); it looks like seconds" +
+                (option is null ? "" : $" -- set '{option}: s'"), isTransient: false);
+        }
+
+        if (seconds && value > MaxPlausibleSeconds)
+        {
+            throw new PzConnectorException(
+                $"{where} is out of range (after 3000-01-01); it looks like milliseconds" +
+                (option is null ? "" : $" -- set '{option}: ms'"), isTransient: false);
+        }
+
+        if (value < minUnits || value > maxUnits)
+        {
+            throw new PzConnectorException(seconds
+                ? $"{where} is out of range for a timestamp"
+                : $"{where} is out of range for a timestamp (microsecond and nanosecond epochs are not supported: " +
+                    "land the column as bigint and convert it in SQL)", isTransient: false);
         }
 
         return DateTimeOffset.UnixEpoch.AddTicks((long)decimal.Truncate(value * ticksPerUnit));
     }
+
+    /// <summary>1e11 ms is 1973-03-03T09:46:40Z: a smaller milliseconds value is almost always seconds.</summary>
+    public const decimal MinPlausibleMilliseconds = 100_000_000_000m;
+
+    /// <summary>3000-01-01T00:00:00Z in seconds: a larger seconds value is almost always milliseconds.</summary>
+    public const decimal MaxPlausibleSeconds = 32_503_680_000m;
 
     private static DateTimeOffset ParseTimestamp(string text, string name, string context)
     {
