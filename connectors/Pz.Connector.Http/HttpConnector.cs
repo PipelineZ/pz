@@ -64,7 +64,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "strategy": { "enum": ["page", "offset", "link_header", "cursor", "next_url"] },
                 "param": { "type": "string" }, "start": { "type": "integer" },
                 "size_param": { "type": "string" }, "size": { "type": "integer" },
-                "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" } },
+                "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" },
+                "location": { "enum": ["query", "body"] } },
                 "required": ["strategy"], "additionalProperties": false },
             "items": { "type": "string" },
             "columns": { "type": "object", "minProperties": 1, "additionalProperties": {
@@ -73,6 +74,11 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "cursor_pointer": { "type": "string" },
             "cursor_order": { "enum": ["asc", "desc"] },
             "delta_pointer": { "type": "string" },
+            "method": { "enum": ["get", "post"] },
+            "body": { "type": ["object", "string"] },
+            "body_format": { "enum": ["json", "form"] },
+            "content_type": { "type": "string" },
+            "error_pointer": { "type": "string" },
             "max_pages": { "type": "integer", "minimum": 1 } },
           "additionalProperties": false }
         """;

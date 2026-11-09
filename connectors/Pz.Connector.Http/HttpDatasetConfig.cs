@@ -1,3 +1,4 @@
+using System.Net.Http;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Bindings;
 using Pz.Connectors.Toolkit.Json;
@@ -9,10 +10,15 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     Func<IPageStrategy>? PageStrategyFactory, string ItemsPointer,
     IReadOnlyDictionary<string, string>? Columns, string? Cursor, string? CursorType,
     string CursorPointer, string? CursorOrder, int? MaxPages, string? DeltaLinkPointer,
-    bool StopOnShortPage = false, int? PageSize = null)
+    bool StopOnShortPage = false, int? PageSize = null,
+    HttpMethod? Method = null, HttpBody? Body = null, string? ErrorPointer = null,
+    BodyPaging? BodyPaging = null)
 {
     private static readonly HashSet<string> ContractTypes =
         ["int", "bigint", "double", "decimal", "varchar", "boolean", "date", "timestamp"];
+
+    /// <summary>True for a POST read; a config constructed without a method is a GET.</summary>
+    public bool IsPost => Method == HttpMethod.Post;
 
     public bool IsContractMode => Columns is { Count: > 0 };
 
@@ -40,12 +46,30 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             {
                 var template = YamlScalarText.Of(value) ?? "";
                 query[name] = template;
-                ValidateBindingTemplate(template, name, knownBindings, errors);
+                ValidateBindingTemplate(template, $"query option '{name}'", knownBindings, errors);
             }
+        }
+
+        var method = ParseMethod(options, errors);
+        var body = ParseBody(options, method, spec, errors);
+        var errorPointer = Get(options, "error_pointer");
+        if (errorPointer is not null)
+        {
+            ValidatePointer(errorPointer, "error_pointer", errors);
         }
 
         var items = ValidatePointer(Get(options, "items") ?? "", "items", errors);
         var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize);
+        BodyPaging? bodyPaging = null;
+        if (method == HttpMethod.Post && options.TryGetValue("pagination", out var pg)
+            && pg is IReadOnlyDictionary<string, object?> pgBlock)
+        {
+            // A non-post method with `location: body` is already refused by ParseBody.
+            bodyPaging = BodyPaging.Parse(pgBlock,
+                pgBlock.TryGetValue("strategy", out var st) ? YamlScalarText.Of(st) ?? "" : "",
+                body?.Template, items, errors);
+        }
+
         var columns = options.TryGetValue("columns", out var c)
             ? c as IReadOnlyDictionary<string, string>
             : null;
@@ -119,6 +143,12 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             ValidatePointer(deltaPointer, "delta_pointer", errors);
         }
 
+        if (method == HttpMethod.Post && deltaPointer is not null)
+        {
+            errors.Add("'delta_pointer' is not supported with 'method: post' (a delta link is replayed " +
+                "as a GET)");
+        }
+
         int? maxPages = null;
         if (options.TryGetValue("max_pages", out var mp) && mp is not null)
         {
@@ -139,9 +169,68 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 "(fix the dataset options and re-run)", isTransient: false);
         }
 
-        return new HttpDatasetConfig(path!, query, factory, items, columns, cursor, cursorType,
+        // Body paging replaces the URL strategy (which was parsed only for validation and the
+        // stop_on_short_page/size semantics); leaving it set would stamp the query string too.
+        return new HttpDatasetConfig(path!, query, bodyPaging is null ? factory : null, items, columns, cursor, cursorType,
             cursorPointer ?? (cursor is null ? "" : "/" + cursor), cursorOrder, maxPages, deltaPointer,
-            stopOnShortPage, pageSize);
+            stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging);
+    }
+
+    private static HttpMethod ParseMethod(IReadOnlyDictionary<string, object?> options, List<string> errors)
+    {
+        var method = Get(options, "method");
+        if (method is null or "get")
+        {
+            return HttpMethod.Get;
+        }
+
+        if (method == "post")
+        {
+            return HttpMethod.Post;
+        }
+
+        errors.Add($"'method' must be 'get' or 'post', got '{method}'");
+        return HttpMethod.Get;
+    }
+
+    private static HttpBody? ParseBody(IReadOnlyDictionary<string, object?> options, HttpMethod method,
+        DatasetSpec spec, List<string> errors)
+    {
+        options.TryGetValue("body", out var raw);
+        var bodyFormat = Get(options, "body_format");
+        var contentType = Get(options, "content_type");
+        var locationBody = options.TryGetValue("pagination", out var p)
+            && p is IReadOnlyDictionary<string, object?> block
+            && block.TryGetValue("location", out var loc) && YamlScalarText.Of(loc) == "body";
+
+        if (method != HttpMethod.Post)
+        {
+            foreach (var (present, option) in new[]
+            {
+                (raw is not null, "body"), (bodyFormat is not null, "body_format"),
+                (contentType is not null, "content_type"), (locationBody, "pagination.location: body"),
+            })
+            {
+                if (present)
+                {
+                    errors.Add($"'{option}' requires 'method: post'");
+                }
+            }
+
+            return null;
+        }
+
+        if (raw is null)
+        {
+            if (bodyFormat is not null || contentType is not null)
+            {
+                errors.Add("'body_format'/'content_type' require a 'body'");
+            }
+
+            return null;
+        }
+
+        return HttpBody.Parse(raw, bodyFormat, contentType, BindingExpander.FromSpec(spec).Keys.ToArray(), errors);
     }
 
     private static string? Get(IReadOnlyDictionary<string, object?> options, string key)
@@ -150,8 +239,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// <summary>Offline validation (no live request needed) of a `query:` value template
     /// against the engine-binding vocabulary — first line of defense; <see cref="HttpPartition"/>'s
     /// TryExpand call is the runtime-side defense in depth for the same two failure modes.</summary>
-    private static void ValidateBindingTemplate(string template, string option,
-        IReadOnlyCollection<string> knownBindings, List<string> errors)
+    internal static void ValidateBindingTemplate(string template, string label,
+        IReadOnlyCollection<string> knownBindings, List<string> errors, bool echoTemplate = true)
     {
         IReadOnlyList<string> referenced;
         try
@@ -160,7 +249,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
         catch (FormatException)
         {
-            errors.Add($"query option '{option}': malformed binding template '{template}' " +
+            errors.Add($"{label}: malformed binding template{(echoTemplate ? $" '{template}'" : "")} " +
                 "(expected '{{ name }}' with a lowercase name, e.g. '{{ watermark }}')");
             return;
         }
@@ -169,7 +258,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         {
             if (!knownBindings.Contains(name))
             {
-                errors.Add($"query option '{option}': unknown binding '{name}' — accepted: " +
+                errors.Add($"{label}: unknown binding '{name}' — accepted: " +
                     string.Join(", ", knownBindings.Order()));
             }
         }
