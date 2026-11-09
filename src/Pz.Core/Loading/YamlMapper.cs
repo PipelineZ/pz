@@ -22,6 +22,44 @@ public delegate string YamlScalarInterpolator(string text, bool isPlain, IReadOn
 /// </summary>
 public static class YamlMapper
 {
+    /// <summary>True when a line the parser failed on holds an unquoted <c>${</c>: inside a flow collection
+    /// (<c>auth: { token: ${X} }</c>) the <c>{</c> of a variable reference opens a nested flow map, and the
+    /// parser's own message ("did not find expected ',' or '}'") never says why.</summary>
+    private static bool UnquotedVariableInFlow(string path, YamlException ex)
+    {
+        if (ex.Start.Line <= 0)
+        {
+            return false;
+        }
+
+        string[] lines;
+        try
+        {
+            lines = File.ReadAllLines(path);
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+
+        var first = (int)Math.Max(1, ex.Start.Line);
+        var last = (int)Math.Min(lines.Length, Math.Max(ex.Start.Line, ex.End.Line));
+        for (var n = first; n <= last; n++)
+        {
+            var text = lines[n - 1];
+            for (var at = text.IndexOf("${", StringComparison.Ordinal); at >= 0;
+                 at = text.IndexOf("${", at + 2, StringComparison.Ordinal))
+            {
+                if (at == 0 || text[at - 1] is not ('"' or '\''))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Loads <paramref name="path"/> as YAML. <paramref name="relativePath"/> is the
     /// project-relative path used when reporting a syntax error.
@@ -56,7 +94,10 @@ public static class YamlMapper
                 $"Malformed YAML: {ex.Message}",
                 relativePath,
                 line,
-                "fix the YAML syntax near this location"));
+                UnquotedVariableInFlow(path, ex)
+                    ? "a ${...} inside a { } or [ ] collection is read as the start of another map, so quote it: " +
+                      "write token: \"${X}\", not token: ${X} (or use block style, one key per line)"
+                    : "fix the YAML syntax near this location"));
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {

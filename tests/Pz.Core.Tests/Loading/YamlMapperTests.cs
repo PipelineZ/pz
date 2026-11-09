@@ -57,6 +57,33 @@ public class YamlMapperTests
         Assert.Contains("Malformed YAML", error.Message);
     }
 
+    [Theory]
+    [InlineData("api:\n  auth: { type: bearer, token: ${API_TOKEN} }\n", 2)]
+    [InlineData("api:\n  auth: {token: ${API_TOKEN}}\n", 2)]
+    [InlineData("api:\n  auth: {\n    type: bearer,\n    token: ${API_TOKEN}\n  }\n", 4)]
+    [InlineData("api:\n  hosts: [a, ${HOST}]\n", 2)]
+    public void A_variable_reference_inside_a_flow_collection_gets_a_quoting_hint(string yaml, int line)
+    {
+        LoadString(yaml, out var error);
+
+        Assert.NotNull(error);
+        Assert.Equal(PzErrorCode.YamlShape, error.Code);
+        Assert.Equal(line, error.Line);
+        Assert.Contains("Malformed YAML", error.Message);
+        Assert.Contains("${...} inside a { } or [ ] collection", error.Hint);
+        Assert.Contains("quote it", error.Hint);
+        Assert.Contains("token: \"${X}\"", error.Hint);
+    }
+
+    [Fact]
+    public void A_flow_collection_error_without_a_variable_keeps_the_plain_hint()
+    {
+        LoadString("api:\n  auth: { type: bearer, token: {x }\n", out var error);
+
+        Assert.NotNull(error);
+        Assert.DoesNotContain("${", error.Hint);
+    }
+
     [Fact]
     public void Alias_expansion_beyond_the_node_budget_is_a_config_error()
     {
