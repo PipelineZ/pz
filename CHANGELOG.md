@@ -79,6 +79,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   limit; its wait is the response's `Retry-After`, else the connection's `retry_after` header, else the rule's
   `retry_after` (a duration up to `600s`), else the engine's backoff. A transient rule that matches an export's start
   request fails the read instead, because a retry would send the start again and could create a second export job.
+  The built-in classification of the start is unchanged: a `5xx`, a dropped connection or a timeout stays transient, so
+  the engine's node retry begins a new job, and only a job whose id pz knew is cancelled (with `export.cancel_path`).
   `action: permanent` fails the read with the rule named. `action: skip` ends the read with a notice saying 0 rows
   landed, and only on the read's first request (the first page, a `for_each` item's first page, or a direct file
   download); a skip rule that matches a later request, or the first request of a resumed attempt, fails the read.

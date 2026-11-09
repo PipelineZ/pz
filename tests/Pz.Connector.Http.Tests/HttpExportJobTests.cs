@@ -1466,6 +1466,146 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         Assert.Empty(rows);
     }
 
+    // ---- cancel_path and result lists against on_status rules and sign-in (parts 10 and 11) ----
+
+    [Fact]
+    public async Task Permanent_rule_on_a_poll_cancels_the_unfinished_job()
+    {
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json("""{"error":"job corrupt"}""", 500));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 500), ("body_contains", "corrupt"), ("action", "permanent")))), gate: new RetryingGate()));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("on_status[0]", ex.Message);
+        Assert.Single(Polls("/reports/j1"));
+        Assert.Single(Cancels());
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job j1 (poll failed)"], Notices());
+    }
+
+    [Fact]
+    public async Task Transient_rule_on_a_poll_cancels_once_after_the_gate_gives_up()
+    {
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        _server.Map("/reports/j1", _ => Json("""{"error":"busy"}""", 409));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 409), ("action", "transient")))), gate: new RetryingGate()));
+
+        Assert.True(ex.IsTransient);
+        Assert.Equal(3, Polls("/reports/j1").Count());
+        Assert.Single(Cancels());
+    }
+
+    [Fact]
+    public async Task Transient_rule_on_the_start_has_no_job_to_cancel()
+    {
+        _server.Map("/reports", _ => Json("""{"error":"try later"}""", 403));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 403), ("action", "transient"))))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Single(_server.Requests);
+        Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Rules_never_turn_a_failed_cancel_into_an_error()
+    {
+        MapJob("/reports/j1", "\"j1\"", """{"state":"failed"}""");
+        _server.Map("/reports/j1/cancel", _ => Json("""{"error":"busy"}""", 409));
+        var gate = new RecordingGate();
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport(),
+            OnStatus(Rule(("status", 409), ("action", "transient"), ("retry_after", "30s")))), gate: gate));
+
+        Assert.Contains("failed with status 'failed'", ex.Message);
+        Assert.Single(Cancels());
+        Assert.Single(gate.Calls, c => c.Label == "http.export_cancel");
+        Assert.Equal(["http source 'stub.traffic': export cancel: could not cancel export job j1 (reported failure): " +
+            $"HTTP 409 from DELETE {_server.BaseUrl}reports/j1/cancel"], Notices());
+    }
+
+    [Fact]
+    public async Task Refused_sign_in_during_the_cancel_is_a_notice_and_is_not_repeated()
+    {
+        // A unique refresh token: a refused sign-in is latched for the process, keyed by its credentials.
+        var refresh = "rt-" + Guid.NewGuid().ToString("N");
+        var tokens = 0;
+        _server.Map("/token", _ => ++tokens == 1
+            ? Json("""{"access_token":"acc1","expires_in":3600}""")
+            : Json("""{"error":"invalid_grant"}""", 400));
+        _server.Map("/reports", _ => Json("""{"id":"j1"}""", 202));
+        // The 401 drops the cached token, so the cancel has to sign in again, and that sign-in is refused.
+        _server.Map("/reports/j1", _ => new StubResponse(401, "{}"));
+        await using var source = Source(new Dictionary<string, object?>
+        {
+            ["type"] = "oauth2_refresh_token",
+            ["token_url"] = new Uri(_server.BaseUrl, "token").ToString(),
+            ["client_id"] = "c",
+            ["client_secret"] = "s3cret",
+            ["refresh_token"] = refresh,
+        });
+
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
+
+        Assert.Equal(2, tokens);
+        Assert.Empty(Cancels());
+        var notice = Assert.Single(Notices(), n => n.Contains("export cancel", StringComparison.Ordinal));
+        Assert.StartsWith("http source 'stub.traffic': export cancel: could not cancel export job j1 (poll failed): ",
+            notice);
+        Assert.DoesNotContain(refresh, notice);
+        Assert.DoesNotContain("s3cret", notice);
+
+        // The refusal is latched: a later read fails without asking the token endpoint again.
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
+        Assert.Equal(2, tokens);
+    }
+
+    [Fact]
+    public async Task Session_sign_in_covers_the_cancel_and_same_origin_files_only()
+    {
+        var logins = 0;
+        _server.Map("/auth/login", _ =>
+        {
+            logins++;
+            return Json("""{"session":{"token":"sess-tok"}}""");
+        });
+        _server.Map("/files/a.csv", _ => File("id,name\n1,a\n"));
+        _files.Map("/bucket/b.csv", _ => File("id,name\n2,b\n"));
+        MapJob("/reports/j1", "\"j1\"", ReadyFiles("/files/a.csv", FilesUrl("/bucket/b.csv?sig=S")));
+        await using var source = Source(new Dictionary<string, object?>
+        {
+            ["type"] = "session",
+            ["login"] = new Dictionary<string, object?>
+            {
+                ["path"] = "/auth/login",
+                ["body"] = new Dictionary<string, object?> { ["user"] = "me", ["password"] = "pw" },
+            },
+            ["token_pointer"] = "/session/token",
+            ["ttl"] = "30m",
+            ["inject"] = new Dictionary<string, object?> { ["header"] = "X-Session" },
+        });
+
+        var (rows, _) = await Read(Spec(Export(Urls)), source);
+
+        Assert.Equal([[1, "a"], [2, "b"]], rows);
+        Assert.Equal(1, logins);
+        Assert.Equal("sess-tok", Assert.Single(_server.Requests, r => r.Url.AbsolutePath == "/files/a.csv").Headers["X-Session"]);
+        Assert.False(Assert.Single(_files.Requests).Headers.ContainsKey("X-Session"));
+
+        // A failed job on the same signed-in source: the cancel carries the session token too.
+        _server.Map("/reports/j1", _ => Json("""{"state":"failed"}"""));
+        _server.Map("/reports/j1/cancel", _ => new StubResponse(204, ""));
+        await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(CancellingExport()), source));
+        Assert.Equal("sess-tok", Assert.Single(Cancels()).Headers["X-Session"]);
+        Assert.Equal(1, logins);
+    }
+
     private static StubResponse ZipFile(params (string Name, string Text)[] entries)
     {
         using var buffer = new MemoryStream();
