@@ -113,7 +113,8 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
             : config.IsFileMode
                 ? new HttpFilePartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
                     { Notice = _notice }
-                : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause);
+                : new HttpPartition(_client, _bareClient, _connection, config, spec, _time, _gate, pause)
+                    { Notice = _notice };
         return ValueTask.FromResult<IReadOnlyList<IDatasetPartition>>([partition]);
     }
 
@@ -124,8 +125,8 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
 
     /// <summary>Called at most once per open, before any plan/read call; partitions planned afterward
     /// report a file-mode zip with no matching member (`if_missing: empty`), a for_each cap that stopped
-    /// the read, or for_each items skipped under `on_missing: skip` through it, and so does the sign-in (a
-    /// refresh token rotated under `auth.rotation: ignore`).</summary>
+    /// the read, for_each items skipped under `on_missing: skip`, or a read skipped by an `on_status`
+    /// rule through it, and so does the sign-in (a refresh token rotated under `auth.rotation: ignore`).</summary>
     public void UseNotice(Action<string> notice)
     {
         _notice = notice;

@@ -47,8 +47,13 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     /// sets <see cref="Missing"/> instead of failing. Any later page's 404/410 still fails.</summary>
     internal bool SkipMissing { get; init; }
 
-    /// <summary>True once the first request was answered 404/410 under <see cref="SkipMissing"/>.</summary>
+    /// <summary>True once the first request was answered 404/410 under <see cref="SkipMissing"/>, or was
+    /// skipped by an <c>on_status</c> skip rule.</summary>
     internal bool Missing { get; private set; }
+
+    /// <summary>Where the notice for a read skipped by an <c>on_status</c> rule goes. Only a read that is
+    /// not a for_each item reports through it: item skips are counted by the for_each read.</summary>
+    internal Action<string>? Notice { get; init; }
 
     /// <summary>Where batch buffers come from; null means the shared native pool. Tests count with it.</summary>
     internal Apache.Arrow.Memory.MemoryAllocator? Allocator { get; init; }
@@ -59,7 +64,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
     // In sync mode the query IS the sync token, whose param name is server-defined, so messages drop
     // the whole query rather than masking the authenticator's params by name.
     private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
-        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: config.IsSyncMode, pause);
+        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: config.IsSyncMode, pause, config.OnStatus);
 
     // Set inside FetchPageCoreAsync when config.IsSyncMode: the delta pointer is resolved against
     // every page's body, and since only the terminal page of a Graph-style feed carries a
@@ -588,13 +593,33 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
                         "re-run with --full-refresh to restart the feed from the beginning", isTransient: false);
                 }
 
-                if (SkipMissing && firstOfCrawl && status is 404 or 410)
+                // on_status rules come before on_missing: they are the more specific declaration. Only the
+                // crawl's first request may be skipped; a skip rule matching any later one fails below.
+                var rule = _sender.MatchRule(result, text);
+                if (rule is { Action: StatusAction.Skip } && firstOfCrawl)
+                {
+                    if (HttpRequestSender.CarriesWatermark(spec))
+                    {
+                        throw _sender.SkipOnIncremental(result, text, stage: null, rule);
+                    }
+
+                    Missing = true;
+                    if (Item is null)
+                    {
+                        Notice?.Invoke($"{Label}: skipped the read: HTTP {status} from {Target(sent, sendUri)} " +
+                            $"matched {rule.Label} (skip); 0 rows landed");
+                    }
+
+                    return new FetchedPage([], null, null);
+                }
+
+                if (rule is null && SkipMissing && firstOfCrawl && status is 404 or 410)
                 {
                     Missing = true;
                     return new FetchedPage([], null, null);
                 }
 
-                throw _sender.StatusError(result, text);
+                throw _sender.StatusError(result, text, stage: null, rule);
             }
 
             JsonNode? body;

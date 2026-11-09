@@ -64,6 +64,13 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
     public bool IsForEach => ForEach is not null;
 
+    /// <summary>The request's `on_status` rules, tried in order before the built-in classification of a
+    /// non-2xx response. Null when the request declares none.</summary>
+    public IReadOnlyList<HttpStatusRule>? OnStatus { get; init; }
+
+    /// <summary>True when some `on_status` rule of this request skips.</summary>
+    public bool HasSkipRule => OnStatus?.Any(r => r.Action == StatusAction.Skip) == true;
+
     /// <summary>`pagination.concurrency`: how many page requests may be in flight (1 is strictly
     /// sequential); above 1 only for the plain `page` strategy.</summary>
     public int PageConcurrency { get; init; } = 1;
@@ -225,6 +232,9 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             ValidatePointer(errorPointer, "error_pointer", errors);
         }
 
+        var onStatus = HttpStatusRule.Parse(options.GetValueOrDefault("on_status"),
+            listRequest ? "for_each." : "", errors);
+
         var items = ValidatePointer(Get(options, "items") ?? "", "items", errors);
         var factory = ParsePagination(options, items, errors, out var stopOnShortPage, out var pageSize,
             out var pageNumbering);
@@ -385,6 +395,11 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             ValidateForEach(options, spec, rawExport is not null, deltaPointer is not null, errors);
         }
 
+        if (!listRequest)
+        {
+            ValidateSkipRules(options, spec, rawExport is not null, errors);
+        }
+
         if (listRequest)
         {
             reported.AddRange(errors.Select(e => "for_each: " + e));
@@ -408,6 +423,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             ForEach = forEach,
             PageConcurrency = pageConcurrency,
             PageNumbering = bodyPaging is null ? pageNumbering : null,
+            OnStatus = onStatus is { Count: > 0 } ? onStatus : null,
         };
     }
 
@@ -550,14 +566,8 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             errors.Add("'for_each' cannot be combined with 'export'");
         }
 
-        // A SQL-declared incremental has no WatermarkCursor on its first run or a full refresh, so a raw
-        // cursor or a watermark reference in either request marks the dataset incremental too.
         var block = options["for_each"] as IReadOnlyDictionary<string, object?>;
-        var incremental = spec.WatermarkCursor is not null
-            || options.GetValueOrDefault("cursor") is not null
-            || ReferencesWatermark(options)
-            || (block is not null && ReferencesWatermark(block));
-        if (!incremental)
+        if (!IsIncremental(options, spec))
         {
             return;
         }
@@ -574,6 +584,57 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                 errors.Add($"for_each on an incremental dataset cannot use {key}: a cut-short item would be " +
                     "skipped for good once the watermark passes it");
             }
+        }
+    }
+
+    /// <summary>Whether the dataset reads incrementally. A SQL-declared incremental has no WatermarkCursor
+    /// on its first run or a full refresh, so a raw cursor or a watermark reference in either request
+    /// (the dataset's own or its for_each list) marks the dataset incremental too.</summary>
+    private static bool IsIncremental(IReadOnlyDictionary<string, object?> options, DatasetSpec spec)
+    {
+        var block = options.GetValueOrDefault("for_each") as IReadOnlyDictionary<string, object?>;
+        return spec.WatermarkCursor is not null
+            || options.GetValueOrDefault("cursor") is not null
+            || ReferencesWatermark(options)
+            || (block is not null && ReferencesWatermark(block));
+    }
+
+    /// <summary>Refuses `skip` rules where a skipped response could cost data for good: on a dataset that is
+    /// or could be incremental (a skipped window lands nothing and the engine advances the watermark past
+    /// it; a skipped item lets its siblings move the watermark past it), and with `export` (a job has no
+    /// single first request to skip). A SQL-declared incremental reaches the connector with no
+    /// WatermarkCursor on its first run and under --full-refresh, so a `columns:` contract, whose columns
+    /// can be that cursor, counts as possibly incremental. Skip rules are found in the raw maps, so a rule
+    /// with other errors still has this refusal reported in the same pass; the for_each list's rules are
+    /// covered too.</summary>
+    private static void ValidateSkipRules(IReadOnlyDictionary<string, object?> options, DatasetSpec spec,
+        bool hasExport, List<string> errors)
+    {
+        var own = HttpStatusRule.SkipLabels(options.GetValueOrDefault("on_status"), "");
+        var list = HttpStatusRule.SkipLabels(
+            (options.GetValueOrDefault("for_each") as IReadOnlyDictionary<string, object?>)?.GetValueOrDefault("on_status"),
+            "for_each.");
+        var skips = own.Concat(list).ToList();
+        if (skips.Count == 0)
+        {
+            return;
+        }
+
+        var hasContract = options.GetValueOrDefault("columns") is IReadOnlyDictionary<string, string> { Count: > 0 };
+        if (IsIncremental(options, spec) || hasContract)
+        {
+            errors.Add($"{string.Join(", ", skips)}: action 'skip' is not allowed on a dataset that is or could be " +
+                "incremental — a skipped response would let the watermark move past rows never read (a raw " +
+                "'cursor', a {{ watermark }}/{{ window_upper }} reference, an incremental: block, or a 'columns:' " +
+                "contract, since a 'columns:' contract can carry the cursor of a SQL-declared incremental, which " +
+                "the connector cannot see on a first run or under --full-refresh); use action: permanent (fail) " +
+                "or transient (retry)");
+        }
+
+        if (hasExport && own.Count > 0)
+        {
+            errors.Add($"{string.Join(", ", own)}: action 'skip' cannot be combined with 'export' (an export job has " +
+                "no single first request to skip); use action: permanent or transient");
         }
     }
 

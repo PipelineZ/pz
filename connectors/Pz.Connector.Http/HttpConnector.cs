@@ -75,6 +75,9 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "max_response_mb": { "type": "integer", "minimum": 1, "maximum": 2047 },
             "max_download_mb": { "type": "integer", "minimum": 1, "maximum": 1048576 },
             "allow_hosts": { "type": "array", "items": { "type": "string" } },
+            "retry_after": { "type": "object", "properties": {
+                "header": { "type": "string" }, "kind": { "enum": ["seconds", "ms", "epoch"] } },
+                "required": ["header", "kind"], "additionalProperties": false },
             "proxy": { "oneOf": [
                 { "const": "none" },
                 { "type": "object", "properties": {
@@ -120,6 +123,12 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "body_format": { "enum": ["json", "form"] },
             "content_type": { "type": "string" },
             "error_pointer": { "type": "string" },
+            "on_status": { "type": "array", "minItems": 1, "items": { "type": "object", "properties": {
+                    "status": { "type": ["integer", "string", "array"] },
+                    "body_contains": { "type": "string", "minLength": 1 },
+                    "action": { "enum": ["transient", "permanent", "skip"] },
+                    "retry_after": { "type": "string" } },
+                    "required": ["status", "action"], "additionalProperties": false } },
             "max_pages": { "type": "integer", "minimum": 1 },
             "run_date": { "type": "object", "properties": {
                 "offset_days": { "type": "integer", "minimum": -36500, "maximum": 36500 }, "timezone": { "type": "string" },
@@ -166,6 +175,12 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "concurrency": { "type": "integer", "minimum": 1, "maximum": 16 } },
                     "required": ["strategy"], "additionalProperties": false },
                 "error_pointer": { "type": "string" },
+                "on_status": { "type": "array", "minItems": 1, "items": { "type": "object", "properties": {
+                    "status": { "type": ["integer", "string", "array"] },
+                    "body_contains": { "type": "string", "minLength": 1 },
+                    "action": { "enum": ["transient", "permanent", "skip"] },
+                    "retry_after": { "type": "string" } },
+                    "required": ["status", "action"], "additionalProperties": false } },
                 "max_pages": { "type": "integer", "minimum": 1 },
                 "fields": { "type": "object", "minProperties": 1,
                     "additionalProperties": { "type": "string" } },

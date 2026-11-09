@@ -71,6 +71,30 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     `reauth_status` (any 4xx except `407` and `429`) lists more statuses that mean the session expired, for example
     `[419, 440]`. `401` always counts: a list adds to it and never replaces it. Any other status, `403` included, is
     not treated as an expired session unless it is listed.
+- **http: status rules and a configurable Retry-After header.** `on_status` on a dataset is a list of rules
+  `{status, body_contains, action, retry_after}` that classify non-2xx responses before the built-in rules (408/429/5xx
+  transient, the rest permanent). `status` is a code from 400 to 599, `4xx`/`5xx`, or a list of those; `body_contains` is
+  a plain substring matched without regard to case (a file download matches the first 64 KiB of the error body). The
+  first matching rule wins. `action: transient` makes the response retryable, for example GitHub's `403` secondary rate
+  limit; its wait is the response's `Retry-After`, else the connection's `retry_after` header, else the rule's
+  `retry_after` (a duration up to `600s`), else the engine's backoff. A transient rule that matches an export's start
+  request fails the read instead, because a retry would send the start again and could create a second export job.
+  `action: permanent` fails the read with the rule named. `action: skip` ends the read with a notice saying 0 rows
+  landed, and only on the read's first request (the first page, a `for_each` item's first page, or a direct file
+  download); a skip rule that matches a later request, or the first request of a resumed attempt, fails the read.
+  Skipped `for_each` items are counted in the read's end notice together with `on_missing` skips. A skip rule without
+  `body_contains` must name exact codes and none of 401, 403, 408 or 429. `skip` is refused with `export` and on
+  datasets that are or could be incremental: a raw `cursor`, a `{{ watermark }}`/`{{ window_upper }}` reference, an
+  `incremental:` block, or a `columns:` contract (its columns can be the cursor of a SQL-declared incremental, which the
+  connector cannot see on a first run or under `--full-refresh`). At run time a skip rule that matches a read the engine sent a watermark (a cursor, value or upper bound) fails the read instead of skipping. One case stays open: on the first run, or under `--full-refresh`, of a raw-mode SQL-declared incremental with an inclusive SQL ceiling, no watermark is sent, so a skip there lands 0 rows and the engine advances the watermark to the ceiling. **A skipped read lands an empty table: an output in
+  `replace` mode fed only by it is emptied for that run.** The dataset's rules cover its own (item) requests;
+  `for_each.on_status` covers the list request. Built-in cases still come first: a proxy `407` (which a rule cannot
+  name), a `401` handled by an OAuth2 or Azure AD token, and a `410` on a replayed delta link; rules then come before
+  `for_each.on_missing`. The connection key `retry_after: {header, kind}` (`kind`: `seconds`, `ms` or `epoch`) supplies
+  the wait when a `429` or `503`, or a response a rule classifies as transient, has no usable `Retry-After`. It is capped
+  at 600 seconds (a stated wait above a day adds a note to check `kind`), also applies to sink requests, and moves the
+  shared pause of a concurrent read. A value that is not a number, or a wait that is already over (zero, or an epoch in
+  the past), is ignored with a note, and the next source of a wait applies. Without these keys, behaviour is unchanged.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

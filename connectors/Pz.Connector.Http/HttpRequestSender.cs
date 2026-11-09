@@ -27,10 +27,23 @@ internal sealed record SentResponse(HttpResponseMessage Response, Uri SendUri, H
 /// server-defined name (a sync token, a signed download link).</param>
 /// <param name="pause">The read's shared <c>Retry-After</c> pause: every hop waits it out, and a 429/503
 /// with a <c>Retry-After</c> moves it forward. Null means this sender neither waits nor notes.</param>
+/// <param name="rules">The request's <c>on_status</c> rules, tried in order before the built-in
+/// classification of a non-2xx response. Null or empty leaves the built-in classification alone.</param>
 internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpBody? body, IOperationGate? gate, TimeProvider time, string label, bool redactWholeQuery = false,
-    ThrottlePause? pause = null)
+    ThrottlePause? pause = null, IReadOnlyList<HttpStatusRule>? rules = null)
 {
+    /// <summary>True when some rule needs the response body to decide.</summary>
+    public bool RulesReadBody => rules?.Any(r => r.BodyContains is not null) == true;
+
+    /// <summary>True when some rule names <paramref name="status"/>, whatever its <c>body_contains</c>.</summary>
+    public bool RulesCover(int status) => rules?.Any(r => r.Covers(status)) == true;
+
+    /// <summary>The first <c>on_status</c> rule matching the response, or null. <paramref name="bodyText"/>
+    /// is the raw body (or its head), never shown.</summary>
+    public HttpStatusRule? MatchRule(SentResponse sent, string bodyText)
+        => HttpStatusRule.FirstMatch(rules, (int)sent.Response.StatusCode, bodyText);
+
     private const int MaxRedirects = 5;
 
     /// <summary>Runs <paramref name="op"/> straight through without a gate, and as the gate's op
@@ -177,35 +190,104 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
         }
     }
 
-    /// <summary>The generic non-2xx classification: 408/429/5xx are transient (with the response's
-    /// <c>Retry-After</c>, which on a 429/503 also moves the read's shared pause), everything else permanent with a
-    /// redacted body snippet.</summary>
+    /// <summary>The non-2xx classification: the first matching <c>on_status</c> rule, else the built-in
+    /// one -- 408/429/5xx are transient (with the response's <c>Retry-After</c>, which on a 429/503 also moves
+    /// the read's shared pause), everything else permanent with a redacted body snippet.</summary>
     public PzConnectorException StatusError(SentResponse sent, string bodyText, string? stage = null)
+        => StatusError(sent, bodyText, stage, MatchRule(sent, bodyText));
+
+    /// <summary>As <see cref="StatusError(SentResponse, string, string?)"/>, with the rule the caller
+    /// already matched (on text it may since have redacted) instead of matching again.</summary>
+    public PzConnectorException StatusError(SentResponse sent, string bodyText, string? stage, HttpStatusRule? rule)
     {
         var prefix = Prefix(stage);
         var status = (int)sent.Response.StatusCode;
+        if (rule is not null)
+        {
+            return RuleError(rule, sent, bodyText, prefix, status);
+        }
+
         if (TransientClassifier.IsTransientStatus(status))
         {
-            var retryAfter = TransientClassifier.ParseRetryAfter(
-                sent.Response.Headers.TryGetValues("Retry-After", out var values)
-                    ? values.FirstOrDefault()
-                    : null,
-                time.GetUtcNow());
+            var throttled = status is 429 or 503;
+            var retryAfter = RetryAfter(sent.Response, configuredFallback: throttled, out var note);
             // A throttle (429) or overload (503) hint is noted here, inside the gated operation and before
             // the exception reaches the gate, so the gate's retry of this request and every sibling
             // request of the read wait it out.
-            if (status is 429 or 503 && retryAfter is { } hint)
+            if (throttled && retryAfter is { } hint)
             {
                 pause?.Note(hint);
             }
 
-            return new PzConnectorException($"{prefix}: HTTP {status} from {Target(sent)}",
+            return new PzConnectorException($"{prefix}: HTTP {status} from {Target(sent)}{note}",
                 isTransient: true, retryAfter);
         }
 
         return new PzConnectorException(
             $"{prefix}: HTTP {status} from {Target(sent)}: {RedactSnippet(bodyText, sent.ServerChosen)} " +
             "(check the endpoint path and auth config)", isTransient: false);
+    }
+
+    /// <summary>What a matched rule makes of the response. A <c>skip</c> rule only gets here for a request
+    /// that may not be skipped (the caller handles a skippable one), so it fails the read naming the rule:
+    /// falling through to another classification would hide that the rule matched where it cannot act.</summary>
+    private PzConnectorException RuleError(HttpStatusRule rule, SentResponse sent, string bodyText, string prefix,
+        int status)
+    {
+        switch (rule.Action)
+        {
+            case StatusAction.Transient:
+            {
+                // The server's own timing first, then the connection's header, then the rule's constant. A
+                // rule is how a user says "this is a throttle", so its hint moves the shared pause too.
+                var retryAfter = RetryAfter(sent.Response, configuredFallback: true, out var note) ?? rule.RetryAfter;
+                if (retryAfter is { } hint)
+                {
+                    pause?.Note(hint);
+                }
+
+                return new PzConnectorException($"{prefix}: HTTP {status} from {Target(sent)} ({rule.Label}: transient){note}",
+                    isTransient: true, retryAfter);
+            }
+
+            case StatusAction.Permanent:
+                return new PzConnectorException(
+                    $"{prefix}: HTTP {status} from {Target(sent)}: {RedactSnippet(bodyText, sent.ServerChosen)} " +
+                    $"({rule.Label}: permanent)", isTransient: false);
+            default:
+                return new PzConnectorException(
+                    $"{prefix}: HTTP {status} from {Target(sent)}: {RedactSnippet(bodyText, sent.ServerChosen)} " +
+                    $"matched {rule.Label} (skip), but skip applies only to the first request of a read or of a " +
+                    "for_each item, and this was a later request; narrow the rule's status/body_contains or " +
+                    "use action: permanent", isTransient: false);
+        }
+    }
+
+    /// <summary>A <c>skip</c> rule that matched the first request of a read carrying a watermark (a cursor,
+    /// a value or an upper bound): validation could not see the incremental (a raw-mode SQL-declared one),
+    /// but the read is one, and a skipped incremental read can let the watermark move past rows never read.</summary>
+    public PzConnectorException SkipOnIncremental(SentResponse sent, string bodyText, string? stage, HttpStatusRule rule)
+        => new($"{Prefix(stage)}: HTTP {(int)sent.Response.StatusCode} from {Target(sent)}: " +
+            $"{RedactSnippet(bodyText, sent.ServerChosen)} matched {rule.Label} (skip), but skip is refused on " +
+            "incremental reads, and this read carries a watermark: a skipped incremental read can let the watermark " +
+            "move past rows never read; use action: permanent (fail) or transient (retry)", isTransient: false);
+
+    /// <summary>True when the read carries any watermark the engine stamped.</summary>
+    public static bool CarriesWatermark(DatasetSpec spec)
+        => spec.WatermarkCursor is not null || spec.WatermarkValue is not null || spec.WatermarkUpperBound is not null;
+
+    /// <summary>The response's <c>Retry-After</c>; when it has none usable and
+    /// <paramref name="configuredFallback"/>, the wait the connection's <c>retry_after</c> header states.
+    /// <paramref name="note"/> says when that header was present but unreadable.</summary>
+    private TimeSpan? RetryAfter(HttpResponseMessage response, bool configuredFallback, out string note)
+    {
+        note = "";
+        var now = time.GetUtcNow();
+        var standard = TransientClassifier.ParseRetryAfter(
+            response.Headers.TryGetValues("Retry-After", out var values) ? values.FirstOrDefault() : null, now);
+        return standard is null && configuredFallback && connection.RetryAfter is { } configured
+            ? configured.Read(response, now, out note)
+            : standard;
     }
 
     private bool IsBaseOrigin(Uri uri)
