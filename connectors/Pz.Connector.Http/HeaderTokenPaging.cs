@@ -46,20 +46,12 @@ internal sealed record HeaderTokenPaging(string Header, PageTokenSource Source)
     /// <summary>Request header names pz or the HTTP stack owns: credentials, cookies and framing. An
     /// endpoint-chosen value in any of them would replace or corrupt what pz sends. Content headers
     /// (<c>Content-*</c>, <c>Expires</c>, <c>Allow</c>, ...) are refused separately by
-    /// <see cref="IsRequestHeader"/>, which asks the HTTP stack itself.</summary>
+    /// <see cref="HttpHeaderNames.IsRequestHeader"/>, which asks the HTTP stack itself.</summary>
     internal static readonly HashSet<string> ReservedHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization", "Proxy-Authorization", "Cookie", "Host", "Transfer-Encoding", "Connection", "Expect", "TE",
         "Upgrade",
     };
-
-    /// <summary>Whether <paramref name="name"/> can go on a request's own headers. The HTTP stack refuses the
-    /// names it treats as content headers there, so a page token in one would never be sent.</summary>
-    public static bool IsRequestHeader(string name)
-    {
-        using var probe = new HttpRequestMessage();
-        return probe.Headers.TryAddWithoutValidation(name, "probe");
-    }
 
     /// <summary>The page header a request would not send: <see cref="ReservedHeaders"/> or one of
     /// the connection's own (<c>headers:</c> or the <c>api_key</c> auth header), or null. Known before the first
@@ -119,9 +111,4 @@ internal sealed record HeaderTokenPaging(string Header, PageTokenSource Source)
 
     private static bool HasEdgeWhitespace(string value)
         => value.Length > 0 && (value[0] is ' ' or '\t' || value[^1] is ' ' or '\t');
-
-    /// <summary>An RFC 9110 token: what a header field name may contain.</summary>
-    public static bool IsHeaderName(string name)
-        => name.Length > 0 && name.All(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9'
-            || "!#$%&'*+-.^_`|~".Contains(c));
 }

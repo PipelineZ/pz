@@ -158,7 +158,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
 
         // Compared as the query string compares them: decoded, in any case.
         if (connection.SessionInject?.Query is { } secret
-            && request.QueryPagingParams.FirstOrDefault(p => string.Equals(Decoded(secret), Decoded(p),
+            && request.QueryPagingParams.FirstOrDefault(p => string.Equals(HttpCheckpointToken.DecodedQueryName(secret), HttpCheckpointToken.DecodedQueryName(p),
                 StringComparison.OrdinalIgnoreCase)) is { } clash)
         {
             clashes.Add($"{prefix}pagination query parameter '{clash}' is also the session sign-in's query token " +
@@ -174,18 +174,6 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         {
             _notice?.Invoke($"{label}: {prefix}pagination 'location' '{location}' is not one of query, body, header; " +
                 "it is ignored and the token goes in the query string (fix it: `pz validate` reports it)");
-        }
-    }
-
-    private static string Decoded(string name)
-    {
-        try
-        {
-            return Uri.UnescapeDataString(name.Replace('+', ' '));
-        }
-        catch (UriFormatException)
-        {
-            return name;
         }
     }
 

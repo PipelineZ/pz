@@ -199,14 +199,11 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
         }
     }
 
-    /// <summary>The non-2xx classification: the first matching <c>on_status</c> rule, else the built-in
+    /// <summary>The non-2xx classification: the matched <c>on_status</c> <paramref name="rule"/>, else the built-in
     /// one -- 408/429/5xx are transient (with the response's <c>Retry-After</c>, which on a 429/503 also moves
     /// the read's shared pause), everything else permanent with a redacted body snippet.</summary>
-    public PzConnectorException StatusError(SentResponse sent, string bodyText, string? stage = null)
-        => StatusError(sent, bodyText, stage, MatchRule(sent, bodyText));
-
-    /// <summary>As <see cref="StatusError(SentResponse, string, string?)"/>, with the rule the caller
-    /// already matched (on text it may since have redacted) instead of matching again.</summary>
+    /// <remarks><paramref name="rule"/> is the rule the caller already matched with <see cref="MatchRule"/> (on
+    /// text it may since have redacted), never matched again here.</remarks>
     public PzConnectorException StatusError(SentResponse sent, string bodyText, string? stage, HttpStatusRule? rule)
     {
         var prefix = Prefix(stage);

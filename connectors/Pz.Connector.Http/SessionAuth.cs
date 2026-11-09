@@ -101,7 +101,7 @@ internal sealed record SessionOptions(
 
         if (ttlText is not null)
         {
-            if (TryParseDuration(ttlText, out var parsed) && parsed >= MinTtl && parsed <= MaxTtl)
+            if (HttpDuration.TryParse(ttlText, out var parsed) && parsed >= MinTtl && parsed <= MaxTtl)
             {
                 ttl = parsed;
             }
@@ -323,7 +323,7 @@ internal sealed record SessionOptions(
             {
                 errors.Add($"auth.login.headers.{name}: set the body's type with auth.login.content_type");
             }
-            else if (!IsRequestHeaderName(name))
+            else if (!HttpHeaderNames.IsRequestHeader(name))
             {
                 errors.Add($"auth.login.headers has an invalid header name '{name}'");
             }
@@ -379,7 +379,7 @@ internal sealed record SessionOptions(
             errors.Add("auth.inject.prefix applies only with auth.inject.header");
         }
 
-        if (header is not null && (IsContentHeader(header) || !IsRequestHeaderName(header)))
+        if (header is not null && (IsContentHeader(header) || !HttpHeaderNames.IsRequestHeader(header)))
         {
             errors.Add($"auth.inject.header '{header}' is not a request header name");
         }
@@ -401,12 +401,6 @@ internal sealed record SessionOptions(
 
     private static bool IsContentHeader(string name)
         => name.StartsWith("Content-", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsRequestHeaderName(string name)
-    {
-        using var probe = new HttpRequestMessage();
-        return name.Length > 0 && probe.Headers.TryAddWithoutValidation(name, "x");
-    }
 
     private static string? LoginText(IReadOnlyDictionary<string, object?> login, string key, List<string> errors)
     {
@@ -442,41 +436,6 @@ internal sealed record SessionOptions(
         catch (ArgumentException)
         {
             errors.Add($"auth.{key} is not a valid JSON pointer: '{pointer}' (it must start with '/')");
-        }
-    }
-
-    /// <summary>pz's one duration grammar for config: a non-negative integer and one of <c>ms|s|m|h|d</c>,
-    /// lowercase, no spaces, signs, fractions or compounds.</summary>
-    internal static bool TryParseDuration(string text, out TimeSpan value)
-    {
-        value = default;
-        var unitStart = 0;
-        while (unitStart < text.Length && char.IsAsciiDigit(text[unitStart]))
-        {
-            unitStart++;
-        }
-
-        if (unitStart == 0
-            || !long.TryParse(text.AsSpan(0, unitStart), NumberStyles.None, CultureInfo.InvariantCulture, out var magnitude))
-        {
-            return false;
-        }
-
-        try
-        {
-            switch (text[unitStart..])
-            {
-                case "ms": value = TimeSpan.FromMilliseconds(magnitude); return true;
-                case "s": value = TimeSpan.FromSeconds(magnitude); return true;
-                case "m": value = TimeSpan.FromMinutes(magnitude); return true;
-                case "h": value = TimeSpan.FromHours(magnitude); return true;
-                case "d": value = TimeSpan.FromDays(magnitude); return true;
-                default: return false;
-            }
-        }
-        catch (OverflowException)
-        {
-            return false;
         }
     }
 

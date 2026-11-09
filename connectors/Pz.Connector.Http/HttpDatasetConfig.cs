@@ -979,7 +979,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
             else if (Get("param") is { } headerParam)
             {
-                if (!HeaderTokenPaging.IsHeaderName(headerParam))
+                if (!HttpHeaderNames.IsToken(headerParam))
                 {
                     errors.Add($"pagination 'param' '{headerParam}' is not a valid HTTP header name");
                 }
@@ -988,7 +988,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
                     errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (pz or the HTTP " +
                         "stack sets that header); name the header the API reads the token from");
                 }
-                else if (!HeaderTokenPaging.IsRequestHeader(headerParam))
+                else if (!HttpHeaderNames.IsRequestHeader(headerParam))
                 {
                     errors.Add($"pagination 'param' '{headerParam}' cannot carry the page token (HTTP treats it as a " +
                         "content header, which a request without a body never sends); name the header the API reads " +
@@ -1003,7 +1003,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             {
                 errors.Add($"pagination 'header' is only valid with strategy 'cursor' (got strategy '{strategy}')");
             }
-            else if (!HeaderTokenPaging.IsHeaderName(responseHeader))
+            else if (!HttpHeaderNames.IsToken(responseHeader))
             {
                 errors.Add($"pagination 'header' '{responseHeader}' is not a valid HTTP header name");
             }

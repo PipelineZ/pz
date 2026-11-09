@@ -114,7 +114,7 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
         }
 
         var header = map.TryGetValue("header", out var h) ? YamlScalarText.Of(h) : null;
-        if (string.IsNullOrEmpty(header) || YamlScalarText.NonScalarKind(h) is not null || !IsToken(header))
+        if (string.IsNullOrEmpty(header) || YamlScalarText.NonScalarKind(h) is not null || !HttpHeaderNames.IsToken(header))
         {
             errors.Add($"retry_after.header must be a header name, got '{header}'");
         }
@@ -136,8 +136,4 @@ internal sealed record HttpRetryAfterHeader(string Header, RetryAfterKind Kind)
 
         return errors.Count > before ? null : new HttpRetryAfterHeader(header!, kind!.Value);
     }
-
-    // RFC 9110 token characters.
-    private static bool IsToken(string name)
-        => name.All(c => char.IsAsciiLetterOrDigit(c) || "!#$%&'*+-.^_`|~".Contains(c));
 }

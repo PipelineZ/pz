@@ -547,7 +547,8 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         using var sent = await sender.SendAsync(new HttpPageRequest(HttpMethod.Get, new Uri(_server.BaseUrl, "r"), null,
             null), streamBody: false, credentialsOnlyToOrigin: false, CancellationToken.None);
 
-        var ex = sender.StatusError(sent, await sent.Response.Content.ReadAsStringAsync());
+        var body = await sent.Response.Content.ReadAsStringAsync();
+        var ex = sender.StatusError(sent, body, stage: null, sender.MatchRule(sent, body));
 
         Assert.Equal(TimeSpan.FromSeconds(30), ex.RetryAfter);
         var wait = pause.WaitAsync(CancellationToken.None);
@@ -573,7 +574,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         using var sent = await sender.SendAsync(new HttpPageRequest(HttpMethod.Get, new Uri(_server.BaseUrl, "r"), null,
             null), streamBody: false, credentialsOnlyToOrigin: false, CancellationToken.None);
 
-        Assert.Equal(TimeSpan.FromSeconds(12), sender.StatusError(sent, "{}").RetryAfter);
+        Assert.Equal(TimeSpan.FromSeconds(12), sender.StatusError(sent, "{}", stage: null, sender.MatchRule(sent, "{}")).RetryAfter);
         var wait = pause.WaitAsync(CancellationToken.None);
         Assert.False(wait.IsCompleted);
         clock.Advance(TimeSpan.FromSeconds(12));

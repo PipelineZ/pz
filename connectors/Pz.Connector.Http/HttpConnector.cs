@@ -33,24 +33,24 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
 
     // Shared schema fragments. Each mirrors its parser exactly (HttpSchemaParserAgreementTests holds them to it).
 
-    /// <summary>An RFC 9110 token: what a header field name may contain (as the parsers check it).</summary>
+    /// <summary>An RFC 9110 token: what a header field name may contain (<see cref="HttpHeaderNames.IsToken"/>).</summary>
     private const string HeaderName = """{ "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" }""";
 
     /// <summary>A header a request can carry itself: a token that is not a content header
-    /// (as the parsers check it).</summary>
+    /// (<see cref="HttpHeaderNames.IsRequestHeader"/>; a session header also refuses every <c>Content-*</c>).</summary>
     private const string RequestHeaderName = """
         { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$",
           "not": { "pattern": "^([Cc][Oo][Nn][Tt][Ee][Nn][Tt]-.*|[Aa][Ll][Ll][Oo][Ww]|[Ee][Xx][Pp][Ii][Rr][Ee][Ss]|[Ll][Aa][Ss][Tt]-[Mm][Oo][Dd][Ii][Ff][Ii][Ee][Dd])$" } }
         """;
 
-    /// <summary>A session <c>ttl</c>: the pz duration grammar from 1s to 30d.</summary>
+    /// <summary>A session <c>ttl</c>: <see cref="HttpDuration"/> from 1s to 30d.</summary>
     private const string SessionTtl =
         "^0*([1-9][0-9]{3,8}ms|1[0-9]{9}ms|2[0-4][0-9]{8}ms|25[0-8][0-9]{7}ms|259[01][0-9]{6}ms|2592000000ms" +
         "|[1-9][0-9]{0,5}s|1[0-9]{6}s|2[0-4][0-9]{5}s|25[0-8][0-9]{4}s|259[01][0-9]{3}s|2592000s" +
         "|[1-9][0-9]{0,3}m|[1-3][0-9]{4}m|4[0-2][0-9]{3}m|43[01][0-9]{2}m|43200m" +
         "|[1-9][0-9]?h|[1-6][0-9]{2}h|7[01][0-9]h|720h|([1-9]|[12][0-9]|30)d)$";
 
-    /// <summary>A rule's <c>retry_after</c>: the pz duration grammar above 0 and at most 600s.</summary>
+    /// <summary>A rule's <c>retry_after</c>: <see cref="HttpDuration"/> above 0 and at most 600s.</summary>
     private const string RuleRetryAfter =
         "^0*([1-9][0-9]{0,4}ms|[1-5][0-9]{5}ms|600000ms|[1-9][0-9]?s|[1-5][0-9]{2}s|600s|([1-9]|10)m)$";
 
