@@ -94,7 +94,7 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   first request (a 404 on a later page still fails) and reports the count in a notice at the end of the read; the
   default `error` fails. `for_each.max_items` stops after that many list records, with a notice, and does not fetch a
   further list page once it is reached. An item-level `max_pages` that stops items before their last page is reported
-  in one notice at the end of the read. On an incremental dataset (a declared watermark, a raw `cursor:`, or a
+  in one notice at the end of the read. Like `for_each.max_items`, that notice counts per attempt. On an incremental dataset (a declared watermark, a raw `cursor:`, or a
   `{{ watermark }}`/`{{ window_upper }}` reference in either request) `for_each.max_items`, `for_each.max_pages` and
   the item-level `max_pages` are refused at validation, because an item cut short would be skipped for good once the
   watermark passes it; the 50,000-page ceiling stays an error everywhere. A read resumes from a checkpoint at the item
