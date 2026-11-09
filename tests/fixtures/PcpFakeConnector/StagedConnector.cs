@@ -185,6 +185,11 @@ internal class StagedSource(ISource inner, FixtureOptions options) : ISource, IO
 
     public bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
     {
+        if (options.ThrowUnhandledAtPlan)
+        {
+            throw new InvalidOperationException("--throw-unhandled-at-plan: a staged connector defect while planning");
+        }
+
         if (options.SyncState)
         {
             // A feed read has no SQL fragment DuckDB could scan: the token only exists once the
