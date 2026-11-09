@@ -535,6 +535,46 @@ public class ConnectionsLoaderTests
     }
 
     [Fact]
+    public void Columns_long_form_pointer_becomes_the_column_pointers_option()
+    {
+        var dataset = Assert.Single(Assert.Single(Load(WithEmail(
+            "{ type: varchar, pointer: /contact/email, redact: true }")).Connections).Datasets);
+
+        Assert.Equal(new Dictionary<string, string> { ["id"] = "bigint", ["email"] = "varchar" }, dataset.Columns);
+        Assert.Equal(["email"], dataset.RedactedColumns);
+        var pointers = Assert.IsType<Dictionary<string, object?>>(dataset.Options["column_pointers"]);
+        Assert.Equal("/contact/email", Assert.Single(pointers, p => p.Key == "email").Value);
+    }
+
+    [Fact]
+    public void Columns_without_pointers_add_no_option() =>
+        Assert.False(Assert.Single(Assert.Single(Load(WithEmail("{ type: varchar, redact: true }")).Connections)
+            .Datasets).Options.ContainsKey("column_pointers"));
+
+    [Theory]
+    [InlineData("{ type: varchar, pointer: contact/email }")]
+    [InlineData("{ type: varchar, pointer: '' }")]
+    [InlineData("{ type: varchar, pointer: '/a/~2' }")]
+    [InlineData("{ type: varchar, pointer: [ a ] }")]
+    public void Columns_pointer_must_be_a_json_pointer(string entry)
+    {
+        var error = Assert.Single(Errors(WithEmail(entry)), e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("column 'email'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'pointer'", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Hand_written_column_pointers_is_refused()
+    {
+        var error = Assert.Single(Errors(RedactYaml.Replace("columns:", "column_pointers: { id: /x }\n        columns:")),
+            e => e.Code == PzErrorCode.YamlShape);
+
+        Assert.Contains("'column_pointers'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("pointer", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Columns_long_form_unknown_key_is_refused()
     {
         var error = Assert.Single(Errors(WithEmail("{ type: varchar, mask: true }")), e => e.Code == PzErrorCode.YamlShape);

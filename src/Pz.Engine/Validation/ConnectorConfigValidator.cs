@@ -90,6 +90,8 @@ public static class ConnectorConfigValidator
             foreach (var dataset in source.Datasets)
             {
                 var options = MergeColumns(dataset.Options, dataset.Columns);
+                RefuseUnsupportedColumnPointers(connector.DatasetConfigSchema, options, source.Connector,
+                    source.Name, dataset.Name, source.FilePath, errors);
                 ValidateSchema(connector.DatasetConfigSchema, options, "connection", source.Name,
                     $"dataset '{dataset.Name}'", source.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
                     new HashSet<string>(StringComparer.Ordinal));
@@ -659,6 +661,48 @@ public static class ConnectorConfigValidator
     /// to the "same missing key, re-reported in our own connectors' standard phrasing" duplicate.</summary>
     private static bool ReferencesFlaggedKey(string message, HashSet<string> requiredFlaggedKeys) =>
         requiredFlaggedKeys.Any(key => message.Contains($"requires '{key}'", StringComparison.Ordinal));
+
+    private const string ColumnPointersOption = "column_pointers";
+
+    /// <summary>A column's <c>pointer</c> reaches the connector as the <c>column_pointers</c> read option,
+    /// which a connector opts into by listing it in its dataset schema. One that does not would otherwise
+    /// report an "unknown option" pz wrote, not the user; this names the columns instead and removes the
+    /// key from <paramref name="options"/> so the schema check does not report it a second time. An empty
+    /// schema declares nothing to check against (see <see cref="ValidateSchema"/>), so it is left alone.</summary>
+    private static void RefuseUnsupportedColumnPointers(string schemaText, Dictionary<string, object?> options,
+        string connector, string name, string dataset, string filePath, List<PzError> errors)
+    {
+        if (string.IsNullOrEmpty(schemaText) || !options.TryGetValue(ColumnPointersOption, out var raw))
+        {
+            return;
+        }
+
+        try
+        {
+            using var schemaDoc = JsonDocument.Parse(schemaText);
+            if (schemaDoc.RootElement.ValueKind == JsonValueKind.Object
+                && schemaDoc.RootElement.TryGetProperty("properties", out var properties)
+                && properties.ValueKind == JsonValueKind.Object
+                && properties.TryGetProperty(ColumnPointersOption, out _))
+            {
+                return;
+            }
+        }
+        catch (JsonException)
+        {
+            return; // malformed schema: ValidateSchema reports it in its own terms
+        }
+
+        options.Remove(ColumnPointersOption);
+        var columns = raw is IReadOnlyDictionary<string, object?> map
+            ? string.Join(", ", map.Keys.Order(StringComparer.Ordinal).Select(c => $"'{c}'"))
+            : "(unknown)";
+        errors.Add(new PzError(PzErrorCode.ConnectorConfigInvalid,
+            $"connection '{name}': dataset '{dataset}': column(s) {columns} declare a 'pointer', which " +
+            $"connector '{connector}' does not support", filePath, null,
+            "remove 'pointer' from those columns -- only connectors that read JSON records (such as http) " +
+            "read a column from a nested pointer"));
+    }
 
     /// <summary>Mirrors <c>SpecBuilder.ForSourceLoad</c>'s options/columns merge so tier 3 validates the
     /// exact same dataset config shape the executor/planner will see -- the loader stores a dataset's

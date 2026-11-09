@@ -155,6 +155,22 @@ public class ReadSurfaceTests
             Assert.Single(DagCompiler.Compile(marked, Ctx(marked)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
     }
 
+    // A pointer changes what lands in the column, so it must force a re-extraction.
+    [Fact]
+    public void Column_pointers_change_the_source_node_id()
+    {
+        PzProject With(string status) => Project(
+            [Pipe("a", Into("out", strategy: "replace") +
+                       $"select id from {{{{ source('crm', 'orders', columns: {{ id: 'bigint', status: {status} }}) }}}}")],
+            sources: [Crm()], sinks: [Sink()]);
+        var plain = With("'varchar'");
+        var nested = With("{ type: 'varchar', pointer: '/fields/status' }");
+
+        Assert.NotEqual(
+            Assert.Single(DagCompiler.Compile(plain, Ctx(plain)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id,
+            Assert.Single(DagCompiler.Compile(nested, Ctx(nested)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
+    }
+
     // Review of batch 1: a call site's redact mark must not be silently lost to another pipeline's bare
     // call for the same dataset (which would preview the column in clear). PZ0349 refuses the second
     // reader outright, so the marks can never be dropped this way.

@@ -185,6 +185,46 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Equal("remove or rename it -- accepted options: verify", error.Hint);
     }
 
+    private static ConnectionDef WithPointers(string connector) =>
+        new("crm", connector, new Dictionary<string, object?>(),
+            [new DatasetDef("customers", new Dictionary<string, object?>
+                {
+                    ["path"] = "c.csv",
+                    ["column_pointers"] = new Dictionary<string, object?> { ["status"] = "/a/b", ["email"] = "/c" },
+                },
+                new Dictionary<string, string> { ["status"] = "varchar", ["email"] = "varchar" })],
+            "connections.yml");
+
+    /// <summary>A column `pointer` reaches the connector as `column_pointers`; a connector whose dataset
+    /// schema does not list it cannot honour it, and the refusal names the columns, not the internal key.</summary>
+    [Fact]
+    public async Task Column_pointers_on_a_connector_that_does_not_list_them_name_the_columns()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("localfiles", new StubConnector { DatasetConfigSchema = LocalFilesDatasetSchema });
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("localfiles")]),
+            registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Contains("dataset 'customers'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'email', 'status'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("connector 'localfiles'", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("unknown option", error.Message, StringComparison.Ordinal);
+        Assert.Contains("pointer", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Column_pointers_pass_on_a_connector_that_lists_them()
+    {
+        var schema = LocalFilesDatasetSchema.Replace("\"path\": { \"type\": \"string\" }",
+            "\"path\": { \"type\": \"string\" }, \"column_pointers\": { \"type\": \"object\" }");
+        var registry = new ConnectorRegistry();
+        registry.AddSource("http", new StubConnector { DatasetConfigSchema = schema });
+
+        Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("http")]), registry, default));
+    }
+
     [Fact]
     public async Task Wrong_type_dataset_option_is_PZ0301()
     {
