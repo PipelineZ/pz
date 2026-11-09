@@ -967,7 +967,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         var stopsOnShort = stopOnShortPage;
         // An unknown location is not an error here: GET reads ignored the key before header paging existed, and
         // configs that ran then must keep running. The dataset schema reports it at `pz validate`, and the read
-        // gives a notice (IgnoredLocation).
+        // gives a notice (IgnoredLocation). POST reads refuse it in BodyPaging.Parse.
         var location = Get("location");
 
         if (location == "header")
