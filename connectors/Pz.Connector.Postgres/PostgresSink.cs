@@ -46,7 +46,7 @@ internal sealed class PostgresSink(string connectionString) : ISink
             throw new PzConnectorException(
                 $"output '{spec.Output}': postgres sink supports only 'append'/'replace'/'merge' write " +
                 $"modes (got '{spec.Mode}')",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (string.Equals(spec.Mode, "merge", StringComparison.Ordinal))

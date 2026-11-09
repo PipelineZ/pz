@@ -129,7 +129,7 @@ internal sealed class SftpWindowFilter
             "timestamp" => TimestampRowKept(loText, hiText),
             "varchar" => VarcharRowKept(loText, hiText),
             _ => throw new PzConnectorException(
-                $"window filter: unsupported cursor column type '{typeName}'", isTransient: false),
+                $"window filter: unsupported cursor column type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
 
     private static Func<IArrowArray, int, bool> IntRowKept(string loText, string hiText)

@@ -54,7 +54,7 @@ internal static class MotherDuckSql
         return (schema, table);
 
         static PzConnectorException Malformed(string entity) => new(
-            $"entity '{entity}': expected 'table' or 'schema.table'", isTransient: false);
+            $"entity '{entity}': expected 'table' or 'schema.table'", isTransient: false, code: PzConnectorErrorCodes.Config);
     }
 
     internal static string QualifiedTable(string database, string entity)
@@ -116,7 +116,7 @@ internal static class MotherDuckSql
             case "merge":
                 if (keys.Count == 0)
                 {
-                    throw new PzConnectorException($"output '{table}': merge requires at least one key column", isTransient: false);
+                    throw new PzConnectorException($"output '{table}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
@@ -196,5 +196,5 @@ internal static class MotherDuckSql
         spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns ? columns : null;
 
     private static string Require(ConnectorConfig config, string key) =>
-        config.GetString(key) is { Length: > 0 } s ? s : throw new PzConnectorException($"motherduck connection requires '{key}'", isTransient: false);
+        config.GetString(key) is { Length: > 0 } s ? s : throw new PzConnectorException($"motherduck connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 }

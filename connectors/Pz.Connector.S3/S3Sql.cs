@@ -62,7 +62,7 @@ internal static class S3Sql
     private static string Require(ConnectorConfig config, string key) =>
         config.GetString(key) is { Length: > 0 } s
             ? s
-            : throw new PzConnectorException($"s3 connection requires '{key}'", isTransient: false);
+            : throw new PzConnectorException($"s3 connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
 

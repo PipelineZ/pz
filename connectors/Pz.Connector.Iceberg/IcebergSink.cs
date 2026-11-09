@@ -16,7 +16,7 @@ internal sealed class IcebergSink(ConnectorConfig config) : ISink
         {
             throw new PzConnectorException(
                 $"output '{spec.Output}': catalog 'files' is read-only -- writing an Iceberg table needs a rest, glue " +
-                "or s3_tables catalog to commit to", isTransient: false);
+                "or s3_tables catalog to commit to", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         var alias = IcebergSql.Alias(spec.Sink);
@@ -33,7 +33,7 @@ internal sealed class IcebergSink(ConnectorConfig config) : ISink
     public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct) =>
         throw new PzConnectorException(
             $"PZ0312: output '{spec.Output}': iceberg writes are native-copy only; they cannot run on the " +
-            "universal tier (remove engine.force_universal)", isTransient: false);
+            "universal tier (remove engine.force_universal)", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     public ValueTask DisposeAsync() => default;
 }

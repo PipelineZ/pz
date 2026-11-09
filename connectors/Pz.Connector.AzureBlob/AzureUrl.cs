@@ -39,7 +39,7 @@ internal static class AzureUrl
             null or "az" or "azure" => "az",
             "abfss" => "abfss",
             _ => throw new PzConnectorException(
-                $"{subject}: azure 'scheme' must be one of 'az', 'azure', 'abfss' (got '{raw}')", isTransient: false),
+                $"{subject}: azure 'scheme' must be one of 'az', 'azure', 'abfss' (got '{raw}')", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
     }
 
@@ -51,5 +51,5 @@ internal static class AzureUrl
     private static string Require(IReadOnlyDictionary<string, object?> options, string key, string subject) =>
         Str(options, key) is { Length: > 0 } s
             ? s
-            : throw new PzConnectorException($"{subject}: azure requires '{key}'", isTransient: false);
+            : throw new PzConnectorException($"{subject}: azure requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 }

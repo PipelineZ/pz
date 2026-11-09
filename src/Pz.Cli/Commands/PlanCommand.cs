@@ -171,7 +171,7 @@ internal static class PlanCommand
                 Console.Error.WriteLine($"error {error}");
             }
 
-            return ExitCodes.ConfigError;
+            return ExitCodes.ForPlanFailure(ex);
         }
     }
 

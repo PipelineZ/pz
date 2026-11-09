@@ -59,20 +59,31 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         // half of PZ0214, split from DagCompiler's compile-time half).
         var shapeByNode = new Dictionary<NodeId, ResolvedReadShape>();
 
+        // Connector failures while planning: one error per refused connection, however many datasets and outputs
+        // use it, and which errors are fatal.
+        var refusals = new PlanRefusals();
+
         foreach (var node in dag.TopologicalOrder())
         {
-            planned.Add(node.Kind switch
+            try
             {
-                NodeKind.SourceLoad => WithPushdown(
-                    await PlanSourceLoadAsync(node, forceUniversal, errors, pacingRefused, identityRefused, changeCaptureRefused, shapeByNode, Executes(executing, node), ct).ConfigureAwait(false),
-                    node),
-                NodeKind.SinkWrite => await PlanSinkWriteAsync(node, forceUniversal, errors, pacingRefused, modeRefused, Executes(executing, node), ct).ConfigureAwait(false),
-                NodeKind.Pipeline => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
-                    "duckdb sql: executes in-engine"),
-                NodeKind.Check => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
-                    "check: not executed in this version"),
-                _ => throw new ArgumentOutOfRangeException(nameof(node), node.Kind, "unknown node kind"),
-            });
+                planned.Add(node.Kind switch
+                {
+                    NodeKind.SourceLoad => WithPushdown(
+                        await PlanSourceLoadAsync(node, forceUniversal, errors, pacingRefused, identityRefused, changeCaptureRefused, shapeByNode, refusals, Executes(executing, node), ct).ConfigureAwait(false),
+                        node),
+                    NodeKind.SinkWrite => await PlanSinkWriteAsync(node, forceUniversal, errors, pacingRefused, modeRefused, refusals, Executes(executing, node), ct).ConfigureAwait(false),
+                    NodeKind.Pipeline => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
+                        "duckdb sql: executes in-engine"),
+                    NodeKind.Check => new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.DuckSql, 1,
+                        "check: not executed in this version"),
+                    _ => throw new ArgumentOutOfRangeException(nameof(node), node.Kind, "unknown node kind"),
+                });
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException && ClassifyNodeFailure(node, ex) is { } failure)
+            {
+                planned.Add(Refused(node, failure.Connector, failure.Failure, errors, refusals, Executes(executing, node)));
+            }
         }
 
         // Feed-side delivery-guarantee pass -- the planner's half of the (read x write) matrix, the
@@ -143,7 +154,8 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         if (errors.Count > 0)
         {
-            throw new PzValidationException(errors);
+            // Every other error is the project's to fix; a connector that failed rather than refused is not.
+            throw new PzValidationException(errors) { IsFatal = refusals.AnyFatal };
         }
 
         var budget = MemoryBudget.Compute(engineConfig ?? new EngineConfig());
@@ -179,7 +191,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
     private async Task<PlannedNode> PlanSourceLoadAsync(DagNode node, bool forceUniversal, List<PzError> errors,
         ISet<string> pacingRefused, ISet<string> identityRefused, ISet<string> changeCaptureRefused,
-        IDictionary<NodeId, ResolvedReadShape> shapeByNode, bool executes, CancellationToken ct)
+        IDictionary<NodeId, ResolvedReadShape> shapeByNode, PlanRefusals refusals, bool executes, CancellationToken ct)
     {
         var def = (SourceDatasetDef)node.Definition;
 
@@ -281,9 +293,21 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         // path further down. OpenAsync is the same "cheap and offline" call TryGetNativeScan
         // relies on below (class doc above), so opening it this early adds no network behavior --
         // including under force_universal.
-        await using var source = connectorFound
-            ? await connector!.OpenAsync(connectors.ConfigFor(def.Source), ct).ConfigureAwait(false)
-            : null;
+        ISource? opened = null;
+        if (connectorFound)
+        {
+            try
+            {
+                opened = await connector!.OpenAsync(connectors.ConfigFor(def.Source), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException &&
+                                       ClassifyOpenFailure(def.Source, ex) is { } refusal)
+            {
+                return Refused(node, def.Source.Connector, refusal, errors, refusals, executes, def.Source.Name);
+            }
+        }
+
+        await using var source = opened;
         var spec = SpecBuilder.ForSourceLoad(def);
         ResolvedReadShape? shape = source is null ? null : ReadShapeResolver.Resolve(def.Dataset, source, spec);
         if (shape is { } resolvedShape)
@@ -430,8 +454,10 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 return Universal(node, $"arrow stream: connector '{def.Source.Connector}' has no native path", declaredPartitions, readToken);
             }
         }
-        catch (PzConnectorException ex)
+        catch (PzConnectorException ex) when (!ex.IsTransient && ex.Code != PzConnectorErrorCodes.Unhandled)
         {
+            // A transient failure or a connector defect is not a refusal of the native path: it propagates to
+            // PlanAsync's classification instead.
             // A connector may refuse a native scan because the dataset config is inconsistent with the file
             // it would read (e.g. CsvSource's C1 positional-binding guard), or because the file is not there
             // yet. That is a config error, not an engine bug -- surface it aggregated and exit-2-coded rather
@@ -639,7 +665,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
     }
 
     private async Task<PlannedNode> PlanSinkWriteAsync(DagNode node, bool forceUniversal, List<PzError> errors,
-        ISet<string> pacingRefused, ISet<string> modeRefused, bool executes, CancellationToken ct)
+        ISet<string> pacingRefused, ISet<string> modeRefused, PlanRefusals refusals, bool executes, CancellationToken ct)
     {
         var def = (SinkOutputDef)node.Definition;
         if (!connectors.TryGetSink(def.Sink.Connector, out var connector))
@@ -729,7 +755,17 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "use on_delete: ignore, or an ApplyDeletes-capable sink (postgres, sqlserver)"));
         }
 
-        await using var sink = await connector.OpenAsync(connectors.ConfigFor(def.Sink), ct).ConfigureAwait(false);
+        ISink opened;
+        try
+        {
+            opened = await connector.OpenAsync(connectors.ConfigFor(def.Sink), ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException && ClassifyOpenFailure(def.Sink, ex) is { } refusal)
+        {
+            return Refused(node, def.Sink.Connector, refusal, errors, refusals, executes, def.Sink.Name);
+        }
+
+        await using var sink = opened;
         var spec = SpecBuilder.ForSinkOutput(def);
         if (forceUniversal)
         {
@@ -752,7 +788,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 return Universal(node, $"arrow stream: connector '{def.Sink.Connector}' has no native path");
             }
         }
-        catch (PzConnectorException ex)
+        catch (PzConnectorException ex) when (!ex.IsTransient && ex.Code != PzConnectorErrorCodes.Unhandled)
         {
             // Sink-side mirror of PlanSourceLoadAsync's catch: a connector may refuse a native copy
             // because the output's own config cannot produce one (e.g. DuckDbSink's three-part entity
@@ -783,6 +819,61 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,
             $"native copy: connector '{def.Sink.Connector}' provides {copy.Mechanism}");
+    }
+
+    /// <summary>A connector failing to open a connection: classified (<see cref="ConnectorFailures"/>) with the
+    /// connection as its subject, since every dataset and output on it fails the same way.</summary>
+    private ConnectorFailure? ClassifyOpenFailure(ConnectionDef connection, Exception ex) =>
+        ConnectorFailures.Classify(ex, connection.Connector, $"connection '{connection.Name}'", connection.FilePath,
+            "planning", connectors.DescribeHostFailure);
+
+    /// <summary>A connector failing while one node is planned after its connection opened (resolving the read
+    /// shape, probing the native path): classified with the dataset or output as its subject. Null for a failure
+    /// that is not the connector's, which propagates.</summary>
+    private (string Connector, ConnectorFailure Failure)? ClassifyNodeFailure(DagNode node, Exception ex)
+    {
+        var (connection, subject) = node.Definition switch
+        {
+            SourceDatasetDef d => (d.Source, $"connection '{d.Source.Name}' dataset '{d.Dataset.Name}'"),
+            SinkOutputDef o => (o.Sink, $"connection '{o.Sink.Name}' output '{o.Output.Name}'"),
+            _ => (null, ""),
+        };
+        return connection is not null &&
+               ConnectorFailures.Classify(ex, connection.Connector, subject, connection.FilePath, "planning",
+                   connectors.DescribeHostFailure) is { } failure
+            ? (connection.Connector, failure)
+            : null;
+    }
+
+    /// <summary>What the planner recorded about connector failures: the connections already reported as refused
+    /// at open, and whether any recorded failure is fatal (<see cref="ConnectorFailure.IsFatal"/>).</summary>
+    private sealed class PlanRefusals
+    {
+        public HashSet<string> RefusedConnections { get; } = new(StringComparer.Ordinal);
+        public bool AnyFatal { get; set; }
+    }
+
+    /// <summary>Records a connector's failure while a node is planned (aggregated, never thrown) and plans the node
+    /// universal. A node outside this run's effective set only records the deferral, without the connector's
+    /// message (it may name a path or a value), so a selection that does not touch the node still runs. With
+    /// <paramref name="connection"/>, a failure already reported for that connection is not repeated.</summary>
+    private static PlannedNode Refused(DagNode node, string connector, ConnectorFailure failure, List<PzError> errors,
+        PlanRefusals refusals, bool executes, string? connection = null)
+    {
+        if (!executes)
+        {
+            return Universal(node,
+                $"arrow stream: connector '{connector}' refused while planning; {failure.Error.Code} deferred because " +
+                "this node is not part of the run");
+        }
+
+        if (connection is null || refusals.RefusedConnections.Add(connection))
+        {
+            errors.Add(failure.Error);
+            refusals.AnyFatal |= failure.IsFatal;
+        }
+
+        return Universal(node, $"arrow stream: connector '{connector}' refused while planning");
     }
 
     private static PlannedNode Universal(DagNode node, string reason, int partitions = 1, string? readToken = null)

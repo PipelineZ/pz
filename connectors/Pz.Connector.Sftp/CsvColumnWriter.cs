@@ -72,7 +72,7 @@ internal abstract class CsvColumnWriter
                 ? parsed
                 : throw Invalid(path, line, field.Name, v, typeName))),
         _ => throw new PzConnectorException(
-            $"column '{field.Name}': unknown columns: contract type '{typeName}'", isTransient: false),
+            $"column '{field.Name}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
     };
 
     private static PzConnectorException Invalid(

@@ -435,6 +435,18 @@ public sealed class HttpTlsTests : IDisposable
         Assert.Equal(IntPtr.Zero, transport.ClientCert.Handle);
     }
 
+    // Loading a client certificate must not leave its key in a key store. On Linux the key stays in memory
+    // (EphemeralKeySet). Windows SChannel can present only a persisted key, and macOS cannot import an ephemeral
+    // one, so both keep DefaultKeySet: the key lives only as long as the certificate, which its source disposes.
+    [Fact]
+    public void Client_certificate_keys_stay_in_memory_where_the_platform_allows()
+    {
+        var expected = OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+            ? System.Security.Cryptography.X509Certificates.X509KeyStorageFlags.DefaultKeySet
+            : System.Security.Cryptography.X509Certificates.X509KeyStorageFlags.EphemeralKeySet;
+        Assert.Equal(expected, BoundTransport.ClientKeyStorage);
+    }
+
     [Fact]
     public void Pem_bundle_parse_helper()
     {
@@ -449,6 +461,13 @@ public sealed class HttpTlsTests : IDisposable
 
         var missing = Assert.Throws<PzConnectorException>(() => BoundTransport.Load(Parse(Config(url, Tls("absent.pem"))).Transport));
         Assert.Equal($"tls.ca_file '{File("absent.pem")}' was not found", missing.Message);
+
+        // A file the connection names that cannot be loaded is the author's config to fix: PZ0301, exit 2.
+        Assert.Equal(PzConnectorErrorCodes.Config, none.Code);
+        Assert.Equal(PzConnectorErrorCodes.Config, missing.Code);
+        var noClient = Assert.Throws<PzConnectorException>(() => BoundTransport.Load(Parse(Config(url,
+            Tls(client: new Dictionary<string, object?> { ["path"] = File("absent.pfx") }))).Transport));
+        Assert.Equal(PzConnectorErrorCodes.Config, noClient.Code);
 
         Assert.Null(BoundTransport.Load(HttpTransportOptions.Default));
     }

@@ -527,7 +527,8 @@ internal static class AuthoringTools
         }
 
         // Step 2c: the tier-3 JSON-Schema seam itself -- never reimplemented.
-        var schemaErrors = await ConnectorConfigValidator.ValidateAsync(probeProject, registry, ct)
+        var schemaErrors = await ConnectorConfigValidator.ValidateAsync(probeProject, registry, ct,
+                anchored: ProjectPhases.InjectProjectDirectoryAnchor(probeProject, projectDir))
             .ConfigureAwait(false);
         if (schemaErrors.Count > 0)
         {
@@ -675,7 +676,8 @@ internal static class AuthoringTools
             var (registry, host) = await services.CreateRegistryAsync(project, projectDir, ct).ConfigureAwait(false);
             await using var connectorHost = host;
 
-            var tier3Errors = await ConnectorConfigValidator.ValidateAsync(project, registry, ct)
+            var tier3Errors = await ConnectorConfigValidator.ValidateAsync(project, registry, ct,
+                    anchored: ProjectPhases.InjectProjectDirectoryAnchor(project, projectDir))
                 .ConfigureAwait(false);
             if (tier3Errors.Count > 0)
             {

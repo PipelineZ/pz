@@ -66,7 +66,8 @@ internal static class VerifyTools
             var (registry, host) = await services.CreateRegistryAsync(project, projectDir, ct).ConfigureAwait(false);
             await using var connectorHost = host;
 
-            var tier3Errors = await ConnectorConfigValidator.ValidateAsync(project, registry, ct).ConfigureAwait(false);
+            var tier3Errors = await ConnectorConfigValidator.ValidateAsync(project, registry, ct,
+                anchored: ProjectPhases.InjectProjectDirectoryAnchor(project, projectDir)).ConfigureAwait(false);
             if (tier3Errors.Count > 0)
             {
                 return ToolEnvelope.Errors(tier3Errors);
@@ -114,11 +115,10 @@ internal static class VerifyTools
     {
         try
         {
-            var (project, dag, _) = ProjectPhases.LoadAndCompile(projectDir);
-            // Injected after compile here (PlanCommand injects before compiling instead) — harmless
-            // either way: base_dir is a connector-open-time value, never consulted by DagCompiler
-            // itself, so which side of Compile() it's added on doesn't change the resulting DAG.
-            project = ProjectPhases.InjectProjectDirectoryAnchor(project, projectDir);
+            // Anchored before compiling, as PlanCommand does: every node carries its connection's config, so
+            // the anchor must be in the DAG for a relative path to resolve against the project when the planner
+            // opens the connector.
+            var (project, dag, _) = ProjectPhases.LoadAndCompile(projectDir, anchor: true);
             var runDag = new CompiledDag([.. dag.Nodes.Where(n => n.Kind != NodeKind.Check)]);
 
             var (registry, host) = await services.CreateRegistryAsync(project, projectDir, ct).ConfigureAwait(false);

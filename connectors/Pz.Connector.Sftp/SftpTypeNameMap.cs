@@ -24,6 +24,6 @@ internal static class SftpTypeNameMap
         "date" => Date32Type.Default,
         "timestamp" => new TimestampType(TimeUnit.Microsecond, "+00:00"),
         _ => throw new PzConnectorException(
-            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false),
+            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
     };
 }

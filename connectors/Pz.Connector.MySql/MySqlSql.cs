@@ -46,9 +46,9 @@ internal static class MySqlSql
     internal static string CreateSecretSql(ConnectorConfig config, string secretName)
     {
         var host = config.GetString("host") ??
-            throw new PzConnectorException("mysql connection requires 'host'", isTransient: false);
+            throw new PzConnectorException("mysql connection requires 'host'", isTransient: false, code: PzConnectorErrorCodes.Config);
         var database = config.GetString("database") ??
-            throw new PzConnectorException("mysql connection requires 'database'", isTransient: false);
+            throw new PzConnectorException("mysql connection requires 'database'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
         var body = new StringBuilder(
             $"host '{EscapeLiteral(host)}', port {config.GetInt("port") ?? 3306}, database '{EscapeLiteral(database)}'");

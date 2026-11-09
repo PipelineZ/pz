@@ -31,7 +31,7 @@ internal static class DuckDbSql
     internal static string ResolvePath(ConnectorConfig config)
     {
         var path = config.GetString("path") ??
-            throw new PzConnectorException("duckdb connection requires 'path'", isTransient: false);
+            throw new PzConnectorException("duckdb connection requires 'path'", isTransient: false, code: PzConnectorErrorCodes.Config);
         if (Path.IsPathRooted(path))
         {
             return Path.GetFullPath(path);
@@ -62,7 +62,8 @@ internal static class DuckDbSql
         return (schema, table);
 
         static PzConnectorException Malformed(string entity) => new(
-            $"entity '{entity}': expected 'table' or 'schema.table'", isTransient: false);
+            $"entity '{entity}': expected 'table' or 'schema.table'", isTransient: false,
+            code: PzConnectorErrorCodes.Config);
     }
 
     internal static string QualifiedTable(string alias, string entity)
@@ -194,7 +195,7 @@ internal static class DuckDbSql
                 if (keys.Count == 0)
                 {
                     throw new PzConnectorException(
-                        $"output '{table}': merge requires at least one key column", isTransient: false);
+                        $"output '{table}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));

@@ -88,6 +88,7 @@ public sealed class GcsAuthTests
         var ex = Assert.Throws<PzConnectorException>(() =>
             GcsAuth.CreateStorageClient(Config(("auth", "service_account"), ("key_json", "not json"))));
         Assert.False(ex.IsTransient);
+        Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
         Assert.Contains("'key_json'", ex.Message, StringComparison.Ordinal);
     }
 
@@ -97,6 +98,7 @@ public sealed class GcsAuthTests
         var ex = Assert.Throws<PzConnectorException>(() => GcsAuth.CreateStorageClient(
             Config(("auth", "service_account"), ("key_file", "/nonexistent/pz-test-key.json"))));
         Assert.False(ex.IsTransient);
+        Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
         Assert.Contains("'key_file'", ex.Message, StringComparison.Ordinal);
     }
 

@@ -3,6 +3,7 @@ using Google.Protobuf.WellKnownTypes;
 using Grpc.Core;
 using Microsoft.Extensions.Hosting;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Protocol;
 using Pz.Connectors.Protocol.V1;
 using Pz.Connectors.Sdk;
 
@@ -100,6 +101,40 @@ public sealed class HonestMappingTests
         var ex = await Assert.ThrowsAsync<RpcException>(() =>
             service.GetNaturalReadShape(new NaturalReadShapeRequest { OpId = "op", Spec = Spec() }, Context()));
         Assert.Equal(StatusCode.Unimplemented, ex.StatusCode);
+    }
+
+    // A connector's own unhandled exception is a defect in the connector: it crosses as an operational failure
+    // coded Unhandled, so the engine never reports it as a config error the author should fix.
+    [Fact]
+    public async Task A_connectors_unhandled_exception_crosses_coded_unhandled()
+    {
+        var service = await ConfiguredAsync(new ThrowingShapeConnector());
+        var ex = await Assert.ThrowsAsync<RpcException>(() =>
+            service.GetNaturalReadShape(new NaturalReadShapeRequest { OpId = "op", Spec = Spec() }, Context()));
+
+        var detail = PzErrorDetail.Parser.ParseFrom(ex.Trailers.GetValueBytes(ProtocolConstants.ErrorDetailTrailerKey));
+        Assert.Equal(PzConnectorErrorCodes.Unhandled, detail.Code);
+        Assert.False(detail.IsTransient);
+        Assert.StartsWith("unhandled NullReferenceException:", detail.Message);
+    }
+
+    private sealed class ThrowingShapeConnector : ISourceConnector
+    {
+        public ConnectorInfo Info => new("fake", "1.0.0", ProtocolVersion.Major);
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+        public string ConnectionConfigSchema => "{}";
+        public string DatasetConfigSchema => "{}";
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(ValidationResult.Success);
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(new ConnectionCheck(true, null));
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult<ISource>(new ThrowingShapeSource());
+    }
+
+    private sealed class ThrowingShapeSource : PlainSource, INaturalReadShapeSource
+    {
+        public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) => throw new NullReferenceException("oops");
     }
 
     [Fact]

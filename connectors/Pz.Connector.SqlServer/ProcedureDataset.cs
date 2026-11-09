@@ -80,7 +80,7 @@ internal static class ProcedureDataset
                 throw new PzConnectorException(
                     $"dataset '{spec.Dataset}': column '{column}' has unknown columns: type '{typeName}' -- " +
                     $"valid types are {string.Join(", ", ContractTypeMap.Keys)}",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             fields.Add(new Field(column, arrowType, nullable: true));
@@ -189,7 +189,7 @@ internal static class ProcedureDataset
 
         throw new PzConnectorException(
             $"dataset '{spec.Dataset}': 'parameters' must be a mapping of parameter names to scalar values",
-            isTransient: false);
+            isTransient: false, code: PzConnectorErrorCodes.Config);
     }
 
     /// <summary>`columns:` can arrive either as <see cref="IReadOnlyDictionary{TKey,TValue}"/> of

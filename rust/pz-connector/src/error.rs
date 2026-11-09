@@ -13,9 +13,16 @@ pub(crate) const ERROR_DETAIL_TRAILER_KEY: &str = "pz-error-bin";
 /// `PzErrorDetail`) so the host can rebuild a real host-side exception with transience and retry-after
 /// intact, rather than guessing from a bare gRPC status code -- the trailer is the contract, never the
 /// status code, which exists only for readable logs.
+/// The code of a config refusal, mirrored from `Pz.Connectors.Abstractions.PzConnectorErrorCodes.Config` (that C#
+/// constant is the source of truth for the VALUE). Only a non-transient error may carry it, and only for a missing,
+/// invalid or conflicting option -- never a network, auth or data failure, which the author cannot fix in config.
+pub const CONFIG_CODE: &str = "config";
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PzError {
-    /// `PZ####` where this connector has an assigned code, empty otherwise.
+    /// `PZ####` where this connector has an assigned code, empty otherwise. [`CONFIG_CODE`] is the one value
+    /// the engine acts on: set it (see [`PzError::config`]) on a refusal of the config, so the engine reports a
+    /// config error (PZ0301) naming the connection and dataset, rather than a connector failure.
     pub code: Option<String>,
     pub message: String,
     pub is_transient: bool,
@@ -27,6 +34,16 @@ pub struct PzError {
 impl PzError {
     pub fn new(message: impl Into<String>) -> Self {
         PzError {
+            message: message.into(),
+            ..Default::default()
+        }
+    }
+
+    /// A refusal of the config the connector was given, coded [`CONFIG_CODE`]. The engine names the connection and
+    /// the dataset or output, so the message should name the option but not the connection.
+    pub fn config(message: impl Into<String>) -> Self {
+        PzError {
+            code: Some(CONFIG_CODE.to_string()),
             message: message.into(),
             ..Default::default()
         }
@@ -88,6 +105,15 @@ pub(crate) fn to_status(err: &PzError) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_config_refusal_crosses_coded_config_and_permanent() {
+        let decoded = to_error_detail(&PzError::config("'region' is required"));
+
+        assert_eq!(decoded.code, "config");
+        assert_eq!(decoded.message, "'region' is required");
+        assert!(!decoded.is_transient);
+    }
 
     #[test]
     fn trailer_round_trips_through_prost() {

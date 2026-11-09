@@ -20,14 +20,14 @@ internal static partial class HttpFirstRequest
             {
                 throw new PzConnectorException(
                     $"{label}: incremental dataset needs the raw-mode 'cursor' + 'cursor_type' options " +
-                    "(or a 'columns' contract declaring the cursor)", isTransient: false);
+                    "(or a 'columns' contract declaring the cursor)", isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             if (config.Cursor is { } optCursor && optCursor != wmCursor)
             {
                 throw new PzConnectorException(
                     $"{label}: incremental.cursor is '{wmCursor}' but options.cursor is '{optCursor}'; " +
-                    "align the two", isTransient: false);
+                    "align the two", isTransient: false, code: PzConnectorErrorCodes.Config);
             }
         }
 
@@ -38,7 +38,7 @@ internal static partial class HttpFirstRequest
             {
                 throw new PzConnectorException(
                     $"{label}: incremental cursor '{spec.WatermarkCursor}' is not declared in 'columns:' — " +
-                    "add it to the contract so its values land and its type is known", isTransient: false);
+                    "add it to the contract so its values land and its type is known", isTransient: false, code: PzConnectorErrorCodes.Config);
             }
         }
         else
@@ -180,7 +180,7 @@ internal static partial class HttpFirstRequest
             {
                 throw new PzConnectorException(
                     $"{label}: query parameter '{name}': malformed binding template '{template}': " +
-                    $"{ex.Message}", isTransient: false);
+                    $"{ex.Message}", isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             if (!expanded)
@@ -234,12 +234,12 @@ internal static partial class HttpFirstRequest
         {
             throw new PzConnectorException(
                 $"{label}: option '{option}': malformed binding template '{template}': {ex.Message}",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (!expanded)
         {
-            throw new PzConnectorException($"{label}: option '{option}': {error}", isTransient: false);
+            throw new PzConnectorException($"{label}: option '{option}': {error}", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (path is null)
@@ -250,7 +250,7 @@ internal static partial class HttpFirstRequest
             throw new PzConnectorException(
                 $"{label}: option '{option}' references '{{{{ {name} }}}}', which has no value on this run " +
                 "(a first run or --full-refresh has no watermark) — declare 'initial:' so the first run " +
-                "has a lower bound, or use '{{ run_date }}'", isTransient: false);
+                "has a lower bound, or use '{{ run_date }}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (hasItemReferences)

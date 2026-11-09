@@ -316,6 +316,7 @@ public class AzureAdAuthTests
         {
             var ex = Assert.Throws<PzConnectorException>(() => CertOptions(path, "wrong-pw-123").CreateCredential(TimeSpan.FromSeconds(7), out _));
             Assert.False(ex.IsTransient);
+            Assert.Equal(PzConnectorErrorCodes.Config, ex.Code);
             Assert.Contains("certificate_path", ex.Message);
             Assert.DoesNotContain("wrong-pw-123", ex.Message);
             Assert.DoesNotContain(CertPassword, ex.Message);

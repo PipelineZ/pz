@@ -29,7 +29,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
         var columns = ExtractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': gcs is native-only with no offline schema probe -- " +
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
-            isTransient: false);
+            isTransient: false, code: PzConnectorErrorCodes.Config);
 
         var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new ValueTask<DatasetSchema>(new DatasetSchema(new Schema(fields, null)));
@@ -64,7 +64,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
         throw new PzConnectorException(
             $"PZ0312: dataset '{spec.Dataset}': gcs reads are native-scan only; they cannot run on the " +
-            "universal tier (remove engine.force_universal / files_per_partition)", isTransient: false);
+            "universal tier (remove engine.force_universal / files_per_partition)", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     public ValueTask DisposeAsync() => default;
 
@@ -80,7 +80,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
             ? named
             : rootBucket ?? throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': gcs needs a 'root' on the connection or a 'bucket' option",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         var path = spec.Options.TryGetValue("path", out var p) && p?.ToString() is { Length: > 0 } given
             ? given.Trim('/')
             : $"{spec.Dataset}.{GetFormat(spec)}";

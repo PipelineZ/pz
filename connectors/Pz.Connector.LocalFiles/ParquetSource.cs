@@ -77,7 +77,7 @@ internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
         throw new PzConnectorException(
             $"PZ0312: dataset '{spec.Dataset}': localfiles parquet source is native-scan only; it cannot run " +
-            "on the universal tier (remove engine.force_universal, or use csv)", isTransient: false);
+            "on the universal tier (remove engine.force_universal, or use csv)", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     public ValueTask DisposeAsync() => default;
 

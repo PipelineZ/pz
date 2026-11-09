@@ -173,7 +173,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         throw new PzConnectorException(
             $"PZ0312: dataset '{spec.Dataset}': azure reads are native-scan only; they cannot run on the " +
             "universal tier (remove engine.force_universal / files_per_partition)",
-            isTransient: false);
+            isTransient: false, code: PzConnectorErrorCodes.Config);
     }
 
     public ValueTask DisposeAsync() => default;
@@ -357,7 +357,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// permanent failure.</summary>
     private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec, string formatName) =>
         ExtractColumns(spec) ?? throw new PzConnectorException(
-            $"dataset '{spec.Dataset}': azure {formatName} requires a declared columns: contract", isTransient: false);
+            $"dataset '{spec.Dataset}': azure {formatName} requires a declared columns: contract", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
         spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
