@@ -16,7 +16,7 @@ internal sealed class IcebergSink(ConnectorConfig config) : ISink
         {
             throw new PzConnectorException(
                 $"output '{spec.Output}': catalog 'files' is read-only -- writing an Iceberg table needs a rest, glue " +
-                "or s3_tables catalog to commit to", isTransient: false);
+                "or s3_tables catalog to commit to", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         var alias = IcebergSql.Alias(spec.Sink);

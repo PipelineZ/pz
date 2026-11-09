@@ -761,6 +761,39 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Equal(["connection 'l': 'host' is required"], errors.Select(e => e.Message));
     }
 
+    // A native-path refusal coded config is reported at validate as the plan reports it (PZ0353); an uncoded one
+    // depends on what is on disk now and stays the plan's; force_universal skips the probe, as in the plan.
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, false)]
+    public async Task A_native_scan_refusal_is_reported_at_validate_only_when_coded_config(bool coded, bool forceUniversal,
+        bool reported)
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub-ds", new StubDatasetValidatorConnector
+        {
+            NativeScanThrows = spec => new PzConnectorException($"dataset '{spec.Dataset}': cannot be scanned",
+                isTransient: false, code: coded ? PzConnectorErrorCodes.Config : null),
+        });
+        var source = new ConnectionDef("db", "stub-ds", new Dictionary<string, object?>(),
+            [new DatasetDef("events", new Dictionary<string, object?>(), null)], "connections.yml");
+        var project = Project([source]) with { Engine = new EngineConfig { ForceUniversal = forceUniversal } };
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(project, registry, default);
+
+        if (reported)
+        {
+            var error = Assert.Single(errors);
+            Assert.Equal(PzErrorCode.NativePathContractMismatch, error.Code);
+            Assert.Equal("dataset 'events': cannot be scanned", error.Message);
+        }
+        else
+        {
+            Assert.Empty(errors);
+        }
+    }
+
     // An output on a connection whose connector also reads is schema-checked too, not only a write-only one's.
     [Fact]
     public async Task Outputs_of_a_read_write_connection_are_schema_validated()

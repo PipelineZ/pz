@@ -80,7 +80,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
             ? named
             : rootBucket ?? throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': gcs needs a 'root' on the connection or a 'bucket' option",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         var path = spec.Options.TryGetValue("path", out var p) && p?.ToString() is { Length: > 0 } given
             ? given.Trim('/')
             : $"{spec.Dataset}.{GetFormat(spec)}";

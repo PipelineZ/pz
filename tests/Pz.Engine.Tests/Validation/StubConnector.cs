@@ -62,6 +62,9 @@ internal sealed class StubDatasetValidatorConnector : ISourceConnector, IDataset
     /// <summary>Thrown by the read-shape probe tier 3 runs on the opened source, when set.</summary>
     public Func<DatasetSpec, Exception?>? ShapeThrows { get; init; }
 
+    /// <summary>Thrown by the source's native-scan probe, when set.</summary>
+    public Func<DatasetSpec, Exception?>? NativeScanThrows { get; init; }
+
     /// <summary>Thrown by OpenAsync, when set.</summary>
     public Func<Exception>? OpenThrows { get; init; }
 
@@ -95,6 +98,12 @@ internal sealed class ShapeSource(StubDatasetValidatorConnector owner) : NoopSou
         owner.ShapeProbed.Add(spec.Dataset);
         return owner.ShapeThrows?.Invoke(spec) is { } refusal ? throw refusal : NaturalReadShape.Full;
     }
+
+    public override bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = null;
+        return owner.NativeScanThrows?.Invoke(spec) is { } refusal ? throw refusal : false;
+    }
 }
 
 /// <summary>A source that is never read: tier 3 only opens it.</summary>
@@ -103,8 +112,11 @@ internal class NoopSource : ISource
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
         throw new InvalidOperationException("tier 3 never reads a schema");
 
-    public bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan) =>
-        throw new InvalidOperationException("tier 3 never probes the native path");
+    public virtual bool TryGetNativeScan(DatasetSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeScan? scan)
+    {
+        scan = null;
+        return false;
+    }
 
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
         throw new InvalidOperationException("tier 3 never plans a read");
@@ -115,8 +127,11 @@ internal class NoopSource : ISource
 /// <summary>A sink that is never written: tier 3 only opens it.</summary>
 internal sealed class NoopSink : ISink
 {
-    public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy) =>
-        throw new InvalidOperationException("tier 3 never probes the native path");
+    public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
+    {
+        copy = null;
+        return false;
+    }
 
     public ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Apache.Arrow.Schema schema, CancellationToken ct) =>
         throw new InvalidOperationException("tier 3 never writes");

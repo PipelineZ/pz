@@ -240,14 +240,14 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         {
             throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': files_per_partition '{raw}' is not a valid integer",
-                isTransient: false, innerException: ex);
+                isTransient: false, innerException: ex, code: PzConnectorErrorCodes.Config);
         }
 
         if (value <= 0)
         {
             throw new PzConnectorException(
                 $"dataset '{spec.Dataset}': files_per_partition must be a positive integer (got {value})",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return value;

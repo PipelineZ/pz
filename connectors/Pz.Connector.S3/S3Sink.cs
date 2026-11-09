@@ -20,7 +20,7 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
             ? named
             : rootBucket ?? throw new PzConnectorException(
                 $"output '{spec.Output}': s3 needs a 'root' on the connection or a 'bucket' option",
-                isTransient: false);
+                isTransient: false, code: PzConnectorErrorCodes.Config);
         var pathOption = (spec.Options.TryGetValue("path", out var p) ? p?.ToString() : null)?.TrimEnd('/') ?? "";
         if (pathOption.Length > 0)
         {

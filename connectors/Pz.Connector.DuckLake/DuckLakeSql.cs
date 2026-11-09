@@ -35,7 +35,7 @@ internal static class DuckLakeSql
     internal static string ResolveLocal(ConnectorConfig config, string key)
     {
         var value = config.GetString(key) ??
-            throw new PzConnectorException($"ducklake connection requires '{key}'", isTransient: false);
+            throw new PzConnectorException($"ducklake connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         if (Path.IsPathRooted(value))
         {
             return Path.GetFullPath(value);
@@ -215,7 +215,7 @@ internal static class DuckLakeSql
                 break;
             case DuckLakeCatalog.Postgres:
                 var pgDataPath = dataPath ??
-                    throw new PzConnectorException("ducklake connection requires 'data_path'", isTransient: false);
+                    throw new PzConnectorException("ducklake connection requires 'data_path'", isTransient: false, code: PzConnectorErrorCodes.Config);
                 var pgSecret = PostgresSecretName(alias);
                 var secret = SecretName(alias);
                 statements.Add(PostgresSecretSql(config, pgSecret));
@@ -229,7 +229,7 @@ internal static class DuckLakeSql
                 if (!DuckLakeCatalog.TryParseQuackUri(uri, out var host, out var port))
                 {
                     throw new PzConnectorException(
-                        "ducklake connection 'uri' must be of the form quack:host[:port]", isTransient: false);
+                        "ducklake connection 'uri' must be of the form quack:host[:port]", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
                 var canonical = $"quack:{host}:{port}";
@@ -244,7 +244,7 @@ internal static class DuckLakeSql
                     $"attach if not exists 'ducklake:md:__ducklake_metadata_{EscapeLiteral(Require(config, "database"))}' as {alias}{dataClause}");
                 break;
             default:
-                throw new PzConnectorException($"ducklake connection: unknown catalog '{catalog}'", isTransient: false);
+                throw new PzConnectorException($"ducklake connection: unknown catalog '{catalog}'", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         return statements;
@@ -333,7 +333,7 @@ internal static class DuckLakeSql
         if (hasVersion && hasTimestamp)
         {
             throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': declare either version: or timestamp:, not both", isTransient: false);
+                $"dataset '{spec.Dataset}': declare either version: or timestamp:, not both", isTransient: false, code: PzConnectorErrorCodes.Config);
         }
 
         if (hasVersion)
@@ -342,7 +342,7 @@ internal static class DuckLakeSql
             {
                 throw new PzConnectorException(
                     $"dataset '{spec.Dataset}': version: must be a non-negative snapshot id (got '{versionValue}')",
-                    isTransient: false);
+                    isTransient: false, code: PzConnectorErrorCodes.Config);
             }
 
             return $" at (version => {version})";
@@ -385,7 +385,7 @@ internal static class DuckLakeSql
                 if (keys.Count == 0)
                 {
                     throw new PzConnectorException(
-                        $"output '{table}': merge requires at least one key column", isTransient: false);
+                        $"output '{table}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
@@ -412,7 +412,7 @@ internal static class DuckLakeSql
     private static string Require(ConnectorConfig config, string key) =>
         config.GetString(key) is { Length: > 0 } s
             ? s
-            : throw new PzConnectorException($"ducklake connection requires '{key}'", isTransient: false);
+            : throw new PzConnectorException($"ducklake connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
     private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
 

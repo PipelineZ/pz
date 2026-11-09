@@ -61,5 +61,5 @@ public static class RootContainment
 
     private static PzConnectorException Refused(string connectionName, string subject) =>
         new($"PZ0365: connection '{connectionName}': {subject} resolves outside 'root:' " +
-            "-- use an absolute path, or fix 'root:'", isTransient: false);
+            "-- use an absolute path, or fix 'root:'", isTransient: false, code: PzConnectorErrorCodes.Config);
 }

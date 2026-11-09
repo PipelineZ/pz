@@ -130,14 +130,16 @@ public static class ConnectorConfigValidator
 
             // Outputs on a connection whose connector also reads are checked here; the loop below covers
             // write-only connectors.
+            var outputsWithFindings = new HashSet<string>(StringComparer.Ordinal);
             if (registry.TryGetSink(source.Connector, out var sinkConnector) && sinkConnector is IOutputConfigSchema readWriteSchema)
             {
-                ValidateOutputs(readWriteSchema, source, errors);
+                ValidateOutputs(readWriteSchema, source, errors, outputsWithFindings);
             }
 
             if (connectionErrors == 0 && !registry.IsHosted(source.Connector))
             {
-                await ProbeAsync(registry, source, connector, sinkConnector, datasetsWithFindings, errors, ct)
+                await ProbeAsync(registry, source, connector, sinkConnector, datasetsWithFindings, outputsWithFindings,
+                        project.Engine.ForceUniversal, errors, ct)
                     .ConfigureAwait(false);
             }
 
@@ -168,9 +170,10 @@ public static class ConnectorConfigValidator
                 "connection", sink.FilePath, errors, connectionFlaggedKeys, requiredFlaggedKeys);
             connectionErrors = errors.Count - connectionErrors;
 
+            var outputsWithFindings = new HashSet<string>(StringComparer.Ordinal);
             if (connector is IOutputConfigSchema outputSchema)
             {
-                ValidateOutputs(outputSchema, sink, errors);
+                ValidateOutputs(outputSchema, sink, errors, outputsWithFindings);
             }
 
             var crossFieldBefore = errors.Count;
@@ -181,7 +184,8 @@ public static class ConnectorConfigValidator
             // Output-schema findings are about the outputs, not the connection, so they do not stop the probe.
             if (connectionErrors == 0 && !registry.IsHosted(sink.Connector))
             {
-                await ProbeAsync(registry, sink, null, connector, [], errors, ct).ConfigureAwait(false);
+                await ProbeAsync(registry, sink, null, connector, [], outputsWithFindings, project.Engine.ForceUniversal,
+                    errors, ct).ConfigureAwait(false);
             }
         }
 
@@ -192,10 +196,12 @@ public static class ConnectorConfigValidator
     /// a sink that does not offer it has its output options reach it unchecked. <see cref="ConnectionDef.Outputs"/> is
     /// DagCompiler's EFFECTIVE, already-merged output list -- whichever of entities:write: / sink() kwargs declared an
     /// output, it lands here once (PZ0341 refuses declaring both).</summary>
-    private static void ValidateOutputs(IOutputConfigSchema outputSchema, ConnectionDef connection, List<PzError> errors)
+    private static void ValidateOutputs(IOutputConfigSchema outputSchema, ConnectionDef connection, List<PzError> errors,
+        HashSet<string> outputsWithFindings)
     {
         foreach (var output in connection.Outputs)
         {
+            var before = errors.Count;
             // partition_by is set aside first. It stays among an output's options because the
             // sinks that partition read it, but its shape is the compiler's to check and whether
             // this connector can honour it is the planner's, answered from its capabilities. A
@@ -207,19 +213,27 @@ public static class ConnectorConfigValidator
             ValidateSchema(outputSchema.OutputConfigSchema, options, "connection", connection.Name,
                 $"output '{output.Name}'", connection.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
                 new HashSet<string>(StringComparer.Ordinal));
+            if (errors.Count > before)
+            {
+                outputsWithFindings.Add(output.Name);
+            }
         }
     }
 
     /// <summary>The planner's own offline probes of a builtin connection whose connection-level checks passed, so
     /// `pz validate` refuses whatever the plan would: opening the source (when the connection has datasets) and the
-    /// sink (when it has outputs), then each dataset's read shape (<see cref="INaturalReadShapeSource"/>), skipping
-    /// datasets that already have findings. A connector failure is classified like the plan's
-    /// (<see cref="ConnectorFailures"/>); a connection refused at open is reported once. Never for a hosted
-    /// connector: its OpenAsync spawns a process and runs the connector's own configure, which the ABI does not
-    /// promise is offline.</summary>
+    /// sink (when it has outputs), then each dataset's read shape (<see cref="INaturalReadShapeSource"/>), and --
+    /// unless engine.force_universal is set, as in the plan -- each dataset's native scan and each output's native
+    /// copy, skipping datasets and outputs that already have findings. A connector failure at open or read shape
+    /// is classified like the plan's (<see cref="ConnectorFailures"/>); a connection refused at open is reported
+    /// once. A native-path refusal is reported as the plan reports it (PZ0353) only when the connector codes it
+    /// <see cref="PzConnectorErrorCodes.Config"/>: the others depend on what is on disk now (a database file or
+    /// table directory not written yet, a csv header), which the plan rechecks for the nodes a run executes and
+    /// deliberately defers for the rest. Never for a hosted connector: its OpenAsync spawns a process and runs the
+    /// connector's own configure, which the ABI does not promise is offline.</summary>
     private static async Task ProbeAsync(ConnectorRegistry registry, ConnectionDef connection,
         ISourceConnector? sourceConnector, ISinkConnector? sinkConnector, HashSet<string> datasetsWithFindings,
-        List<PzError> errors, CancellationToken ct)
+        HashSet<string> outputsWithFindings, bool forceUniversal, List<PzError> errors, CancellationToken ct)
     {
         var config = registry.ConfigFor(connection);
         var subject = $"connection '{connection.Name}'";
@@ -239,19 +253,35 @@ public static class ConnectorConfigValidator
 
             await using (source.ConfigureAwait(false))
             {
-                if (source is INaturalReadShapeSource shapes)
+                foreach (var dataset in connection.Datasets.Where(d => !datasetsWithFindings.Contains(d.Name)))
                 {
-                    foreach (var dataset in connection.Datasets.Where(d => !datasetsWithFindings.Contains(d.Name)))
+                    var spec = SpecBuilder.ForSourceLoad(new SourceDatasetDef(connection, dataset));
+                    try
+                    {
+                        (source as INaturalReadShapeSource)?.GetNaturalReadShape(spec);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException &&
+                                               Classify(ex, connection, $"{subject} dataset '{dataset.Name}'",
+                                                   registry) is { } refusal)
+                    {
+                        errors.Add(refusal);
+                        continue;
+                    }
+
+                    if (!forceUniversal)
                     {
                         try
                         {
-                            shapes.GetNaturalReadShape(SpecBuilder.ForSourceLoad(new SourceDatasetDef(connection, dataset)));
+                            source.TryGetNativeScan(spec, out _);
                         }
-                        catch (Exception ex) when (ex is not OperationCanceledException &&
-                                                   Classify(ex, connection, $"{subject} dataset '{dataset.Name}'",
-                                                       registry) is { } refusal)
+                        catch (PzConnectorException ex) when (IsConfigRefusal(ex))
                         {
-                            errors.Add(refusal);
+                            errors.Add(new PzError(PzErrorCode.NativePathContractMismatch, ex.Message, connection.FilePath,
+                                null, null));
+                        }
+                        catch (PzConnectorException)
+                        {
+                            // Depends on what is on disk now: the plan's to report, for the nodes a run executes.
                         }
                     }
                 }
@@ -260,18 +290,42 @@ public static class ConnectorConfigValidator
 
         if (sinkConnector is not null && connection.Outputs.Count > 0)
         {
+            ISink sink;
             try
             {
-                var sink = await sinkConnector.OpenAsync(config, ct).ConfigureAwait(false);
-                await sink.DisposeAsync().ConfigureAwait(false);
+                sink = await sinkConnector.OpenAsync(config, ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException &&
                                        Classify(ex, connection, subject, registry) is { } refusal)
             {
                 errors.Add(refusal);
+                return;
+            }
+
+            await using (sink.ConfigureAwait(false))
+            {
+                foreach (var output in connection.Outputs.Where(o => !forceUniversal && !outputsWithFindings.Contains(o.Name)))
+                {
+                    try
+                    {
+                        sink.TryGetNativeCopy(SpecBuilder.ForSinkOutput(new SinkOutputDef(connection, output)), out _);
+                    }
+                    catch (PzConnectorException ex) when (IsConfigRefusal(ex))
+                    {
+                        errors.Add(new PzError(PzErrorCode.NativePathContractMismatch,
+                            $"sink '{connection.Name}' output '{output.Name}': {ex.Message}", connection.FilePath, null, null));
+                    }
+                    catch (PzConnectorException)
+                    {
+                        // Depends on what is on disk now: the plan's to report, for the nodes a run executes.
+                    }
+                }
             }
         }
     }
+
+    private static bool IsConfigRefusal(PzConnectorException ex) =>
+        !ex.IsTransient && ex.Code == PzConnectorErrorCodes.Config;
 
     private static PzError? Classify(Exception ex, ConnectionDef connection, string subject, ConnectorRegistry registry) =>
         ConnectorFailures.Classify(ex, connection.Connector, subject, connection.FilePath, "validating",

@@ -5,6 +5,7 @@ using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.Engine.Execution;
 using Pz.Engine.Planning;
+using Pz.Engine.Validation;
 
 namespace Pz.Connector.DuckDb.Tests;
 
@@ -122,5 +123,32 @@ public sealed class DuckDbPlannerTests : IDisposable
         var plan = await new ExecutionPlanner(Registry())
             .PlanAsync(DuckDbToDuckDbDag(), forceUniversal: false, CancellationToken.None);
         Assert.All(plan.Nodes, n => Assert.DoesNotContain(dbPath, n.Reason, StringComparison.Ordinal));
+    }
+
+    // A native-path refusal the connector codes as config is reported by `pz validate` exactly as the plan reports
+    // it, so the two agree; one that depends on what is on disk (the database file not written yet) stays the
+    // plan's, which defers it for nodes a run does not execute.
+    [Fact]
+    public async Task Validate_reports_the_three_part_output_entity_as_the_plan_does_and_leaves_a_missing_file_to_the_plan()
+    {
+        var dag = DuckDbToDuckDbDag(outputName: "a.b.c");
+        var connections = dag.Nodes.Select(n => n.Definition switch
+            {
+                SourceDatasetDef d => d.Source,
+                SinkOutputDef o => o.Sink,
+                _ => null,
+            })
+            .OfType<ConnectionDef>().ToList();
+        var missing = connections[0] with { Connection = new Dictionary<string, object?> { ["path"] = dbPath + ".missing" } };
+        var project = new PzProject("p", "0.1.0", new EngineConfig(), new Dictionary<string, object?>(), [],
+            [missing, connections[1]], []);
+
+        var errors = await ConnectorConfigValidator.ValidateAsync(project, Registry(), CancellationToken.None);
+        var planned = await Assert.ThrowsAsync<PzValidationException>(() => new ExecutionPlanner(Registry())
+            .PlanAsync(dag, forceUniversal: false, CancellationToken.None));
+
+        var error = Assert.Single(errors);
+        Assert.Equal(PzErrorCode.NativePathContractMismatch, error.Code);
+        Assert.Equal(Assert.Single(planned.Errors).Message, error.Message);
     }
 }
