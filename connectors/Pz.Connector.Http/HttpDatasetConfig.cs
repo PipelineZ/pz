@@ -334,8 +334,21 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// <see cref="HttpFirstRequest"/>'s TryExpand calls are the runtime-side defense in depth for the
     /// same two failure modes.</summary>
     internal static void ValidateBindingTemplate(string template, string label,
-        IReadOnlyCollection<string> knownBindings, List<string> errors, bool echoTemplate = true)
+        IReadOnlyCollection<string> knownBindings, List<string> errors, bool echoTemplate = true,
+        IReadOnlyCollection<string>? itemFields = null)
     {
+        // An item reference is not a malformed engine binding: it is checked against the declared
+        // item fields (none here unless the caller passes them, which refuses it).
+        if (HttpTemplate.HasItemReferences(template))
+        {
+            if (!HttpTemplate.TryValidate(template, knownBindings, itemFields, out var error))
+            {
+                errors.Add($"{label}: {error}");
+            }
+
+            return;
+        }
+
         IReadOnlyList<string> referenced;
         try
         {

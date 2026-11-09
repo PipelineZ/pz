@@ -37,7 +37,8 @@ internal sealed class HttpBody
     public JsonNode? Template => IsJson ? template : null;
 
     public static HttpBody? Parse(object? raw, string? bodyFormat, string? contentType,
-        IReadOnlyCollection<string> knownBindings, List<string> errors)
+        IReadOnlyCollection<string> knownBindings, List<string> errors,
+        IReadOnlyCollection<string>? itemFields = null)
     {
         if (raw is null)
         {
@@ -67,7 +68,7 @@ internal sealed class HttpBody
                 return null;
             }
 
-            CheckTemplate(s, "body", knownBindings, errors);
+            CheckTemplate(s, "body", knownBindings, itemFields, errors);
             return new HttpBody(null, s, false, mediaType);
         }
 
@@ -78,7 +79,7 @@ internal sealed class HttpBody
         }
 
         var before = errors.Count;
-        var node = ToJson(raw, "", knownBindings, errors);
+        var node = ToJson(raw, "", knownBindings, itemFields, errors);
         if (isForm)
         {
             if (node is JsonObject obj && obj.All(kv => kv.Value is null or JsonValue))
@@ -96,9 +97,10 @@ internal sealed class HttpBody
 
     /// <summary>Expands a map body to a fresh JSON tree. A string value that references a null binding
     /// becomes JSON null; a string that is exactly one binding takes a JSON number when the binding's
-    /// cursor type is numeric.</summary>
+    /// cursor type is numeric; a string that is exactly one item reference takes the field's JSON value
+    /// with its type.</summary>
     public JsonNode? Render(IReadOnlyDictionary<string, BindingValue> bindings,
-        Func<string, BindingValue, string> format, out string? error)
+        Func<string, BindingValue, string> format, out string? error, ItemValues? item = null)
     {
         error = null;
         if (template is null)
@@ -107,13 +109,13 @@ internal sealed class HttpBody
             return null;
         }
 
-        return Expand(template.DeepClone(), bindings, format, ref error);
+        return Expand(template.DeepClone(), bindings, format, item, ref error);
     }
 
     /// <summary>Renders a string body (or a form body as `k=v&amp;...`). A null binding in a string
     /// body is refused: sending a half-rendered body would be a silent wrong result.</summary>
     public string RenderText(IReadOnlyDictionary<string, BindingValue> bindings,
-        Func<string, BindingValue, string> format)
+        Func<string, BindingValue, string> format, ItemValues? item = null)
     {
         if (form)
         {
@@ -126,7 +128,7 @@ internal sealed class HttpBody
                     continue;
                 }
 
-                var expanded = ExpandString(raw, bindings, format, out var err);
+                var expanded = ExpandString(raw, bindings, format, out var err, item);
                 if (err is not null)
                 {
                     throw new PzConnectorException($"body field '{key}': {err}", isTransient: false);
@@ -141,7 +143,7 @@ internal sealed class HttpBody
             return string.Join('&', pairs);
         }
 
-        var result = ExpandString(text!, bindings, format, out var error);
+        var result = ExpandString(text!, bindings, format, out var error, item);
         if (error is not null)
         {
             throw new PzConnectorException($"body: {error}", isTransient: false);
@@ -149,7 +151,10 @@ internal sealed class HttpBody
 
         if (result is null)
         {
-            var nulls = BindingExpander.ReferencedBindings(text!).Where(n => bindings[n].IsNull);
+            var referenced = HttpTemplate.HasItemReferences(text!)
+                ? HttpTemplate.EngineReferences(text!)
+                : BindingExpander.ReferencedBindings(text!);
+            var nulls = referenced.Where(n => bindings[n].IsNull);
             throw new PzConnectorException(
                 $"body references binding(s) {string.Join(", ", nulls.Select(n => $"'{n}'"))} with no value " +
                 "(first run or --full-refresh); a string body cannot omit a fragment — set an " +
@@ -173,7 +178,7 @@ internal sealed class HttpBody
     }
 
     private static JsonNode? Expand(JsonNode? node, IReadOnlyDictionary<string, BindingValue> bindings,
-        Func<string, BindingValue, string> format, ref string? error)
+        Func<string, BindingValue, string> format, ItemValues? item, ref string? error)
     {
         switch (node)
         {
@@ -181,7 +186,7 @@ internal sealed class HttpBody
                 foreach (var key in obj.Select(kv => kv.Key).ToList())
                 {
                     var child = obj[key];
-                    var expanded = Expand(child, bindings, format, ref error);
+                    var expanded = Expand(child, bindings, format, item, ref error);
                     if (!ReferenceEquals(expanded, child))
                     {
                         obj[key] = expanded;
@@ -193,7 +198,7 @@ internal sealed class HttpBody
                 for (var i = 0; i < arr.Count; i++)
                 {
                     var child = arr[i];
-                    var expanded = Expand(child, bindings, format, ref error);
+                    var expanded = Expand(child, bindings, format, item, ref error);
                     if (!ReferenceEquals(expanded, child))
                     {
                         arr[i] = expanded;
@@ -202,7 +207,9 @@ internal sealed class HttpBody
 
                 return arr;
             case JsonValue v when v.TryGetValue<string>(out var s):
-                return ExpandValue(s, bindings, format, ref error);
+                return HttpTemplate.HasItemReferences(s)
+                    ? ExpandItemValue(s, bindings, format, item, ref error)
+                    : ExpandValue(s, bindings, format, ref error);
             default:
                 return node;
         }
@@ -241,6 +248,30 @@ internal sealed class HttpBody
         return JsonValue.Create(text);
     }
 
+    private static JsonNode? ExpandItemValue(string s, IReadOnlyDictionary<string, BindingValue> bindings,
+        Func<string, BindingValue, string> format, ItemValues? item, ref string? error)
+    {
+        if (HttpTemplate.WholeItemReference(s) is { } name)
+        {
+            if (HttpTemplate.TryGetField(item, name, out var value, out var fieldError))
+            {
+                return value!.DeepClone();
+            }
+
+            error ??= fieldError;
+            return null;
+        }
+
+        var text = ExpandString(s, bindings, format, out var err, item);
+        if (err is not null)
+        {
+            error ??= err;
+            return null;
+        }
+
+        return text is null ? null : JsonValue.Create(text);
+    }
+
     private static bool TryParseNumber(string text, out JsonNode? number)
     {
         number = null;
@@ -268,8 +299,14 @@ internal sealed class HttpBody
     }
 
     internal static string? ExpandString(string s, IReadOnlyDictionary<string, BindingValue> bindings,
-        Func<string, BindingValue, string> format, out string? error)
+        Func<string, BindingValue, string> format, out string? error, ItemValues? item = null)
     {
+        if (HttpTemplate.HasItemReferences(s))
+        {
+            return HttpTemplate.TryExpand(s, bindings, item, format, (_, node) => HttpTemplate.ItemText(node),
+                out var expanded, out error) ? expanded : null;
+        }
+
         try
         {
             return BindingExpander.TryExpand(s, bindings, format, out var result, out error) ? result : null;
@@ -282,14 +319,14 @@ internal sealed class HttpBody
     }
 
     private static JsonNode? ToJson(object? value, string path, IReadOnlyCollection<string> knownBindings,
-        List<string> errors)
+        IReadOnlyCollection<string>? itemFields, List<string> errors)
     {
         switch (value)
         {
             case null:
                 return null;
             case string s:
-                CheckTemplate(s, $"body value at '{(path.Length == 0 ? "/" : path)}'", knownBindings, errors);
+                CheckTemplate(s, $"body value at '{(path.Length == 0 ? "/" : path)}'", knownBindings, itemFields, errors);
                 return JsonValue.Create(s);
             case bool b:
                 return JsonValue.Create(b);
@@ -308,7 +345,7 @@ internal sealed class HttpBody
             var obj = new JsonObject();
             foreach (var (k, v) in Entries(value))
             {
-                obj[k] = ToJson(v, $"{path}/{k}", knownBindings, errors);
+                obj[k] = ToJson(v, $"{path}/{k}", knownBindings, itemFields, errors);
             }
 
             return obj;
@@ -320,7 +357,7 @@ internal sealed class HttpBody
             var i = 0;
             foreach (var item in items)
             {
-                arr.Add(ToJson(item, $"{path}/{i++}", knownBindings, errors));
+                arr.Add(ToJson(item, $"{path}/{i++}", knownBindings, itemFields, errors));
             }
 
             return arr;
@@ -341,7 +378,7 @@ internal sealed class HttpBody
     }
 
     private static void CheckTemplate(string template, string label,
-        IReadOnlyCollection<string> knownBindings, List<string> errors)
+        IReadOnlyCollection<string> knownBindings, IReadOnlyCollection<string>? itemFields, List<string> errors)
         => HttpDatasetConfig.ValidateBindingTemplate(template, label, knownBindings, errors,
-            echoTemplate: false);
+            echoTemplate: false, itemFields: itemFields);
 }

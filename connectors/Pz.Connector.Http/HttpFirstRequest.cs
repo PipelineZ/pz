@@ -58,9 +58,10 @@ internal static class HttpFirstRequest
     }
 
     public static HttpPageRequest Build(HttpConnectionConfig connection, HttpDatasetConfig config,
-        IPageStrategy? strategy, IReadOnlyDictionary<string, BindingValue> bindings, string label)
+        IPageStrategy? strategy, IReadOnlyDictionary<string, BindingValue> bindings, string label,
+        ItemValues? item = null)
     {
-        var url = BuildFirstUri(connection, config, strategy, bindings, label);
+        var url = BuildFirstUri(connection, config, strategy, bindings, label, item);
         if (!config.IsPost)
         {
             return new HttpPageRequest(HttpMethod.Get, url, null, null);
@@ -74,7 +75,7 @@ internal static class HttpFirstRequest
         {
             if (body.IsJson)
             {
-                json = body.Render(bindings, FormatBinding, out var error);
+                json = body.Render(bindings, FormatBinding, out var error, item);
                 if (error is not null)
                 {
                     throw new PzConnectorException($"{label}: body: {error}", isTransient: false);
@@ -89,7 +90,7 @@ internal static class HttpFirstRequest
             {
                 try
                 {
-                    text = body.RenderText(bindings, FormatBinding);
+                    text = body.RenderText(bindings, FormatBinding, item);
                 }
                 catch (PzConnectorException ex)
                 {
@@ -103,7 +104,8 @@ internal static class HttpFirstRequest
     }
 
     private static Uri BuildFirstUri(HttpConnectionConfig connection, HttpDatasetConfig config,
-        IPageStrategy? strategy, IReadOnlyDictionary<string, BindingValue> bindings, string label)
+        IPageStrategy? strategy, IReadOnlyDictionary<string, BindingValue> bindings, string label,
+        ItemValues? item)
     {
         var pairs = new List<string>();
         foreach (var (name, template) in config.Query)
@@ -115,7 +117,11 @@ internal static class HttpFirstRequest
                 // Defense in depth: HttpDatasetConfig.Parse already validates every query template
                 // offline, but a malformed/unknown binding must never surface as an uncoded
                 // FormatException from a live read.
-                expanded = BindingExpander.TryExpand(template, bindings, FormatBinding, out value, out error);
+                // Raw text either way: the value is escaped once, below, when the pair is joined.
+                expanded = HttpTemplate.HasItemReferences(template)
+                    ? HttpTemplate.TryExpand(template, bindings, item, FormatBinding,
+                        (_, node) => HttpTemplate.ItemText(node), out value, out error)
+                    : BindingExpander.TryExpand(template, bindings, FormatBinding, out value, out error);
             }
             catch (FormatException ex)
             {
@@ -141,7 +147,7 @@ internal static class HttpFirstRequest
         // config.Path always starts with '/' (HttpDatasetConfig.Parse validated); stripping it makes
         // the segment relative so it resolves against the FULL slash-terminated base_url (including
         // any path prefix) instead of root-relative to the host.
-        var first = new UriBuilder(new Uri(connection.BaseUrl, ExpandPath(config.Path, bindings, label)[1..]))
+        var first = new UriBuilder(new Uri(connection.BaseUrl, ExpandPath(config.Path, bindings, label, item: item)[1..]))
         {
             Query = string.Join('&', pairs),
         }.Uri;
@@ -156,14 +162,20 @@ internal static class HttpFirstRequest
     // segments, while the template's own literal characters stay as written. A query parameter
     // with a null binding can be dropped; a path cannot drop anything, so a null is an error.
     internal static string ExpandPath(string template, IReadOnlyDictionary<string, BindingValue> bindings,
-        string label, string option = "path")
+        string label, string option = "path", ItemValues? item = null)
     {
+        var hasItemReferences = HttpTemplate.HasItemReferences(template);
         bool expanded;
         string? path, error;
         try
         {
-            expanded = BindingExpander.TryExpand(template, bindings,
-                (name, value) => Uri.EscapeDataString(FormatBinding(name, value)), out path, out error);
+            expanded = hasItemReferences
+                ? HttpTemplate.TryExpand(template, bindings, item,
+                    (name, value) => Uri.EscapeDataString(FormatBinding(name, value)),
+                    (name, node) => Uri.EscapeDataString(ItemPathSegment(name, node, label, option)),
+                    out path, out error)
+                : BindingExpander.TryExpand(template, bindings,
+                    (name, value) => Uri.EscapeDataString(FormatBinding(name, value)), out path, out error);
         }
         catch (FormatException ex)
         {
@@ -179,7 +191,9 @@ internal static class HttpFirstRequest
 
         if (path is null)
         {
-            var name = BindingExpander.ReferencedBindings(template).First(n => bindings[n].IsNull);
+            var name = (hasItemReferences
+                ? HttpTemplate.EngineReferences(template)
+                : BindingExpander.ReferencedBindings(template)).First(n => bindings[n].IsNull);
             throw new PzConnectorException(
                 $"{label}: option '{option}' references '{{{{ {name} }}}}', which has no value on this run " +
                 "(a first run or --full-refresh has no watermark) — declare 'initial:' so the first run " +
@@ -187,6 +201,22 @@ internal static class HttpFirstRequest
         }
 
         return path;
+    }
+
+    // Escaping keeps an item value inside its segment, but '.' or '..' as the whole value would still
+    // be resolved as a dot segment and move the request to another resource.
+    private static string ItemPathSegment(string name, JsonNode node, string label,
+        string option)
+    {
+        var text = HttpTemplate.ItemText(node);
+        if (text is "." or "..")
+        {
+            throw new PzConnectorException(
+                $"{label}: option '{option}': item field '{name}' is '{text}', which cannot be a path segment",
+                isTransient: false);
+        }
+
+        return text;
     }
 
     // Formats a bound value for a query param. Serves BOTH the lower bound (watermark) and the
