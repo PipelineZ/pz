@@ -52,7 +52,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "path": { "type": "string" },
             "query": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
             "pagination": { "type": "object", "properties": {
-                "strategy": { "enum": ["page", "link_header", "cursor"] },
+                "strategy": { "enum": ["page", "offset", "link_header", "cursor", "next_url"] },
                 "param": { "type": "string" }, "start": { "type": "integer" },
                 "size_param": { "type": "string" }, "size": { "type": "integer" },
                 "pointer": { "type": "string" }, "stop_on_short_page": { "type": "boolean" } },
@@ -84,10 +84,11 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         var errors = new List<string>();
-        HttpConnectionConfig.Parse(config, errors);
-        return ValueTask.FromResult(errors.Count == 0
-            ? ValidationResult.Success
-            : new ValidationResult(errors));
+        var connection = HttpConnectionConfig.Parse(config, errors);
+        return ValueTask.FromResult(new ValidationResult(errors)
+        {
+            Warnings = connection?.Warnings() ?? [],
+        });
     }
 
     // Mirrors HttpPartition.MaxRedirects: the client itself never auto-follows (AllowAutoRedirect is

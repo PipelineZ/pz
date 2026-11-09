@@ -44,7 +44,9 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// explicitly listed in 'allow_hosts'. Pagination links, redirect targets and stored resume
     /// tokens are all chosen by the far side, so each is checked against this before it is followed —
     /// otherwise a compromised or malicious endpoint can name any host it likes and pz will send the
-    /// connection's Authorization/api-key headers there.</summary>
+    /// connection's Authorization/api-key headers there. An allow-listed host must be reached over
+    /// https unless the base URL is itself http: otherwise a far-side link to 'http://files.x' would
+    /// carry credentials in cleartext that the author only ever meant to send encrypted.</summary>
     public bool IsAllowedTarget(Uri candidate)
     {
         if (candidate.Scheme is not ("http" or "https"))
@@ -59,6 +61,11 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             return true;
         }
 
+        if (candidate.Scheme == Uri.UriSchemeHttp && BaseUrl.Scheme == Uri.UriSchemeHttps)
+        {
+            return false;
+        }
+
         foreach (var host in AllowedHosts)
         {
             if (string.Equals(candidate.Host, host, StringComparison.OrdinalIgnoreCase))
@@ -68,6 +75,23 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         }
 
         return false;
+    }
+
+    /// <summary>Non-blocking validation diagnostics. Credentials (an 'auth:' block or an
+    /// Authorization header) sent to a cleartext http base URL travel unencrypted; that is legal —
+    /// some internal APIs are http-only — but never silent. Loopback is exempt: it never leaves the
+    /// machine.</summary>
+    public IReadOnlyList<string> Warnings()
+    {
+        var sendsCredentials = Authenticator is not null
+            || Headers.Keys.Any(k => string.Equals(k, "Authorization", StringComparison.OrdinalIgnoreCase));
+        if (BaseUrl.Scheme != Uri.UriSchemeHttp || !sendsCredentials || BaseUrl.IsLoopback)
+        {
+            return [];
+        }
+
+        return [$"'base_url' is http://{BaseUrl.Authority}, so this connection's credentials are sent " +
+            "unencrypted on every request; use an https:// base_url unless this API really is http-only"];
     }
 
     public static HttpConnectionConfig? Parse(ConnectorConfig config, List<string> errors)
