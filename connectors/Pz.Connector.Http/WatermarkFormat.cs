@@ -19,7 +19,10 @@ internal sealed class WatermarkFormat
     private const string IsoPattern = "yyyy-MM-dd'T'HH:mm:ss'Z'";
 
     /// <summary>Today's rendering: ISO-8601 UTC to whole seconds.</summary>
-    public static WatermarkFormat Iso8601 { get; } = new("iso8601", Kind.Custom, IsoPattern, Unit.Second, 0);
+    public static WatermarkFormat Iso8601 { get; } = new("iso8601", Kind.Custom, IsoPattern, Unit.Second, 0)
+    {
+        HasUtcMarker = true,
+    };
 
     private readonly Kind _kind;
     private readonly string _pattern;
@@ -41,6 +44,14 @@ internal sealed class WatermarkFormat
     /// <summary>True for the epoch formats: the rendered value is an integer, so a whole-value JSON body
     /// binding sends it as a JSON number.</summary>
     public bool IsNumeric => _kind != Kind.Custom;
+
+    /// <summary>True for `iso8601` and the epoch formats, which name an instant on their own, so a time
+    /// zone has nothing to apply to.</summary>
+    public bool IsAbsolute => _kind != Kind.Custom || ReferenceEquals(this, Iso8601);
+
+    /// <summary>True when the format writes a UTC marker (a literal `Z`, or quoted text holding `Z` or
+    /// `UTC`): its wall time must then be UTC, so no other time zone may apply.</summary>
+    public bool HasUtcMarker { get; private init; }
 
     /// <summary>True when the format renders no time of day, so it suits a `date` cursor.</summary>
     public bool IsDateOnly => _kind == Kind.Custom && _unit <= Unit.Day;
@@ -75,6 +86,7 @@ internal sealed class WatermarkFormat
         }
 
         var seen = new HashSet<Unit>();
+        var utcMarker = false;
         var fractionDigits = 0;
         var pattern = new StringBuilder();
         for (var i = 0; i < text.Length;)
@@ -89,6 +101,16 @@ internal sealed class WatermarkFormat
                     return null;
                 }
 
+                // .NET reads a backslash inside quoted text as an escape (a trailing one swallows the closing
+                // quote and the render throws); a double quote opens another literal.
+                var quoted = text[(i + 1)..end];
+                if (quoted.IndexOfAny(['\\', '"']) >= 0)
+                {
+                    error = $"'watermark_format' '{text}' has a backslash or a double quote inside quoted text";
+                    return null;
+                }
+
+                utcMarker |= quoted.Contains('Z') || quoted.Contains("UTC", StringComparison.OrdinalIgnoreCase);
                 pattern.Append(text, i, end - i + 1);
                 i = end + 1;
                 continue;
@@ -96,6 +118,7 @@ internal sealed class WatermarkFormat
 
             if (c is '-' or '_' or '/' or '.' or ':' or ',' or ' ' or 'T' or 'Z')
             {
+                utcMarker |= c == 'Z';
                 // Quoted, so '/' and ':' stay literal instead of becoming culture separators.
                 pattern.Append('\'').Append(c).Append('\'');
                 i++;
@@ -167,36 +190,116 @@ internal sealed class WatermarkFormat
             }
         }
 
-        return new WatermarkFormat(text, Kind.Custom, pattern.ToString(), finest, fractionDigits);
-    }
-
-    /// <summary>Renders <paramref name="value"/> (a stored watermark or window bound, already parsed as
-    /// UTC) as the lower bound, or as the upper bound when <paramref name="upper"/>.</summary>
-    public string Render(DateTimeOffset value, bool upper)
-    {
-        var utc = value.ToUniversalTime();
-        var floored = Floor(utc);
-        var bound = upper && utc > floored ? Next(floored) : floored;
-        return _kind switch
+        return new WatermarkFormat(text, Kind.Custom, pattern.ToString(), finest, fractionDigits)
         {
-            Kind.EpochSeconds => bound.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),
-            Kind.EpochMilliseconds => bound.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture),
-            _ => bound.ToString(_pattern.Length == 1 ? "%" + _pattern : _pattern, CultureInfo.InvariantCulture),
+            HasUtcMarker = utcMarker,
         };
     }
 
-    private DateTimeOffset Floor(DateTimeOffset t) => _unit switch
+    /// <summary>The largest wall-clock shift a time-zone transition makes (Troll in Antarctica moves 2 h).
+    /// A bound that lands in a skipped or repeated hour is moved this far past the transition before it is
+    /// floored or rounded up again, so the API reads it as an instant on the safe side whichever way it
+    /// resolves the local time.</summary>
+    private static readonly TimeSpan MaxTransitionShift = TimeSpan.FromHours(3);
+
+    /// <summary>Renders <paramref name="value"/> (a stored watermark or window bound) as the lower bound,
+    /// or as the upper bound when <paramref name="upper"/>. A custom or `date` format renders the wall time
+    /// in <paramref name="zone"/> (UTC when null) and floors or rounds up there. When the floored lower
+    /// bound is a local time the zone skips or repeats, the earlier safe wall time is used, and the later
+    /// one for the upper bound, so a DST transition never narrows the window. Throws a permanent
+    /// <see cref="Pz.Connectors.Abstractions.PzConnectorException"/> (without the value) when rounding up
+    /// would pass year 9999.</summary>
+    public string Render(DateTimeOffset value, bool upper, TimeZoneInfo? zone = null)
     {
-        Unit.Year => new DateTimeOffset(t.Year, 1, 1, 0, 0, 0, TimeSpan.Zero),
-        Unit.Month => new DateTimeOffset(t.Year, t.Month, 1, 0, 0, 0, TimeSpan.Zero),
-        Unit.Day => new DateTimeOffset(t.Year, t.Month, t.Day, 0, 0, 0, TimeSpan.Zero),
-        Unit.Hour => new DateTimeOffset(t.Year, t.Month, t.Day, t.Hour, 0, 0, TimeSpan.Zero),
-        Unit.Minute => new DateTimeOffset(t.Year, t.Month, t.Day, t.Hour, t.Minute, 0, TimeSpan.Zero),
-        Unit.Second => new DateTimeOffset(t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second, TimeSpan.Zero),
-        _ => new DateTimeOffset(t.UtcTicks - t.UtcTicks % FractionTicks, TimeSpan.Zero),
+        var utc = value.ToUniversalTime();
+        if (_kind != Kind.Custom || zone is null || zone == TimeZoneInfo.Utc)
+        {
+            var wall = Bound(utc.DateTime, upper);
+            return Format(wall);
+        }
+
+        var local = TimeZoneInfo.ConvertTimeFromUtc(utc.UtcDateTime, zone);
+        var bound = Bound(local, upper);
+        for (var i = 0; i < 4 && !IsSafe(bound, utc, upper, zone); i++)
+        {
+            bound = upper
+                ? Bound(Shift(bound, MaxTransitionShift), upper: true)
+                : Bound(Shift(bound, -MaxTransitionShift), upper: false);
+        }
+
+        return Format(bound);
+    }
+
+    private string Format(DateTime wall) => _kind switch
+    {
+        Kind.EpochSeconds => new DateTimeOffset(wall, TimeSpan.Zero).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture),
+        Kind.EpochMilliseconds => new DateTimeOffset(wall, TimeSpan.Zero).ToUnixTimeMilliseconds()
+            .ToString(CultureInfo.InvariantCulture),
+        _ => wall.ToString(_pattern.Length == 1 ? "%" + _pattern : _pattern, CultureInfo.InvariantCulture),
     };
 
-    private DateTimeOffset Next(DateTimeOffset floored) => _unit switch
+    /// <summary>A lower bound is safe when every instant the zone maps it to is at or before the value; an
+    /// upper bound when every one is at or after it. A skipped local time maps to no instant, so it is
+    /// never safe: the API might resolve it either way.</summary>
+    private static bool IsSafe(DateTime wall, DateTimeOffset value, bool upper, TimeZoneInfo zone)
+    {
+        wall = DateTime.SpecifyKind(wall, DateTimeKind.Unspecified);
+        if (zone.IsInvalidTime(wall))
+        {
+            return false;
+        }
+
+        var offsets = zone.IsAmbiguousTime(wall) ? zone.GetAmbiguousTimeOffsets(wall) : [zone.GetUtcOffset(wall)];
+        var instants = offsets.Select(o => new DateTimeOffset(wall, o));
+        return upper ? instants.All(i => i >= value) : instants.All(i => i <= value);
+    }
+
+    private static DateTime Shift(DateTime wall, TimeSpan by)
+    {
+        try
+        {
+            return wall.Add(by);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            throw Overflow();
+        }
+    }
+
+    private DateTime Bound(DateTime wall, bool upper)
+    {
+        var floored = Floor(wall);
+        if (!upper || wall <= floored)
+        {
+            return floored;
+        }
+
+        try
+        {
+            return Next(floored);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            throw Overflow();
+        }
+    }
+
+    private static Pz.Connectors.Abstractions.PzConnectorException Overflow() => new(
+        "'watermark_format' cannot round the window's upper bound up: it would pass 9999-12-31; declare an " +
+        "earlier 'until:'", isTransient: false);
+
+    private DateTime Floor(DateTime t) => _unit switch
+    {
+        Unit.Year => new DateTime(t.Year, 1, 1),
+        Unit.Month => new DateTime(t.Year, t.Month, 1),
+        Unit.Day => t.Date,
+        Unit.Hour => new DateTime(t.Year, t.Month, t.Day, t.Hour, 0, 0),
+        Unit.Minute => new DateTime(t.Year, t.Month, t.Day, t.Hour, t.Minute, 0),
+        Unit.Second => new DateTime(t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second),
+        _ => new DateTime(t.Ticks - t.Ticks % FractionTicks),
+    };
+
+    private DateTime Next(DateTime floored) => _unit switch
     {
         Unit.Year => floored.AddYears(1),
         Unit.Month => floored.AddMonths(1),

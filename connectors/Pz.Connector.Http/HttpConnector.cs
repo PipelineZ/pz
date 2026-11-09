@@ -90,6 +90,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "column_pointers": { "type": "object", "additionalProperties": { "type": "string" } },
             "epoch_unit": { "enum": ["s", "ms"] },
             "watermark_format": { "type": "string", "minLength": 1 },
+            "watermark_time_zone": { "type": "string", "minLength": 1 },
             "cursor": { "type": "string" }, "cursor_type": { "type": "string" },
             "cursor_pointer": { "type": "string" },
             "cursor_order": { "enum": ["asc", "desc"] },

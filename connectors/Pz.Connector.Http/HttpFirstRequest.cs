@@ -9,7 +9,7 @@ namespace Pz.Connector.Http;
 /// <summary>Builds a dataset's first request from its options: the engine bindings, then the path,
 /// the query string and (for a POST) the body, all expanded from the same bindings with the same
 /// formatting, so a watermark appears identically wherever it is referenced.</summary>
-internal static class HttpFirstRequest
+internal static partial class HttpFirstRequest
 {
     public static Dictionary<string, BindingValue> Bindings(DatasetSpec spec, HttpDatasetConfig config,
         string runDate, string label)
@@ -47,10 +47,10 @@ internal static class HttpFirstRequest
         }
         var bindings = new Dictionary<string, BindingValue>
         {
-            ["watermark"] = Bound(spec.WatermarkValue, cursorType, config.WatermarkFormat, upper: false, label),
+            ["watermark"] = Bound(spec.WatermarkValue, cursorType, config, upper: false, label),
             // Upper bound of the engine-resolved (lower, upper] window; null when the dataset is
             // not windowed, in which case TryExpand omits the param.
-            ["window_upper"] = Bound(spec.WatermarkUpperBound, cursorType, config.WatermarkFormat, upper: true, label),
+            ["window_upper"] = Bound(spec.WatermarkUpperBound, cursorType, config, upper: true, label),
             // Never null: already rendered text, so it passes through FormatBinding untouched.
             ["run_date"] = new(runDate, null),
         };
@@ -62,16 +62,16 @@ internal static class HttpFirstRequest
     /// rendered here, once, where the bound's direction is known; the result is typed `bigint` for an epoch
     /// format (so a whole-value JSON body binding sends a number) and untyped text otherwise, which
     /// FormatBinding passes through.</summary>
-    private static BindingValue Bound(string? value, string? cursorType, WatermarkFormat? format, bool upper,
+    private static BindingValue Bound(string? value, string? cursorType, HttpDatasetConfig config, bool upper,
         string label)
     {
-        if (format is null)
+        if (config.WatermarkFormat is not { } format)
         {
             return new BindingValue(value, cursorType);
         }
 
         // The offline check cannot know a SQL-declared incremental's type; this is where it is known.
-        if (HttpDatasetConfig.CheckFormatForCursor(format, cursorType) is { } error)
+        if (HttpDatasetConfig.CheckFormatForCursor(format, config.WatermarkTimeZone, cursorType) is { } error)
         {
             throw new PzConnectorException($"{label}: {error}", isTransient: false);
         }
@@ -82,8 +82,7 @@ internal static class HttpFirstRequest
         }
 
         // The stored value is never echoed: rendered binding values stay out of messages.
-        if (!DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var ts))
+        if (!TryParseBound(value, out var ts))
         {
             throw new PzConnectorException(
                 $"{label}: 'watermark_format: {format.Name}' cannot render the stored {(upper ? "window upper bound" : "watermark")}: " +
@@ -91,8 +90,25 @@ internal static class HttpFirstRequest
                 isTransient: false);
         }
 
-        return new BindingValue(format.Render(ts, upper), format.IsNumeric ? "bigint" : null);
+        try
+        {
+            return new BindingValue(format.Render(ts, upper, config.WatermarkTimeZone), format.IsNumeric ? "bigint" : null);
+        }
+        catch (PzConnectorException ex)
+        {
+            throw new PzConnectorException($"{label}: {ex.Message}", isTransient: false, innerException: ex);
+        }
     }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?<=\.\d{7})\d+")]
+    private static partial System.Text.RegularExpressions.Regex SubTickDigits();
+
+    /// <summary>Parses a stored bound as UTC. Digits past the 100 ns tick (a nanosecond cursor) are cut off
+    /// first: the parser would round them, and a lower bound rounded up past the stored value can floor
+    /// into the next unit and skip rows.</summary>
+    internal static bool TryParseBound(string value, out DateTimeOffset ts)
+        => DateTimeOffset.TryParse(SubTickDigits().Replace(value, ""), CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out ts);
 
     public static HttpPageRequest Build(HttpConnectionConfig connection, HttpDatasetConfig config,
         IPageStrategy? strategy, IReadOnlyDictionary<string, BindingValue> bindings, string label,
@@ -299,9 +315,7 @@ internal static class HttpFirstRequest
     //     (empty-slice advancement), silently skipping those rows.
     internal static string FormatBinding(string name, BindingValue value)
     {
-        if (value.TypeName != "timestamp"
-            || !DateTimeOffset.TryParse(value.Value, CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var ts))
+        if (value.TypeName != "timestamp" || value.Value is null || !TryParseBound(value.Value, out var ts))
         {
             return value.Value!;
         }

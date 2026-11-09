@@ -529,4 +529,165 @@ public class HttpFormatsTests
 
         Assert.Empty(await Pz.Engine.Validation.ConnectorConfigValidator.ValidateAsync(project, registry, default));
     }
+
+    // ---- fix round: time zone, sub-tick digits, more binding sites ----
+
+    [Fact]
+    public async Task A_time_zone_renders_local_wall_time_in_the_request()
+    {
+        var options = Incremental(new()
+        {
+            ["watermark_format"] = "yyyy-MM-dd HH:mm:ss",
+            ["watermark_time_zone"] = "America/New_York",
+        });
+        var (server, _) = await ReadAsync(WithWatermark(options));
+        await using var _s = server;
+
+        // 12:34:56.789Z is 07:34:56 EST; 2026-11-10T00:00:00.5Z is 19:00:00.5 EST on the 9th.
+        Assert.Equal("?since=2026-11-09 07:34:56&until=2026-11-09 19:00:01", Query(server));
+    }
+
+    [Theory]
+    [InlineData("iso8601", "names an instant on its own")]
+    [InlineData("epoch_s", "names an instant on its own")]
+    [InlineData("yyyy-MM-ddTHH:mm:ssZ", "UTC marker")]
+    public void A_time_zone_is_refused_with_absolute_or_utc_marked_formats(string format, string reason)
+        => Assert.Contains(reason, Errors(Incremental(new()
+        {
+            ["watermark_format"] = format,
+            ["watermark_time_zone"] = "America/New_York",
+        })));
+
+    [Fact]
+    public void A_time_zone_needs_a_watermark_format_and_a_known_id()
+    {
+        Assert.Contains("needs a 'watermark_format'",
+            Errors(Incremental(new() { ["watermark_time_zone"] = "America/New_York" })));
+        Assert.Contains("'watermark_time_zone' 'Mars/Olympus' is not a known time zone id",
+            Errors(Incremental(new() { ["watermark_format"] = "date", ["watermark_time_zone"] = "Mars/Olympus" })));
+    }
+
+    [Fact]
+    public void A_time_zone_is_refused_on_a_date_cursor()
+        => Assert.Contains("cannot apply to a date cursor", Errors(Incremental(new()
+        {
+            ["watermark_format"] = "date",
+            ["watermark_time_zone"] = "America/New_York",
+            ["cursor_type"] = "date",
+        })));
+
+    [Fact]
+    public void A_time_zone_is_refused_inside_for_each()
+        => Assert.Contains("for_each.watermark_time_zone is not allowed", Errors(new Dictionary<string, object?>
+        {
+            ["path"] = "/orders/{{ item.id }}",
+            ["for_each"] = new Dictionary<string, object?>
+            {
+                ["path"] = "/events",
+                ["fields"] = new Dictionary<string, object?> { ["id"] = "/id" },
+                ["watermark_time_zone"] = "UTC",
+            },
+        }));
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("iso8601")]
+    [InlineData("yyyy-MM-dd HH:mm:ss.fffffff")]
+    public async Task Nanosecond_digits_are_cut_not_rounded(string? format)
+    {
+        // Rounding .99999999995 would carry into the next second and skip the rows of this one.
+        var extra = format is null ? new Dictionary<string, object?>() : new() { ["watermark_format"] = format };
+        var options = Incremental(extra);
+        options["query"] = new Dictionary<string, object?> { ["since"] = "{{ watermark }}" };
+        var (server, _) = await ReadAsync(new DatasetSpec("s", "d", options)
+        {
+            WatermarkCursor = "updated_at", WatermarkValue = "2026-11-09T12:34:56.99999999995",
+        });
+        await using var _s = server;
+
+        Assert.Equal(format == "yyyy-MM-dd HH:mm:ss.fffffff"
+            ? "?since=2026-11-09 12:34:56.9999999"
+            : "?since=2026-11-09T12:34:56Z", Query(server));
+    }
+
+    [Fact]
+    public async Task Window_upper_is_a_json_number_in_a_whole_value_body_binding()
+    {
+        var options = Incremental(new()
+        {
+            ["watermark_format"] = "epoch_ms",
+            ["method"] = "post",
+            ["body"] = new Dictionary<string, object?> { ["until"] = "{{ window_upper }}" },
+        });
+        options.Remove("query");
+        var (server, _) = await ReadAsync(WithWatermark(options));
+        await using var _s = server;
+
+        Assert.Equal("""{"until":1794268800500}""", server.Requests.Single().Body);
+    }
+
+    [Fact]
+    public void An_export_path_renders_the_formatted_bindings()
+    {
+        var options = new Dictionary<string, object?>
+        {
+            ["path"] = "/exports",
+            ["method"] = "post",
+            ["watermark_format"] = "epoch_s",
+            ["file"] = new Dictionary<string, object?> { ["format"] = "csv" },
+            ["columns"] = new Dictionary<string, string> { ["updated_at"] = "timestamp" },
+            ["export"] = new Dictionary<string, object?>
+            {
+                ["job_id"] = "/id",
+                ["status_path"] = "/exports/{{ watermark }}/status",
+                ["status_pointer"] = "/state",
+                ["ready"] = new List<object?> { "done" },
+                ["download_pointer"] = "/url",
+            },
+        };
+        var spec = WithWatermark(options);
+        var config = HttpDatasetConfig.Parse(spec);
+        var bindings = HttpFirstRequest.Bindings(spec, config, "2026-11-09", "ctx");
+
+        Assert.Equal("/exports/1794227696/status",
+            HttpFirstRequest.ExpandPath(config.Export!.StatusPath!, bindings, "ctx", "export.status_path"));
+    }
+
+    [Fact]
+    public async Task Every_page_reuses_the_formatted_bindings()
+    {
+        var options = Incremental(new()
+        {
+            ["watermark_format"] = "epoch_s",
+            ["pagination"] = new Dictionary<string, object?> { ["strategy"] = "page", ["size"] = 1L },
+        });
+        options["query"] = new Dictionary<string, object?> { ["since"] = "{{ watermark }}" };
+        await using var server = new StubHttpServer();
+        server.Map("/events", request => new StubResponse(200,
+            request.Url.Query.Contains("page=1", StringComparison.Ordinal)
+                ? """[{"updated_at":"2026-11-09T13:00:00Z"}]"""
+                : "[]"));
+        var connector = new HttpConnector();
+        await using var source = await connector.OpenAsync(new ConnectorConfig(
+            new Dictionary<string, object?> { ["base_url"] = server.BaseUrl.ToString() }), CancellationToken.None);
+        var partitions = await source.PlanReadAsync(WithWatermark(options), ReadHints.None, CancellationToken.None);
+        await foreach (var batch in partitions[0].ReadAsync(BatchOptions.Default, CancellationToken.None))
+        {
+            batch.Dispose();
+        }
+
+        Assert.Equal(2, server.Requests.Count);
+        Assert.All(server.Requests, r => Assert.Contains("since=1794227696", r.Url.Query, StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("/a/~2")]
+    [InlineData("/a~")]
+    public void A_pointer_with_a_bad_escape_is_refused(string pointer)
+        => Assert.Contains("column 'n': 'pointer' must be a JSON pointer", Errors(new Dictionary<string, object?>
+        {
+            ["path"] = "/x",
+            ["columns"] = new Dictionary<string, string> { ["n"] = "bigint" },
+            ["column_pointers"] = Pointers(("n", pointer)),
+        }));
 }
