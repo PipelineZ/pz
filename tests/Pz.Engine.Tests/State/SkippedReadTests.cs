@@ -37,7 +37,7 @@ public sealed class SkippedReadTests : IAsyncLifetime
         try { Directory.Delete(_dir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
-    public enum Path_ { Channel, Streaming, PartitionMode, Checkpointing }
+    public enum Path_ { Channel, Streaming, PartitionMode, StreamingPartitionMode, Checkpointing }
 
     private RunContext Ctx(SkippingConnector connector, bool fullRefresh = false)
     {
@@ -64,6 +64,7 @@ public sealed class SkippedReadTests : IAsyncLifetime
     [InlineData(Path_.Channel)]
     [InlineData(Path_.Streaming)]
     [InlineData(Path_.PartitionMode)]
+    [InlineData(Path_.StreamingPartitionMode)]
     [InlineData(Path_.Checkpointing)]
     public async Task A_skipped_read_fails_an_incremental_node_with_PZ0540_naming_the_rule(Path_ path)
     {
@@ -78,7 +79,7 @@ public sealed class SkippedReadTests : IAsyncLifetime
         Assert.Contains(Rule, result.Error.Message);
         Assert.Null(result.WatermarkCandidate);
         Assert.Equal(1, connector.Attempts); // permanent: never retried
-        if (path is Path_.PartitionMode or Path_.Checkpointing)
+        if (path is Path_.PartitionMode or Path_.StreamingPartitionMode or Path_.Checkpointing)
         {
             // Nothing the skipped read produced is recorded as done or resumable, so pz retry reads it again.
             Assert.Equal(0L, await _duck.ScalarAsync<long>(
@@ -126,6 +127,7 @@ public sealed class SkippedReadTests : IAsyncLifetime
         {
             Path_.Streaming => ConnectorCapabilities.StreamingPartitions,
             Path_.PartitionMode => ConnectorCapabilities.StablePartitionIds,
+            Path_.StreamingPartitionMode => ConnectorCapabilities.StablePartitionIds | ConnectorCapabilities.StreamingPartitions,
             Path_.Checkpointing => ConnectorCapabilities.StablePartitionIds | ConnectorCapabilities.CheckpointableReads,
             _ => ConnectorCapabilities.None,
         };
