@@ -284,7 +284,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
         Assert.Equal(0, rows);
         Assert.Single(_server.Requests);
         Assert.Equal($"http source 's.d': skipped the read: HTTP 400 from {_server.BaseUrl}r?page=1 matched " +
-            "on_status[0] (skip); no rows", Assert.Single(_notices));
+            "on_status[0] (skip); 0 rows landed", Assert.Single(_notices));
     }
 
     [Fact]
@@ -346,7 +346,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 
         Assert.Equal(0, rows);
         Assert.Equal($"http source 's.d': download: skipped the read: HTTP 400 from {_server.BaseUrl}export.csv " +
-            "matched on_status[0] (skip); no rows", Assert.Single(_notices));
+            "matched on_status[0] (skip); 0 rows landed", Assert.Single(_notices));
     }
 
     [Fact]
@@ -499,7 +499,7 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 
         Assert.Equal(0, rows);
         Assert.Single(_server.Requests);
-        Assert.Contains("matched for_each.on_status[0] (skip); no rows", Assert.Single(_notices));
+        Assert.Contains("matched for_each.on_status[0] (skip); 0 rows landed", Assert.Single(_notices));
     }
 
     [Fact]
@@ -607,5 +607,58 @@ public sealed class HttpStatusRulesReadTests : IAsyncLifetime
 
         Assert.True(ex.IsTransient);
         Assert.Null(ex.RetryAfter);
+    }
+
+    // --- an item 404 under on_missing: skip never waits for the error body unless a rule could match it ---
+
+    private static async Task<long> ReadStalledMissingItem(Dictionary<string, object?>? extra)
+    {
+        await using var hostile = new HostileServer((_, request) => request.StartsWith("GET /orders/b/", StringComparison.Ordinal)
+            ? HostileReply.StallMidBody(404, "text/plain", "gone", 100_000)
+            : request.StartsWith("GET /orders/", StringComparison.Ordinal)
+                ? HostileReply.Raw("HTTP/1.1 200 OK\nContent-Type: text/csv\nContent-Length: 6\nConnection: close\n\nsku\nx\n")
+                : HostileReply.Json("""{"data":[{"id":"a"},{"id":"b"}]}"""));
+        var errors = new List<string>();
+        // A one-second idle limit: reading the stalled body at all would fail the read as a stall.
+        var connection = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
+        {
+            ["base_url"] = hostile.BaseUrl.ToString(),
+            ["timeout_seconds"] = "1",
+        }), errors)!;
+        Assert.Empty(errors);
+        var options = Map(("path", "/orders/{{ item.id }}/lines.csv"), ("file", Map(("format", "csv"))),
+            ("for_each", Map(("path", "/orders"), ("items", "/data"), ("fields", Map(("id", "/id"))),
+                ("on_missing", "skip"))));
+        foreach (var (k, v) in extra ?? [])
+        {
+            options[k] = v;
+        }
+
+        await using var source = new HttpSource(connection);
+        var partition = Assert.Single(await source.PlanReadAsync(new DatasetSpec("s", "d", options), ReadHints.None,
+            CancellationToken.None));
+        long rows = 0;
+        await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+        {
+            rows += batch.Length;
+            batch.Dispose();
+        }
+
+        return rows;
+    }
+
+    [Fact]
+    public async Task On_missing_file_item_skips_without_reading_the_body_when_there_are_no_rules()
+    {
+        Assert.Equal(1, await ReadStalledMissingItem(null));
+    }
+
+    [Fact]
+    public async Task On_missing_file_item_skips_without_reading_the_body_when_no_rule_covers_the_status()
+    {
+        Assert.Equal(1, await ReadStalledMissingItem(new()
+        {
+            ["on_status"] = Rules(Map(("status", 400), ("body_contains", "quota"), ("action", "transient"))),
+        }));
     }
 }

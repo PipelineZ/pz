@@ -36,6 +36,9 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
     /// <summary>True when some rule needs the response body to decide.</summary>
     public bool RulesReadBody => rules?.Any(r => r.BodyContains is not null) == true;
 
+    /// <summary>True when some rule names <paramref name="status"/>, whatever its <c>body_contains</c>.</summary>
+    public bool RulesCover(int status) => rules?.Any(r => r.Covers(status)) == true;
+
     /// <summary>The first <c>on_status</c> rule matching the response, or null. <paramref name="bodyText"/>
     /// is the raw body (or its head), never shown.</summary>
     public HttpStatusRule? MatchRule(SentResponse sent, string bodyText)

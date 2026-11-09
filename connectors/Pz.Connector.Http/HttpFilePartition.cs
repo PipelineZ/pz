@@ -188,6 +188,19 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
         if (!sent.Response.IsSuccessStatusCode)
         {
             var status = (int)sent.Response.StatusCode;
+            if (!sender.RulesCover(status))
+            {
+                // No rule can match this status: exactly the order this read always had, so an item skipped
+                // under on_missing never waits for its error body.
+                if (SkipMissing && status is 404 or 410)
+                {
+                    return (null, "");
+                }
+
+                throw sender.StatusError(sent, await BodyHeadAsync(content, idle, ct).ConfigureAwait(false),
+                    DownloadStage, rule: null);
+            }
+
             // Rules match the raw head; only the message text has URL queries stripped.
             var head = await HeadAsync(content, idle, sender.RulesReadBody ? RuleMatchBytes : SnippetBytes, ct)
                 .ConfigureAwait(false);
@@ -197,7 +210,7 @@ internal sealed class HttpFilePartition(HttpClient client, HttpClient bareClient
             if (rule is { Action: StatusAction.Skip } && config.Export is null)
             {
                 _skipNotice = $"{DownloadLabel}: skipped the read: HTTP {status} from {target} matched " +
-                    $"{rule.Label} (skip); no rows";
+                    $"{rule.Label} (skip); 0 rows landed";
                 return (null, "");
             }
 

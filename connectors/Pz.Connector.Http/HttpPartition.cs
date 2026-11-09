@@ -602,7 +602,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
                     if (Item is null)
                     {
                         Notice?.Invoke($"{Label}: skipped the read: HTTP {status} from {Target(sent, sendUri)} " +
-                            $"matched {rule.Label} (skip); no rows");
+                            $"matched {rule.Label} (skip); 0 rows landed");
                     }
 
                     return new FetchedPage([], null, null);

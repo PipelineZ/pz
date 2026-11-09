@@ -29,8 +29,10 @@ internal sealed record HttpStatusRule(string Label, IReadOnlySet<int> Codes, IRe
     /// <summary>Whether the rule covers <paramref name="status"/> and, when it names a substring,
     /// <paramref name="body"/> contains it (ordinal, ignoring case).</summary>
     public bool Matches(int status, string body)
-        => (Codes.Contains(status) || Classes.Contains(status / 100))
-           && (BodyContains is null || body.Contains(BodyContains, StringComparison.OrdinalIgnoreCase));
+        => Covers(status) && (BodyContains is null || body.Contains(BodyContains, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>Whether the rule's status set names <paramref name="status"/>.</summary>
+    public bool Covers(int status) => Codes.Contains(status) || Classes.Contains(status / 100);
 
     /// <summary>The first rule of <paramref name="rules"/> that matches, or null.</summary>
     public static HttpStatusRule? FirstMatch(IReadOnlyList<HttpStatusRule>? rules, int status, string body)
