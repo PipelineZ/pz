@@ -269,7 +269,17 @@ public sealed class HttpTlsTests : IDisposable
         using var store = new X509Store(StoreName.CertificateAuthority, StoreLocation.CurrentUser);
         store.Open(OpenFlags.ReadWrite);
         var added = !store.Certificates.Contains(_pki.Intermediate);
-        store.Add(_pki.Intermediate);
+        try
+        {
+            store.Add(_pki.Intermediate);
+        }
+        catch (System.Security.Cryptography.CryptographicException)
+        {
+            // Some accounts may not write the user store (a CI runner on Windows); the rule must hold
+            // either way, and there the server tests have already put the intermediate in a CA store.
+            added = false;
+        }
+
         try
         {
             using (var omitted = Presented(_pki.Leaf))
