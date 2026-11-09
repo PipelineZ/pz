@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using Pz.Connectors.Abstractions;
 
 namespace Pz.Connectors.Toolkit.Auth;
 
@@ -11,7 +12,10 @@ public sealed record FetchedToken(string AccessToken, DateTimeOffset? ExpiresOn)
 /// it is cancelled only by <see cref="Dispose"/>. A failed fetch reaches every current waiter once
 /// and is not cached. Each fetched token has a generation stamped on the requests that carry it,
 /// so a 401 for an older token cannot discard a newer one. Subclasses must not put the access
-/// token in any exception message.</summary>
+/// token in any exception message. A subclass that names a <see cref="SignInKey"/> gets two more
+/// guarantees: its sign-ins are serialised with every other authenticator in the process that has the same
+/// key, and once one of them fails with an exception marked by <see cref="Terminal"/>, every later sign-in
+/// with that key fails at once with the same permanent error and sends nothing.</summary>
 public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuthenticator, IDisposable
 {
     public static readonly TimeSpan RefreshMargin = TimeSpan.FromMinutes(5);
@@ -32,6 +36,32 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
     public virtual IReadOnlyCollection<string> SecretQueryParams => [];
 
     protected abstract ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct);
+
+    /// <summary>A fingerprint of the endpoint and credential (see <see cref="Fingerprint"/>) under which a
+    /// <see cref="Terminal"/> refusal is remembered for the process; null (the default) remembers nothing.</summary>
+    protected virtual string? SignInKey => null;
+
+    /// <summary>True when a response with <paramref name="status"/> means the token was refused; 401 by default.</summary>
+    protected virtual bool IsTokenRejection(int status) => status == 401;
+
+    /// <summary>A SHA-256 fingerprint of <paramref name="parts"/> (endpoint, client id, secrets): safe to keep,
+    /// since no part can be recovered from it.</summary>
+    protected static string Fingerprint(params string?[] parts) => SignInRefusals.Fingerprint(parts);
+
+    /// <summary>Marks <paramref name="refusal"/> (a permanent error) as a refusal that must not be repeated in
+    /// this process, and returns it to be thrown.</summary>
+    protected static PzConnectorException Terminal(PzConnectorException refusal) => MarkTerminal(refusal);
+
+    private const string TerminalMark = "pz.auth.terminal";
+
+    internal static PzConnectorException MarkTerminal(PzConnectorException refusal)
+    {
+        refusal.Data[TerminalMark] = true;
+        return refusal;
+    }
+
+    internal const string RepeatSuffix =
+        " (pz did not try again: this sign-in was already refused once in this run, and pz makes one refused sign-in per connection per run)";
 
     /// <summary>Puts <paramref name="token"/> on the request; by default as <c>Authorization: Bearer</c>.</summary>
     protected virtual void ApplyToken(HttpRequestMessage request, string token)
@@ -102,7 +132,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                 return AuthResponseOutcome.Unchanged;
             }
 
-            if (status != 401)
+            if (!IsTokenRejection(status))
             {
                 return AuthResponseOutcome.Unchanged;
             }
@@ -132,7 +162,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
     {
         try
         {
-            var fetched = await FetchTokenAsync(_disposed.Token).ConfigureAwait(false);
+            var fetched = await FetchOnceAsync().ConfigureAwait(false);
             var now = time.GetUtcNow();
             (string, int) result;
             lock (_lock)
@@ -158,6 +188,35 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
             }
 
             flight.SetException(ex);
+        }
+    }
+
+    private async ValueTask<FetchedToken> FetchOnceAsync()
+    {
+        if (SignInKey is not { } key)
+        {
+            return await FetchTokenAsync(_disposed.Token).ConfigureAwait(false);
+        }
+
+        var gate = SignInRefusals.Gate(key);
+        await gate.WaitAsync(_disposed.Token).ConfigureAwait(false);
+        try
+        {
+            if (SignInRefusals.TryGet(key, out var refused))
+            {
+                throw new PzConnectorException(refused + RepeatSuffix, isTransient: false);
+            }
+
+            return await FetchTokenAsync(_disposed.Token).ConfigureAwait(false);
+        }
+        catch (PzConnectorException ex) when (!ex.IsTransient && ex.Data[TerminalMark] is true)
+        {
+            SignInRefusals.Record(key, ex.Message);
+            throw;
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 }

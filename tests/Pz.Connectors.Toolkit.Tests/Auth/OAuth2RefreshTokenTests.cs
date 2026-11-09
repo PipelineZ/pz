@@ -214,10 +214,123 @@ public class OAuth2RefreshTokenTests
             Assert.DoesNotContain("NewAccess-999", ex.Message);
             Assert.DoesNotContain(Refresh, ex.Message);
             Assert.Null(api.Headers.Authorization);
+            Assert.Equal(attempt == 1, ex.Message.Contains("pz did not try again", StringComparison.Ordinal));
         }
 
-        // Nothing was cached: each attempt asked again and refused again.
+        // The refusal is remembered: the second attempt sent nothing, so the rotated token family is not replayed.
+        Assert.Single(server.Requests);
+    }
+
+    private static async Task<PzConnectorException> ApplyFailsAsync(OAuth2RefreshTokenAuthenticator auth, StubHttpServer server)
+    {
+        using var api = new HttpRequestMessage(HttpMethod.Get, server.BaseUrl + "api");
+        return await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await auth.ApplyAsync(api, CancellationToken.None).AsTask().WaitAsync(Timeout));
+    }
+
+    [Fact]
+    public async Task A_refused_refresh_token_is_never_replayed_by_any_authenticator_in_the_process()
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/token", _ => new StubResponse(400, """{"error":"invalid_grant"}"""));
+        var options = Parse(Block(server.BaseUrl + "token"));
+
+        // Two nodes, each with its own authenticator, starting together.
+        using var first = new OAuth2RefreshTokenAuthenticator(options, Timeout, new ManualClock());
+        using var second = new OAuth2RefreshTokenAuthenticator(options, Timeout, new ManualClock());
+        var failures = await Task.WhenAll(ApplyFailsAsync(first, server), ApplyFailsAsync(second, server));
+        using var third = new OAuth2RefreshTokenAuthenticator(options, Timeout, new ManualClock());
+        var later = await ApplyFailsAsync(third, server);
+
+        Assert.Single(server.Requests);
+        Assert.All(failures.Append(later), ex =>
+        {
+            Assert.False(ex.IsTransient);
+            Assert.Contains("invalid_grant", ex.Message);
+        });
+        Assert.Contains("pz did not try again", later.Message);
+
+        // A new refresh token is a new credential and is tried.
+        server.Map("/token", _ => new StubResponse(200, """{"access_token":"tok"}"""));
+        using var renewed = new OAuth2RefreshTokenAuthenticator(Parse(Block(server.BaseUrl + "token", d => d["refresh_token"] = "new-one")),
+            Timeout, new ManualClock());
+        using var api = new HttpRequestMessage(HttpMethod.Get, server.BaseUrl + "api");
+        await renewed.ApplyAsync(api, CancellationToken.None).AsTask().WaitAsync(Timeout);
         Assert.Equal(2, server.Requests.Count);
+    }
+
+    [Fact]
+    public async Task A_transient_failure_is_not_remembered()
+    {
+        await using var server = new StubHttpServer();
+        var calls = 0;
+        server.Map("/token", _ => ++calls == 1 ? new StubResponse(503, "{}") : new StubResponse(200, """{"access_token":"tok"}"""));
+        using var auth = new OAuth2RefreshTokenAuthenticator(Parse(Block(server.BaseUrl + "token")), Timeout, new ManualClock());
+        Assert.True((await ApplyFailsAsync(auth, server)).IsTransient);
+        using var api = new HttpRequestMessage(HttpMethod.Get, server.BaseUrl + "api");
+        await auth.ApplyAsync(api, CancellationToken.None).AsTask().WaitAsync(Timeout);
+        Assert.Equal(2, server.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Rotation_ignore_uses_the_token_keeps_the_configured_refresh_token_and_says_so()
+    {
+        await using var server = new StubHttpServer();
+        var issued = 0;
+        server.Map("/token", _ => new StubResponse(200,
+            $$$"""{"access_token":"acc{{{++issued}}}","expires_in":600,"refresh_token":"Rotated-{{{issued}}}"}"""));
+        var clock = new ManualClock();
+        var notices = new List<string>();
+        using var auth = new OAuth2RefreshTokenAuthenticator(Parse(Block(server.BaseUrl + "token", d => d["rotation"] = "ignore")),
+            Timeout, clock) { Notice = notices.Add };
+        foreach (var advance in new[] { TimeSpan.Zero, TimeSpan.FromMinutes(6) })
+        {
+            clock.Advance(advance);
+            using var api = new HttpRequestMessage(HttpMethod.Get, server.BaseUrl + "api");
+            await auth.ApplyAsync(api, CancellationToken.None).AsTask().WaitAsync(Timeout);
+        }
+
+        Assert.Equal(2, server.Requests.Count);
+        Assert.All(server.Requests, r => Assert.Equal(Refresh, System.Web.HttpUtility.ParseQueryString(r.Body)["refresh_token"]));
+        // The same text each time: the engine shows it once per run.
+        Assert.Equal(2, notices.Count);
+        Assert.Single(notices.Distinct());
+        Assert.Contains("auth.rotation is ignore", notices[0]);
+        Assert.DoesNotContain("Rotated-", notices[0]);
+        Assert.DoesNotContain(Refresh, notices[0]);
+    }
+
+    [Fact]
+    public void Rotation_accepts_only_refuse_or_ignore()
+    {
+        Assert.False(Parse(Block("https://x/token", d => d["rotation"] = "refuse")).IgnoreRotation);
+        Assert.True(Parse(Block("https://x/token", d => d["rotation"] = "ignore")).IgnoreRotation);
+        Assert.Equal(["auth.rotation must be one of: refuse, ignore"], Errors(Block("https://x/token", d => d["rotation"] = "store")));
+    }
+
+    [Fact]
+    public async Task Provider_text_never_carries_the_refresh_token_or_the_secret()
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/token", _ => new StubResponse(400,
+            $$"""{"error":"invalid_request","error_description":"refresh token '{{Refresh}}' for secret {{Uri.EscapeDataString(Secret)}} / {{Secret}} is bad"}"""));
+        var ex = await FailureAsync(server);
+        Assert.DoesNotContain(Refresh, ex.Message);
+        Assert.DoesNotContain(Secret, ex.Message);
+        Assert.DoesNotContain(Uri.EscapeDataString(Secret), ex.Message);
+        Assert.Contains("refresh token '***' for secret *** / *** is bad", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("""{"access_token":"a","access_token":"b"}""")]
+    [InlineData("""{"access_token":"a","refresh_token":"x","refresh_token":"y"}""")]
+    public async Task A_token_response_with_duplicate_keys_is_a_permanent_connector_error(string body)
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/token", _ => new StubResponse(200, body));
+        var ex = await FailureAsync(server);
+        Assert.False(ex.IsTransient);
+        Assert.Contains("duplicate keys", ex.Message);
     }
 
     [Fact]

@@ -277,4 +277,51 @@ public class CachedTokenAuthenticatorTests
         Assert.Equal(AuthResponseOutcome.Unchanged, auth.OnResponse(r, 200));
         Assert.Equal(AuthResponseOutcome.TokenDiscarded, auth.OnResponse(r, 401));
     }
+
+    private sealed class RefusingAuthenticator(ManualClock clock, string key, bool terminal) : CachedTokenAuthenticator(clock)
+    {
+        public int Fetches;
+
+        protected override string? SignInKey => key;
+
+        protected override ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
+        {
+            Fetches++;
+            var refusal = new PzConnectorException("login refused", isTransient: false);
+            throw terminal ? Terminal(refusal) : refusal;
+        }
+    }
+
+    [Fact]
+    public async Task A_terminal_refusal_is_remembered_by_key_for_every_authenticator()
+    {
+        var key = Guid.NewGuid().ToString("N");
+        var first = new RefusingAuthenticator(new ManualClock(), key, terminal: true);
+        var second = new RefusingAuthenticator(new ManualClock(), key, terminal: true);
+        var other = new RefusingAuthenticator(new ManualClock(), Guid.NewGuid().ToString("N"), terminal: true);
+
+        var a = await Assert.ThrowsAsync<PzConnectorException>(async () => await first.ApplyAsync(Req(), default));
+        var b = await Assert.ThrowsAsync<PzConnectorException>(async () => await first.ApplyAsync(Req(), default));
+        var c = await Assert.ThrowsAsync<PzConnectorException>(async () => await second.ApplyAsync(Req(), default));
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await other.ApplyAsync(Req(), default));
+
+        Assert.Equal(1, first.Fetches);
+        Assert.Equal(0, second.Fetches);
+        Assert.Equal(1, other.Fetches);
+        Assert.Equal("login refused", a.Message);
+        Assert.All(new[] { b, c }, ex =>
+        {
+            Assert.False(ex.IsTransient);
+            Assert.StartsWith("login refused (pz did not try again", ex.Message);
+        });
+    }
+
+    [Fact]
+    public async Task A_permanent_failure_not_marked_terminal_is_tried_again()
+    {
+        var auth = new RefusingAuthenticator(new ManualClock(), Guid.NewGuid().ToString("N"), terminal: false);
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await auth.ApplyAsync(Req(), default));
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await auth.ApplyAsync(Req(), default));
+        Assert.Equal(2, auth.Fetches);
+    }
 }

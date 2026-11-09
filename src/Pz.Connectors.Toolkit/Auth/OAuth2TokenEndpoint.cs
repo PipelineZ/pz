@@ -185,8 +185,13 @@ internal sealed class OAuth2TokenEndpoint : IDisposable
     /// <summary>Posts <paramref name="grant"/> (its first field must be <c>grant_type</c>; <c>scope</c> is added when set) with the client credentials. On a
     /// 2xx returns the bearer token and the whole response object, for grant-specific checks.
     /// <paramref name="errorHints"/> appends a next step to a non-2xx answer with that OAuth <c>error</c>.</summary>
+    /// <param name="terminalErrors">OAuth <c>error</c> values that mean the credential is refused for good; the
+    /// exception is marked terminal (<see cref="CachedTokenAuthenticator.MarkTerminal"/>).</param>
+    /// <param name="secrets">Grant values (a refresh token) removed from any server text put in a message,
+    /// together with the client secret.</param>
     public async ValueTask<(FetchedToken Token, JsonObject Response)> RequestAsync(
-        IEnumerable<KeyValuePair<string, string>> grant, IReadOnlyDictionary<string, string>? errorHints, CancellationToken ct)
+        IEnumerable<KeyValuePair<string, string>> grant, IReadOnlyDictionary<string, string>? errorHints, CancellationToken ct,
+        IReadOnlyCollection<string>? terminalErrors = null, IReadOnlyCollection<string>? secrets = null)
     {
         // grant_type first, then scope, then the grant's other fields: the order the wire has always had.
         var fields = grant.ToList();
@@ -218,7 +223,7 @@ internal sealed class OAuth2TokenEndpoint : IDisposable
         {
             using var response = await _http.SendAsync(request, ct).ConfigureAwait(false);
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-            return Interpret(response, body, errorHints);
+            return Interpret(response, body, errorHints, terminalErrors, secrets ?? []);
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException && !ct.IsCancellationRequested)
         {
@@ -250,7 +255,8 @@ internal sealed class OAuth2TokenEndpoint : IDisposable
     }
 
     private (FetchedToken, JsonObject) Interpret(HttpResponseMessage response, string body,
-        IReadOnlyDictionary<string, string>? errorHints)
+        IReadOnlyDictionary<string, string>? errorHints, IReadOnlyCollection<string>? terminalErrors,
+        IReadOnlyCollection<string> secrets)
     {
         var status = (int)response.StatusCode;
         if (status is >= 200 and < 300)
@@ -266,6 +272,9 @@ internal sealed class OAuth2TokenEndpoint : IDisposable
 
         var message = new StringBuilder($"token endpoint {Endpoint} responded HTTP {status}");
         var (error, description) = ReadOAuthError(body);
+        var known = error;
+        error = Scrub(error, secrets);
+        description = Scrub(description, secrets);
         if (error is not null)
         {
             message.Append(": ").Append(error);
@@ -293,7 +302,31 @@ internal sealed class OAuth2TokenEndpoint : IDisposable
             retryAfter = TransientClassifier.ParseRetryAfter(values.FirstOrDefault(), _time.GetUtcNow());
         }
 
-        throw new PzConnectorException(message.ToString(), transient, retryAfter);
+        var failure = new PzConnectorException(message.ToString(), transient, retryAfter);
+        throw known is not null && !transient && terminalErrors is not null && terminalErrors.Contains(known)
+            ? CachedTokenAuthenticator.MarkTerminal(failure)
+            : failure;
+    }
+
+    // A provider may echo what it was sent ("refresh token 'abc' is invalid"); the secrets go before the text does.
+    private string? Scrub(string? text, IReadOnlyCollection<string> secrets)
+    {
+        if (text is null)
+        {
+            return null;
+        }
+
+        foreach (var secret in secrets.Append(_clientSecret))
+        {
+            if (!string.IsNullOrEmpty(secret))
+            {
+                text = text.Replace(secret, "***", StringComparison.Ordinal)
+                    .Replace(Uri.EscapeDataString(secret), "***", StringComparison.Ordinal)
+                    .Replace(WebUtility.UrlEncode(secret), "***", StringComparison.Ordinal);
+            }
+        }
+
+        return text;
     }
 
     private static (string? Error, string? Description) ReadOAuthError(string body)
@@ -312,15 +345,30 @@ internal sealed class OAuth2TokenEndpoint : IDisposable
                 return (error, description);
             }
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
         {
-            // not JSON: no OAuth error fields to report
+            // not JSON, or JSON with duplicate keys: no OAuth error fields to report
         }
 
         return (null, null);
     }
 
     private (FetchedToken, JsonObject) ParseToken(string body)
+    {
+        try
+        {
+            return ParseTokenFields(body);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+        {
+            // A JSON object with duplicate keys throws only when a property is read.
+            throw new PzConnectorException(
+                $"token endpoint {Endpoint} answered 200 with a JSON response that could not be read (duplicate keys)",
+                isTransient: false);
+        }
+    }
+
+    private (FetchedToken, JsonObject) ParseTokenFields(string body)
     {
         JsonObject? obj;
         try
