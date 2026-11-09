@@ -450,8 +450,15 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     [InlineData("")]
     [InlineData(".")]
     [InlineData("..")]
-    [InlineData("a/b")]
     [InlineData("../admin")]
+    [InlineData("a//b")]
+    [InlineData("/a")]
+    [InlineData("a/")]
+    [InlineData("/")]
+    [InlineData("./x")]
+    [InlineData("x/..")]
+    [InlineData("x/./y")]
+    [InlineData("projects/../jobs")]
     [InlineData("a\\b")]
     [InlineData("a\u0001b")]
     [InlineData("a\tb")]
@@ -467,8 +474,30 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         Assert.False(ex.IsTransient);
         Assert.Contains("http source 'stub.traffic': export start: export job id", ex.Message);
         Assert.Contains("cannot be used in a URL path", ex.Message);
+        Assert.Contains("an empty, '.' or '..' segment", ex.Message);
         Assert.Single(_server.Requests);
         Assert.Empty(Notices());
+    }
+
+    [Fact]
+    public async Task Resource_name_job_id_still_polls_and_cancels()
+    {
+        // A slash-separated id is inserted escaped, as before: one path segment.
+        _server.MapPrefix("/reports/projects", r => r.Method == "DELETE"
+            ? new StubResponse(204, "")
+            : Json("""{"state":"failed"}"""));
+        _server.Map("/reports", _ => Json("""{"id":"projects/1/jobs/2"}""", 202));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(
+            () => Read(Spec(CancellingExport(CancelPath("/reports/{job_id}")))));
+
+        Assert.Contains("export job projects/1/jobs/2 failed with status 'failed'", ex.Message);
+        var poll = Assert.Single(_server.Requests, r => r.Method == "GET");
+        Assert.Equal("/reports/projects%2F1%2Fjobs%2F2", poll.Url.AbsolutePath);
+        var cancel = Assert.Single(_server.Requests, r => r.Method == "DELETE");
+        Assert.Equal("/reports/projects%2F1%2Fjobs%2F2", cancel.Url.AbsolutePath);
+        Assert.Equal(["http source 'stub.traffic': export cancel: cancelled export job projects/1/jobs/2 " +
+            "(reported failure)"], Notices());
     }
 
     [Theory]

@@ -144,8 +144,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   or file read fails later. The cancel is sent at most once per job, through the gate as non-idempotent (never retried),
   and waits at most 10 seconds (5 once the run is cancelled, by a node timeout or Ctrl-C, and never longer than
   `timeout_seconds`). Only its status is read. Its outcome is a notice, never an error: the read fails with its own
-  error. A job whose start request failed has no id, so it cannot be cancelled. A job id that is empty, `.` or `..`, or
-  contains `/`, `\` or a control character is now a permanent error before any poll. `download_pointer` may now
+  error. A job whose start request failed has no id, so it cannot be cancelled. A job id that is empty, has an empty, `.` or
+  `..` segment between `/` (such as `a//b`, `/a`, `./x`, `x/..`), or contains `\` or a control character is now a
+  permanent error before any poll. Slash-separated ids such as `projects/1/jobs/2` still work, inserted escaped as before. `download_pointer` may now
   resolve to a list of URLs: each file is downloaded and read in order, with the full single-file budgets
   (`max_download_mb`, the decompression cap, the idle timeout) and one scratch file on disk at a time. Every URL is
   checked (a string, a valid URL, `allow_hosts`) before the first download. A repeated URL is read once, with a notice
