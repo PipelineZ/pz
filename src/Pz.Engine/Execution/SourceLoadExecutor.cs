@@ -13,6 +13,7 @@ using Pz.DuckDb;
 using Pz.Engine.Planning;
 using Pz.Engine.Resilience;
 using Pz.Engine.State;
+using Pz.Engine.Validation;
 
 namespace Pz.Engine.Execution;
 
@@ -47,6 +48,15 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
         await using var source = await connector.OpenAsync(
             ctx.Connectors.ConfigFor(def.Source), ct).ConfigureAwait(false);
+
+        // `pz run` skips tier 3, and a connector that does not read `column_pointers` would silently land
+        // the wrong value in a nested column. Checked after the open, where an external connector's schema
+        // is known.
+        if (ColumnPointerSupport.Refusal(def.Dataset.Options, connector.DatasetConfigSchema, def.Source.Connector,
+                def.Source.Name, def.Dataset.Name, def.Source.FilePath) is { } pointerRefusal)
+        {
+            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, pointerRefusal);
+        }
 
         // Hand a gate-aware source its operation gate before any plan/read call. The gate exists even
         // with no pacing registry (op-level retry alone).

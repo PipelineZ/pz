@@ -109,6 +109,22 @@ public class SourceFunctionTests
     }
 
     [Fact]
+    public void Columns_kwarg_long_form_pointer_becomes_the_column_pointers_option()
+    {
+        var dep = Source("select 1 from {{ source('api', 'issues', " +
+                         "columns: { id: 'bigint', status: { type: 'varchar', pointer: '/fields/status/name' } }) }}");
+
+        Assert.Equal("varchar", dep.Read.Columns!["status"]);
+        var pointers = Assert.IsType<Dictionary<string, object?>>(dep.Read.Options["column_pointers"]);
+        Assert.Equal("/fields/status/name", Assert.Single(pointers).Value);
+    }
+
+    [Fact]
+    public void Column_pointers_kwarg_is_refused() =>
+        Assert.Single(Errors("select 1 from {{ source('api', 'issues', column_pointers: { id: '/x' }) }}"),
+            e => e.Code == PzErrorCode.YamlShape && e.Message.Contains("'column_pointers'", StringComparison.Ordinal));
+
+    [Fact]
     public void Columns_kwarg_long_form_error_carries_the_call_line()
     {
         var error = Assert.Single(Errors(

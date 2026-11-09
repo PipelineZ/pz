@@ -78,7 +78,7 @@ internal static class FileOutput
             JsonPointer.TryResolve(payload, config.CursorPointer, out var node);
             values[cursorSlot] = node is JsonValue value && value.GetValueKind() == JsonValueKind.String
                 ? TextValueParser.Parse(value.GetValue<string>(), config.CursorType!, $"{context}: column '{cursor}'")
-                : ContractProjector.ConvertScalar(node, config.CursorType!, cursor, context);
+                : ContractProjector.ConvertScalar(node, config.CursorType!, cursor, context, config.ReadOptions);
         }
 
         return values;

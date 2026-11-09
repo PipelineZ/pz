@@ -13,7 +13,7 @@ internal sealed partial record HttpForEachConfig(HttpDatasetConfig List,
     /// <summary>Keys that describe the item request or the dataset as a whole, never the list request.</summary>
     internal static readonly string[] ItemOnlyKeys =
         ["file", "export", "columns", "cursor", "cursor_type", "cursor_pointer", "cursor_order", "delta_pointer",
-         "for_each", "run_date"];
+         "for_each", "run_date", "watermark_format", "watermark_time_zone", "epoch_unit", "column_pointers"];
 
     [GeneratedRegex(@"^[a-z_][a-z0-9_]*$")]
     private static partial Regex FieldName();

@@ -47,7 +47,7 @@ internal sealed record RunDateConfig(int OffsetDays, TimeZoneInfo Zone, string F
         var zone = Default.Zone;
         if (Get("timezone") is { } zoneId)
         {
-            zone = FindZone(zoneId, errors) ?? Default.Zone;
+            zone = FindZone(zoneId, "run_date.timezone", errors) ?? Default.Zone;
         }
 
         var format = Get("format") ?? Default.Format;
@@ -60,7 +60,9 @@ internal sealed record RunDateConfig(int OffsetDays, TimeZoneInfo Zone, string F
         return new RunDateConfig(offsetDays, zone, format);
     }
 
-    private static TimeZoneInfo? FindZone(string id, List<string> errors)
+    /// <summary>Resolves an IANA (or Windows) time zone id; null with an error naming
+    /// <paramref name="option"/> when it cannot be resolved.</summary>
+    internal static TimeZoneInfo? FindZone(string id, string option, List<string> errors)
     {
         try
         {
@@ -69,9 +71,9 @@ internal sealed record RunDateConfig(int OffsetDays, TimeZoneInfo Zone, string F
         catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
         {
             errors.Add(TimeZoneInfo.GetSystemTimeZones().Count == 0
-                ? $"'run_date.timezone' '{id}' cannot be resolved: this machine has no time zone database " +
-                    "(install tzdata, or omit 'timezone' to use UTC)"
-                : $"'run_date.timezone' '{id}' is not a known time zone id (use an IANA id such as " +
+                ? $"'{option}' '{id}' cannot be resolved: this machine has no time zone database " +
+                    $"(install tzdata, or omit '{option}' to use UTC)"
+                : $"'{option}' '{id}' is not a known time zone id (use an IANA id such as " +
                     "'Europe/Bucharest')");
             return null;
         }

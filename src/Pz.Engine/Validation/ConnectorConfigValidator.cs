@@ -90,6 +90,13 @@ public static class ConnectorConfigValidator
             foreach (var dataset in source.Datasets)
             {
                 var options = MergeColumns(dataset.Options, dataset.Columns);
+                // pz wrote this key, not the user: its refusal comes after the cross-field check below
+                // (whose spawn gives an external connector its schema), never as an "unknown option".
+                if (!ColumnPointerSupport.IsListedIn(connector.DatasetConfigSchema))
+                {
+                    options.Remove(ColumnPointerSupport.Option);
+                }
+
                 ValidateSchema(connector.DatasetConfigSchema, options, "connection", source.Name,
                     $"dataset '{dataset.Name}'", source.FilePath, errors, new HashSet<string>(StringComparer.Ordinal),
                     new HashSet<string>(StringComparer.Ordinal));
@@ -97,6 +104,15 @@ public static class ConnectorConfigValidator
 
             await ValidateCrossFieldAsync(connector, registry.ConfigFor(source), "connection", source.Name, source.FilePath,
                 errors, requiredFlaggedKeys, warnings, ct).ConfigureAwait(false);
+
+            foreach (var dataset in source.Datasets)
+            {
+                if (ColumnPointerSupport.Refusal(dataset.Options, connector.DatasetConfigSchema, source.Connector,
+                        source.Name, dataset.Name, source.FilePath) is { } refusal)
+                {
+                    errors.Add(refusal);
+                }
+            }
         }
 
         // A connection whose connector also reads was config-validated in the loop above, so this one

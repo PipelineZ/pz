@@ -4,7 +4,8 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Http;
 
-/// <summary>Generic HTTP/REST API connector. Universal tier only; reads are GET only and declare
+/// <summary>Generic HTTP/REST API connector. Universal tier only; reads are GET or POST (`method:
+/// post`, with a JSON or form `body`), in raw or contract (`columns:`) mode, and declare
 /// BoundedWindow ((lower, upper] window pushdown via the window_upper binding), SyncState (delta-link
 /// mode: <see cref="HttpPartition"/> replays a stored token verbatim and captures the terminal page's
 /// delta link via `delta_pointer`), GatedOperations (<see cref="HttpSource"/> routes every page fetch
@@ -86,6 +87,10 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "items": { "type": "string" },
             "columns": { "type": "object", "minProperties": 1, "additionalProperties": {
                 "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } },
+            "column_pointers": { "type": "object", "additionalProperties": { "type": "string" } },
+            "epoch_unit": { "enum": ["s", "ms"] },
+            "watermark_format": { "type": "string", "minLength": 1 },
+            "watermark_time_zone": { "type": "string", "minLength": 1 },
             "cursor": { "type": "string" }, "cursor_type": { "type": "string" },
             "cursor_pointer": { "type": "string" },
             "cursor_order": { "enum": ["asc", "desc"] },

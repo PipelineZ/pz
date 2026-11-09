@@ -44,7 +44,7 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
                 object?[] values;
                 if (item is null)
                 {
-                    values = ContractProjector.ProjectRow(record, config.Columns!, context);
+                    values = ContractProjector.ProjectRow(record, config.Columns!, context, config.ReadOptions);
                     if (hasFileColumn)
                     {
                         System.Array.Resize(ref values, values.Length + 1);
@@ -52,7 +52,7 @@ internal sealed class HttpJsonFileReader(long maxDocumentBytes) : IFileFormatRea
                 }
                 else
                 {
-                    values = item.Place(ContractProjector.ProjectRow(record, item.RecordColumns, context),
+                    values = item.Place(ContractProjector.ProjectRow(record, item.RecordColumns, context, config.ReadOptions),
                         hasFileColumn ? 1 : 0);
                 }
 

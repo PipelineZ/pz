@@ -511,8 +511,8 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         if (config.IsContractMode)
         {
             return _itemCells is { } cells
-                ? cells.Place(ContractProjector.ProjectRow(record, cells.RecordColumns, Label), 0)
-                : ContractProjector.ProjectRow(record, config.Columns!, Label);
+                ? cells.Place(ContractProjector.ProjectRow(record, cells.RecordColumns, Label, config.ReadOptions), 0)
+                : ContractProjector.ProjectRow(record, config.Columns!, Label, config.ReadOptions);
         }
 
         var cursorSlot = config.IsForEach ? 4 : 3;
@@ -532,7 +532,7 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         else if (config.Cursor is { } cursor)
         {
             JsonPointer.TryResolve(record, config.CursorPointer, out var node);
-            row[cursorSlot] = ContractProjector.ConvertScalar(node, config.CursorType!, cursor, Label);
+            row[cursorSlot] = ContractProjector.ConvertScalar(node, config.CursorType!, cursor, Label, config.ReadOptions);
         }
 
         return row;

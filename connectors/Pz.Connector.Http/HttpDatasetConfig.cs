@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Bindings;
+using Pz.Connectors.Toolkit.Formats;
 using Pz.Connectors.Toolkit.Json;
 using Pz.Connectors.Toolkit.Paging;
 
@@ -35,6 +36,22 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     /// <summary>What `{{ run_date }}` renders to; <see cref="RunDateConfig.Default"/> when the
     /// dataset declares no `run_date` option.</summary>
     public RunDateConfig RunDate { get; init; } = RunDateConfig.Default;
+
+    /// <summary>The `watermark_format` option; null when the dataset declares none, which keeps today's
+    /// rendering (<see cref="HttpFirstRequest.FormatBinding"/>) untouched.</summary>
+    public WatermarkFormat? WatermarkFormat { get; init; }
+
+    /// <summary>The `watermark_time_zone` option: the zone a `date` or custom `watermark_format` renders
+    /// its wall time in, and floors or rounds up in; null for UTC.</summary>
+    public TimeZoneInfo? WatermarkTimeZone { get; init; }
+
+    internal const string TimeZoneOption = "watermark_time_zone";
+
+    internal const string EpochUnitOption = "epoch_unit";
+
+    /// <summary>How contract columns and the raw cursor are read from JSON: the `column_pointers` the
+    /// columns' long-form `pointer` entries became, and the `epoch_unit` of epoch-number timestamps.</summary>
+    public ContractReadOptions ReadOptions { get; init; } = new() { EpochUnitOption = EpochUnitOption };
 
     /// <summary>True when `delta_pointer` is configured: the dataset is a change-feed source
     /// (Graph-style `@odata.deltaLink`) — <see cref="HttpPartition"/> replays a stored sync token
@@ -142,6 +159,51 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var runDate = RunDateConfig.Parse(options.TryGetValue("run_date", out var rd) ? rd : null, errors);
+        WatermarkFormat? watermarkFormat = null;
+        if (Get(options, "watermark_format") is { } formatText)
+        {
+            watermarkFormat = WatermarkFormat.Parse(formatText, out var formatError);
+            if (formatError is not null)
+            {
+                errors.Add(formatError);
+            }
+        }
+
+        TimeZoneInfo? watermarkZone = null;
+        if (Get(options, TimeZoneOption) is { } zoneId)
+        {
+            watermarkZone = RunDateConfig.FindZone(zoneId, TimeZoneOption, errors);
+            // An unparseable format is reported on its own; only an absent one is "missing".
+            if (watermarkFormat is null && Get(options, "watermark_format") is null)
+            {
+                errors.Add($"'{TimeZoneOption}' needs a 'watermark_format' of 'date' or a custom format " +
+                    "(the default iso8601 is always UTC)");
+            }
+            else if (watermarkFormat is { IsAbsolute: true })
+            {
+                errors.Add($"'{TimeZoneOption}' cannot apply to 'watermark_format: {watermarkFormat.Name}', which " +
+                    $"names an instant on its own; remove '{TimeZoneOption}'");
+            }
+            else if (watermarkFormat is { HasUtcMarker: true })
+            {
+                errors.Add($"'watermark_format' '{watermarkFormat.Name}' writes a UTC marker ('Z' or 'UTC'), so " +
+                    $"'{TimeZoneOption}' would make it lie; drop the marker or '{TimeZoneOption}'");
+            }
+        }
+
+        var epochUnit = Get(options, EpochUnitOption) switch
+        {
+            null => (EpochUnit?)null,
+            "s" => EpochUnit.Seconds,
+            "ms" => EpochUnit.Milliseconds,
+            var other => Refuse($"'{EpochUnitOption}' must be 's' or 'ms', got '{other}'"),
+        };
+
+        EpochUnit? Refuse(string error)
+        {
+            errors.Add(error);
+            return null;
+        }
 
         var query = new Dictionary<string, string>();
         if (options.TryGetValue("query", out var q) && q is IReadOnlyDictionary<string, object?> qmap)
@@ -310,6 +372,13 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         ValidateFileMode(options, rawFile is not null, rawExport is not null, file, columns, errors);
+        var pointers = ParseColumnPointers(options, columns, file, itemFields, errors);
+        ValidateWatermarkFormat(options, watermarkFormat, watermarkZone, columns, cursor ?? spec.WatermarkCursor,
+            cursorType, errors);
+        if (options.ContainsKey(EpochUnitOption))
+        {
+            ValidateEpochUnit(columns, cursorType, file, errors);
+        }
 
         if (options.TryGetValue("for_each", out var fe) && fe is not null)
         {
@@ -328,12 +397,144 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging)
         {
             RunDate = runDate,
+            WatermarkFormat = watermarkFormat,
+            WatermarkTimeZone = watermarkZone,
+            ReadOptions = new ContractReadOptions
+            {
+                EpochUnitOption = EpochUnitOption, EpochUnit = epochUnit, Pointers = pointers,
+            },
             File = file,
             Export = export,
             ForEach = forEach,
             PageConcurrency = pageConcurrency,
             PageNumbering = bodyPaging is null ? pageNumbering : null,
         };
+    }
+
+    /// <summary>Whether <paramref name="format"/> can render a cursor of <paramref name="cursorType"/>;
+    /// null when it can, else the reason. Numeric and text cursors are sent as stored; a date cursor has no
+    /// time of day for a time-rendering format to invent.</summary>
+    internal static string? CheckFormatForCursor(WatermarkFormat format, TimeZoneInfo? zone, string? cursorType)
+        => cursorType switch
+        {
+            null or "timestamp" => null,
+            "date" when !format.IsDateOnly => $"'watermark_format: {format.Name}' renders a time, but the cursor is " +
+                "a date; use 'date' or a custom format of years, months and days only (e.g. 'yyyyMMdd')",
+            "date" when zone is not null => $"'{TimeZoneOption}' cannot apply to a date cursor, which has no time " +
+                $"of day to convert; remove '{TimeZoneOption}'",
+            "date" => null,
+            _ => $"'watermark_format' applies to timestamp and date cursors, but the cursor is '{cursorType}', " +
+                "which is sent as stored; remove 'watermark_format'",
+        };
+
+    private static void ValidateWatermarkFormat(IReadOnlyDictionary<string, object?> options, WatermarkFormat? format,
+        TimeZoneInfo? zone, IReadOnlyDictionary<string, string>? columns, string? cursor, string? cursorType, List<string> errors)
+    {
+        if (format is null)
+        {
+            return;
+        }
+
+        // The type is known offline for a raw cursor or a contract column; a SQL-declared incremental
+        // learns it at run time, where HttpFirstRequest.Bindings checks again.
+        var type = columns is { Count: > 0 }
+            ? cursor is not null && columns.TryGetValue(cursor, out var t) ? t : null
+            : cursorType;
+        if (CheckFormatForCursor(format, zone, type) is { } error)
+        {
+            errors.Add(error);
+        }
+
+        var forEach = options.GetValueOrDefault("for_each") as IReadOnlyDictionary<string, object?>;
+        var referenced = ReferencesWatermark(options) || (forEach is not null && ReferencesWatermark(forEach))
+            || Strings(options.GetValueOrDefault("export")).SelectMany(HttpTemplate.EngineReferences)
+                .Any(name => name is "watermark" or "window_upper");
+        if (!referenced)
+        {
+            errors.Add("'watermark_format' has no effect: no path, query, body or export path references " +
+                "'{{ watermark }}' or '{{ window_upper }}'; reference one, or remove 'watermark_format'");
+        }
+    }
+
+    private static void ValidateEpochUnit(IReadOnlyDictionary<string, string>? columns, string? cursorType,
+        HttpFileConfig? file, List<string> errors)
+    {
+        if (file is { Format: not HttpFileFormat.Json })
+        {
+            errors.Add($"'{EpochUnitOption}' reads JSON numbers, and file.format {file.Format.ToString().ToLowerInvariant()} " +
+                $"has only text values; remove '{EpochUnitOption}'");
+        }
+        else if (!(columns is { Count: > 0 } ? columns.Values.Contains("timestamp") : cursorType == "timestamp"))
+        {
+            errors.Add($"'{EpochUnitOption}' has no effect: no 'timestamp' column (or raw-mode cursor_type " +
+                $"timestamp) to read epoch numbers into; remove '{EpochUnitOption}'");
+        }
+    }
+
+    /// <summary>The `column_pointers` option (pz writes it from the columns' long-form `pointer`), checked
+    /// against the contract, the file format and the for_each fields; null when absent.</summary>
+    private static Dictionary<string, string>? ParseColumnPointers(IReadOnlyDictionary<string, object?> options,
+        IReadOnlyDictionary<string, string>? columns, HttpFileConfig? file, IReadOnlyCollection<string>? itemFields,
+        List<string> errors)
+    {
+        if (!options.TryGetValue("column_pointers", out var raw) || raw is null)
+        {
+            return null;
+        }
+
+        if (raw is not IReadOnlyDictionary<string, object?> map)
+        {
+            errors.Add("'column_pointers' must be a map of column name to JSON pointer");
+            return null;
+        }
+
+        var pointers = new Dictionary<string, string>();
+        foreach (var (name, value) in map)
+        {
+            if (columns is null || !columns.ContainsKey(name))
+            {
+                errors.Add($"column '{name}' has a 'pointer' but is not declared in 'columns'");
+                continue;
+            }
+
+            if (value is not string { Length: > 0 } pointer || pointer[0] != '/' || HasBadEscape(pointer))
+            {
+                errors.Add($"column '{name}': 'pointer' must be a JSON pointer starting with '/' (with '~0'/'~1' escapes)");
+                continue;
+            }
+
+            if (itemFields?.Contains(name) == true)
+            {
+                errors.Add($"column '{name}' is filled from the for_each field '{name}', so it cannot also have a " +
+                    "'pointer'; rename the column or the field");
+                continue;
+            }
+
+            pointers[name] = pointer;
+        }
+
+        if (pointers.Count > 0 && file is { Format: not HttpFileFormat.Json })
+        {
+            errors.Add($"a column 'pointer' reads a JSON record, and file.format " +
+                $"{file.Format.ToString().ToLowerInvariant()} has none; remove 'pointer' from " +
+                string.Join(", ", pointers.Keys.Select(k => $"'{k}'")));
+        }
+
+        return pointers.Count > 0 ? pointers : null;
+    }
+
+    /// <summary>RFC 6901: every '~' is followed by '0' or '1'.</summary>
+    private static bool HasBadEscape(string pointer)
+    {
+        for (var i = 0; i < pointer.Length; i++)
+        {
+            if (pointer[i] == '~' && (i + 1 >= pointer.Length || pointer[i + 1] is not ('0' or '1')))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void ValidateForEach(IReadOnlyDictionary<string, object?> options, DatasetSpec spec,

@@ -124,11 +124,18 @@ internal sealed class SourceFunction : IScriptCustomFunction
         }
 
         var columns = ParseColumns(kwargs, connection, entity, line);
+        if (ColumnContract.RefuseHandWritten(kwargs.Keys, $"source('{connection}', '{entity}')", _pipeline.FilePath)
+            is { } handWritten)
+        {
+            _errors.Add(handWritten with { Line = line });
+        }
 
         var options = kwargs
-            .Where(kv => kv.Key is not ("columns" or "sync" or "retry"))
-            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Where(kv => kv.Key is not ("columns" or "sync" or "retry" or ColumnContract.PointersOption))
             .ToDictionary(kv => kv.Key, kv => kv.Value.Value, StringComparer.Ordinal);
+        columns?.AddPointersTo(options);
+        options = options.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
         return declaredAtCallSite
             ? new SourceReadOptions(columns?.Types, sync, retry, options) { RedactedColumns = columns?.Redacted ?? [] }

@@ -9,6 +9,32 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **http: watermark formats, epoch timestamps and nested contract columns.** Four dataset `read:` options.
+  - `watermark_format` sets how a timestamp cursor renders in `{{ watermark }}` and `{{ window_upper }}`: `iso8601`
+    (the default, unchanged), `epoch_s`, `epoch_ms`, `date`, or a custom format of the letters `y M d H m s f` (for
+    example `yyyy-MM-dd HH:mm:ss`; quoted text may not hold `\` or `"`). The lower bound is floored to the format's
+    unit and the upper bound is rounded up to the next one, so a window is never under-covered. An epoch value that is
+    a whole JSON body value is sent as a number. A `date` cursor takes only `date` or a date-only custom format;
+    numeric and text cursors refuse the option. A unit of a day or longer (`date`, `yyyy-MM`, `yyyy`, ...) re-reads up
+    to that whole unit on every run or window; into an append sink those rows land again, which `pz validate` reports
+    as a PZ0364 warning for an incremental http dataset whose cursor is not a date. Rounding past 9999-12-31 is a permanent error.
+  - `watermark_time_zone` (an IANA id, default UTC) makes `date` and custom formats render, floor and round up in
+    local wall time. Across a DST change a bound that falls in a skipped or repeated hour moves to the safe side in
+    3-hour steps (earlier for the lower bound, later for the upper), so the window only grows; a transition that no
+    step within 48 hours clears is a permanent error, never a narrower window. It is refused with
+    `iso8601` and the epoch formats, with a format that writes `Z` or `UTC`, and on date cursors.
+  - `epoch_unit: s | ms` reads JSON numbers in `timestamp` contract columns, raw `cursor_type: timestamp` cursors
+    and `for_each` item fields as epoch time; strings are still parsed as text. Values that look like the other
+    unit are refused: under `ms`, anything before 1973-03-03 (below 1e11) except exactly `0`, which is the epoch
+    itself; under `s`, anything after 3000-01-01.
+    Without the option, an epoch number fails with a message naming `epoch_unit`.
+  - A contract column's long form takes `pointer`, a JSON pointer into the record:
+    `status: { type: varchar, pointer: /fields/status/name }`. It works for JSON pages and JSON files, with `redact`,
+    and on the incremental cursor column; changing a pointer changes the SourceLoad node id. It is refused on a
+    column filled from a `for_each` field and with csv/tsv/xml files. On any other connector it is PZ0301, both in
+    `pz validate` and when `pz run` opens the source (a connector opts in by listing `column_pointers` in its dataset
+    schema; an external connector with no schema is refused). pz writes that `column_pointers` option itself:
+    writing it by hand, in `read:` or as a `source()` argument, is PZ0101.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is
@@ -128,6 +154,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   unchanged.
 
 ### Changed
+
+- **A JSON number in a contract `timestamp` column has a clearer error.** It used to be "value is not a valid
+  timestamp". The http connector now says it is a JSON number and names `epoch_unit`; sftp's JSON reader says it
+  "does not read epoch numbers as timestamps".
+- **JSON pointers follow RFC 6901 array indexes.** In http's `items`, `cursor_pointer`, pagination and `for_each`
+  pointers, an array index with a leading zero, a sign or blanks (`/data/01`, `/data/+1`) no longer selects an
+  element; it resolves to nothing, as the RFC says. `/data/0` and `/data/1` are unchanged.
+- **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
+  rounded to the 100 ns tick, which could carry into the next second and skip that second's rows; the extra digits
+  are now dropped.
 
 - **http: responses are requested compressed.** Reads, writes and the connection check send
   `Accept-Encoding: gzip, deflate, br` and unpack what comes back; JSON pages typically shrink to 10–20% on the wire

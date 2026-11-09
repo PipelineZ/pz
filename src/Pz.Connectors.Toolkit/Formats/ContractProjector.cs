@@ -33,8 +33,16 @@ public static class ContractProjector
     };
 
     public static object?[] ProjectRow(JsonNode? record, IReadOnlyDictionary<string, string> columns, string context)
+        => ProjectRow(record, columns, context, ContractReadOptions.Default);
+
+    /// <summary>As <see cref="ProjectRow(JsonNode?, IReadOnlyDictionary{string, string}, string)"/>, under
+    /// <paramref name="options"/>: a column with a pointer reads the pointed-at node (a missing step is
+    /// NULL, like a missing key), and timestamps follow its epoch rule.</summary>
+    public static object?[] ProjectRow(JsonNode? record, IReadOnlyDictionary<string, string> columns, string context,
+        ContractReadOptions options)
     {
         ArgumentNullException.ThrowIfNull(columns);
+        ArgumentNullException.ThrowIfNull(options);
         if (record is not JsonObject obj)
         {
             // A record that isn't a JSON object means 'items' resolved one level off (e.g. an
@@ -49,30 +57,48 @@ public static class ContractProjector
         var i = 0;
         foreach (var (name, typeName) in columns)
         {
-            row[i++] = Extract(obj, name, typeName, context);
+            row[i++] = Extract(obj, name, typeName, context, options);
         }
 
         return row;
     }
 
-    private static object? Extract(JsonObject obj, string name, string typeName, string context)
+    private static object? Extract(JsonObject obj, string name, string typeName, string context,
+        ContractReadOptions options)
     {
-        if (!obj.TryGetPropertyValue(name, out var node) || node is null)
+        JsonNode? node;
+        if (options.Pointers is { } pointers && pointers.TryGetValue(name, out var pointer))
         {
-            return null;
+            Json.JsonPointer.TryResolve(obj, pointer, out node);
+        }
+        else
+        {
+            obj.TryGetPropertyValue(name, out node);
         }
 
-        return ConvertScalar(node, typeName, name, context);
+        return node is null ? null : ConvertScalar(node, typeName, name, context, options);
     }
 
     /// <summary>Converts one JSON scalar to the CLR value <c>ArrowBatchBuilder.AppendRow</c> expects
     /// for the contract type. Public so callers with their own extraction (e.g. a JSON-pointer cursor)
     /// share one conversion truth. Null node → null.</summary>
     public static object? ConvertScalar(JsonNode? node, string typeName, string columnName, string context)
+        => ConvertScalar(node, typeName, columnName, context, ContractReadOptions.Default);
+
+    /// <summary>As <see cref="ConvertScalar(JsonNode?, string, string, string)"/>, under the epoch rule of
+    /// <paramref name="options"/> (its pointers do not apply: the caller already holds the node).</summary>
+    public static object? ConvertScalar(JsonNode? node, string typeName, string columnName, string context,
+        ContractReadOptions options)
     {
+        ArgumentNullException.ThrowIfNull(options);
         if (node is null)
         {
             return null;
+        }
+
+        if (typeName == "timestamp" && node.GetValueKind() == JsonValueKind.Number)
+        {
+            return EpochTimestamp(node, columnName, context, options);
         }
 
         try
@@ -101,6 +127,75 @@ public static class ContractProjector
                 innerException: ex);
         }
     }
+
+    private const long TicksPerMillisecond = TimeSpan.TicksPerMillisecond;
+
+    private static DateTimeOffset EpochTimestamp(JsonNode node, string name, string context,
+        ContractReadOptions options)
+    {
+        if (options.EpochUnit is not { } unit)
+        {
+            var next = options.EpochUnitOption is { } optionName
+                ? $"; if it is epoch time, set '{optionName}: s' (or '{optionName}: ms') on the dataset"
+                : "; this connector does not read epoch numbers as timestamps";
+            throw new PzConnectorException(
+                $"{context}: column '{name}': value is a JSON number, not a timestamp string{next}",
+                isTransient: false);
+        }
+
+        // Exact in decimal; the range checks run before the tick product can overflow.
+        var seconds = unit == EpochUnit.Seconds;
+        var ticksPerUnit = seconds ? TimeSpan.TicksPerSecond : TicksPerMillisecond;
+        var minUnits = (DateTimeOffset.MinValue.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks) / (decimal)ticksPerUnit;
+        var maxUnits = (DateTimeOffset.MaxValue.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks) / (decimal)ticksPerUnit;
+        var where = $"{context}: column '{name}': epoch {(seconds ? "seconds" : "milliseconds")} value";
+        var option = options.EpochUnitOption;
+        decimal value;
+        try
+        {
+            value = node.GetValue<decimal>();
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidOperationException)
+        {
+            throw new PzConnectorException($"{where} is out of range for a timestamp", isTransient: false,
+                innerException: ex);
+        }
+
+        // The unit-confusion guards come first. A seconds feed read as milliseconds lands in early 1970,
+        // and a milliseconds feed read as seconds lands centuries ahead: both would be silently wrong
+        // timestamps, and a wrong cursor would move the watermark wrongly for good.
+        // Exactly 0 is the epoch instant (and a common "never" sentinel), not a seconds value.
+        if (!seconds && value != 0 && value < MinPlausibleMilliseconds)
+        {
+            throw new PzConnectorException(
+                $"{where} is out of range (before 1973-03-03, below 1e11 ms); it looks like seconds" +
+                (option is null ? "" : $" -- set '{option}: s'"), isTransient: false);
+        }
+
+        if (seconds && value > MaxPlausibleSeconds)
+        {
+            throw new PzConnectorException(
+                $"{where} is out of range (after 3000-01-01); it looks like milliseconds" +
+                (option is null ? "" : $" -- set '{option}: ms'"), isTransient: false);
+        }
+
+        if (value < minUnits || value > maxUnits)
+        {
+            throw new PzConnectorException(seconds
+                ? $"{where} is out of range for a timestamp"
+                : $"{where} is out of range for a timestamp (microsecond and nanosecond epochs are not supported: " +
+                    "land the column as bigint and convert it in SQL)", isTransient: false);
+        }
+
+        return DateTimeOffset.UnixEpoch.AddTicks((long)decimal.Truncate(value * ticksPerUnit));
+    }
+
+    /// <summary>1e11 ms is 1973-03-03T09:46:40Z: a smaller milliseconds value other than exactly 0 is almost
+    /// always seconds.</summary>
+    public const decimal MinPlausibleMilliseconds = 100_000_000_000m;
+
+    /// <summary>3000-01-01T00:00:00Z in seconds: a larger seconds value is almost always milliseconds.</summary>
+    public const decimal MaxPlausibleSeconds = 32_503_680_000m;
 
     private static DateTimeOffset ParseTimestamp(string text, string name, string context)
     {

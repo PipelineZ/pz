@@ -30,7 +30,7 @@ public static class JsonPointer
                 case JsonObject obj when obj.TryGetPropertyValue(segment, out var child):
                     current = child;
                     break;
-                case JsonArray arr when int.TryParse(segment, out var index) && index >= 0 && index < arr.Count:
+                case JsonArray arr when TryParseIndex(segment, out var index) && index < arr.Count:
                     current = arr[index];
                     break;
                 default:
@@ -41,5 +41,18 @@ public static class JsonPointer
 
         result = current;
         return true;
+    }
+
+    /// <summary>An RFC 6901 array index: "0", or digits with no leading zero, no sign and no blanks.</summary>
+    private static bool TryParseIndex(string segment, out int index)
+    {
+        index = 0;
+        if (segment.Length == 0 || (segment.Length > 1 && segment[0] == '0'))
+        {
+            return false;
+        }
+
+        return int.TryParse(segment, System.Globalization.NumberStyles.None,
+            System.Globalization.CultureInfo.InvariantCulture, out index);
     }
 }

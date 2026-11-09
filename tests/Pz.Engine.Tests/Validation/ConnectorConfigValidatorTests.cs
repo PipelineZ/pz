@@ -185,6 +185,75 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Equal("remove or rename it -- accepted options: verify", error.Hint);
     }
 
+    private static ConnectionDef WithPointers(string connector) =>
+        new("crm", connector, new Dictionary<string, object?>(),
+            [new DatasetDef("customers", new Dictionary<string, object?>
+                {
+                    ["path"] = "c.csv",
+                    ["column_pointers"] = new Dictionary<string, object?> { ["status"] = "/a/b", ["email"] = "/c" },
+                },
+                new Dictionary<string, string> { ["status"] = "varchar", ["email"] = "varchar" })],
+            "connections.yml");
+
+    /// <summary>A column `pointer` reaches the connector as `column_pointers`; a connector whose dataset
+    /// schema does not list it cannot honour it, and the refusal names the columns, not the internal key.</summary>
+    [Fact]
+    public async Task Column_pointers_on_a_connector_that_does_not_list_them_name_the_columns()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("localfiles", new StubConnector { DatasetConfigSchema = LocalFilesDatasetSchema });
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("localfiles")]),
+            registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Contains("dataset 'customers'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("'email', 'status'", error.Message, StringComparison.Ordinal);
+        Assert.Contains("connector 'localfiles'", error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("unknown option", error.Message, StringComparison.Ordinal);
+        Assert.Contains("pointer", error.Hint, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Column_pointers_pass_on_a_connector_that_lists_them()
+    {
+        var schema = LocalFilesDatasetSchema.Replace("\"path\": { \"type\": \"string\" }",
+            "\"path\": { \"type\": \"string\" }, \"column_pointers\": { \"type\": \"object\" }");
+        var registry = new ConnectorRegistry();
+        registry.AddSource("http", new StubConnector { DatasetConfigSchema = schema });
+
+        Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("http")]), registry, default));
+    }
+
+    /// <summary>An empty schema (an external connector not spawned yet, or one that sends none) cannot
+    /// show that the connector reads `column_pointers`, so a pointer is refused rather than let through.</summary>
+    [Fact]
+    public async Task Column_pointers_on_a_connector_with_an_empty_schema_are_refused()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("acme", new StubConnector { DatasetConfigSchema = "" });
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("acme")]),
+            registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Contains("connector 'acme'", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>An external connector's schema arrives with its first spawn, which the cross-field check
+    /// triggers; the pointer check runs after it, so its outcome cannot depend on connection order.</summary>
+    [Fact]
+    public async Task Column_pointers_are_checked_against_the_schema_known_after_the_cross_field_check()
+    {
+        var listing = LocalFilesDatasetSchema.Replace("\"path\": { \"type\": \"string\" }",
+            "\"path\": { \"type\": \"string\" }, \"column_pointers\": { \"type\": \"object\" }");
+        var stub = new SpawningStub(listing);
+        var registry = new ConnectorRegistry();
+        registry.AddSource("acme", stub);
+
+        Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("acme")]), registry, default));
+    }
+
     [Fact]
     public async Task Wrong_type_dataset_option_is_PZ0301()
     {
@@ -661,5 +730,32 @@ public sealed class ConnectorConfigValidatorTests
 
         var error = Assert.Single(errors);
         Assert.Equal("connection 'out' output 'customers': unknown option 'bogus'", error.Message);
+    }
+
+    /// <summary>A connector whose dataset schema is empty until its ValidateAsync runs, like an external
+    /// connector's process host before its first spawn.</summary>
+    private sealed class SpawningStub(string schema) : ISourceConnector
+    {
+        private string _schema = "";
+
+        public ConnectorInfo Info { get; } = new("acme", "0.1.0", ProtocolVersion.Major);
+
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+
+        public string ConnectionConfigSchema => "";
+
+        public string DatasetConfigSchema => _schema;
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
+        {
+            _schema = schema;
+            return ValueTask.FromResult(ValidationResult.Success);
+        }
+
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(new ConnectionCheck(true));
+
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+            throw new NotSupportedException();
     }
 }

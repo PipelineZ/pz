@@ -215,6 +215,7 @@ internal static class ConnectionsLoader
 
         Dictionary<string, string>? columns = null;
         List<string> redacted = [];
+        ColumnContract? parsedContract = null;
         // A bodyless `columns:` parses as an empty scalar, not a null node; both mean "no contract".
         if (read.TryGetValue("columns", out var columnsValue) && columnsValue is not (null or ""))
         {
@@ -230,7 +231,13 @@ internal static class ConnectionsLoader
             {
                 columns = contract.Types;
                 redacted = contract.Redacted;
+                parsedContract = contract;
             }
+        }
+
+        if (ColumnContract.RefuseHandWritten(read.Keys, where, FileName) is { } handWritten)
+        {
+            errors.Add(handWritten);
         }
 
         if (read.TryGetValue("incremental", out var oldIncremental) && oldIncremental is not null)
@@ -269,8 +276,9 @@ internal static class ConnectionsLoader
 
         var options = read
             .Where(kv => kv.Key is not ("columns" or "incremental" or "retry" or "sync" or "rate_limit"
-                or "schema" or "table"))
+                or "schema" or "table" or ColumnContract.PointersOption))
             .ToDictionary(kv => kv.Key, kv => kv.Value);
+        parsedContract?.AddPointersTo(options);
 
         return new DatasetDef(entity, options, columns,
             ProjectLoader.ParseSyncMode(read, entity, FileName, errors),

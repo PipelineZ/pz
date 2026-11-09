@@ -155,6 +155,55 @@ public class ReadSurfaceTests
             Assert.Single(DagCompiler.Compile(marked, Ctx(marked)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
     }
 
+    // A pointer changes what lands in the column, so it must force a re-extraction.
+    [Fact]
+    public void Column_pointers_change_the_source_node_id()
+    {
+        PzProject With(string status) => Project(
+            [Pipe("a", Into("out", strategy: "replace") +
+                       $"select id from {{{{ source('crm', 'orders', columns: {{ id: 'bigint', status: {status} }}) }}}}")],
+            sources: [Crm()], sinks: [Sink()]);
+        var plain = With("'varchar'");
+        var nested = With("{ type: 'varchar', pointer: '/fields/status' }");
+
+        Assert.NotEqual(
+            Assert.Single(DagCompiler.Compile(plain, Ctx(plain)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id,
+            Assert.Single(DagCompiler.Compile(nested, Ctx(nested)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
+    }
+
+    // The YAML surface carries a pointer as the `column_pointers` option the loader writes; it must hash too.
+    [Fact]
+    public void Yaml_column_pointers_change_the_source_node_id()
+    {
+        PzProject With(Dictionary<string, object?> options) => Project(
+            [Pipe("a", Into("out", strategy: "replace") + "select id from {{ source('crm', 'orders') }}")],
+            sources: [Crm(new DatasetDef("orders", options,
+                new Dictionary<string, string> { ["id"] = "bigint", ["status"] = "varchar" }))], sinks: [Sink()]);
+        var plain = With(new() { ["format"] = "json" });
+        var nested = With(new()
+        {
+            ["format"] = "json",
+            ["column_pointers"] = new Dictionary<string, object?> { ["status"] = "/fields/status" },
+        });
+
+        Assert.NotEqual(
+            Assert.Single(DagCompiler.Compile(plain, Ctx(plain)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id,
+            Assert.Single(DagCompiler.Compile(nested, Ctx(nested)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id);
+    }
+
+    // A contract without pointers adds no option, so its id is the one it had before pointers existed.
+    [Fact]
+    public void A_contract_without_pointers_keeps_its_node_id()
+    {
+        var p = Project(
+            [Pipe("a", Into("out", strategy: "replace") +
+                       "select id from {{ source('crm', 'orders', columns: { id: 'bigint', email: { type: 'varchar', redact: true } }) }}")],
+            sources: [Crm()], sinks: [Sink()]);
+
+        Assert.Equal("49436e3e925c98ac",
+            Assert.Single(DagCompiler.Compile(p, Ctx(p)).Nodes, n => n.Kind == NodeKind.SourceLoad).Id.Value);
+    }
+
     // Review of batch 1: a call site's redact mark must not be silently lost to another pipeline's bare
     // call for the same dataset (which would preview the column in clear). PZ0349 refuses the second
     // reader outright, so the marks can never be dropped this way.
