@@ -507,4 +507,26 @@ public class HttpFormatsTests
         Assert.Contains("\"watermark_format\"", schema);
         Assert.Contains("\"epoch_unit\"", schema);
     }
+
+    /// <summary>The real schema must keep listing `column_pointers` where tier 3 looks for it, or every
+    /// http pointer would be refused.</summary>
+    [Fact]
+    public async Task Tier_3_validation_accepts_http_column_pointers()
+    {
+        var registry = new Pz.Engine.Execution.ConnectorRegistry();
+        registry.AddSource("http", new HttpConnector());
+        var source = new Pz.Core.Model.ConnectionDef("api", "http",
+            new Dictionary<string, object?> { ["base_url"] = "https://api.example.com/" },
+            [new Pz.Core.Model.DatasetDef("issues", new Dictionary<string, object?>
+                {
+                    ["path"] = "/issues",
+                    ["column_pointers"] = Pointers(("status", "/fields/status/name")),
+                },
+                new Dictionary<string, string> { ["status"] = "varchar" })],
+            "connections.yml");
+        var project = new Pz.Core.Model.PzProject("proj", "0.1.0", new Pz.Core.Model.EngineConfig(),
+            new Dictionary<string, object?>(), [], [source], []);
+
+        Assert.Empty(await Pz.Engine.Validation.ConnectorConfigValidator.ValidateAsync(project, registry, default));
+    }
 }

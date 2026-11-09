@@ -225,6 +225,35 @@ public sealed class ConnectorConfigValidatorTests
         Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("http")]), registry, default));
     }
 
+    /// <summary>An empty schema (an external connector not spawned yet, or one that sends none) cannot
+    /// show that the connector reads `column_pointers`, so a pointer is refused rather than let through.</summary>
+    [Fact]
+    public async Task Column_pointers_on_a_connector_with_an_empty_schema_are_refused()
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("acme", new StubConnector { DatasetConfigSchema = "" });
+
+        var error = Assert.Single(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("acme")]),
+            registry, default));
+
+        Assert.Equal(PzErrorCode.ConnectorConfigInvalid, error.Code);
+        Assert.Contains("connector 'acme'", error.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>An external connector's schema arrives with its first spawn, which the cross-field check
+    /// triggers; the pointer check runs after it, so its outcome cannot depend on connection order.</summary>
+    [Fact]
+    public async Task Column_pointers_are_checked_against_the_schema_known_after_the_cross_field_check()
+    {
+        var listing = LocalFilesDatasetSchema.Replace("\"path\": { \"type\": \"string\" }",
+            "\"path\": { \"type\": \"string\" }, \"column_pointers\": { \"type\": \"object\" }");
+        var stub = new SpawningStub(listing);
+        var registry = new ConnectorRegistry();
+        registry.AddSource("acme", stub);
+
+        Assert.Empty(await ConnectorConfigValidator.ValidateAsync(Project([WithPointers("acme")]), registry, default));
+    }
+
     [Fact]
     public async Task Wrong_type_dataset_option_is_PZ0301()
     {
@@ -701,5 +730,32 @@ public sealed class ConnectorConfigValidatorTests
 
         var error = Assert.Single(errors);
         Assert.Equal("connection 'out' output 'customers': unknown option 'bogus'", error.Message);
+    }
+
+    /// <summary>A connector whose dataset schema is empty until its ValidateAsync runs, like an external
+    /// connector's process host before its first spawn.</summary>
+    private sealed class SpawningStub(string schema) : ISourceConnector
+    {
+        private string _schema = "";
+
+        public ConnectorInfo Info { get; } = new("acme", "0.1.0", ProtocolVersion.Major);
+
+        public ConnectorCapabilities Capabilities => ConnectorCapabilities.None;
+
+        public string ConnectionConfigSchema => "";
+
+        public string DatasetConfigSchema => _schema;
+
+        public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
+        {
+            _schema = schema;
+            return ValueTask.FromResult(ValidationResult.Success);
+        }
+
+        public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+            ValueTask.FromResult(new ConnectionCheck(true));
+
+        public ValueTask<ISource> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
+            throw new NotSupportedException();
     }
 }

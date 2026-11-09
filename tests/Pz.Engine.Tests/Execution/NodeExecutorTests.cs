@@ -239,6 +239,26 @@ public sealed class NodeExecutorTests : IAsyncLifetime
         Assert.Contains("postgres", result.Error.Message);
     }
 
+    /// <summary>`pz run` does not run tier 3, so a connector that cannot read `column_pointers` must be
+    /// refused before any read: ignoring it would land the top-level key, or NULL, in a nested column.</summary>
+    [Fact]
+    public async Task Column_pointers_on_a_connector_that_does_not_list_them_fail_before_reading()
+    {
+        var node = SourceLoadNode(10, new()
+        {
+            ["column_pointers"] = new Dictionary<string, object?> { ["status"] = "/fields/status" },
+        });
+
+        var result = await new KindDispatchingExecutor().ExecuteAsync(node, _ctx, default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal("PZ0301", result.Error!.Code);
+        Assert.Contains("'status'", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("connector 'inmemory'", result.Error.Message, StringComparison.Ordinal);
+        Assert.Equal(0, await _duck.ScalarAsync<long>(
+            "select count(*) from information_schema.tables where table_name = 'src_mem__numbers'"));
+    }
+
     [Fact]
     public void StagingNames_ForSinkInput_maps_bare_pipeline_name_to_its_staging_relation()
     {
