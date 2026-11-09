@@ -100,6 +100,13 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         else
         {
             ValidateBindingTemplate(path, "option 'path'", knownBindings, errors, itemFields: itemFields);
+
+            // Item values are substituted into the path; a literal '?' or '#' could leave an empty or dot
+            // segment after it that the URL builder no longer sees as a path segment.
+            if (forEach is not null && path.AsSpan().IndexOfAny('?', '#') >= 0)
+            {
+                errors.Add("path cannot contain '?' or '#' in a for_each dataset; put query parameters in query:");
+            }
         }
 
         var runDate = RunDateConfig.Parse(options.TryGetValue("run_date", out var rd) ? rd : null, errors);
