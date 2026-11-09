@@ -7,6 +7,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-09
+
+### Breaking
+
+- **`column_pointers` is a reserved read option name, on every connector.** pz writes it itself from the contract
+  columns' `pointer` entries, so an option of that name written by hand is now PZ0101, whichever connector the dataset
+  uses: in `read:` when `connections.yml` loads, as a `source()` argument when the pipeline compiles.
+  *Migration:* rename such an option.
+
 ### Added
 
 - **http: `export.idempotency_key_header`.** Name the header an API reads an idempotency key from (for example
@@ -361,10 +370,6 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **JSON pointers follow RFC 6901 array indexes.** In http's `items`, `cursor_pointer`, pagination and `for_each`
   pointers, an array index with a leading zero, a sign or blanks (`/data/01`, `/data/+1`) no longer selects an
   element; it resolves to nothing, as the RFC says. `/data/0` and `/data/1` are unchanged.
-- **`column_pointers` is a reserved read option name, on every connector.** pz writes it itself from the contract
-  columns' `pointer` entries, so an option of that name written by hand is now PZ0101, whichever connector the dataset
-  uses: in `read:` when `connections.yml` loads, as a `source()` argument when the pipeline compiles. Rename such an
-  option.
 - **http: responses are requested compressed.** Reads, writes and the connection check send
   `Accept-Encoding: gzip, deflate, br` and unpack what comes back; JSON pages typically shrink to 10–20% on the wire
   (measured: a 1 MB page 54% faster, a GitHub issues page 35% faster). `max_response_mb` caps the unpacked size.
