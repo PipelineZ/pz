@@ -15,6 +15,7 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
 {
     private readonly StubHttpServer _server = new();
     private readonly List<string> _notices = [];
+    private Dictionary<string, object?>? _auth;
 
     private readonly string _scratchRoot =
         Path.Combine(Path.GetTempPath(), "pz-for-each-checkpoint-tests", Guid.NewGuid().ToString("N"));
@@ -42,7 +43,7 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
         var errors = new List<string>();
         var connection = HttpConnectionConfig.Parse(new ConnectorConfig(new Dictionary<string, object?>
         {
-            ["base_url"] = _server.BaseUrl.ToString(),
+            ["base_url"] = _server.BaseUrl.ToString(), ["auth"] = _auth,
         }), errors);
         Assert.Empty(errors);
         var source = new HttpSource(connection!, TimeProvider.System);
@@ -647,5 +648,54 @@ public sealed class HttpForEachCheckpointTests : IAsyncLifetime
                 """{"list":"https://h.example/l","index":3,"item":null,"anchor":"x","skipped":2,"first_skipped":"item id=a"}""")),
             HttpCheckpointToken.EncodeForEach(
                 new HttpCheckpointToken.ForEachToken("https://h.example/l", 3, null, "x", 2, "item id=a")));
+    }
+
+    [Fact]
+    public async Task An_api_key_query_param_echoed_into_list_and_item_links_is_never_stored()
+    {
+        _auth = Map(("type", "api_key"), ("key", "TOPSECRET"), ("param", "api_key"));
+        _server.Map("/orders", r => Query(r, "page") == "2"
+            ? OrdersPage("o3")
+            : new StubResponse(200, """{"data":[{"id":"o1"},{"id":"o2"}]}""", new Dictionary<string, string>
+            {
+                ["Link"] = $"<{_server.BaseUrl}orders?Api_Key=TOPSECRET&page=2>; rel=\"next\"",
+            }));
+        _server.MapPrefix("/orders/", r =>
+        {
+            var id = r.Url.AbsolutePath.Split('/')[2];
+            return Query(r, "page") == "2"
+                ? new StubResponse(200, $$"""{"lines":[{"sku":"{{id}}-2"}]}""")
+                : new StubResponse(200, $$"""{"lines":[{"sku":"{{id}}-1"}]}""", new Dictionary<string, string>
+                {
+                    ["Link"] = $"<{_server.BaseUrl}orders/{id}/lines?page=2&%61pi_key=TOPSECRET>; rel=\"next\"",
+                });
+        });
+        var options = OrdersOptions(paged: false, forEachExtra: Map(("pagination", Map(("strategy", "link_header")))));
+        options["pagination"] = Map(("strategy", "link_header"));
+        var spec = Spec(options);
+
+        var first = await Run(spec, options: new BatchOptions(MaxRowsPerBatch: 1));
+
+        var tokens = first.Batches.Select(b => b.Token).OfType<string>().ToList();
+        Assert.NotEmpty(tokens);
+        Assert.All(tokens, token =>
+        {
+            Assert.True(HttpCheckpointToken.TryDecodeForEach(token, out var list, out _, out var item));
+            Assert.DoesNotContain("TOPSECRET", list);
+            Assert.DoesNotContain("api_key", list, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("TOPSECRET", item ?? "");
+            Assert.DoesNotContain("pi_key", item ?? "", StringComparison.OrdinalIgnoreCase);
+        });
+
+        var midItem = first.Batches.Select(b => b.Token).OfType<string>()
+            .First(t => HttpCheckpointToken.TryDecodeForEach(t, out var l, out _, out var i) && l.Contains("page=2") is false
+                && i is not null);
+        var mark = _server.Requests.Count;
+        await Run(spec, midItem);
+
+        // The resumed item request has no key of its own any more; the authenticator adds the current one.
+        Assert.Equal("TOPSECRET", Query(_server.Requests.Skip(mark).First(r => r.Url.AbsolutePath.EndsWith("/lines")
+            && r.Url.Query.Contains("page=2")), "api_key"));
+        Assert.All(_server.Requests.Skip(mark), r => Assert.Contains("TOPSECRET", Query(r, "api_key")));
     }
 }

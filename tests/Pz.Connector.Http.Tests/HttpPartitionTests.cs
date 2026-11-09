@@ -495,6 +495,28 @@ public class HttpPartitionTests
         Assert.Contains("api_key=***", ex.Message);
     }
 
+    [Theory]
+    [InlineData("API_KEY")]
+    [InlineData("%61pi_key")]
+    [InlineData("api%5Fkey")]
+    public async Task Api_key_echoed_in_another_case_or_encoding_is_redacted(string echoedName)
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/items", _ => new StubResponse(404,
+            $$"""{"error":"forbidden, retry https://x/items?page=1&{{echoedName}}=TOPSECRET&x=1"}"""));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => ReadAllAsync(server,
+            new() { ["path"] = "/items" },
+            new()
+            {
+                ["auth"] = new Dictionary<string, object?>
+                    { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" },
+            }));
+
+        Assert.DoesNotContain("TOPSECRET", ex.Message);
+        Assert.Contains($"{echoedName}=***&x=1", ex.Message);
+    }
+
     [Fact]
     public async Task Response_over_max_response_mb_is_a_permanent_error_naming_the_option()
     {

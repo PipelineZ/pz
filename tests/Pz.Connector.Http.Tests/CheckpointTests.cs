@@ -461,4 +461,64 @@ public sealed class CheckpointTests
         Assert.True(resumeSyncPartition.TryGetSyncStateCandidate(out var resumedCandidate));
         Assert.Equal(deltaLink, resumedCandidate);
     }
+
+    [Theory]
+    [InlineData("api_key")]
+    [InlineData("API_KEY")]
+    [InlineData("%61pi_key")]
+    [InlineData("api%5Fkey")]
+    public async Task An_api_key_query_param_echoed_into_a_next_link_is_never_stored_and_is_sent_again_on_resume(
+        string echoedName)
+    {
+        await using var server = new StubHttpServer();
+        server.Map("/keyed", req => req.Url.Query.Contains("page=2", StringComparison.Ordinal)
+            ? new StubResponse(200, """[{"id":3}]""")
+            : new StubResponse(200, """[{"id":1},{"id":2}]""", new Dictionary<string, string>
+            {
+                ["Link"] = $"<{server.BaseUrl}keyed?{echoedName}=TOPSECRET&page=2>; rel=\"next\"",
+            }));
+        var connection = new Dictionary<string, object?>
+        {
+            ["base_url"] = server.BaseUrl.ToString(),
+            ["auth"] = new Dictionary<string, object?> { ["type"] = "api_key", ["key"] = "TOPSECRET", ["param"] = "api_key" },
+        };
+        var spec = new DatasetSpec("stub", "keyed", ContractOptions("/keyed"));
+
+        string? token = null;
+        await using (var source = await new HttpConnector().OpenAsync(new ConnectorConfig(connection), CancellationToken.None))
+        {
+            var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(
+                (await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None))[0]);
+            await foreach (var batch in partition.ReadAsync(new BatchOptions(MaxRowsPerBatch: 2), CancellationToken.None))
+            {
+                batch.Dispose();
+                if (partition.TryGetCheckpoint(out var offered) && offered is not null)
+                {
+                    token = offered;
+                    break;
+                }
+            }
+        }
+
+        Assert.NotNull(token);
+        Assert.DoesNotContain("TOPSECRET", token);
+        Assert.DoesNotContain(echoedName, token, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("page=2", token);
+
+        var mark = server.Requests.Count;
+        await using (var source = await new HttpConnector().OpenAsync(new ConnectorConfig(connection), CancellationToken.None))
+        {
+            var partition = Assert.IsAssignableFrom<ICheckpointingPartition>(
+                (await source.PlanReadAsync(spec, ReadHints.None, CancellationToken.None))[0]);
+            Assert.True(partition.TryResumeFrom(token!));
+            await foreach (var batch in partition.ReadAsync(BatchOptions.Default, CancellationToken.None))
+            {
+                batch.Dispose();
+            }
+        }
+
+        var resumed = Assert.Single(server.Requests.Skip(mark));
+        Assert.Equal("TOPSECRET", System.Web.HttpUtility.ParseQueryString(resumed.Url.Query)["api_key"]);
+        Assert.Contains("page=2", resumed.Url.Query);
+    }
 }
