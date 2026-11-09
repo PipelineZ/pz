@@ -115,13 +115,13 @@ public class HttpAuthConfigTests
     }
 
     [Fact]
-    public void Unknown_auth_type_lists_all_five()
+    public void Unknown_auth_type_lists_every_type()
     {
         var errors = new List<string>();
         HttpConnectionConfig.Parse(Config("https://api.example.com",
             new Dictionary<string, object?> { ["type"] = "kerberos" }), errors);
         var error = Assert.Single(errors);
-        foreach (var name in new[] { "api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials" })
+        foreach (var name in new[] { "api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials", "oauth2_refresh_token", "session" })
         {
             Assert.Contains(name, error, StringComparison.Ordinal);
         }

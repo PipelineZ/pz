@@ -29,8 +29,15 @@ internal static class HttpCheckpointToken
     public static BodyKind KindOf(HttpBody? body)
         => body is null ? BodyKind.None : body.IsJson ? BodyKind.Json : BodyKind.Text;
 
-    public static string Encode(HttpPageRequest request, bool isPost)
+    /// <param name="strip">Query parameters removed from the URL first: a secret the sign-in adds to every
+    /// request (a session token) must not be stored, and is added back when the resumed request is sent.</param>
+    public static string Encode(HttpPageRequest request, bool isPost, IReadOnlyCollection<string>? strip = null)
     {
+        if (strip is { Count: > 0 })
+        {
+            request = request with { Url = WithoutQueryParams(request.Url, strip) };
+        }
+
         if (!isPost)
         {
             return request.Url.ToString();
@@ -39,6 +46,33 @@ internal static class HttpCheckpointToken
         var body = request.JsonBody?.DeepClone() ?? (request.TextBody is { } text ? JsonValue.Create(text) : null);
         var payload = new JsonObject { ["url"] = request.Url.ToString(), ["body"] = body };
         return PostPrefix + Base64Url.EncodeToString(Encoding.UTF8.GetBytes(payload.ToJsonString()));
+    }
+
+    private static Uri WithoutQueryParams(Uri url, IReadOnlyCollection<string> names)
+    {
+        if (url.Query.Length == 0)
+        {
+            return url;
+        }
+
+        // A server may spell the name in another case or percent-encode it (%73id); every pair whose decoded name
+        // matches, in any case, goes.
+        var kept = url.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(pair => !names.Contains(DecodedName(pair), StringComparer.OrdinalIgnoreCase));
+        return new UriBuilder(url) { Query = string.Join('&', kept) }.Uri;
+    }
+
+    private static string DecodedName(string pair)
+    {
+        var name = pair.Split('=', 2)[0].Replace('+', ' ');
+        try
+        {
+            return Uri.UnescapeDataString(name);
+        }
+        catch (UriFormatException)
+        {
+            return name;
+        }
     }
 
     public static bool TryDecode(string token, bool isPost, HttpMethod method, BodyKind expected,

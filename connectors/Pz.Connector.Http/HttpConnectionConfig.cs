@@ -90,6 +90,12 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         return false;
     }
 
+    /// <summary>Query parameters taken out of every URL a checkpoint stores: a session token sent as a query
+    /// parameter (the sign-in adds the current one back to the resumed request). An api_key query parameter is not
+    /// in this list.</summary>
+    public IReadOnlyCollection<string> CheckpointStrippedParams
+        => Authenticator is SessionAuthenticator session ? session.SecretQueryParams : [];
+
     /// <summary>True when the connection sends credentials: an authenticator (built or still to be
     /// built by <see cref="AuthFactory"/>) or an Authorization header.</summary>
     public bool HasCredentials => Authenticator is not null || AuthFactory is not null
@@ -211,7 +217,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         }
         else
         {
-            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport);
+            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport, baseUri);
         }
 
         var maxResponseBytes = DefaultMaxResponseBytes;
@@ -272,14 +278,27 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             }
         }
 
-        return baseUri is null
-            ? null
-            : new HttpConnectionConfig(baseUri, auth.Static, headers, config.GetString("check_path"),
-                timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings)
-            {
-                MaxDownloadBytes = maxDownloadBytes,
-                Transport = transport,
-            };
+        if (baseUri is null)
+        {
+            return null;
+        }
+
+        var connection = new HttpConnectionConfig(baseUri, auth.Static, headers, config.GetString("check_path"),
+            timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings)
+        {
+            MaxDownloadBytes = maxDownloadBytes,
+            Transport = transport,
+        };
+
+        // The login carries the credentials, so it follows the rule every credentialed request follows.
+        if (auth.LoginUrl is { } login && !connection.IsAllowedTarget(login))
+        {
+            errors.Add($"auth.login points at '{login.GetLeftPart(UriPartial.Authority)}', which is not base_url's origin " +
+                $"'{baseUri.GetLeftPart(UriPartial.Authority)}' or an 'allow_hosts' host reached over https; add the host " +
+                "to 'allow_hosts' if the login really belongs to this API");
+        }
+
+        return connection;
     }
 
     // A relative certificate_path resolves under base_dir; a path still inside it is easy to commit by accident.

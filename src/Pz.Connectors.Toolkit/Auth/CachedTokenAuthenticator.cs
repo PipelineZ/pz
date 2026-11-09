@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using Pz.Connectors.Abstractions;
 
 namespace Pz.Connectors.Toolkit.Auth;
 
@@ -8,10 +9,14 @@ public sealed record FetchedToken(string AccessToken, DateTimeOffset? ExpiresOn)
 /// <summary>Caches one bearer token, refreshes it <see cref="RefreshMargin"/> before expiry
 /// (at most half its lifetime, so short-lived tokens are still reused), and shares a single
 /// in-flight fetch between concurrent callers. The fetch outlives any one caller's cancellation;
-/// it is cancelled only by <see cref="Dispose"/>. A failed fetch reaches every current waiter once
+/// it is cancelled only by <see cref="Dispose"/>, though a wait for the sign-in gate (below) stops once
+/// every caller waiting on it has cancelled. A failed fetch reaches every current waiter once
 /// and is not cached. Each fetched token has a generation stamped on the requests that carry it,
 /// so a 401 for an older token cannot discard a newer one. Subclasses must not put the access
-/// token in any exception message.</summary>
+/// token in any exception message. A subclass that names a <see cref="SignInKey"/> gets two more
+/// guarantees: its sign-ins are serialised with every other authenticator in the process that has the same
+/// key, and once one of them fails with an exception marked by <see cref="Terminal"/>, every later sign-in
+/// with that key fails at once with the same permanent error and sends nothing.</summary>
 public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuthenticator, IDisposable
 {
     public static readonly TimeSpan RefreshMargin = TimeSpan.FromMinutes(5);
@@ -20,23 +25,68 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
     private readonly Lock _lock = new();
     private readonly CancellationTokenSource _disposed = new();
-    private TaskCompletionSource<(string Token, int Generation)>? _inFlight;
+    private Flight? _inFlight;
     private string? _token;
     private DateTimeOffset? _refreshAt;
     private int _generation;
     private bool _accepted;
     private string? _discardedAccepted;
 
-    public IReadOnlyCollection<string> SecretQueryParams => [];
+    /// <summary>Query parameters that carry the token; none for the default bearer header. A subclass that
+    /// puts the token in the URL (<see cref="ApplyToken"/>) names the parameter here so messages redact it.</summary>
+    public virtual IReadOnlyCollection<string> SecretQueryParams => [];
 
     protected abstract ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct);
+
+    /// <summary>A fingerprint of the endpoint and credential (see <see cref="Fingerprint"/>) under which a
+    /// <see cref="Terminal"/> refusal is remembered for the process; null (the default) remembers nothing.</summary>
+    protected virtual string? SignInKey => null;
+
+    /// <summary>True when a response with <paramref name="status"/> means the token was refused; 401 by default.</summary>
+    protected virtual bool IsTokenRejection(int status) => status == 401;
+
+    /// <summary>A SHA-256 fingerprint of <paramref name="parts"/> (endpoint, client id, secrets): safe to keep,
+    /// since no part can be recovered from it.</summary>
+    protected static string Fingerprint(params string?[] parts) => SignInRefusals.Fingerprint(parts);
+
+    /// <summary>Marks <paramref name="refusal"/> (a permanent error) as a refusal that must not be repeated in
+    /// this process, and returns it to be thrown.</summary>
+    protected static PzConnectorException Terminal(PzConnectorException refusal) => MarkTerminal(refusal);
+
+    private const string TerminalMark = "pz.auth.terminal";
+
+    internal static PzConnectorException MarkTerminal(PzConnectorException refusal)
+    {
+        refusal.Data[TerminalMark] = true;
+        return refusal;
+    }
+
+    internal const string RepeatSuffix =
+        " (pz did not try again: this sign-in was already refused once in this run, and pz makes one refused sign-in per connection per run)";
+
+    /// <summary>Puts <paramref name="token"/> on the request; by default as <c>Authorization: Bearer</c>.</summary>
+    protected virtual void ApplyToken(HttpRequestMessage request, string token)
+        => request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
     public void Apply(HttpRequestMessage request)
         => throw new InvalidOperationException("this authenticator fetches tokens asynchronously; use ApplyAsync");
 
+    /// <summary>One shared sign-in and the callers waiting on it. When every waiter has cancelled before it
+    /// finishes, it is abandoned: a wait for the process-wide sign-in gate stops, and the next caller starts a
+    /// new one. A fetch already under way still runs to the end.</summary>
+    private sealed class Flight
+    {
+        public TaskCompletionSource<(string Token, int Generation)> Result { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public CancellationTokenSource Abandoned { get; } = new();
+
+        public int Waiters;
+    }
+
     public async ValueTask ApplyAsync(HttpRequestMessage request, CancellationToken ct)
     {
-        TaskCompletionSource<(string Token, int Generation)> flight;
+        Flight flight;
         var owner = false;
         string token;
         int generation;
@@ -50,13 +100,14 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
             }
             else
             {
-                if (_inFlight is null)
+                if (_inFlight is null || _inFlight.Abandoned.IsCancellationRequested)
                 {
-                    _inFlight = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _inFlight = new Flight();
                     owner = true;
                 }
 
                 flight = _inFlight;
+                flight.Waiters++;
                 token = "";
                 generation = 0;
             }
@@ -69,10 +120,20 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                 _ = RunFetchAsync(flight);
             }
 
-            (token, generation) = await flight.Task.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                (token, generation) = await flight.Result.Task.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Left here rather than in a token callback: the wait can resume inline inside Cancel and
+                // dispose such a registration before it runs.
+                Leave(flight);
+                throw;
+            }
         }
 
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        ApplyToken(request, token);
         request.Options.Set(GenerationKey, generation);
     }
 
@@ -96,7 +157,7 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                 return AuthResponseOutcome.Unchanged;
             }
 
-            if (status != 401)
+            if (!IsTokenRejection(status))
             {
                 return AuthResponseOutcome.Unchanged;
             }
@@ -122,11 +183,25 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
 
     public virtual void Dispose() => _disposed.Cancel();
 
-    private async Task RunFetchAsync(TaskCompletionSource<(string Token, int Generation)> flight)
+    private void Leave(Flight flight)
+    {
+        bool abandon;
+        lock (_lock)
+        {
+            abandon = --flight.Waiters == 0 && !flight.Result.Task.IsCompleted;
+        }
+
+        if (abandon)
+        {
+            flight.Abandoned.Cancel();
+        }
+    }
+
+    private async Task RunFetchAsync(Flight flight)
     {
         try
         {
-            var fetched = await FetchTokenAsync(_disposed.Token).ConfigureAwait(false);
+            var fetched = await FetchOnceAsync(flight.Abandoned.Token).ConfigureAwait(false);
             var now = time.GetUtcNow();
             (string, int) result;
             lock (_lock)
@@ -139,19 +214,66 @@ public abstract class CachedTokenAuthenticator(TimeProvider time) : IRequestAuth
                     && string.Equals(fetched.AccessToken, _discardedAccepted, StringComparison.Ordinal);
                 _discardedAccepted = null;
                 result = (fetched.AccessToken, ++_generation);
-                _inFlight = null;
+                if (_inFlight == flight)
+                {
+                    _inFlight = null;
+                }
             }
 
-            flight.SetResult(result);
+            flight.Result.SetResult(result);
         }
         catch (Exception ex)
         {
             lock (_lock)
             {
-                _inFlight = null;
+                if (_inFlight == flight)
+                {
+                    _inFlight = null;
+                }
             }
 
-            flight.SetException(ex);
+            flight.Result.SetException(ex);
+        }
+    }
+
+    private async ValueTask<FetchedToken> FetchOnceAsync(CancellationToken abandoned)
+    {
+        if (SignInKey is not { } key)
+        {
+            return await FetchTokenAsync(_disposed.Token).ConfigureAwait(false);
+        }
+
+        var gate = SignInRefusals.Gate(key);
+        // Waiting behind another sign-in with this key stops as soon as nobody wants this one any more.
+        using (var waiting = CancellationTokenSource.CreateLinkedTokenSource(_disposed.Token, abandoned))
+        {
+            await gate.WaitAsync(waiting.Token).ConfigureAwait(false);
+        }
+
+        // A cancelled semaphore wait can still be handed the slot when a release races the cancellation.
+        if (abandoned.IsCancellationRequested)
+        {
+            gate.Release();
+            throw new OperationCanceledException(abandoned);
+        }
+
+        try
+        {
+            if (SignInRefusals.TryGet(key, out var refused))
+            {
+                throw new PzConnectorException(refused + RepeatSuffix, isTransient: false);
+            }
+
+            return await FetchTokenAsync(_disposed.Token).ConfigureAwait(false);
+        }
+        catch (PzConnectorException ex) when (!ex.IsTransient && ex.Data[TerminalMark] is true)
+        {
+            SignInRefusals.Record(key, ex.Message);
+            throw;
+        }
+        finally
+        {
+            gate.Release();
         }
     }
 }

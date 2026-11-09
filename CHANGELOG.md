@@ -35,6 +35,42 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     `pz validate` and when `pz run` opens the source (a connector opts in by listing `column_pointers` in its dataset
     schema; an external connector with no schema is refused). pz writes that `column_pointers` option itself:
     writing it by hand, in `read:` or as a `source()` argument, is PZ0101.
+- **http: sign in with a refresh token.** `auth.type: oauth2_refresh_token` takes `token_url`, `client_id`,
+  `refresh_token`, and optionally `client_secret` (omit it for a public client), `client_auth` (`body` or `basic`;
+  `basic` needs a secret), `scope`, `params` and `rotation`. It exchanges the refresh token for access tokens with
+  `grant_type=refresh_token` and otherwise behaves like `oauth2_client_credentials`: the same token cache, 401
+  handling, `token_url` rules and `proxy`/`tls`. pz cannot store a new refresh token, so `rotation` says what happens
+  when the token response returns a different `refresh_token`:
+  - `refuse` (the default): the read fails with the permanent error `PZ0366` and the new access token is not used,
+    because the provider may already have revoked the configured token.
+  - `ignore`: the new access token is used, the configured `refresh_token` stays in use for later refreshes, and a
+    notice says the provider rotated it. Use it only for providers that keep old refresh tokens valid, such as
+    Microsoft Entra and Google. If the provider does revoke the old token, the next refresh fails with `invalid_grant`,
+    which is permanent.
+
+  An `invalid_grant` answer says to authorize again and update `auth.refresh_token`. A `PZ0366` refusal, or an
+  `invalid_grant`, `invalid_client` or `unauthorized_client` answer, is remembered for the rest of the run (the rest of the process): later reads, writes and nodes
+  using the same token fail at once without sending it again, so a provider's reuse detection never sees a replay. Any
+  `refresh_token` or `client_secret` that the provider echoes in its error text is replaced with `***`.
+- **http: sign in with a login request.** `auth.type: session` sends `login` (`path` relative to `base_url`, or
+  `url`; `method` `post` or `get`; a literal `body` sent as JSON, as a form with `body_format: form`, or as a string with
+  `content_type`; and `headers`), reads the token at `token_pointer` in the JSON response, and sends it on every API
+  request as set by `inject`: `bearer` (the default), `{ header: <name>, prefix: <text> }`, or `{ query: <name> }`.
+  - A query token is redacted from messages and is never stored in a checkpoint; a resumed read adds the current one.
+  - A header or bearer token must be printable ASCII.
+  - Set exactly one of `ttl` (`1s` to `30d`, for example `30m`) or `expires_in_pointer` (seconds in the login
+    response).
+  - The login must go to `base_url`'s origin or an `allow_hosts` host, and it uses the connection's `proxy` and `tls`.
+    It never follows a redirect. Connection `headers:` are not sent on the login.
+  - A form field that is empty (null, for example an unset variable) is a validation error.
+  - A login answered `401` or `403` is a permanent error. pz makes one refused login per connection per run: later
+    reads, writes and nodes in the same run (the same process) fail at once without logging in again. Scheduled
+    runs still try again, once each.
+  - `408`, `429` and `5xx` on the login are transient.
+  - A `401` from the API on a session that worked before is transient, and the engine's retry logs in again.
+    `reauth_status` (any 4xx except `407` and `429`) lists more statuses that mean the session expired, for example
+    `[419, 440]`. `401` always counts: a list adds to it and never replaces it. Any other status, `403` included, is
+    not treated as an expired session unless it is listed.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is

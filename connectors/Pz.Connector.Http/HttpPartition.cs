@@ -232,7 +232,8 @@ internal sealed partial class HttpPartition(HttpClient client, HttpClient bareCl
         }
     }
 
-    private string CheckpointToken(HttpPageRequest next) => HttpCheckpointToken.Encode(next, config.IsPost);
+    private string CheckpointToken(HttpPageRequest next)
+        => HttpCheckpointToken.Encode(next, config.IsPost, connection.CheckpointStrippedParams);
 
     public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options,
         [EnumeratorCancellation] CancellationToken ct)

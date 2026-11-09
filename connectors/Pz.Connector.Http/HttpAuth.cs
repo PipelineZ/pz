@@ -10,6 +10,8 @@ internal static class HttpAuth
 {
     private const string AzureAd = "azure_ad";
     private const string OAuth2ClientCredentials = "oauth2_client_credentials";
+    private const string OAuth2RefreshToken = "oauth2_refresh_token";
+    private const string Session = "session";
 
     /// <summary>Reports a final response to the authenticator and turns a rejected token into the
     /// exception the engine acts on: a token that was accepted before is discarded and the retry signs
@@ -21,12 +23,26 @@ internal static class HttpAuth
         {
             case AuthResponseOutcome.TokenDiscarded:
                 throw new PzConnectorException(
-                    $"{label}: the API rejected the access token (HTTP 401); signing in again on retry",
+                    $"{label}: the API rejected the access token (HTTP {status}); signing in again on retry",
                     isTransient: true);
+            case AuthResponseOutcome.FreshTokenRejected when authenticator is SessionAuthenticator:
+                throw new PzConnectorException(
+                    $"{label}: the API rejected a fresh session token (HTTP {status}); check that auth.token_pointer " +
+                    "picks the token from the login response and that auth.inject sends it the way this API expects",
+                    isTransient: false);
             case AuthResponseOutcome.FreshTokenRejected:
                 throw new PzConnectorException(
-                    $"{label}: the API rejected a freshly issued token (HTTP 401); check that 'scope' names " +
+                    $"{label}: the API rejected a freshly issued token (HTTP {status}); check that 'scope' names " +
                     "this API and that the app has been granted access to it", isTransient: false);
+        }
+    }
+
+    /// <summary>Gives the sign-in a place for its notices; only a refresh-token sign-in has any.</summary>
+    internal static void UseNotice(IRequestAuthenticator? authenticator, Action<string> notice)
+    {
+        if (authenticator is OAuth2RefreshTokenAuthenticator refresh)
+        {
+            refresh.Notice = notice;
         }
     }
 
@@ -34,10 +50,12 @@ internal static class HttpAuth
         IRequestAuthenticator? Static,
         Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? Factory,
         string? CertificatePath,
-        IReadOnlyList<string>? Warnings = null);
+        IReadOnlyList<string>? Warnings = null,
+        Uri? LoginUrl = null);
 
+    /// <param name="baseUrl">The connection's base URL (null when it is invalid): a session login path resolves against it.</param>
     internal static Parsed Parse(IReadOnlyDictionary<string, object?>? auth, string? baseDir, TimeSpan timeout, List<string> errors,
-        bool hasTransport = false)
+        bool hasTransport = false, Uri? baseUrl = null)
     {
         var none = new Parsed(null, null, null);
         if (auth is null || auth.Count == 0)
@@ -57,6 +75,16 @@ internal static class HttpAuth
                     ? new Parsed(null, (time, handlers) => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time,
                         handlers?.Invoke(oauth.TokenUrl)), null)
                     : none;
+            case OAuth2RefreshToken:
+                return OAuth2RefreshTokenOptions.TryParse(auth, errors) is { } refresh
+                    ? new Parsed(null, (time, handlers) => new OAuth2RefreshTokenAuthenticator(refresh, timeout, time,
+                        handlers?.Invoke(refresh.TokenUrl)), null)
+                    : none;
+            case Session:
+                return SessionOptions.TryParse(auth, baseUrl, errors) is { } session
+                    ? new Parsed(null, (time, handlers) => new SessionAuthenticator(session, timeout, time,
+                        handlers?.Invoke(session.LoginUrl)), null, LoginUrl: session.LoginUrl)
+                    : none;
             case "api_key" or "bearer" or "basic":
                 if (!Authenticators.TryCreate(auth, out var authenticator, out var error))
                 {
@@ -66,7 +94,7 @@ internal static class HttpAuth
 
                 return new Parsed(authenticator, null, null);
             default:
-                errors.Add($"unknown auth type '{type}' (accepted: api_key, bearer, basic, {AzureAd}, {OAuth2ClientCredentials})");
+                errors.Add($"unknown auth type '{type}' (accepted: api_key, bearer, basic, {AzureAd}, {OAuth2ClientCredentials}, {OAuth2RefreshToken}, {Session})");
                 return none;
         }
     }

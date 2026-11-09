@@ -253,4 +253,125 @@ public class CachedTokenAuthenticatorTests
         Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(r1, 401));
         Assert.Equal(AuthResponseOutcome.FreshTokenRejected, auth.OnResponse(r2, 401));
     }
+
+    private sealed class HeaderTokenAuthenticator(ManualClock clock) : CachedTokenAuthenticator(clock)
+    {
+        public override IReadOnlyCollection<string> SecretQueryParams => ["session"];
+
+        protected override ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
+            => ValueTask.FromResult(new FetchedToken("tok", null));
+
+        protected override void ApplyToken(HttpRequestMessage request, string token)
+            => request.Headers.TryAddWithoutValidation("X-Session", token);
+    }
+
+    [Fact]
+    public async Task A_subclass_chooses_where_the_token_goes_and_keeps_the_401_rule()
+    {
+        var auth = new HeaderTokenAuthenticator(new ManualClock());
+        var r = Req();
+        await auth.ApplyAsync(r, default);
+        Assert.Null(r.Headers.Authorization);
+        Assert.Equal("tok", Assert.Single(r.Headers.GetValues("X-Session")));
+        Assert.Equal(["session"], ((IRequestAuthenticator)auth).SecretQueryParams);
+        Assert.Equal(AuthResponseOutcome.Unchanged, auth.OnResponse(r, 200));
+        Assert.Equal(AuthResponseOutcome.TokenDiscarded, auth.OnResponse(r, 401));
+    }
+
+    private sealed class RefusingAuthenticator(ManualClock clock, string key, bool terminal) : CachedTokenAuthenticator(clock)
+    {
+        public int Fetches;
+
+        protected override string? SignInKey => key;
+
+        protected override ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
+        {
+            Fetches++;
+            var refusal = new PzConnectorException("login refused", isTransient: false);
+            throw terminal ? Terminal(refusal) : refusal;
+        }
+    }
+
+    [Fact]
+    public async Task A_terminal_refusal_is_remembered_by_key_for_every_authenticator()
+    {
+        var key = Guid.NewGuid().ToString("N");
+        var first = new RefusingAuthenticator(new ManualClock(), key, terminal: true);
+        var second = new RefusingAuthenticator(new ManualClock(), key, terminal: true);
+        var other = new RefusingAuthenticator(new ManualClock(), Guid.NewGuid().ToString("N"), terminal: true);
+
+        var a = await Assert.ThrowsAsync<PzConnectorException>(async () => await first.ApplyAsync(Req(), default));
+        var b = await Assert.ThrowsAsync<PzConnectorException>(async () => await first.ApplyAsync(Req(), default));
+        var c = await Assert.ThrowsAsync<PzConnectorException>(async () => await second.ApplyAsync(Req(), default));
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await other.ApplyAsync(Req(), default));
+
+        Assert.Equal(1, first.Fetches);
+        Assert.Equal(0, second.Fetches);
+        Assert.Equal(1, other.Fetches);
+        Assert.Equal("login refused", a.Message);
+        Assert.All(new[] { b, c }, ex =>
+        {
+            Assert.False(ex.IsTransient);
+            Assert.StartsWith("login refused (pz did not try again", ex.Message);
+        });
+    }
+
+    [Fact]
+    public async Task A_permanent_failure_not_marked_terminal_is_tried_again()
+    {
+        var auth = new RefusingAuthenticator(new ManualClock(), Guid.NewGuid().ToString("N"), terminal: false);
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await auth.ApplyAsync(Req(), default));
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await auth.ApplyAsync(Req(), default));
+        Assert.Equal(2, auth.Fetches);
+    }
+
+    private sealed class GatedAuthenticator(ManualClock clock, string key, Task release) : CachedTokenAuthenticator(clock)
+    {
+        public int Fetches;
+
+        protected override string? SignInKey => key;
+
+        protected override async ValueTask<FetchedToken> FetchTokenAsync(CancellationToken ct)
+        {
+            Interlocked.Increment(ref Fetches);
+            await release;
+            return new FetchedToken("tok", null);
+        }
+    }
+
+    [Fact]
+    public async Task A_caller_waiting_behind_another_sign_in_with_the_same_key_can_cancel()
+    {
+        var key = Guid.NewGuid().ToString("N");
+        var release = new TaskCompletionSource();
+        var holder = new GatedAuthenticator(new ManualClock(), key, release.Task);
+        var waiter = new GatedAuthenticator(new ManualClock(), key, Task.CompletedTask);
+
+        var held = holder.ApplyAsync(Req(), default).AsTask();
+        while (Volatile.Read(ref holder.Fetches) == 0)
+        {
+            await Task.Yield();
+        }
+
+        // The waiter queues behind the holder's sign-in, then its node is cancelled.
+        using var cts = new CancellationTokenSource();
+        var waiting = waiter.ApplyAsync(Req(), cts.Token).AsTask();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => waiting.WaitAsync(TimeSpan.FromSeconds(10)));
+
+        release.SetResult();
+        await held.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Gate waiters are served in order: had the abandoned sign-in still been queued, it would run before this.
+        var gate = SignInRefusals.Gate(key);
+        await gate.WaitAsync(TimeSpan.FromSeconds(10));
+        gate.Release();
+        Assert.Equal(0, waiter.Fetches);
+
+        // The abandoned sign-in never ran; the next call starts its own and gets a token.
+        var r = Req();
+        await waiter.ApplyAsync(r, default).AsTask().WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, waiter.Fetches);
+        Assert.Equal("Bearer tok", Bearer(r));
+    }
 }
