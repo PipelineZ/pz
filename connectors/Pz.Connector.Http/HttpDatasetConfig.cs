@@ -22,6 +22,19 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
 
     public bool IsContractMode => Columns is { Count: > 0 };
 
+    /// <summary>The `file:` option; non-null switches the dataset to file mode.</summary>
+    public HttpFileConfig? File { get; init; }
+
+    /// <summary>The `export:` option (an asynchronous export job whose result is the file); only
+    /// valid together with <see cref="File"/>.</summary>
+    public HttpExportConfig? Export { get; init; }
+
+    public bool IsFileMode => File is not null;
+
+    /// <summary>What `{{ run_date }}` renders to; <see cref="RunDateConfig.Default"/> when the
+    /// dataset declares no `run_date` option.</summary>
+    public RunDateConfig RunDate { get; init; } = RunDateConfig.Default;
+
     /// <summary>True when `delta_pointer` is configured: the dataset is a change-feed source
     /// (Graph-style `@odata.deltaLink`) — <see cref="HttpPartition"/> replays a stored sync token
     /// verbatim as the first request and captures the terminal page's delta link.</summary>
@@ -32,16 +45,24 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         var errors = new List<string>();
         var options = spec.Options;
 
+        // The engine's bindings, then the connector's own.
+        string[] knownBindings = [.. BindingExpander.FromSpec(spec).Keys, "run_date"];
+
         var path = Get(options, "path");
         if (string.IsNullOrEmpty(path) || path[0] != '/')
         {
             errors.Add("option 'path' is required and must start with '/'");
         }
+        else
+        {
+            ValidateBindingTemplate(path, "option 'path'", knownBindings, errors);
+        }
+
+        var runDate = RunDateConfig.Parse(options.TryGetValue("run_date", out var rd) ? rd : null, errors);
 
         var query = new Dictionary<string, string>();
         if (options.TryGetValue("query", out var q) && q is IReadOnlyDictionary<string, object?> qmap)
         {
-            var knownBindings = BindingExpander.FromSpec(spec).Keys.ToArray();
             foreach (var (name, value) in qmap)
             {
                 var template = YamlScalarText.Of(value) ?? "";
@@ -51,7 +72,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         }
 
         var method = ParseMethod(options, errors);
-        var body = ParseBody(options, method, spec, errors);
+        var body = ParseBody(options, method, knownBindings, errors);
         var errorPointer = Get(options, "error_pointer");
         if (errorPointer is not null)
         {
@@ -162,6 +183,26 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             }
         }
 
+        options.TryGetValue("file", out var rawFile);
+        options.TryGetValue("export", out var rawExport);
+        var file = HttpFileConfig.Parse(rawFile, errors);
+        var export = HttpExportConfig.Parse(rawExport, errors);
+        if (export is not null)
+        {
+            // A rejected status_path (already reported) leaves it null.
+            if (export.StatusPath is { } statusPath)
+            {
+                ValidateBindingTemplate(statusPath, "export.status_path", knownBindings, errors);
+            }
+
+            if (export.DownloadPath is { } downloadPath)
+            {
+                ValidateBindingTemplate(downloadPath, "export.download_path", knownBindings, errors);
+            }
+        }
+
+        ValidateFileMode(options, rawFile is not null, rawExport is not null, file, columns, errors);
+
         if (errors.Count > 0)
         {
             throw new PzConnectorException(
@@ -173,7 +214,59 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
         // stop_on_short_page/size semantics); leaving it set would stamp the query string too.
         return new HttpDatasetConfig(path!, query, bodyPaging is null ? factory : null, items, columns, cursor, cursorType,
             cursorPointer ?? (cursor is null ? "" : "/" + cursor), cursorOrder, maxPages, deltaPointer,
-            stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging);
+            stopOnShortPage, pageSize, method, body, errorPointer, bodyPaging)
+        {
+            RunDate = runDate,
+            File = file,
+            Export = export,
+        };
+    }
+
+    private static void ValidateFileMode(IReadOnlyDictionary<string, object?> options, bool hasFile,
+        bool hasExport, HttpFileConfig? file, IReadOnlyDictionary<string, string>? columns, List<string> errors)
+    {
+        if (hasExport && !hasFile)
+        {
+            errors.Add("'export' requires 'file' (the export's result is read as a file)");
+        }
+
+        if (!hasFile)
+        {
+            return;
+        }
+
+        foreach (var option in new[] { "pagination", "delta_pointer", "max_pages" })
+        {
+            if (options.TryGetValue(option, out var value) && value is not null)
+            {
+                errors.Add($"'{option}' cannot be combined with 'file' (a file is read in one request)");
+            }
+        }
+
+        if (file is null)
+        {
+            return;
+        }
+
+        // `items` only locates records in a JSON document; the dataset default must not trip this,
+        // so it is checked only when the key is written.
+        if (file is { Format: HttpFileFormat.Json, JsonLayout: HttpJsonLayout.Lines }
+            && options.TryGetValue("items", out var items) && items is not null)
+        {
+            errors.Add("'items' cannot be combined with file.layout lines (it applies to layout document)");
+        }
+
+        if (file.FileColumn is not null)
+        {
+            if (columns is not { Count: > 0 })
+            {
+                errors.Add("file.file_column is only for contract mode (raw mode always has 'pz_file')");
+            }
+            else if (columns.ContainsKey(file.FileColumn))
+            {
+                errors.Add($"file.file_column '{file.FileColumn}' collides with a column in 'columns'");
+            }
+        }
     }
 
     private static HttpMethod ParseMethod(IReadOnlyDictionary<string, object?> options, List<string> errors)
@@ -194,7 +287,7 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
     }
 
     private static HttpBody? ParseBody(IReadOnlyDictionary<string, object?> options, HttpMethod method,
-        DatasetSpec spec, List<string> errors)
+        IReadOnlyCollection<string> knownBindings, List<string> errors)
     {
         options.TryGetValue("body", out var raw);
         var bodyFormat = Get(options, "body_format");
@@ -230,15 +323,16 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             return null;
         }
 
-        return HttpBody.Parse(raw, bodyFormat, contentType, BindingExpander.FromSpec(spec).Keys.ToArray(), errors);
+        return HttpBody.Parse(raw, bodyFormat, contentType, knownBindings, errors);
     }
 
     private static string? Get(IReadOnlyDictionary<string, object?> options, string key)
         => options.TryGetValue(key, out var value) ? YamlScalarText.Of(value) : null;
 
-    /// <summary>Offline validation (no live request needed) of a `query:` value template
-    /// against the engine-binding vocabulary — first line of defense; <see cref="HttpPartition"/>'s
-    /// TryExpand call is the runtime-side defense in depth for the same two failure modes.</summary>
+    /// <summary>Offline validation (no live request needed) of a `path`, `query:` or `body` template
+    /// against the binding vocabulary (listed in the order given) — first line of defense;
+    /// <see cref="HttpFirstRequest"/>'s TryExpand calls are the runtime-side defense in depth for the
+    /// same two failure modes.</summary>
     internal static void ValidateBindingTemplate(string template, string label,
         IReadOnlyCollection<string> knownBindings, List<string> errors, bool echoTemplate = true)
     {
@@ -259,12 +353,12 @@ internal sealed record HttpDatasetConfig(string Path, IReadOnlyDictionary<string
             if (!knownBindings.Contains(name))
             {
                 errors.Add($"{label}: unknown binding '{name}' — accepted: " +
-                    string.Join(", ", knownBindings.Order()));
+                    string.Join(", ", knownBindings));
             }
         }
     }
 
-    private static string ValidatePointer(string pointer, string option, List<string> errors)
+    internal static string ValidatePointer(string pointer, string option, List<string> errors)
     {
         try
         {

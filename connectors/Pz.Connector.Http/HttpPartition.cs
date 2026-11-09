@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,11 +16,16 @@ namespace Pz.Connector.Http;
 /// following pagination until exhausted. Never retries, never sleeps — classification is this
 /// class's whole resilience duty (the engine owns policy). Batches yielded become
 /// engine-owned; nothing here retains them.</summary>
-internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig connection,
+internal sealed class HttpPartition(HttpClient client, HttpClient bareClient, HttpConnectionConfig connection,
     HttpDatasetConfig config, DatasetSpec spec, TimeProvider time, IOperationGate? gate = null)
     : IDatasetPartition, ISyncStatePartition, ICheckpointingPartition
 {
     private string Label => $"http source '{spec.Source}.{spec.Dataset}'";
+
+    // In sync mode the query IS the sync token, whose param name is server-defined, so messages drop
+    // the whole query rather than masking the authenticator's params by name.
+    private readonly HttpRequestSender _sender = new(client, bareClient, connection, config.Body, gate, time,
+        $"http source '{spec.Source}.{spec.Dataset}'", redactWholeQuery: config.IsSyncMode);
 
     // Set inside FetchPageCoreAsync when config.IsSyncMode: the delta pointer is resolved against
     // every page's body, and since only the terminal page of a Graph-style feed carries a
@@ -88,8 +92,6 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     /// takes long enough that a test proving the ceiling would otherwise have to spend a minute
     /// getting there.</summary>
     internal static int UnboundedPageCeiling = 50_000;
-
-    private const int MaxRedirects = 5;
 
     // Per-attempt truncation-guard state. Ordinal of the incremental cursor within ProjectRow's
     // output (raw envelope: fixed slot 3; contract mode:
@@ -205,11 +207,14 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         var builder = new ArrowBatchBuilder(ContractProjector.BuildSchema(columns),
             options.TargetBatchBytes, maxRowsPerBatch: options.MaxRowsPerBatch);
         var strategy = config.PageStrategyFactory?.Invoke();
+        // Read once: every request this partition builds renders the same {{ run_date }}, even
+        // across midnight.
+        var runDate = config.RunDate.Render(time.GetUtcNow());
         // A resume link wins over sync-token replay -- it is a LATER position inside the same
         // crawl, whereas PriorSyncState (inside BuildFirstRequest) replays a
         // whole-feed delta token from a PRIOR run. _syncCandidate capture from the terminal page
         // is unaffected either way.
-        HttpPageRequest? request = _resume ?? BuildFirstRequest(strategy);
+        HttpPageRequest? request = _resume ?? BuildFirstRequest(strategy, runDate);
         EnsureAllowedTarget(request.Url, "the first request");
         var page = 0;
         // An empty page ends the crawl only for a strategy with no other end (page numbers). For
@@ -382,7 +387,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     private static string SameBody(HttpPageRequest request)
         => request.JsonBody is not null || request.TextBody is not null ? " with the same body" : "";
 
-    private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy)
+    private HttpPageRequest BuildFirstRequest(IPageStrategy? strategy, string runDate)
     {
         // Delta-link replay is a GET by construction ('delta_pointer' is refused with POST).
         if (TryGetSyncReplay() is { } replay)
@@ -390,47 +395,8 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
             return new HttpPageRequest(HttpMethod.Get, replay, null, null);
         }
 
-        var bindings = BuildBindings();
-        var url = BuildFirstUri(strategy, bindings);
-        if (!config.IsPost)
-        {
-            return new HttpPageRequest(HttpMethod.Get, url, null, null);
-        }
-
-        // The query string and the body expand the same bindings with the same formatting, so a
-        // watermark appears identically in both.
-        JsonNode? json = null;
-        string? text = null;
-        if (config.Body is { } body)
-        {
-            if (body.IsJson)
-            {
-                json = body.Render(bindings, FormatBinding, out var error);
-                if (error is not null)
-                {
-                    throw new PzConnectorException($"{Label}: body: {error}", isTransient: false);
-                }
-
-                if (config.BodyPaging is { } paging && json is not null)
-                {
-                    json = paging.First(json);
-                }
-            }
-            else
-            {
-                try
-                {
-                    text = body.RenderText(bindings, FormatBinding);
-                }
-                catch (PzConnectorException ex)
-                {
-                    throw new PzConnectorException($"{Label}: {ex.Message}", isTransient: false,
-                        innerException: ex, code: ex.Code, hint: ex.Hint);
-                }
-            }
-        }
-
-        return new HttpPageRequest(HttpMethod.Post, url, json, text);
+        var bindings = HttpFirstRequest.Bindings(spec, config, runDate, Label);
+        return HttpFirstRequest.Build(connection, config, strategy, bindings, Label);
     }
 
     private Uri? TryGetSyncReplay()
@@ -456,124 +422,8 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         return null;
     }
 
-    private Dictionary<string, BindingValue> BuildBindings()
-    {
-        if (spec.WatermarkCursor is { } wmCursor)
-        {
-            if (config.Cursor is null && !config.IsContractMode)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: incremental dataset needs the raw-mode 'cursor' + 'cursor_type' options " +
-                    "(or a 'columns' contract declaring the cursor)", isTransient: false);
-            }
-
-            if (config.Cursor is { } optCursor && optCursor != wmCursor)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: incremental.cursor is '{wmCursor}' but options.cursor is '{optCursor}'; " +
-                    "align the two", isTransient: false);
-            }
-        }
-
-        string? cursorType;
-        if (config.IsContractMode && spec.WatermarkCursor is not null)
-        {
-            if (!config.Columns!.TryGetValue(spec.WatermarkCursor, out cursorType))
-            {
-                throw new PzConnectorException(
-                    $"{Label}: incremental cursor '{spec.WatermarkCursor}' is not declared in 'columns:' — " +
-                    "add it to the contract so its values land and its type is known", isTransient: false);
-            }
-        }
-        else
-        {
-            cursorType = config.CursorType;
-        }
-        var bindings = new Dictionary<string, BindingValue>
-        {
-            ["watermark"] = new(spec.WatermarkValue, cursorType),
-            // Upper bound of the engine-resolved (lower, upper] window; null when the dataset is
-            // not windowed, in which case TryExpand omits the param.
-            ["window_upper"] = new(spec.WatermarkUpperBound, cursorType),
-        };
-        return bindings;
-    }
-
-    private Uri BuildFirstUri(IPageStrategy? strategy, Dictionary<string, BindingValue> bindings)
-    {
-        var pairs = new List<string>();
-        foreach (var (name, template) in config.Query)
-        {
-            bool expanded;
-            string? value, error;
-            try
-            {
-                // Defense in depth: HttpDatasetConfig.Parse already validates every query template
-                // offline, but a malformed/unknown binding must never surface as an uncoded
-                // FormatException from a live read.
-                expanded = BindingExpander.TryExpand(template, bindings, FormatBinding, out value, out error);
-            }
-            catch (FormatException ex)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: query parameter '{name}': malformed binding template '{template}': " +
-                    $"{ex.Message}", isTransient: false);
-            }
-
-            if (!expanded)
-            {
-                throw new PzConnectorException($"{Label}: query parameter '{name}': {error}",
-                    isTransient: false);
-            }
-
-            if (value is null)
-            {
-                continue; // referenced binding is null (first run / --full-refresh): omit the param
-            }
-
-            pairs.Add($"{Uri.EscapeDataString(name)}={Uri.EscapeDataString(value)}");
-        }
-
-        // config.Path always starts with '/' (HttpDatasetConfig.Parse validated); stripping it makes
-        // the segment relative so it resolves against the FULL slash-terminated base_url (including
-        // any path prefix) instead of root-relative to the host.
-        var first = new UriBuilder(new Uri(connection.BaseUrl, config.Path[1..]))
-        {
-            Query = string.Join('&', pairs),
-        }.Uri;
-
-        // The strategy's own params (page number, size) go on the first request too — an API's
-        // default page size is otherwise in effect for page one, skipping or re-delivering rows
-        // the moment page two jumps ahead. Sync-token replays returned above stay verbatim.
-        return strategy is null ? first : strategy.FirstRequestUri(first);
-    }
-
-    // Formats a bound value for a query param. Serves BOTH the lower bound (watermark) and the
-    // upper bound (window_upper). A timestamp cursor renders as ISO-8601 UTC to whole seconds
-    // (many APIs reject sub-second precision). Rounding direction differs by bound so the
-    // (lower, upper] window is never under-covered:
-    //   - lower (watermark, exclusive '>'): truncate DOWN — re-reads at most the boundary second.
-    //   - upper (window_upper, inclusive '<='): round UP — a sub-second upper like ...00.5 must
-    //     still include rows at ...00.5, so we query '<= ...01'. Rows in (upper, ceil] are
-    //     over-extracted this window, but the engine's window-scoped MAX probe caps the watermark
-    //     candidate at 'upper', so they re-deliver in the next window: re-delivery, never loss,
-    //     even for an empty (lower, floor_sec(upper)] slice (windowed->append requires
-    //     accept_duplicates, PZ0214). Truncating the upper DOWN would instead drop the fractional
-    //     tail: an empty truncated slice advances the watermark to the full untruncated upper
-    //     (empty-slice advancement), silently skipping those rows.
     internal static string FormatBinding(string name, BindingValue value)
-    {
-        if (value.TypeName != "timestamp"
-            || !DateTimeOffset.TryParse(value.Value, CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var ts))
-        {
-            return value.Value!;
-        }
-
-        var floored = new DateTimeOffset(ts.Year, ts.Month, ts.Day, ts.Hour, ts.Minute, ts.Second, TimeSpan.Zero);
-        var rendered = name == "window_upper" && ts > floored ? floored.AddSeconds(1) : floored;
-        return rendered.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
-    }
+        => HttpFirstRequest.FormatBinding(name, value);
 
     private object?[] ProjectRow(JsonNode? record, int page, DateTimeOffset fetchedAt)
     {
@@ -605,38 +455,27 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     /// author asserts has no side effects, so it is replayed on the same terms.</summary>
     private Task<(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next)> FetchPageAsync(
         IPageStrategy? strategy, HttpPageRequest request, CancellationToken ct)
-        => gate is null
-            ? FetchPageCoreAsync(strategy, request, ct)
-            : gate.ExecuteAsync("http.get_page", idempotent: true,
-                innerCt => FetchPageCoreAsync(strategy, request, innerCt), ct);
+        => _sender.RunAsync("http.get_page", idempotent: true,
+            innerCt => FetchPageCoreAsync(strategy, request, innerCt), ct);
 
     private async Task<(IReadOnlyList<JsonNode?> Records, HttpPageRequest? Next)> FetchPageCoreAsync(
         IPageStrategy? strategy, HttpPageRequest request, CancellationToken ct)
     {
-        var (response, sendUri, sent) = await SendFollowingRedirectsAsync(request, ct).ConfigureAwait(false);
+        var result = await _sender.SendAsync(request, streamBody: false, credentialsOnlyToOrigin: false, ct)
+            .ConfigureAwait(false);
+        var (response, sendUri, sent) = result;
 
-        using (response)
+        using (result)
         {
             var status = (int)response.StatusCode;
             var text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
             {
-                if (TransientClassifier.IsTransientStatus(status))
-                {
-                    var retryAfter = TransientClassifier.ParseRetryAfter(
-                        response.Headers.TryGetValues("Retry-After", out var values)
-                            ? values.FirstOrDefault()
-                            : null,
-                        time.GetUtcNow());
-                    throw new PzConnectorException($"{Label}: HTTP {status} from {Target(sent, sendUri)}",
-                        isTransient: true, retryAfter);
-                }
-
                 if (config.IsSyncMode && status == 410 && spec.PriorSyncState is { Length: > 0 })
                 {
                     // Only an actual replay (a stored prior token) makes a 410 mean "the token
                     // expired" — a first-run sync read has no token to expire, so a 410 there falls
-                    // through to the normal permanent-error path below (bad path/endpoint).
+                    // through to the generic classification below (bad path/endpoint).
                     // The delta link/sync token itself embeds server-side state (and, for
                     // token-in-query auth, a secret) — always surface the redacted URI, never
                     // the raw stored token.
@@ -645,9 +484,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
                         "re-run with --full-refresh to restart the feed from the beginning", isTransient: false);
                 }
 
-                throw new PzConnectorException(
-                    $"{Label}: HTTP {status} from {Target(sent, sendUri)}: {RedactSnippet(text)} " +
-                    "(check the endpoint path and auth config)", isTransient: false);
+                throw _sender.StatusError(result, text);
             }
 
             JsonNode? body;
@@ -664,7 +501,7 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
 
             if (config.ErrorPointer is { } errorPointer)
             {
-                ThrowIfErrorReported(body, errorPointer, Target(sent, sendUri));
+                ThrowIfErrorReported(body, errorPointer, Target(sent, sendUri), Label, config.IsSyncMode, Redact);
             }
 
             if (!JsonPointer.TryResolve(body, config.ItemsPointer, out var itemsNode))
@@ -731,8 +568,11 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
     /// <c>false</c>, an empty array or an empty object: a 200 that reports errors (GraphQL, including
     /// partial data alongside errors) would otherwise land wrong or incomplete rows silently. The
     /// message carries the first error's <c>message</c> field (or the value itself when it is a
-    /// string), redacted like a response snippet and cut to 200 characters.</summary>
-    private void ThrowIfErrorReported(JsonNode? body, string pointer, string target)
+    /// string), redacted like a response snippet and cut to 200 characters. <paramref name="stripUrlQueries"/>
+    /// drops the whole query of any URL in that text first (for a read whose queries are secrets with
+    /// server-defined names).</summary>
+    internal static void ThrowIfErrorReported(JsonNode? body, string pointer, string target, string label,
+        bool stripUrlQueries, Func<string, string> redact)
     {
         if (!JsonPointer.TryResolve(body, pointer, out var reported)
             || reported is null
@@ -755,179 +595,21 @@ internal sealed class HttpPartition(HttpClient client, HttpConnectionConfig conn
         if (!string.IsNullOrEmpty(detail))
         {
             // Redact before cutting, so a cut can never leave half a secret that no longer matches.
-            var flat = Redact((config.IsSyncMode ? StripUrlQueries(detail) : detail).ReplaceLineEndings(" "));
+            var flat = redact((stripUrlQueries ? HttpRequestSender.StripUrlQueries(detail) : detail).ReplaceLineEndings(" "));
             suffix = $": {(flat.Length <= 200 ? flat : flat[..200] + "…")}";
         }
 
         throw new PzConnectorException(
-            $"{Label}: the response from {target} reports an error at 'error_pointer' '{pointer}'{suffix}",
+            $"{label}: the response from {target} reports an error at 'error_pointer' '{pointer}'{suffix}",
             isTransient: false);
     }
 
-    // How a request is named in a message: the redacted URL, prefixed by the method when it is not
-    // GET (GET messages stay exactly as they were). Never the body.
-    private string Target(HttpMethod method, Uri uri)
-        => method == HttpMethod.Get ? Redact(uri) : $"{method.Method} {Redact(uri)}";
+    private string Target(HttpMethod method, Uri uri) => _sender.Target(method, uri);
 
-    /// <summary>Issues the request and walks any redirect chain by hand, because
-    /// <see cref="HttpSource.CreateClient"/> turns the handler's own redirect following off. Each hop's
-    /// target is resolved against the URL actually requested and then checked with
-    /// <see cref="EnsureAllowedTarget"/>, so a redirect can never carry this connection's credentials
-    /// to a host the endpoint picked; the chain is bounded so a redirect loop fails instead of
-    /// spinning. Returns the first non-redirect response together with the URI that produced it —
-    /// the post-auth URI, which is what every error message redacts and reports — and the method that
-    /// produced it. Each hop sends a freshly built message: 307/308 keep the method and body, 301/302/303
-    /// switch to GET without a body. The target of every hop is checked before credentials and the
-    /// body go anywhere.</summary>
-    private async Task<(HttpResponseMessage Response, Uri SendUri, HttpMethod Method)> SendFollowingRedirectsAsync(
-        HttpPageRequest first, CancellationToken ct)
-    {
-        var current = first;
-        for (var hop = 0; ; hop++)
-        {
-            using var request = current.ToMessage(config.Body);
-            if (connection.Authenticator is { } authenticator)
-            {
-                await authenticator.ApplyAsync(request, ct).ConfigureAwait(false);
-            }
+    private string Redact(Uri uri) => _sender.Redact(uri);
 
-            // Redact the POST-auth URI: an api_key-in-query authenticator just added the secret to
-            // request.RequestUri, and that is the URL any error message must never echo unredacted.
-            var sendUri = request.RequestUri ?? current.Url;
-            var sent = current.Method;
+    private void EnsureAllowedTarget(Uri candidate, string what) => _sender.EnsureAllowedTarget(candidate, what);
 
-            HttpResponseMessage response;
-            try
-            {
-                response = await client.SendAsync(request, ct).ConfigureAwait(false);
-            }
-            catch (HttpRequestException ex) when (ex.HttpRequestError == HttpRequestError.ConfigurationLimitExceeded)
-            {
-                // HttpClient buffers the whole response before SendAsync returns (default
-                // HttpCompletionOption.ResponseContentRead) and refuses to grow the buffer past
-                // MaxResponseContentBufferSize -- the runtime's own message never mentions the pz
-                // option that set the limit, so callers see a bare "configured maximum buffer size"
-                // with nothing to act on.
-                throw new PzConnectorException(
-                    $"{Label}: response from {Target(sent, sendUri)} exceeds 'max_response_mb' " +
-                    $"({connection.MaxResponseBytes / (1024 * 1024)} MiB)", isTransient: false,
-                    innerException: ex);
-            }
-            catch (HttpRequestException ex)
-            {
-                throw new PzConnectorException($"{Label}: request to {Target(sent, sendUri)} failed: {ex.Message}",
-                    TransientClassifier.IsTransientException(ex), innerException: ex);
-            }
-            catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
-            {
-                throw new PzConnectorException($"{Label}: request to {Target(sent, sendUri)} timed out",
-                    isTransient: true, innerException: ex);
-            }
-
-            var redirectStatus = (int)response.StatusCode;
-            if (!IsRedirect(redirectStatus))
-            {
-                try
-                {
-                    HttpAuth.ThrowIfTokenRejected(connection.Authenticator, request, redirectStatus, Label);
-                }
-                catch
-                {
-                    response.Dispose();
-                    throw;
-                }
-
-                return (response, sendUri, sent);
-            }
-
-            var location = response.Headers.Location;
-            response.Dispose();
-
-            if (location is null)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: HTTP {redirectStatus} from {Target(sent, sendUri)} has no Location " +
-                    "header (check the endpoint path)", isTransient: false);
-            }
-
-            if (hop >= MaxRedirects)
-            {
-                throw new PzConnectorException(
-                    $"{Label}: more than {MaxRedirects} redirects starting at {Target(first.Method, first.Url)}; " +
-                    "point 'base_url'/'path' at the endpoint's final location", isTransient: false);
-            }
-
-            var target = new Uri(sendUri, location);
-            EnsureAllowedTarget(target, "a redirect from the endpoint");
-            current = current.RedirectedTo(target, redirectStatus);
-        }
-    }
-
-    private static bool IsRedirect(int status) => status is 301 or 302 or 303 or 307 or 308;
-
-    /// <summary>Refuses any request target the far side chose that is not this connection's own origin
-    /// (or an explicitly allow-listed host). Pagination links, redirect targets and stored resume
-    /// tokens are all endpoint-controlled, and every request carries the connection's
-    /// Authorization/api-key headers — so without this a single hostile response turns pz into a
-    /// credential-exfiltration channel. Only the authority is named: the rest of the URL can embed the
-    /// secret itself.</summary>
-    private void EnsureAllowedTarget(Uri candidate, string what)
-    {
-        if (connection.IsAllowedTarget(candidate))
-        {
-            return;
-        }
-
-        throw new PzConnectorException(
-            $"{Label}: {what} points at '{candidate.GetLeftPart(UriPartial.Authority)}', which is not " +
-            $"this connection's host '{connection.BaseUrl.GetLeftPart(UriPartial.Authority)}' — pz will " +
-            "not send this connection's credentials to a host the endpoint chose; if this really is " +
-            "part of the same API, add the host to 'allow_hosts' on the connection", isTransient: false);
-    }
-
-    private static string Snippet(string body)
-    {
-        var flat = body.ReplaceLineEndings(" ");
-        return flat.Length <= 160 ? flat : flat[..160] + "…";
-    }
-
-    /// <summary>Redacts a permanent-error response body before it is surfaced in an exception message.
-    /// A 4xx body can echo the request URL verbatim (e.g. a Graph-style 403/404 error payload naming the
-    /// request), leaking the server-defined sync token/delta link param through the snippet even though
-    /// it isn't one of the connector's configured <c>SecretQueryParams</c>. In sync mode, strip the query
-    /// string off any URL found in the text wholesale first (same whole-query approach as
-    /// <see cref="RedactQuery"/> -- the param name is opaque/server-defined, not maskable by name), then
-    /// apply the param-based <see cref="Redact(string)"/> as a second pass for any configured auth secret
-    /// the body might also echo.</summary>
-    private string RedactSnippet(string text) =>
-        Redact(Snippet(config.IsSyncMode ? StripUrlQueries(text) : text));
-
-    private static readonly System.Text.RegularExpressions.Regex UrlWithQuery =
-        new(@"https?://[^\s""'?]+\?[^\s""']*", System.Text.RegularExpressions.RegexOptions.Compiled);
-
-    private static string StripUrlQueries(string text) =>
-        UrlWithQuery.Replace(text, m =>
-            // The match is regex-shaped, not RFC 3986-valid -- an upstream API's own error body can
-            // embed "scheme://...?..." text (an example, a malformed hint) that the Uri constructor
-            // refuses (e.g. an out-of-range port). This runs inside error-message formatting itself,
-            // so it must never throw; a match Uri can't parse is masked wholesale instead.
-            Uri.TryCreate(m.Value, UriKind.Absolute, out var uri) ? RedactQuery(uri) : "<redacted>");
-
-    /// <summary>Redacts a URI before it is surfaced in an exception message. For a sync-mode
-    /// dataset the query IS the sync token — its param name is server-defined/opaque (e.g. Graph's
-    /// `$deltatoken`), not necessarily the connector's configured auth param — so the whole query is
-    /// replaced wholesale rather than masked param-by-param; scheme/host/path are kept for
-    /// diagnosability. Non-sync reads use SecretQueryParams-based masking.</summary>
-    private string Redact(Uri uri) => config.IsSyncMode ? RedactQuery(uri) : Redact(uri.ToString());
-
-    private static string RedactQuery(Uri uri)
-    {
-        var basePart = uri.GetLeftPart(UriPartial.Path);
-        return uri.Query.Length > 0 ? $"{basePart}?<redacted>" : basePart;
-    }
-
-    /// <summary>Masks any authenticator secret-query-param value found in arbitrary text — the
-    /// same rule applied to request URIs, reused here for 4xx response body snippets (a server
-    /// echoing the request URL, e.g. in a 403 body, must not leak an api_key-in-query secret).</summary>
+    /// <summary>Masks any authenticator secret-query-param value found in arbitrary text.</summary>
     private string Redact(string text) => connection.RedactSecretParams(text);
 }

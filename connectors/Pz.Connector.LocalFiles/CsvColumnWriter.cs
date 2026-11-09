@@ -29,7 +29,9 @@ namespace Pz.Connector.LocalFiles;
 /// path; decimal, date and timestamp stay on Arrow's builders (<see cref="BuilderWriter{TArray,TBuilder}"/>).
 /// Their parses cost hundreds of nanoseconds and their layouts (128-bit two's-complement scaled decimals,
 /// epoch-relative calendar arithmetic) are exactly the kind of conversion that is a correctness risk to
-/// re-derive for a few percent — the same line <c>CsvWriteCodec</c> draws on the write side.</para></summary>
+/// re-derive for a few percent — the same line <c>CsvWriteCodec</c> draws on the write side.</para>
+///
+/// Replicated in Pz.Connector.LocalFiles, Pz.Connector.Sftp and Pz.Connector.Http per the no-cross-connector-reference rule; keep the three copies in lockstep.</summary>
 internal abstract class CsvColumnWriter
 {
     /// <summary>Parses and appends one cell, returning the value's estimated width in EIGHTHS of a byte.

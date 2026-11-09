@@ -52,6 +52,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "headers": { "type": "object", "additionalProperties": { "type": "string" } },
             "timeout_seconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 3600 },
             "max_response_mb": { "type": "integer", "minimum": 1, "maximum": 2047 },
+            "max_download_mb": { "type": "integer", "minimum": 1, "maximum": 1048576 },
             "allow_hosts": { "type": "array", "items": { "type": "string" } } },
           "additionalProperties": false }
         """;
@@ -79,7 +80,35 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "body_format": { "enum": ["json", "form"] },
             "content_type": { "type": "string" },
             "error_pointer": { "type": "string" },
-            "max_pages": { "type": "integer", "minimum": 1 } },
+            "max_pages": { "type": "integer", "minimum": 1 },
+            "run_date": { "type": "object", "properties": {
+                "offset_days": { "type": "integer", "minimum": -36500, "maximum": 36500 }, "timezone": { "type": "string" },
+                "format": { "type": "string" } },
+                "additionalProperties": false },
+            "file": { "type": "object", "properties": {
+                "format": { "enum": ["csv", "tsv", "json", "xml"] },
+                "archive": { "enum": ["auto", "zip", "gzip", "none"] },
+                "members": { "type": "string" },
+                "if_missing": { "enum": ["error", "empty"] },
+                "file_column": { "type": "string" },
+                "encoding": { "enum": ["utf-8", "utf-16", "iso-8859-1"] },
+                "delimiter": { "type": "string", "minLength": 1, "maxLength": 1 },
+                "header": { "type": "boolean" },
+                "skip_lines": { "type": "integer", "minimum": 0 },
+                "layout": { "enum": ["lines", "document"] },
+                "records": { "type": "string" } },
+                "required": ["format"], "additionalProperties": false },
+            "export": { "type": "object", "properties": {
+                "job_id": { "type": "string" },
+                "status_path": { "type": "string" }, "status_pointer": { "type": "string" },
+                "ready": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+                "failed": { "type": "array", "items": { "type": "string" } },
+                "message_pointer": { "type": "string" },
+                "download_pointer": { "type": "string" }, "download_path": { "type": "string" },
+                "poll_interval_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+                "timeout_minutes": { "type": "integer", "minimum": 1, "maximum": 1440 } },
+                "required": ["job_id", "status_path", "status_pointer", "ready"],
+                "additionalProperties": false } },
           "additionalProperties": false }
         """;
 
@@ -133,14 +162,14 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         try
         {
             using var client = HttpSource.CreateClient(connection);
-            // Resolve check_path the same way dataset paths resolve (HttpPartition.BuildFirstUri):
+            // Resolve check_path the same way dataset paths resolve (HttpFirstRequest.Build):
             // a relative segment against the slash-terminated base, not root-relative to the host —
             // otherwise a base_url path prefix (e.g. '/api/v2') is silently dropped.
             var target = connection.CheckPath is { } checkPath
                 ? new Uri(connection.BaseUrl, checkPath.TrimStart('/'))
                 : connection.BaseUrl;
 
-            // A real read follows a 3xx by hand (HttpPartition.SendFollowingRedirectsAsync) rather
+            // A real read follows a 3xx by hand (HttpRequestSender.SendAsync) rather
             // than treating it as failure -- the check must accept the same shape of response a read
             // against this exact path would.
             for (var hop = 0; ; hop++)

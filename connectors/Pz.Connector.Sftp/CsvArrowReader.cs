@@ -27,7 +27,7 @@ namespace Pz.Connector.Sftp;
 /// boundaries, and the same <see cref="PzConnectorException"/> message naming file, line, column, value
 /// and type.
 ///
-/// Replicated from connectors/Pz.Connector.LocalFiles/CsvArrowReader.cs per the no-cross-connector-reference rule; keep in lockstep.</summary>
+/// Replicated in Pz.Connector.LocalFiles, Pz.Connector.Sftp and Pz.Connector.Http per the no-cross-connector-reference rule; keep the three copies in lockstep.</summary>
 internal static class CsvArrowReader
 {
     /// <summary>Streams <paramref name="csv"/>'s rows as Arrow batches, reading exactly the columns of
