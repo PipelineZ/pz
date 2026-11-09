@@ -344,7 +344,7 @@ public static class ConnectorConfigValidator
 
     private static PzError? Classify(Exception ex, ConnectionDef connection, string subject, ConnectorRegistry registry) =>
         ConnectorFailures.Classify(ex, connection.Connector, subject, connection.FilePath, "validating",
-            registry.DescribeHostFailure);
+            registry.DescribeHostFailure)?.Error;
 
     /// <summary>Nothing upstream checks a connection's connector NAME against the registry (PZ0305's
     /// other raise sites cover missing packages and cross-package collisions), so without this a typo'd

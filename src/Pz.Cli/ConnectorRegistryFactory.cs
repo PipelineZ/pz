@@ -38,9 +38,17 @@ internal static class ConnectorRegistryFactory
     /// can fire before the caller is ready for it.</para></summary>
     /// <summary>A connector host's failure thrown from a connector call (a process that would not spawn or
     /// handshake, one that died), with the host's own code and hint -- the same error a failure while the
-    /// registry is built becomes.</summary>
+    /// registry is built becomes. The one place a host failure's code decides whether it is fatal: a connector
+    /// process that broke protocol (PZ0357) or died (PZ0358) while in use stopped pz on its own terms; one that
+    /// never started or handshook (PZ0355, PZ0356), or a missing or unusable package (PZ0304-PZ0307), is an install
+    /// problem the author fixes, reported as config exactly as when the registry is built.</summary>
     internal static ConnectorHostFailure? DescribeHostFailure(Exception ex) =>
-        ex is ConnectorHostException host ? new ConnectorHostFailure(host.Code, host.Message, host.Hint) : null;
+        ex is ConnectorHostException host
+            ? new ConnectorHostFailure(host.Code, host.Message, host.Hint)
+            {
+                IsFatal = host.Code is PzErrorCode.ProtocolViolation or PzErrorCode.ConnectorDiedMidOperation,
+            }
+            : null;
 
     public static async Task<(ConnectorRegistry Registry, ConnectorHosts? Hosts)> CreateAsync(
         PzProject project, string projectDir, bool noLockCheck, CancellationToken ct, string? runId = null,

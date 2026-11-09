@@ -55,15 +55,14 @@ public sealed class ConfigRefusalPlanningTests
             .PlanAsync(dag, forceUniversal: false, CancellationToken.None, executing: executing));
 
     // A config refusal is the author's to fix (exit 2); a connector that failed rather than refused -- transient,
-    // a defect, a dead or misbehaving process -- means pz could not plan on its own terms (exit 3). A host that
-    // would not spawn or handshake is an install problem, reported as config exactly as when the registry is built.
+    // a defect -- means pz could not plan on its own terms (exit 3). A host failure is fatal exactly when the
+    // host's description says so (the registry builder owns that mapping): the planner never reads an error code.
     [Theory]
     [InlineData("config", false)]
     [InlineData("transient", true)]
     [InlineData("unhandled", true)]
-    [InlineData(PzErrorCode.ConnectorSpawnFailed, false)]
-    [InlineData(PzErrorCode.ConnectorDiedMidOperation, true)]
-    [InlineData(PzErrorCode.ProtocolViolation, true)]
+    [InlineData("host-fatal", true)]
+    [InlineData("host-not-fatal", false)]
     public async Task A_plan_failure_is_fatal_only_when_a_connector_failed_rather_than_refused(string kind, bool fatal)
     {
         var connector = new StubThrowingConnector
@@ -78,7 +77,10 @@ public sealed class ConfigRefusalPlanningTests
             },
         };
         var (dag, registry) = TwoDatasetsAndAnOutput(connector);
-        registry.DescribeHostFailure = ex => ex is InvalidProgramException ? new ConnectorHostFailure(ex.Message, "host", null) : null;
+        // The same code either way: only the host's own verdict decides.
+        registry.DescribeHostFailure = ex => ex is InvalidProgramException
+            ? new ConnectorHostFailure(PzErrorCode.ConnectorSpawnFailed, "host", null) { IsFatal = ex.Message == "host-fatal" }
+            : null;
 
         var failure = await PlanFailureAsync(dag, registry);
 

@@ -237,6 +237,19 @@ public sealed class ConnectorRegistryFactoryTests(CliLocalFeedFixture feed) : ID
             Assert.Equal(new Pz.Engine.Execution.ConnectorHostFailure("PZ0355", "could not start connector 'acme'",
                 "check the executable"), described);
             Assert.Null(registry.DescribeHostFailure(new InvalidOperationException("engine bug")));
+
+            // The one place a host failure's code decides whether it is fatal: a connector process that broke
+            // protocol or died while it was in use stops pz on its own terms; one that never started or
+            // handshook, or a missing package, is an install problem the author fixes.
+            foreach (var (code, fatal) in new[]
+            {
+                ("PZ0304", false), ("PZ0305", false), ("PZ0306", false), ("PZ0307", false),
+                ("PZ0355", false), ("PZ0356", false), ("PZ0357", true), ("PZ0358", true),
+            })
+            {
+                Assert.Equal(fatal, registry.DescribeHostFailure(
+                    new Pz.PackageManagement.Hosting.ConnectorHostException(code, "m"))!.IsFatal);
+            }
         }
         finally
         {
