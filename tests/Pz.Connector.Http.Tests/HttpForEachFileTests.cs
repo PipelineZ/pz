@@ -209,14 +209,16 @@ public sealed class HttpForEachFileTests : IAsyncLifetime
             _ => new StubResponse(500, "unexpected"),
         });
 
-        // At every batch exactly one scratch dir exists: the current item's. Earlier items' are gone.
-        var seen = new List<string>();
+        // At every batch at most one scratch dir exists, the current item's; earlier items' are gone. An
+        // item's last batch is yielded after the item's read has ended (the for_each read looks one batch
+        // ahead to place the item-boundary checkpoint), so its dir is already gone by then, and the bad
+        // item's first row is held back by that look-ahead and fails with it.
+        var seen = new List<string[]>();
         var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(ExportsOptions(Map(("format", "csv")))),
-            onBatch: () => seen.Add(Assert.Single(ScratchDirs()))));
+            onBatch: () => seen.Add(ScratchDirs())));
 
         Assert.EndsWith("(item export_id=bad)", ex.Message);
-        Assert.Equal(4, seen.Count);
-        Assert.Equal(3, seen.Distinct().Count());
+        Assert.Equal([1, 0, 0], seen.Select(dirs => dirs.Length));
         Assert.Empty(ScratchDirs());
     }
 }
