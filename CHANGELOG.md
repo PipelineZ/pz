@@ -332,6 +332,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   each one as PZ0301 naming the dataset and option, every dataset at once, and the plan refuses it the same way.
 - **`pz validate` checks the outputs of connections that also read.** Only write-only connections' `write:` options
   were checked against the connector's output schema; an http, localfiles, s3 or duckdb output's typo went unreported.
+- **MCP `pz_plan` resolves relative connection paths against the project.** It anchored the project only after
+  compiling, so the planner opened connections with paths resolved against the server's working directory (a
+  relative http `tls.ca_file`, a sqlite or duckdb `path`). It now anchors before compiling, as `pz plan` does.
+- **An unusable credential or TLS file is a config error.** A missing or unreadable http `tls.ca_file` or
+  `tls.client_certificate`, azure_ad `certificate_path`, gcs `key_file`/`key_json` or sftp `private_key_path` is PZ0301
+  (exit 2), naming the setting.
+- **http: a PKCS#12 client certificate's key stays in memory on Linux.** It used to be imported with the default key
+  storage. Windows keeps it, because SChannel presents only a persisted key, and the key lives only as long as the
+  connection. macOS keeps it too, because it cannot import an ephemeral key.
 - **A wrongly-typed connector option is a config error.** `ConnectorConfig.GetInt`/`GetBool` and postgres's
   `ssl_mode` threw raw .NET exceptions (PZ0500) on a value of the wrong kind; they now refuse it as config.
 - **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
