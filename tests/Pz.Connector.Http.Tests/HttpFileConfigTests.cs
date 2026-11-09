@@ -436,11 +436,21 @@ public class HttpFileConfigTests
               "status_pointer":"/state","ready":["done"],"download_pointer":"/u","cancel_path":"/s/{job_id}",
               "cancel_method":"post"}}
             """));
-        Assert.False(Valid("""
+        bool CancelMethodValid(string method) => Valid($$$"""
             {"path":"/p","file":{"format":"csv"},"export":{"job_id":"/id","status_path":"/s/{job_id}",
               "status_pointer":"/state","ready":["done"],"download_pointer":"/u","cancel_path":"/s/{job_id}",
-              "cancel_method":"get"}}
-            """));
+              "cancel_method":"{{{method}}}"}}
+            """);
+        // Parse accepts any case, so the schema must too.
+        foreach (var method in new[] { "delete", "DELETE", "post", "POST", "Put", "pAtCh" })
+        {
+            Assert.True(CancelMethodValid(method), method);
+        }
+
+        foreach (var method in new[] { "get", "GET", "head", "", "deletee", "xpost" })
+        {
+            Assert.False(CancelMethodValid(method), method);
+        }
         Assert.False(Valid("""{"path":"/p","file":{"format":"csv"},"export":{"job_id":"/id","status_path":"/s","status_pointer":"/s","ready":["d"],"timeout_minutes":1441}}"""));
 
         var connectionSchema = JsonSchema.FromText(connection);

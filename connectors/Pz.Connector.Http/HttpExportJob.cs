@@ -200,8 +200,18 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
                 JsonValueKind.Number => value.ToJsonString(),
                 _ => null,
             };
-            if (!string.IsNullOrEmpty(id))
+            if (id is not null)
             {
+                // Escaping keeps a job id inside one path segment, but '.' and '..' stay dot segments that URL
+                // resolution removes, so a cancel or poll would reach another resource. Such an id, and one no
+                // path segment can carry faithfully, is refused before any request uses it.
+                if (!UsableInPath(id))
+                {
+                    throw new PzConnectorException(
+                        $"{StartLabel}: export job id '{Shown(id)}' from {target} cannot be used in a URL path (it is " +
+                        "empty, '.' or '..', or contains '/', '\\' or a control character)", isTransient: false);
+                }
+
                 return id;
             }
         }
@@ -416,11 +426,16 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
         return new Uri(connection.BaseUrl, expanded[1..]);
     }
 
+    private static bool UsableInPath(string id)
+        => id.Length > 0 && id is not ("." or "..")
+            && !id.Any(c => c is '/' or '\\' || char.IsControl(c));
+
     /// <summary>A job id as messages show it: on one line, and at most <see cref="MaxJobIdChars"/>
     /// characters (a server can return anything as an id).</summary>
     private static string Shown(string jobId)
     {
-        var flat = jobId.Replace("\r\n", " ", StringComparison.Ordinal).Replace('\r', ' ').Replace('\n', ' ');
+        var flat = string.Concat(jobId.Replace("\r\n", " ", StringComparison.Ordinal)
+            .Select(c => char.IsControl(c) ? ' ' : c));
         return flat.Length <= MaxJobIdChars ? flat : flat[..MaxJobIdChars] + "…";
     }
 }

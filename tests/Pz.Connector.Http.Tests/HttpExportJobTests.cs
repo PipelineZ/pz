@@ -434,17 +434,57 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     [Fact]
     public async Task Job_id_is_flattened_and_capped_in_messages()
     {
-        var id = "a\r\nb" + new string('x', 150);
-        // Fixed status_path: the id never reaches the URL (http.sys rejects encoded CR/LF in paths).
+        var id = "x" + new string('y', 150) + "\r\nz";
         MapJob("/reports/status", System.Text.Json.JsonSerializer.Serialize(id), """{"state":"failed"}""");
 
         var ex = await Assert.ThrowsAsync<PzConnectorException>(
             () => Read(Spec(Export(("status_path", "/reports/status")))));
 
-        var shown = ("a b" + new string('x', 150))[..100] + "…";
-        Assert.Contains($"export job {shown} failed with status 'failed'", ex.Message);
+        var shown = ("x" + new string('y', 150))[..100] + "…";
+        Assert.Contains($"export job id '{shown}'", ex.Message);
         Assert.DoesNotContain("\n", ex.Message);
-        Assert.DoesNotContain(new string('x', 98), ex.Message);
+        Assert.DoesNotContain(new string('y', 100), ex.Message);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(".")]
+    [InlineData("..")]
+    [InlineData("a/b")]
+    [InlineData("../admin")]
+    [InlineData("a\\b")]
+    [InlineData("a\u0001b")]
+    [InlineData("a\tb")]
+    [InlineData("a\u007fb")]
+    public async Task Unsafe_job_id_is_refused_before_any_poll_or_cancel(string id)
+    {
+        _server.Map("/reports/cancel", _ => new StubResponse(204, ""));
+        MapJob("/reports/status", System.Text.Json.JsonSerializer.Serialize(id), """{"state":"running"}""");
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => Read(Spec(Export(
+            ("status_path", "/reports/status"), CancelPath("/reports/{job_id}")))));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("http source 'stub.traffic': export start: export job id", ex.Message);
+        Assert.Contains("cannot be used in a URL path", ex.Message);
+        Assert.Single(_server.Requests);
+        Assert.Empty(Notices());
+    }
+
+    [Theory]
+    [InlineData("job-1.csv")]
+    [InlineData("...")]
+    [InlineData("a b")]
+    [InlineData("é")]
+    public async Task Ordinary_job_ids_are_accepted(string id)
+    {
+        _server.Map("/files/abc.csv", _ => File(Csv));
+        MapJob("/reports/status", System.Text.Json.JsonSerializer.Serialize(id),
+            """{"state":"done","result":{"url":"/files/abc.csv"}}""");
+
+        var (rows, _) = await Read(Spec(Export(("status_path", "/reports/status"))));
+
+        Assert.Equal(2, rows.Count);
     }
 
     [Fact]

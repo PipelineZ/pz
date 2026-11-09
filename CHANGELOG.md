@@ -138,17 +138,21 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   of `page`, `offset` or a query `cursor`, on the dataset or its `for_each` list; names compared decoded, in any case)
   is refused when the read is planned, before any request: each would overwrite the other on every page.
 - **http: export job clean-up and multi-file results.** `export.cancel_path` (with `{job_id}` exactly once, and the
-  engine bindings) and `export.cancel_method` (`delete` by default, or `post`, `put`, `patch`; no body) cancel a job the
-  read abandons: a job that timed out, reported a `failed` status, failed a poll, or whose result the read did not take
-  in full (a download or file failure, a cancelled run, an early stop). The cancel is sent at most once per job, through
-  the gate as non-idempotent (never retried), and is bounded by `timeout_seconds` even after the run was cancelled. Its
-  outcome is a notice, never an error: the read fails with its own error. A job whose start request failed has no id,
-  so it cannot be cancelled. `download_pointer` may now resolve to a list of URLs: each file is downloaded and read in
-  order, with the full single-file budgets (`max_download_mb`, the decompression cap, the idle timeout) and one
-  scratch file on disk at a time. Every URL is checked (a string, a valid URL, `allow_hosts`) before the first download.
-  An empty list reads as no rows, with a notice. Under `if_missing: empty`, several files give one notice that counts
-  the files with no matching member. There is still no checkpoint: a retry starts a new job. Without `cancel_path`, and
-  with a single URL, nothing changes.
+  engine bindings) and `export.cancel_method` (`delete` by default, or `post`, `put`, `patch` in any case; no body)
+  cancel a job that never became ready: one that timed out, reported a `failed` status, failed a poll, or whose run was
+  cancelled while it was still running. A job that reached its ready state is never cancelled, even when its download
+  or file read fails later. The cancel is sent at most once per job, through the gate as non-idempotent (never retried),
+  and waits at most 10 seconds (5 once the run is cancelled, by a node timeout or Ctrl-C, and never longer than
+  `timeout_seconds`). Only its status is read. Its outcome is a notice, never an error: the read fails with its own
+  error. A job whose start request failed has no id, so it cannot be cancelled. A job id that is empty, `.` or `..`, or
+  contains `/`, `\` or a control character is now a permanent error before any poll. `download_pointer` may now
+  resolve to a list of URLs: each file is downloaded and read in order, with the full single-file budgets
+  (`max_download_mb`, the decompression cap, the idle timeout) and one scratch file on disk at a time. Every URL is
+  checked (a string, a valid URL, `allow_hosts`) before the first download. A repeated URL is read once, with a notice
+  that counts the duplicates. More than 1000 entries is a permanent error. An empty list reads as no rows, with a
+  notice. A 404 on any file of several is an error. Under `if_missing: empty`, several files give one notice that
+  counts the files with no matching member. There is still no checkpoint: a retry starts a new job. Without
+  `cancel_path`, and with a single URL, nothing changes.
 - **http: proxy, client certificates and a private CA.** Two optional connection keys. `proxy` is `none` or a map
   `{url, user, password, bypass}`; `url` must be an `http://` URL (the TLS connection to the target still runs end to
   end through the proxy), it supports basic auth only, and credentials go in `user`/`password` (a `url` with userinfo is
@@ -222,8 +226,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   post`) starts the job, `status_path` is polled until `status_pointer` reaches a `ready` value (or fails on a `failed`
   one, quoting `message_pointer`), then the file is downloaded from `download_pointer` or `download_path`. Polling defaults to every 10 seconds
   (`poll_interval_seconds`) and gives up after 30 minutes (`timeout_minutes`). The start
-  request is never retried by the gate, so a 503 cannot create a duplicate job; a timeout is transient and the engine
-  retries with a new job. A pre-signed download URL on another host must be in `allow_hosts` and is fetched without
+  request is never retried by the gate, but a failed start (a `5xx`, a dropped connection) or a timeout is transient,
+  and the engine's node retry then begins a new job. Only a job whose id pz knew is cancelled, and only with
+  `export.cancel_path`. A pre-signed download URL on another host must be in `allow_hosts` and is fetched without
   credentials. `{job_id}` and the engine bindings expand inside `status_path` and `download_path`. File datasets take
   no checkpoint, `pagination`, `delta_pointer` or `max_pages`. In file mode, a redirect or download to another host
   carries no credentials and no connection headers, and its query is hidden in messages.
