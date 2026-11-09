@@ -51,6 +51,11 @@ public static class ConnectivityValidator
     {
         var errors = new List<PzError>();
 
+        // One validation pass is one scope for state a connector keeps past an open or a check (a refused
+        // sign-in): the pass's check and schema probes share it, so a refused credential is tried once per pass,
+        // and the next pass in a long-lived process (pz mcp) does not inherit it.
+        var pass = new ConnectorRunContext("validate-" + Guid.NewGuid().ToString("N"), Node: null);
+
         // One probe per connection, not one per direction. A connector
         // that implements both halves (postgres) would otherwise open the same database twice, and
         // report one unreachable host as two errors.
@@ -63,7 +68,7 @@ public static class ConnectivityValidator
             if (connector is not null)
             {
                 connectionProbes.Add(ProbeConnectionAsync(connector, registry.ConfigFor(connection), "connection",
-                    connection.Name, connection.FilePath, ct));
+                    connection.Name, connection.FilePath, pass, ct));
             }
         }
 
@@ -73,9 +78,6 @@ public static class ConnectivityValidator
         errors.AddRange(connectionResults.Select(r => r.Error).Where(e => e is not null)!);
         var notes = connectionResults.Select(r => r.Note).Where(n => n is not null).Cast<string>().ToList();
 
-        // One validation pass is one scope for state a connector keeps past an open (a refused sign-in): the
-        // pass's sources share it, and the next pass in a long-lived process (pz mcp) does not inherit it.
-        var pass = new ConnectorRunContext("validate-" + Guid.NewGuid().ToString("N"), Node: null);
         var fetchedSchemas = new Dictionary<string, string>(StringComparer.Ordinal);
         var extraColumns = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
         foreach (var source in project.Connections)
@@ -97,12 +99,14 @@ public static class ConnectivityValidator
     /// check's message, which becomes the detail of a <see cref="PzErrorCode.ConnectionCheckFailed"/>
     /// error below.</summary>
     private static async Task<(PzError? Error, string? Note)> ProbeConnectionAsync(IConnector connector,
-        ConnectorConfig config, string kind, string name, string filePath, CancellationToken ct)
+        ConnectorConfig config, string kind, string name, string filePath, ConnectorRunContext pass, CancellationToken ct)
     {
         try
         {
             var check = await WithTimeoutAsync(
-                t => connector.CheckConnectionAsync(config, t), ct).ConfigureAwait(false);
+                t => connector is IScopedConnectionCheck scoped
+                    ? scoped.CheckConnectionAsync(config, pass, t)
+                    : connector.CheckConnectionAsync(config, t), ct).ConfigureAwait(false);
             if (check.Ok)
             {
                 var note = string.IsNullOrEmpty(check.Message) ? null : $"{kind} '{name}': {check.Message}";

@@ -22,3 +22,15 @@ public interface IRunContextAware
 {
     void UseRunContext(ConnectorRunContext context);
 }
+
+/// <summary>Implemented by a connector whose connection check can run inside a run or validation pass, so state it
+/// keeps past the check (a refused sign-in) is shared with the sources and sinks of that same pass instead of being
+/// scoped to the check alone. The engine calls this instead of <see cref="IConnector.CheckConnectionAsync"/> when
+/// it has a context (<c>pz validate --connect</c> gives its check and its schema probes one). It must answer exactly
+/// as <see cref="IConnector.CheckConnectionAsync"/> would. Additive: a connector that does not implement it is
+/// checked as before.</summary>
+public interface IScopedConnectionCheck
+{
+    ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, ConnectorRunContext context,
+        CancellationToken ct);
+}

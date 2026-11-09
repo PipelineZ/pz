@@ -682,6 +682,23 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_check_and_a_read_in_one_validation_pass_share_one_login_attempt()
+    {
+        MapLogin(_ => new StubResponse(401, "{}"));
+        var pass = new ConnectorRunContext("validate-1", null);
+
+        var check = await new HttpConnector().CheckConnectionAsync(Config(_server.BaseUrl.ToString(), Session(), null), pass,
+            CancellationToken.None);
+        await using var source = Open(Session());
+        ((IRunContextAware)source).UseRunContext(pass);
+        var read = await FailsAsync(source);
+
+        Assert.False(check.Ok);
+        Assert.Contains("pz did not try again", read.Message);
+        Assert.Equal(1, Logins);
+    }
+
+    [Fact]
     public async Task A_refused_login_is_not_repeated_by_later_reads_or_other_nodes()
     {
         MapLogin(_ => new StubResponse(401, "{}"));
