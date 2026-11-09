@@ -26,85 +26,115 @@ public static class YamlMapper
         "a ${...} inside a { } or [ ] collection is read as the start of another map, so quote it: " +
         "write token: \"${X}\", not token: ${X} (or use block style, one key per line)";
 
-    /// <summary>For a parser failure with no position: true when some line holds an unquoted <c>${</c> after a
-    /// <c>{</c> or <c>[</c> on that same line, the shape of a variable written inside a flow collection.</summary>
+    /// <summary>For a parser failure with no position: true when any line holds a <c>${</c> written unquoted inside a
+    /// flow collection.</summary>
     private static bool UnquotedVariableAfterFlowOpener(string path)
-    {
-        string[] lines;
-        try
-        {
-            lines = File.ReadAllLines(path);
-        }
-        catch (IOException)
-        {
-            return false;
-        }
+        => ReadLines(path) is { } lines && FlowVariableLines(lines).Count > 0;
 
-        foreach (var text in lines)
-        {
-            for (var at = text.IndexOf("${", StringComparison.Ordinal); at >= 0;
-                 at = text.IndexOf("${", at + 2, StringComparison.Ordinal))
-            {
-                if ((at == 0 || text[at - 1] is not ('"' or '\'')) && HasFlowOpener(text, at))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    // A { or [ before `end` that opens a collection, not the { of an earlier ${.
-    private static bool HasFlowOpener(string text, int end)
-    {
-        for (var i = 0; i < end; i++)
-        {
-            if (text[i] == '[' || (text[i] == '{' && (i == 0 || text[i - 1] != '$')))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>True when a line the parser failed on holds an unquoted <c>${</c>: inside a flow collection
-    /// (<c>auth: { token: ${X} }</c>) the <c>{</c> of a variable reference opens a nested flow map, and the
-    /// parser's own message ("did not find expected ',' or '}'") never says why.</summary>
+    /// <summary>True when a line the parser failed on holds a <c>${</c> written unquoted inside a flow collection
+    /// (<c>auth: { token: ${X} }</c>): there the <c>{</c> of the reference opens a nested flow map, and the parser's
+    /// own message ("did not find expected ',' or '}'") never says why. A reference in block style, or inside
+    /// quotes, is not this mistake.</summary>
     private static bool UnquotedVariableInFlow(string path, YamlException ex)
     {
-        if (ex.Start.Line <= 0)
+        if (ex.Start.Line <= 0 || ReadLines(path) is not { } lines)
         {
             return false;
         }
 
-        string[] lines;
+        var first = ex.Start.Line;
+        var last = Math.Max(ex.Start.Line, ex.End.Line);
+        return FlowVariableLines(lines).Any(line => line >= first && line <= last);
+    }
+
+    private static string[]? ReadLines(string path)
+    {
         try
         {
-            lines = File.ReadAllLines(path);
+            return File.ReadAllLines(path);
         }
         catch (IOException)
         {
-            return false;
+            return null;
         }
+    }
 
-        var first = (int)Math.Max(1, ex.Start.Line);
-        var last = (int)Math.Min(lines.Length, Math.Max(ex.Start.Line, ex.End.Line));
-        for (var n = first; n <= last; n++)
+    /// <summary>The 1-based lines holding a <c>${</c> outside quotes while a flow collection (<c>{</c> or <c>[</c>
+    /// outside quotes, comments and references) is open. Quote and nesting state carry across lines, as a flow
+    /// collection or a double-quoted scalar may span several.</summary>
+    private static HashSet<long> FlowVariableLines(string[] lines)
+    {
+        var found = new HashSet<long>();
+        var depth = 0;
+        var inDouble = false;
+        var inSingle = false;
+        for (var n = 0; n < lines.Length; n++)
         {
-            var text = lines[n - 1];
-            for (var at = text.IndexOf("${", StringComparison.Ordinal); at >= 0;
-                 at = text.IndexOf("${", at + 2, StringComparison.Ordinal))
+            var text = lines[n];
+            for (var i = 0; i < text.Length; i++)
             {
-                if (at == 0 || text[at - 1] is not ('"' or '\''))
+                var c = text[i];
+                if (inDouble)
                 {
-                    return true;
+                    if (c == '\\')
+                    {
+                        i++;
+                    }
+                    else if (c == '"')
+                    {
+                        inDouble = false;
+                    }
+
+                    continue;
+                }
+
+                if (inSingle)
+                {
+                    if (c == '\'' && i + 1 < text.Length && text[i + 1] == '\'')
+                    {
+                        i++;
+                    }
+                    else if (c == '\'')
+                    {
+                        inSingle = false;
+                    }
+
+                    continue;
+                }
+
+                if (c == '#' && (i == 0 || char.IsWhiteSpace(text[i - 1])))
+                {
+                    break;
+                }
+
+                switch (c)
+                {
+                    case '"':
+                        inDouble = true;
+                        break;
+                    case '\'' when i == 0 || !char.IsLetterOrDigit(text[i - 1]):
+                        inSingle = true;
+                        break;
+                    case '$' when i + 1 < text.Length && text[i + 1] == '{':
+                        if (depth > 0)
+                        {
+                            found.Add(n + 1);
+                        }
+
+                        var close = text.IndexOf('}', i + 2);
+                        i = close < 0 ? text.Length : close;
+                        break;
+                    case '{' or '[':
+                        depth++;
+                        break;
+                    case '}' or ']':
+                        depth = Math.Max(0, depth - 1);
+                        break;
                 }
             }
         }
 
-        return false;
+        return found;
     }
 
     /// <summary>

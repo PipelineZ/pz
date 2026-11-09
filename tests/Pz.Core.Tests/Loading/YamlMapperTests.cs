@@ -88,6 +88,19 @@ public class YamlMapperTests
         Assert.Contains("quote it", error.Hint);
     }
 
+    [Theory]
+    [InlineData("api:\n\ttoken: ${API_TOKEN}\n")]
+    [InlineData("api:\n  auth: \"Bearer ${API_TOKEN}\" extra\n")]
+    [InlineData("api:\n  auth: 'Bearer ${API_TOKEN}' extra\n")]
+    [InlineData("api:\n  auth: { token: \"Bearer ${API_TOKEN}\" x }\n")]
+    public void A_variable_reference_outside_a_flow_collection_or_inside_quotes_keeps_the_plain_hint(string yaml)
+    {
+        LoadString(yaml, out var error);
+
+        Assert.NotNull(error);
+        Assert.DoesNotContain("${", error.Hint);
+    }
+
     [Fact]
     public void A_flow_collection_error_without_a_variable_keeps_the_plain_hint()
     {
