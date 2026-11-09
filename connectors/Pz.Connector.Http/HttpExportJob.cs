@@ -205,12 +205,13 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
                 // Escaping keeps a job id inside one path segment ('/' becomes %2F), but '.' and '..' stay dot
                 // segments that URL resolution removes, and a server or proxy that decodes %2F would see the same
                 // segments inside a slash-separated id, so a cancel or poll could reach another resource. Such an
-                // id, and one no path segment can carry faithfully, is refused before any request uses it.
+                // id, and one no path segment can carry faithfully, is refused before any request uses it. Empty
+                // segments are harmless once escaped, and standard base64 ids hold them ('//', a leading '/').
                 if (!UsableInPath(id))
                 {
                     throw new PzConnectorException(
                         $"{StartLabel}: export job id '{Shown(id)}' from {target} cannot be used in a URL path (it is " +
-                        "empty, has an empty, '.' or '..' segment between '/', or contains '\\' or a control character)", isTransient: false);
+                        "empty, has a '.' or '..' segment between '/', or contains '\\' or a control character)", isTransient: false);
                 }
 
                 return id;
@@ -429,7 +430,7 @@ internal sealed class HttpExportJob(HttpExportConfig export, HttpRequestSender s
 
     private static bool UsableInPath(string id)
         => id.Length > 0
-            && id.Split('/').All(segment => segment is not ("" or "." or ".."))
+            && id.Split('/').All(segment => segment is not ("." or ".."))
             && !id.Any(c => c == '\\' || char.IsControl(c));
 
     /// <summary>A job id as messages show it: on one line, and at most <see cref="MaxJobIdChars"/>

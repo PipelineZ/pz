@@ -451,10 +451,6 @@ public sealed class HttpExportJobTests : IAsyncLifetime
     [InlineData(".")]
     [InlineData("..")]
     [InlineData("../admin")]
-    [InlineData("a//b")]
-    [InlineData("/a")]
-    [InlineData("a/")]
-    [InlineData("/")]
     [InlineData("./x")]
     [InlineData("x/..")]
     [InlineData("x/./y")]
@@ -474,7 +470,7 @@ public sealed class HttpExportJobTests : IAsyncLifetime
         Assert.False(ex.IsTransient);
         Assert.Contains("http source 'stub.traffic': export start: export job id", ex.Message);
         Assert.Contains("cannot be used in a URL path", ex.Message);
-        Assert.Contains("an empty, '.' or '..' segment", ex.Message);
+        Assert.Contains("has a '.' or '..' segment", ex.Message);
         Assert.Single(_server.Requests);
         Assert.Empty(Notices());
     }
@@ -500,11 +496,31 @@ public sealed class HttpExportJobTests : IAsyncLifetime
             "(reported failure)"], Notices());
     }
 
+    [Fact]
+    public async Task Base64_job_id_with_empty_segments_polls_as_one_escaped_segment()
+    {
+        // Standard base64 ids can start with '/' or hold '//' (bytes FF FF); escaped, they stay one segment.
+        _server.Map("/files/abc.csv", _ => File(Csv));
+        _server.Map("/reports", _ => Json("""{"id":"//8A/w=="}""", 202));
+        _server.MapPrefix("/reports/", _ => Json("""{"state":"done","result":{"url":"/files/abc.csv"}}"""));
+
+        var (rows, _) = await Read(Spec(Export()));
+
+        Assert.Equal(2, rows.Count);
+        var poll = Assert.Single(_server.Requests, r => r.Url.AbsolutePath.StartsWith("/reports/", StringComparison.Ordinal));
+        Assert.Equal("/reports/%2F%2F8A%2Fw%3D%3D", poll.Url.AbsolutePath);
+    }
+
     [Theory]
     [InlineData("job-1.csv")]
     [InlineData("...")]
     [InlineData("a b")]
     [InlineData("é")]
+    [InlineData("a//b")]
+    [InlineData("/a")]
+    [InlineData("a/")]
+    [InlineData("/")]
+    [InlineData("//+/")]
     public async Task Ordinary_job_ids_are_accepted(string id)
     {
         _server.Map("/files/abc.csv", _ => File(Csv));

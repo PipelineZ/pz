@@ -146,9 +146,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   or file read fails later. The cancel is sent at most once per job, through the gate as non-idempotent (never retried),
   and waits at most 10 seconds (5 once the run is cancelled, by a node timeout or Ctrl-C, and never longer than
   `timeout_seconds`). Only its status is read. Its outcome is a notice, never an error: the read fails with its own
-  error. A job whose start request failed has no id, so it cannot be cancelled. A job id that is empty, has an empty, `.` or
-  `..` segment between `/` (such as `a//b`, `/a`, `./x`, `x/..`), or contains `\` or a control character is now a
-  permanent error before any poll. Slash-separated ids such as `projects/1/jobs/2` still work, inserted escaped as before. `download_pointer` may now
+  error. A job whose start request failed has no id, so it cannot be cancelled. An empty job id is a permanent error before any poll,
+  and so is one refused under Changed (a `.` or `..` segment, `\`, a control character). Slash-separated ids such as
+  `projects/1/jobs/2`, and base64 ids with `//` or a leading or trailing `/`, still work, inserted escaped as one path
+  segment as before. `download_pointer` may now
   resolve to a list of URLs: each file is downloaded and read in order, with the full single-file budgets
   (`max_download_mb`, the decompression cap, the idle timeout) and one scratch file on disk at a time. Every URL is
   checked (a string, a valid URL, `allow_hosts`) before the first download. A repeated URL is read once, with a notice
@@ -283,6 +284,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **JSON pointers follow RFC 6901 array indexes.** In http's `items`, `cursor_pointer`, pagination and `for_each`
   pointers, an array index with a leading zero, a sign or blanks (`/data/01`, `/data/+1`) no longer selects an
   element; it resolves to nothing, as the RFC says. `/data/0` and `/data/1` are unchanged.
+- **http: an export job id with a `.` or `..` segment, a `\` or a control character is refused.** A job id one of
+  whose `/`-separated segments is exactly `.` or `..` (such as `..`, `./x`, `x/..`) is now a permanent error before
+  any poll or cancel, because a server or proxy that decodes the escaped `/` would resolve those segments to another
+  resource; so is an id containing `\` or a control character. Such ids used to be sent escaped. Every other id,
+  empty segments and a leading or trailing `/` included, works as before.
 - **http: nanosecond watermarks are cut, not rounded.** A stored value with more than 7 fractional digits used to be
   rounded to the 100 ns tick, which could carry into the next second and skip that second's rows; the extra digits
   are now dropped.
