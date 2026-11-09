@@ -317,6 +317,38 @@ public class CachedTokenAuthenticatorTests
     }
 
     [Fact]
+    public async Task A_terminal_refusal_is_remembered_only_within_its_run()
+    {
+        // A long-lived process (pz mcp) runs many runs: a refusal in one must not block the next, which
+        // gets its own single attempt.
+        var key = Guid.NewGuid().ToString("N");
+        var run1a = new RefusingAuthenticator(new ManualClock(), key, terminal: true) { RunScope = "run-1" };
+        var run1b = new RefusingAuthenticator(new ManualClock(), key, terminal: true) { RunScope = "run-1" };
+        var run2a = new RefusingAuthenticator(new ManualClock(), key, terminal: true) { RunScope = "run-2" };
+        var run2b = new RefusingAuthenticator(new ManualClock(), key, terminal: true) { RunScope = "run-2" };
+
+        foreach (var auth in new[] { run1a, run1b, run2a, run2b })
+        {
+            await Assert.ThrowsAsync<PzConnectorException>(async () => await auth.ApplyAsync(Req(), default));
+        }
+
+        Assert.Equal([1, 0, 1, 0], new[] { run1a.Fetches, run1b.Fetches, run2a.Fetches, run2b.Fetches });
+    }
+
+    [Fact]
+    public async Task A_refusal_without_a_run_does_not_block_a_run()
+    {
+        var key = Guid.NewGuid().ToString("N");
+        var unscoped = new RefusingAuthenticator(new ManualClock(), key, terminal: true);
+        var inRun = new RefusingAuthenticator(new ManualClock(), key, terminal: true) { RunScope = "run-1" };
+
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await unscoped.ApplyAsync(Req(), default));
+        await Assert.ThrowsAsync<PzConnectorException>(async () => await inRun.ApplyAsync(Req(), default));
+
+        Assert.Equal(1, inRun.Fetches);
+    }
+
+    [Fact]
     public async Task A_permanent_failure_not_marked_terminal_is_tried_again()
     {
         var auth = new RefusingAuthenticator(new ManualClock(), Guid.NewGuid().ToString("N"), terminal: false);
