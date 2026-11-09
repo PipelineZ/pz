@@ -718,9 +718,10 @@ public static class PzErrorCode
     /// plain run directory name. Next step: fix the option the message names.</summary>
     public const string PreviewOptionsInvalid = "PZ0539";
 
-    /// <summary>A rule of an incremental dataset's own config skipped part or all of its read (an http
-    /// <c>on_status</c> rule with <c>action: skip</c>). The rows it did not read may exist, so the node fails and
-    /// nothing the read produced is committed: the watermark does not move and no sink receives it. Next step: narrow
+    /// <summary>A rule of the dataset's own config skipped part or all of a read that would commit a watermark or a
+    /// sync token (an incremental dataset, a feed or a CDC read; an http <c>on_status</c> rule with <c>action:
+    /// skip</c>). The rows it did not read may exist, so the node fails and nothing the read produced is committed:
+    /// neither the watermark nor the sync token moves and no sink receives it. Next step: narrow
     /// the rule (its <c>status</c> and <c>body_contains</c>), or use <c>action: permanent</c> or
     /// <c>transient</c>.</summary>
     public const string SkippedReadOnIncremental = "PZ0540";

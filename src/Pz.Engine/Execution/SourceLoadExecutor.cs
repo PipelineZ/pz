@@ -456,7 +456,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // sized to Environment.ProcessorCount -- a bounded I/O fan-out default, no YAML knob. Determinism
         // is unaffected: partitions already funnel through the one bounded channel into the one serialized
         // DuckDB ingest, so cross-partition row order was never guaranteed either way.
-        var skipGuard = new SkippedReadGuard(def);
+        var skipGuard = new SkippedReadGuard(def, shape);
         var pump = streamingSource is null
             ? PumpPartitionsAsync(partitions!, channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipGuard)
             : PumpStreamingPartitionsAsync(
@@ -805,7 +805,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         PzError? loadError;
         long rows;
         PartitionStats stats;
-        var skipGuard = new SkippedReadGuard(def);
+        var skipGuard = new SkippedReadGuard(def, shape);
         if (streamingSource is not null)
         {
             // A streaming source's identity contract is validated AT ADMISSION, one

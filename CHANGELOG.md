@@ -11,7 +11,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 - **http: `export.idempotency_key_header`.** Name the header an API reads an idempotency key from (for example
   `Idempotency-Key`), and the export start request carries one: a UUID-shaped key derived from the run id, the node
-  id, the partition and the start request itself (a `for_each` item's values are part of it), with no clock or
+  id, the partition and the start request itself (a `for_each` item's values are part of it when the start request
+  uses them; items whose start requests are identical share one key), with no clock or
   randomness in it. Every engine retry of the node in the same run sends the same key, also after midnight, since
   `{{ run_date }}` renders from the run's start, so an API that honours it returns the job a start answered `5xx`
   already queued, instead of leaving that job orphaned and starting another. Another run, node, item or request gets
@@ -31,12 +32,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   probes get, so a refused credential is tried once per pass instead of once for the check and again for the probe.
   The http connector and the PCP host implement it; `CheckRequest` carries the context over PCP.
 - **Connector ABI: `ISkippedReadPartition`** (additive). A partition whose read a rule of the dataset's own config
-  skipped, in whole or in part (an http `on_status` rule with `action: skip`), names the rule in `SkippedBy`. On an
-  incremental dataset in any form (first run and `--full-refresh` included) the engine fails the node with the new
-  permanent error **PZ0540**, naming the rule, and commits nothing the read produced: the watermark does not move, no
-  sink receives the rows, and no partition is recorded as done. It asks when a partition's read ends and before it
+  skipped, in whole or in part (an http `on_status` rule with `action: skip`), names the rule in `SkippedBy`. On any
+  node that would commit a watermark or a sync token (an incremental dataset, YAML or SQL-declared, first run and
+  `--full-refresh` included; a feed read, in or out of process; a CDC read) the engine fails the node with the new
+  permanent error **PZ0540**, naming the rule, and commits nothing the read produced: neither the watermark nor the
+  sync token moves, no sink receives the rows, and no partition is recorded as done. It asks when a partition's read ends and before it
   stores each checkpoint, so a checkpoint past a skip is never stored; a checkpointing partition must report the skip
-  no later than the first checkpoint it offers after it. On any other dataset a skip is a success, as before. A read
+  no later than the first checkpoint it offers after it. On a full read that commits neither, a skip is a success, as
+  before. A read
   that found no rows, or an http `on_missing: skip` 404, does not count as skipped. The http JSON, file and
   `for_each` partitions implement it. Over PCP, `ReadStatsResponse.skipped_by` carries the report from an
   out-of-process partition; a host that cannot read it (the call failed for any reason but `UNIMPLEMENTED`) fails the

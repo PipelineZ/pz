@@ -37,7 +37,7 @@ public sealed class SkippedReadTests : IAsyncLifetime
         try { Directory.Delete(_dir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
-    public enum Path_ { Channel, Streaming, PartitionMode, StreamingPartitionMode, Checkpointing }
+    public enum Path_ { Channel, Streaming, PartitionMode, StreamingPartitionMode, Checkpointing, Feed, FeedPartitionMode }
 
     private RunContext Ctx(SkippingConnector connector, bool fullRefresh = false)
     {
@@ -89,6 +89,22 @@ public sealed class SkippedReadTests : IAsyncLifetime
         }
     }
 
+    [Theory]
+    [InlineData(Path_.Feed)]
+    [InlineData(Path_.FeedPartitionMode)]
+    public async Task A_skipped_read_fails_a_feed_node_that_would_commit_a_sync_token(Path_ path)
+    {
+        // An auto dataset over a feed connector: the partition hands back a next token, and committing it after a
+        // skip would move the feed past rows never read.
+        var connector = new SkippingConnector(new InMemoryConnector(), path);
+
+        var result = await RunAsync(Node("feed", incremental: null), Ctx(connector));
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.SkippedReadOnIncremental, result.Error!.Code);
+        Assert.Null(result.SyncStateCandidate);
+    }
+
     [Fact]
     public async Task A_skipped_read_fails_a_windowed_first_run_and_a_full_refresh_too()
     {
@@ -129,6 +145,8 @@ public sealed class SkippedReadTests : IAsyncLifetime
             Path_.PartitionMode => ConnectorCapabilities.StablePartitionIds,
             Path_.StreamingPartitionMode => ConnectorCapabilities.StablePartitionIds | ConnectorCapabilities.StreamingPartitions,
             Path_.Checkpointing => ConnectorCapabilities.StablePartitionIds | ConnectorCapabilities.CheckpointableReads,
+            Path_.Feed => ConnectorCapabilities.SyncState,
+            Path_.FeedPartitionMode => ConnectorCapabilities.SyncState | ConnectorCapabilities.StablePartitionIds,
             _ => ConnectorCapabilities.None,
         };
 
@@ -147,8 +165,11 @@ public sealed class SkippedReadTests : IAsyncLifetime
             return new Source(await ((ISourceConnector)inner).OpenAsync(config, ct), path);
         }
 
-        private sealed class Source(ISource inner, Path_ path) : ISource, IStreamingSource
+        private sealed class Source(ISource inner, Path_ path) : ISource, IStreamingSource, INaturalReadShapeSource
         {
+            public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) =>
+                path is Path_.Feed or Path_.FeedPartitionMode ? NaturalReadShape.Feed : NaturalReadShape.Full;
+
             public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct) =>
                 inner.GetSchemaAsync(spec, ct);
 
@@ -174,9 +195,12 @@ public sealed class SkippedReadTests : IAsyncLifetime
                 }
             }
 
-            private IDatasetPartition Wrap(IDatasetPartition p, int i) => path == Path_.Checkpointing
-                ? new CheckpointingPartition(p, $"p{i}")
-                : new Partition(p, $"p{i}");
+            private IDatasetPartition Wrap(IDatasetPartition p, int i) => path switch
+            {
+                Path_.Checkpointing => new CheckpointingPartition(p, $"p{i}"),
+                Path_.Feed or Path_.FeedPartitionMode => new FeedPartition(p, $"p{i}"),
+                _ => new Partition(p, $"p{i}"),
+            };
 
             public ValueTask DisposeAsync() => inner.DisposeAsync();
         }
@@ -195,6 +219,16 @@ public sealed class SkippedReadTests : IAsyncLifetime
                 {
                     yield return batch;
                 }
+            }
+        }
+
+        /// <summary>A feed partition that skipped part of its read and still offers the next sync token.</summary>
+        private sealed class FeedPartition(IDatasetPartition inner, string id) : Partition(inner, id), ISyncStatePartition
+        {
+            public bool TryGetSyncStateCandidate(out string? candidate)
+            {
+                candidate = "next-token";
+                return true;
             }
         }
 

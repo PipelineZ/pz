@@ -5,11 +5,12 @@ namespace Pz.Connectors.Abstractions;
 /// answered, the answer said "no data here this time", and the partition yielded nothing for it instead of
 /// failing.
 ///
-/// <para>A skipped read is not an empty read: the rows it did not read may exist. On an incremental dataset (any
-/// form: a YAML <c>incremental:</c> block or a SQL-declared one, first run and <c>--full-refresh</c> included) the
+/// <para>A skipped read is not an empty read: the rows it did not read may exist. On any node that would commit a
+/// watermark or a sync token (an incremental dataset, YAML <c>incremental:</c> or SQL-declared, first run and
+/// <c>--full-refresh</c> included; a feed read that hands back a sync token, in or out of process; a CDC read) the
 /// engine therefore fails the node with PZ0540, naming <see cref="SkippedBy"/>, and commits nothing the read
-/// produced: the watermark neither advances nor holds on a partial read, and no sink receives it. On any other
-/// dataset the skip is a success.</para>
+/// produced: neither the watermark nor the sync token moves, and no sink receives the rows. On a full read that
+/// commits neither, the skip is a success.</para>
 ///
 /// <para>When the engine asks: once the partition's ReadAsync has finished, and, for an
 /// <see cref="ICheckpointingPartition"/>, before it stores each checkpoint. A checkpointing partition must therefore
