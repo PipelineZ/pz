@@ -1,6 +1,7 @@
 namespace Pz.Connectors.Toolkit.Paging;
 
-internal static class QueryString
+/// <summary>Query-string editing for request URLs.</summary>
+public static class QueryString
 {
     /// <summary>Sets or replaces one query parameter, RFC 3986-escaping name and value.</summary>
     public static Uri With(Uri uri, string name, string value)

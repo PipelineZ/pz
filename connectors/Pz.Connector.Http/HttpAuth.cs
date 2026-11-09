@@ -23,16 +23,16 @@ internal static class HttpAuth
         {
             case AuthResponseOutcome.TokenDiscarded:
                 throw new PzConnectorException(
-                    $"{label}: the API rejected the access token (HTTP 401); signing in again on retry",
+                    $"{label}: the API rejected the access token (HTTP {status}); signing in again on retry",
                     isTransient: true);
             case AuthResponseOutcome.FreshTokenRejected when authenticator is SessionAuthenticator:
                 throw new PzConnectorException(
-                    $"{label}: the API rejected a fresh session token (HTTP 401); check that auth.token_pointer " +
+                    $"{label}: the API rejected a fresh session token (HTTP {status}); check that auth.token_pointer " +
                     "picks the token from the login response and that auth.inject sends it the way this API expects",
                     isTransient: false);
             case AuthResponseOutcome.FreshTokenRejected:
                 throw new PzConnectorException(
-                    $"{label}: the API rejected a freshly issued token (HTTP 401); check that 'scope' names " +
+                    $"{label}: the API rejected a freshly issued token (HTTP {status}); check that 'scope' names " +
                     "this API and that the app has been granted access to it", isTransient: false);
         }
     }

@@ -142,7 +142,7 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
         Assert.Contains("auth.token_pointer is not a valid JSON pointer: 'token' (it must start with '/')", errors);
         Assert.Contains("auth.inject.prefix applies only with auth.inject.header", errors);
         Assert.Contains("auth needs exactly one of ttl (e.g. 30m) or expires_in_pointer (a JSON pointer to the lifetime in seconds)", errors);
-        Assert.Contains("auth.ttl must be a duration of at least 1s like 90s, 30m, 8h or 1d, got '5m2s'", errors);
+        Assert.Contains("auth.ttl must be a duration from 1s to 30d like 90s, 30m, 8h or 1d, got '5m2s'", errors);
         Assert.Equal(10, errors.Count);
     }
 
@@ -164,7 +164,7 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
     [InlineData("-5m")]
     [InlineData("30M")]
     public void A_ttl_outside_the_duration_grammar_or_under_a_second_is_refused(string ttl)
-        => Assert.Contains($"auth.ttl must be a duration of at least 1s like 90s, 30m, 8h or 1d, got '{ttl}'",
+        => Assert.Contains($"auth.ttl must be a duration from 1s to 30d like 90s, 30m, 8h or 1d, got '{ttl}'",
             Errors(Session(a => a["ttl"] = ttl)));
 
     [Fact]
@@ -472,7 +472,7 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
         Assert.False(ex.IsTransient);
         Assert.Contains($"HTTP {status}", ex.Message);
         Assert.Contains("auth.login", ex.Message);
-        Assert.Contains("lock", ex.Message);
+        Assert.Contains("one refused login per connection per run", ex.Message);
         Assert.DoesNotContain(Password, ex.Message);
         Assert.Equal(1, Logins);
         Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath == "/items");
@@ -602,5 +602,259 @@ public sealed class HttpSessionAuthTests : IAsyncLifetime
         Assert.False(check.Ok);
         Assert.Contains("allow_hosts", check.Message);
         Assert.Empty(_server.Requests);
+    }
+
+    // ---- fix round ----
+
+    [Fact]
+    public async Task A_refused_login_is_not_repeated_by_later_reads_or_other_nodes()
+    {
+        MapLogin(_ => new StubResponse(401, "{}"));
+        await using var first = Open(Session());
+        await using var second = Open(Session());
+
+        // Two nodes starting together, then a later read on each.
+        var together = await Task.WhenAll(FailsAsync(first), FailsAsync(second));
+        var later = await FailsAsync(first);
+
+        Assert.Equal(1, Logins);
+        Assert.All(together.Append(later), ex => Assert.False(ex.IsTransient));
+        Assert.Contains("pz did not try again", later.Message);
+        Assert.DoesNotContain(_server.Requests, r => r.Url.AbsolutePath == "/items");
+
+        // Another password is another credential, and it is tried.
+        MapLogin();
+        _server.Map("/items", _ => new StubResponse(200, """{"data":[]}"""));
+        await using var fixedSource = Open(Session(a => Login(a)["body"] = new Dictionary<string, object?> { ["user"] = "me", ["password"] = "new" }));
+        await ReadAsync(fixedSource).WaitAsync(Bound);
+        Assert.Equal(2, Logins);
+    }
+
+    [Fact]
+    public async Task A_login_that_failed_temporarily_is_tried_again()
+    {
+        MapLogin(n => n == 1 ? new StubResponse(503, "{}") : new StubResponse(200, """{"session":{"token":"ok"}}"""));
+        _server.Map("/items", _ => new StubResponse(200, """{"data":[]}"""));
+        await using var source = Open(Session());
+        Assert.True((await FailsAsync(source)).IsTransient);
+        await ReadAsync(source).WaitAsync(Bound);
+        Assert.Equal(2, Logins);
+    }
+
+    [Theory]
+    [InlineData("c:login")]
+    [InlineData("a:b:c")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("http:api.example.com/login")]
+    public void A_malformed_login_path_is_a_validation_error_not_a_crash(string path)
+    {
+        var errors = Errors(Session(a => Login(a)["path"] = path));
+        Assert.Contains($"auth.login.path '{path}' is not a valid path relative to base_url", errors);
+    }
+
+    [Fact]
+    public async Task Validate_lists_a_malformed_login_path_with_the_other_errors()
+    {
+        var auth = Session(a =>
+        {
+            Login(a)["path"] = "c:login";
+            a["ttl"] = "forever";
+        });
+        var result = await new HttpConnector().ValidateAsync(
+            Config("https://api.example.com/", auth, new() { ["timeout_seconds"] = -1 }), CancellationToken.None);
+
+        Assert.False(result.IsValid);
+        Assert.Equal(3, result.Errors.Count);
+        Assert.Contains("auth.login.path 'c:login' is not a valid path relative to base_url", result.Errors);
+        Assert.Contains(result.Errors, e => e.StartsWith("auth.ttl must be", StringComparison.Ordinal));
+        Assert.Contains(result.Errors, e => e.StartsWith("'timeout_seconds'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Ttl_is_bounded_to_thirty_days()
+    {
+        Assert.Equal(TimeSpan.FromDays(30), Options(Session(a => a["ttl"] = "30d")).Ttl);
+        Assert.Contains("auth.ttl must be a duration from 1s to 30d like 90s, 30m, 8h or 1d, got '31d'",
+            Errors(Session(a => a["ttl"] = "31d")));
+        Assert.Contains("auth.ttl must be a duration from 1s to 30d like 90s, 30m, 8h or 1d, got '5000000d'",
+            Errors(Session(a => a["ttl"] = "5000000d")));
+    }
+
+    [Theory]
+    [InlineData("""{"session":{"token":"a","token":"b"}}""")]
+    [InlineData("""{"session":{"token":"a"},"session":{"token":"b"}}""")]
+    public async Task A_login_response_with_duplicate_keys_is_permanent_and_names_the_pointer(string body)
+    {
+        MapLogin(_ => new StubResponse(200, body));
+        await using var source = Open(Session());
+        var ex = await FailsAsync(source);
+        Assert.False(ex.IsTransient);
+        Assert.Contains("auth.token_pointer '/session/token'", ex.Message);
+        Assert.Contains("duplicate keys", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_non_ascii_token_is_refused_for_a_header_and_accepted_for_a_query()
+    {
+        MapLogin(_ => new StubResponse(200, """{"session":{"token":"tök"}}"""));
+        _server.Map("/items", _ => new StubResponse(200, """{"data":[]}"""));
+
+        await using (var bearer = Open(Session()))
+        {
+            var ex = await FailsAsync(bearer);
+            Assert.False(ex.IsTransient);
+            Assert.Contains("auth.token_pointer", ex.Message);
+            Assert.Contains("printable ASCII", ex.Message);
+        }
+
+        await using var query = Open(Session(a => a["inject"] = new Dictionary<string, object?> { ["query"] = "sid" }));
+        await ReadAsync(query).WaitAsync(Bound);
+        Assert.Contains("sid=t%C3%B6k", Api.Url.Query, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_null_form_field_is_a_validation_error()
+        => Assert.Contains("auth.login.body.password is empty (null); a form field needs a value", Errors(Session(a =>
+        {
+            Login(a)["body_format"] = "form";
+            Login(a)["body"] = new Dictionary<string, object?> { ["user"] = "me", ["password"] = null };
+        })));
+
+    [Fact]
+    public async Task The_login_sends_the_connector_user_agent()
+    {
+        MapLogin();
+        _server.Map("/items", _ => new StubResponse(200, """{"data":[]}"""));
+        await using var source = Open(Session());
+        await ReadAsync(source).WaitAsync(Bound);
+        Assert.Equal("pz-http/0.1", _server.Requests.Single(r => r.Url.AbsolutePath == "/auth/login").Headers["User-Agent"]);
+    }
+
+    [Fact]
+    public void Reauth_status_is_validated()
+    {
+        Assert.Equal(new HashSet<int> { 401 }, Options(Session()).ReauthStatus);
+        Assert.Equal(new HashSet<int> { 401, 419, 440 },
+            Options(Session(a => a["reauth_status"] = new List<object?> { 401L, 419L, "440" })).ReauthStatus);
+
+        var errors = Errors(Session(a => a["reauth_status"] = new List<object?> { 500L, 407L, 429L, "x" }));
+        Assert.Contains("auth.reauth_status entries must be 4xx statuses other than 407 and 429, got '500'", errors);
+        Assert.Contains("auth.reauth_status entries must be 4xx statuses other than 407 and 429, got '407'", errors);
+        Assert.Contains("auth.reauth_status entries must be 4xx statuses other than 407 and 429, got '429'", errors);
+        Assert.Contains("auth.reauth_status entries must be 4xx statuses other than 407 and 429, got 'x'", errors);
+        Assert.Contains("auth.reauth_status must name at least one status", errors);
+        Assert.Equal(["auth.reauth_status must be a list of HTTP statuses, e.g. [401, 419, 440]"],
+            Errors(Session(a => a["reauth_status"] = 419L)));
+    }
+
+    [Theory]
+    [InlineData(419)]
+    [InlineData(440)]
+    public async Task A_reauth_status_on_a_session_that_worked_logs_in_again(int status)
+    {
+        MapLogin();
+        var calls = 0;
+        _server.Map("/items", _ => ++calls == 2 ? new StubResponse(status, "{}") : new StubResponse(200, """{"data":[{"id":1}]}"""));
+
+        await using var source = Open(Session(a => a["reauth_status"] = new List<object?> { 401L, 419L, 440L }));
+        await ReadAsync(source).WaitAsync(Bound);
+        var ex = await FailsAsync(source);
+        Assert.True(ex.IsTransient);
+        Assert.Contains($"HTTP {status}", ex.Message);
+        await ReadAsync(source).WaitAsync(Bound);
+
+        Assert.Equal(2, Logins);
+        Assert.Equal("Bearer sess2", Api.Headers["Authorization"]);
+    }
+
+    [Fact]
+    public async Task Without_reauth_status_a_403_on_a_session_that_worked_stays_permanent()
+    {
+        MapLogin();
+        var calls = 0;
+        _server.Map("/items", _ => ++calls == 2 ? new StubResponse(403, "{}") : new StubResponse(200, """{"data":[{"id":1}]}"""));
+
+        await using var source = Open(Session());
+        await ReadAsync(source).WaitAsync(Bound);
+        var ex = await FailsAsync(source);
+        Assert.False(ex.IsTransient);
+        Assert.Contains("HTTP 403", ex.Message);
+        Assert.Equal(1, Logins);
+    }
+
+    [Fact]
+    public async Task A_reauth_status_on_a_fresh_session_is_permanent_and_points_at_inject()
+    {
+        MapLogin();
+        _server.Map("/items", _ => new StubResponse(419, "{}"));
+
+        await using var source = Open(Session(a => a["reauth_status"] = new List<object?> { 419L }));
+        var ex = await FailsAsync(source);
+        Assert.False(ex.IsTransient);
+        Assert.Contains("(HTTP 419)", ex.Message);
+        Assert.Contains("auth.inject", ex.Message);
+    }
+
+    private static readonly Apache.Arrow.Schema SinkSchema = new(
+        [new Apache.Arrow.Field("id", Apache.Arrow.Types.Int64Type.Default, nullable: false)], null);
+
+    private async Task WriteOneAsync(ISink sink)
+    {
+        var spec = new OutputSpec("api", "out", "append", "fail_on_change", new Dictionary<string, object?> { ["path"] = "/out" });
+        await using var session = await sink.BeginWriteAsync(spec, SinkSchema, CancellationToken.None);
+        var builder = new ArrowBatchBuilder(SinkSchema);
+        builder.AppendRow([1L]);
+        using var batch = builder.Flush()!;
+        await session.WriteBatchAsync(batch, CancellationToken.None).AsTask().WaitAsync(Bound);
+    }
+
+    [Fact]
+    public async Task The_sink_writes_with_the_session_and_logs_in_again_after_a_401()
+    {
+        MapLogin();
+        var posts = 0;
+        _server.Map("/out", _ => ++posts == 2 ? new StubResponse(401, "{}") : new StubResponse(200, "{}"));
+        var errors = new List<string>();
+        await using var sink = new HttpSink(HttpConnectionConfig.Parse(
+            Config(_server.BaseUrl.ToString(), Session(a => a["inject"] = new Dictionary<string, object?> { ["header"] = "X-Session" })),
+            errors)!, _clock);
+        Assert.Empty(errors);
+
+        await WriteOneAsync(sink);
+        Assert.True((await Assert.ThrowsAsync<PzConnectorException>(() => WriteOneAsync(sink))).IsTransient);
+        await WriteOneAsync(sink);
+
+        Assert.Equal(2, Logins);
+        Assert.Equal(["sess1", "sess1", "sess2"],
+            _server.Requests.Where(r => r.Url.AbsolutePath == "/out").Select(r => r.Headers["X-Session"]));
+    }
+
+    [Fact]
+    public async Task A_parallel_for_each_read_shares_one_login_and_a_mid_read_401_logs_in_again_on_retry()
+    {
+        MapLogin();
+        _server.Map("/orders", _ => new StubResponse(200, """{"data":[{"id":"a"},{"id":"b"},{"id":"c"},{"id":"d"}]}"""));
+        _server.MapPrefix("/orders/", req => req.Url.AbsolutePath == "/orders/b/lines" && req.Headers["Authorization"] == "Bearer sess1"
+            ? new StubResponse(401, "{}")
+            : new StubResponse(200, """{"lines":[{"sku":"x"}]}"""));
+        var spec = Items(new()
+        {
+            ["path"] = "/orders/{{ item.id }}/lines",
+            ["items"] = "/lines",
+            ["for_each"] = new Dictionary<string, object?>
+            {
+                ["path"] = "/orders", ["items"] = "/data", ["concurrency"] = 4L,
+                ["fields"] = new Dictionary<string, object?> { ["id"] = "/id" },
+            },
+        });
+
+        await using var source = Open(Session());
+        // The list page succeeded with sess1, so the item's 401 is on a session that had worked: transient.
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(async () => await ReadAsync(source, spec).WaitAsync(Bound));
+        Assert.True(ex.IsTransient);
+        Assert.Equal(1, Logins);
+
+        Assert.Equal(4, await ReadAsync(source, spec).WaitAsync(Bound));
+        Assert.Equal(2, Logins);
     }
 }

@@ -9,6 +9,7 @@ using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Auth;
 using Pz.Connectors.Toolkit.Http;
 using Pz.Connectors.Toolkit.Json;
+using Pz.Connectors.Toolkit.Paging;
 
 namespace Pz.Connector.Http;
 
@@ -27,12 +28,20 @@ internal sealed record SessionOptions(
     string TokenPointer,
     SessionInject Inject,
     TimeSpan? Ttl,
-    string? ExpiresInPointer)
+    string? ExpiresInPointer,
+    IReadOnlySet<int> ReauthStatus,
+    Uri? BaseUrl)
 {
     /// <summary>The largest login response read; a session answer is a few hundred bytes.</summary>
     public const int MaxLoginResponseBytes = 1024 * 1024;
 
     private static readonly TimeSpan MinTtl = TimeSpan.FromSeconds(1);
+
+    /// <summary>The longest <c>ttl</c>: a session that outlives a month is a fixed credential in disguise.</summary>
+    public static readonly TimeSpan MaxTtl = TimeSpan.FromDays(30);
+
+    /// <summary>The statuses that mean "this session expired" when <c>reauth_status</c> is not set.</summary>
+    public static readonly IReadOnlySet<int> DefaultReauthStatus = new HashSet<int> { 401 };
 
     /// <summary>Parses the YAML <c>auth:</c> map. Every problem is appended to <paramref name="errors"/>; the
     /// result is null when any was found, or when <paramref name="baseUrl"/> is null and <c>login.path</c>
@@ -92,13 +101,13 @@ internal sealed record SessionOptions(
 
         if (ttlText is not null)
         {
-            if (TryParseDuration(ttlText, out var parsed) && parsed >= MinTtl)
+            if (TryParseDuration(ttlText, out var parsed) && parsed >= MinTtl && parsed <= MaxTtl)
             {
                 ttl = parsed;
             }
             else
             {
-                errors.Add($"auth.ttl must be a duration of at least 1s like 90s, 30m, 8h or 1d, got '{ttlText}'");
+                errors.Add($"auth.ttl must be a duration from 1s to 30d like 90s, 30m, 8h or 1d, got '{ttlText}'");
             }
         }
 
@@ -107,9 +116,49 @@ internal sealed record SessionOptions(
             Pointer(expiresPointer, "expires_in_pointer", errors);
         }
 
+        var reauth = ParseReauthStatus(auth, errors);
+
         return errors.Count > before || loginUrl is null
             ? null
-            : new SessionOptions(loginUrl, method, body, mediaType, headers, tokenPointer!, inject!, ttl, expiresPointer);
+            : new SessionOptions(loginUrl, method, body, mediaType, headers, tokenPointer!, inject!, ttl, expiresPointer, reauth,
+                baseUrl);
+    }
+
+    // Statuses that, on a session that had worked, mean it expired. 407 is the proxy's and 429 is throttling: neither
+    // is about the session.
+    private static IReadOnlySet<int> ParseReauthStatus(IReadOnlyDictionary<string, object?> auth, List<string> errors)
+    {
+        if (!auth.TryGetValue("reauth_status", out var raw) || raw is null)
+        {
+            return DefaultReauthStatus;
+        }
+
+        if (raw is string || YamlScalarText.NonScalarKind(raw) != "list")
+        {
+            errors.Add("auth.reauth_status must be a list of HTTP statuses, e.g. [401, 419, 440]");
+            return DefaultReauthStatus;
+        }
+
+        var statuses = new HashSet<int>();
+        foreach (var entry in (System.Collections.IEnumerable)raw)
+        {
+            if (int.TryParse(YamlScalarText.Of(entry), NumberStyles.None, CultureInfo.InvariantCulture, out var status)
+                && status is >= 400 and <= 499 and not 407 and not 429)
+            {
+                statuses.Add(status);
+            }
+            else
+            {
+                errors.Add($"auth.reauth_status entries must be 4xx statuses other than 407 and 429, got '{YamlScalarText.Of(entry)}'");
+            }
+        }
+
+        if (statuses.Count == 0)
+        {
+            errors.Add("auth.reauth_status must name at least one status");
+        }
+
+        return statuses;
     }
 
     private static Uri? ParseLoginUrl(IReadOnlyDictionary<string, object?> login, Uri? baseUrl, List<string> errors)
@@ -130,8 +179,20 @@ internal sealed record SessionOptions(
                 return null;
             }
 
+            if (baseUrl is null)
+            {
+                return null;
+            }
+
             // Resolved the way dataset paths are: against the slash-terminated base, so a base_url path prefix stays.
-            return baseUrl is null ? null : new Uri(baseUrl, path.TrimStart('/'));
+            // A scheme-like prefix ('c:login', 'javascript:x') either fails to resolve or leaves http(s): both are refused.
+            if (!Uri.TryCreate(baseUrl, path.TrimStart('/'), out var resolved) || resolved.Scheme is not ("http" or "https"))
+            {
+                errors.Add($"auth.login.path '{path}' is not a valid path relative to base_url");
+                return null;
+            }
+
+            return resolved;
         }
 
         if (!Uri.TryCreate(url, UriKind.Absolute, out var absolute) || absolute.Scheme is not ("http" or "https"))
@@ -226,7 +287,9 @@ internal sealed record SessionOptions(
             switch (value)
             {
                 case null:
-                    continue;
+                    // An empty ${VAR} arrives as null; dropping the field would turn it into a confusing refused login.
+                    errors.Add($"auth.login.body.{key} is empty (null); a form field needs a value");
+                    break;
                 case JsonValue v:
                     var scalar = v.TryGetValue<string>(out var s) ? s : v.ToJsonString();
                     pairs.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(scalar)}");
@@ -472,7 +535,10 @@ internal sealed record SessionOptions(
 }
 
 /// <summary>Signs in with the session login request and puts its token on every API request. A refused login
-/// (401/403) is permanent so the engine never repeats it against a lockout policy. Messages name the login
+/// (401/403) is permanent and remembered for the process under a fingerprint of the connection and the login
+/// (<see cref="CachedTokenAuthenticator.SignInKey"/>), so one run makes at most one refused login per connection
+/// however many nodes use it. A status in <c>reauth_status</c> on a session that had worked drops it, like a 401
+/// does for every token. Messages name the login
 /// endpoint's scheme://authority and the status only: the request body holds the password, and the response
 /// may echo it.</summary>
 internal sealed class SessionAuthenticator : CachedTokenAuthenticator
@@ -483,6 +549,7 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
     private readonly TimeProvider _time;
     private readonly HttpClient _http;
     private readonly string _endpoint;
+    private readonly string _signInKey;
 
     /// <param name="handler">The login transport (the connection's proxy and TLS); owned here. It must not
     /// follow redirects. Null builds the default handler, which follows none.</param>
@@ -501,7 +568,17 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
             Timeout = timeout,
             MaxResponseContentBufferSize = SessionOptions.MaxLoginResponseBytes,
         };
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd(HttpSource.UserAgent);
+        _signInKey = Fingerprint(
+            [
+                "session", options.BaseUrl?.AbsoluteUri, options.LoginUrl.AbsoluteUri, options.Method.Method, options.MediaType,
+                options.Body, .. options.Headers.SelectMany(h => new[] { h.Key, h.Value }),
+            ]);
     }
+
+    protected override string? SignInKey => _signInKey;
+
+    protected override bool IsTokenRejection(int status) => _options.ReauthStatus.Contains(status);
 
     private string Label => $"session login {_endpoint}";
 
@@ -519,7 +596,7 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
         var inject = _options.Inject;
         if (inject.Query is { } query)
         {
-            request.RequestUri = WithQuery(request.RequestUri!, query, token);
+            request.RequestUri = QueryString.With(request.RequestUri!, query, token);
         }
         else if (inject.Header is { } header)
         {
@@ -576,9 +653,10 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
     {
         if (status is 401 or 403)
         {
-            return new PzConnectorException(
-                $"{Label} was refused (HTTP {status}); check the credentials in auth.login. A refused login is not "
-                + "retried, so repeated attempts cannot lock the account", isTransient: false);
+            return Terminal(new PzConnectorException(
+                $"{Label} was refused (HTTP {status}); check the credentials in auth.login. pz makes one refused login "
+                + "per connection per run: later reads and nodes in this run fail without trying again",
+                isTransient: false));
         }
 
         if (status is >= 300 and < 400)
@@ -631,6 +709,21 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
 
     private FetchedToken Interpret(string body)
     {
+        try
+        {
+            return ReadToken(body);
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or FormatException)
+        {
+            // A JSON object with duplicate keys throws only when a property is read.
+            throw new PzConnectorException(
+                $"{Label}: the login response could not be read at auth.token_pointer '{_options.TokenPointer}' "
+                + "(duplicate keys or malformed JSON)", isTransient: false);
+        }
+    }
+
+    private FetchedToken ReadToken(string body)
+    {
         JsonNode? root;
         try
         {
@@ -665,6 +758,15 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
                 + "cannot be sent in a header or URL", isTransient: false);
         }
 
+        // A header carries printable ASCII only; a query parameter escapes anything else.
+        if (_options.Inject.Query is null && token.Any(c => c is < ' ' or > '~'))
+        {
+            throw new PzConnectorException(
+                $"{Label}: the token at auth.token_pointer '{_options.TokenPointer}' has characters outside printable "
+                + "ASCII, which a header cannot carry; check auth.token_pointer, or send it with auth.inject.query",
+                isTransient: false);
+        }
+
         var now = _time.GetUtcNow();
         if (_options.Ttl is { } ttl)
         {
@@ -697,16 +799,5 @@ internal sealed class SessionAuthenticator : CachedTokenAuthenticator
                 out var parsed) && double.IsFinite(parsed) => parsed,
             _ => null,
         };
-    }
-
-    /// <summary>Sets or replaces one query parameter, RFC 3986-escaping name and value.</summary>
-    private static Uri WithQuery(Uri uri, string name, string value)
-    {
-        var encodedName = Uri.EscapeDataString(name);
-        var pairs = uri.Query.TrimStart('?')
-            .Split('&', StringSplitOptions.RemoveEmptyEntries)
-            .Where(p => !p.StartsWith(encodedName + "=", StringComparison.Ordinal) && p != encodedName)
-            .Append($"{encodedName}={Uri.EscapeDataString(value)}");
-        return new UriBuilder(uri) { Query = string.Join('&', pairs) }.Uri;
     }
 }

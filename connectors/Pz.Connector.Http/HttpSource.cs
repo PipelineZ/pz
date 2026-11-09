@@ -63,6 +63,9 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
     internal static HttpClient CreateBareClient(HttpConnectionConfig connection)
         => NewClient(connection, withClientCertificate: false);
 
+    /// <summary>The User-Agent of every request the connector sends, the session login included.</summary>
+    internal const string UserAgent = "pz-http/0.1";
+
     private static HttpClient NewClient(HttpConnectionConfig connection, bool withClientCertificate)
     {
         var handler = HttpHandlerFactory.Create(connection, connection.Bound, withClientCertificate);
@@ -71,7 +74,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
             Timeout = connection.Timeout,
             MaxResponseContentBufferSize = connection.MaxResponseBytes,
         };
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("pz-http/0.1");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
         return client;
     }
 

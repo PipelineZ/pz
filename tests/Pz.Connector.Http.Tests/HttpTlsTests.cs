@@ -602,6 +602,22 @@ public sealed class HttpTlsTests : IDisposable
         Assert.Equal(new string?[] { _pki.Client.Thumbprint, _pki.Client.Thumbprint }, same.ClientCertificates.ToArray());
     }
 
+    [Fact]
+    public async Task Session_login_on_an_allow_hosts_host_gets_no_client_certificate()
+    {
+        await using var login = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), requestClientCertificate: true, respond: SessionOrRows);
+        await using var api = new TestTlsServer(_pki.Leaf, _pki.ServerChain(), requestClientCertificate: true);
+        var auth = ("auth", (object?)Map(("type", "session"),
+            ("login", Map(("url", new Uri(login.Url(), "login").ToString()), ("body", Map(("user", "u"))))),
+            ("token_pointer", "/token"), ("ttl", "30m")));
+
+        Assert.Equal(2, await ReadAsync(Config(api.Url(), Tls(client: Pfx()), null, auth,
+            ("allow_hosts", new List<object?> { "localhost" }))));
+        Assert.Equal(["POST /login HTTP/1.1"], login.Requests.ToArray());
+        Assert.Equal(new string?[] { null }, login.ClientCertificates.ToArray());
+        Assert.Equal(new string?[] { _pki.Client.Thumbprint }, api.ClientCertificates.ToArray());
+    }
+
     private sealed class ProbeOptions : ClientOptions
     {
     }
