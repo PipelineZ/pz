@@ -28,9 +28,17 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INaturalReadSha
     /// and any api-key-header authenticator ride along to whatever host the endpoint names, which
     /// turns one hostile 302 into credential exfiltration. Following them by hand is what makes the
     /// same-origin check in <see cref="HttpConnectionConfig.IsAllowedTarget"/> reachable at all.</summary>
+    /// <remarks>Responses are requested compressed (gzip/deflate/brotli) and unpacked by the handler:
+    /// JSON shrinks to 10–20% on the wire. The handler unpacks BEFORE HttpClient buffers the
+    /// content, so <see cref="HttpClient.MaxResponseContentBufferSize"/> ('max_response_mb') caps the
+    /// unpacked size — a small compressed response cannot expand past it.</remarks>
     internal static HttpClient CreateClient(HttpConnectionConfig connection)
     {
-        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+        };
         var client = new HttpClient(handler)
         {
             BaseAddress = connection.BaseUrl,
