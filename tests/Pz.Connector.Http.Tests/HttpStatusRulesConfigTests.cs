@@ -164,7 +164,7 @@ public class HttpStatusRulesConfigTests
     public void Skip_is_refused_on_incremental_datasets()
     {
         var skip = new List<object?> { Rule(("status", 400), ("action", "skip")) };
-        const string refused = "on_status[0]: action 'skip' is not allowed on an incremental dataset";
+        const string refused = "on_status[0]: action 'skip' is not allowed on a dataset that is or could be incremental";
 
         // An engine cursor, a raw cursor option, a watermark reference, a window_upper reference.
         Assert.Contains(refused, Message(Options(skip), cursor: "updated_at"));
@@ -242,7 +242,7 @@ public class HttpStatusRulesConfigTests
         }, cursor: "updated_at");
 
         Assert.Contains("for_each: on_status[1].status '99' is not a status", message);
-        Assert.Contains("for_each.on_status[0]: action 'skip' is not allowed on an incremental dataset", message);
+        Assert.Contains("for_each.on_status[0]: action 'skip' is not allowed on a dataset that is or could be incremental", message);
     }
 
     // --- connection retry_after ---
@@ -359,5 +359,57 @@ public class HttpStatusRulesConfigTests
             """{"base_url":"https://x","retry_after":{"header":"X-RateLimit-Reset","kind":"epoch"}}""")).IsValid);
         Assert.False(connection.Evaluate(JsonSerializer.Deserialize<JsonElement>(
             """{"base_url":"https://x","retry_after":{"header":"X-RateLimit-Reset"}}""")).IsValid);
+    }
+
+    // --- fix round: validation gaps ---
+
+    [Fact]
+    public void Skip_is_refused_with_a_columns_contract_because_a_SQL_declared_incremental_is_invisible()
+    {
+        // A SQL-declared incremental reaches the connector with no WatermarkCursor on its first run and
+        // under --full-refresh, so a contract (whose columns can be its cursor) counts as possibly incremental.
+        var message = Message(Options(new List<object?> { Rule(("status", 400), ("action", "skip")) },
+            ("columns", new Dictionary<string, string> { ["id"] = "bigint", ["updated_at"] = "timestamp" })));
+
+        Assert.Contains("on_status[0]: action 'skip' is not allowed on a dataset that is or could be incremental",
+            message);
+        Assert.Contains("a 'columns:' contract can carry the cursor of a SQL-declared incremental", message);
+    }
+
+    [Fact]
+    public void Skip_refusal_is_reported_together_with_the_rules_other_errors()
+    {
+        var message = Message(Options(new List<object?>
+        {
+            Rule(("status", 400), ("action", "skip"), ("retry_after", "5s")),
+        }), cursor: "updated_at");
+
+        Assert.Contains("on_status[0].retry_after only applies to action: transient", message);
+        Assert.Contains("on_status[0]: action 'skip' is not allowed on a dataset that is or could be incremental",
+            message);
+    }
+
+    [Fact]
+    public void List_skip_refusal_is_reported_together_with_a_sibling_error()
+    {
+        var message = Message(new Dictionary<string, object?>
+        {
+            ["path"] = "/orders/{{ item.id }}",
+            ["for_each"] = new Dictionary<string, object?>
+            {
+                ["path"] = "/orders",
+                ["fields"] = new Dictionary<string, object?> { ["id"] = "/id" },
+                ["on_status"] = new List<object?>
+                {
+                    Rule(("status", 404), ("action", "skip"), ("body_contains", "")),
+                    Rule(("status", 99), ("action", "permanent")),
+                },
+            },
+        }, cursor: "updated_at");
+
+        Assert.Contains("for_each: on_status[0].body_contains must be a non-empty string", message);
+        Assert.Contains("for_each: on_status[1].status '99' is not a status", message);
+        Assert.Contains("for_each.on_status[0]: action 'skip' is not allowed on a dataset that is or could be " +
+            "incremental", message);
     }
 }

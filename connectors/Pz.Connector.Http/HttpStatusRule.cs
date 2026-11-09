@@ -81,6 +81,32 @@ internal sealed record HttpStatusRule(string Label, IReadOnlySet<int> Codes, IRe
         return rules;
     }
 
+    /// <summary>The labels of the entries of a raw <c>on_status</c> list whose action is <c>skip</c>, whatever
+    /// else is wrong with them, so refusals that depend only on the action are reported in the same pass as
+    /// the rule's other errors.</summary>
+    public static List<string> SkipLabels(object? raw, string labelPrefix)
+    {
+        var labels = new List<string>();
+        if (raw is string or IReadOnlyDictionary<string, object?> || raw is not System.Collections.IEnumerable list)
+        {
+            return labels;
+        }
+
+        var index = 0;
+        foreach (var entry in list)
+        {
+            if (entry is IReadOnlyDictionary<string, object?> map
+                && YamlScalarText.Of(map.GetValueOrDefault("action")) == "skip")
+            {
+                labels.Add($"{labelPrefix}on_status[{index}]");
+            }
+
+            index++;
+        }
+
+        return labels;
+    }
+
     private static HttpStatusRule? Rule(object? entry, string name, string label, List<string> errors)
     {
         if (entry is not IReadOnlyDictionary<string, object?> map)
