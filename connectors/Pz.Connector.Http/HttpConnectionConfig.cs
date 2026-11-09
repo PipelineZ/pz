@@ -7,7 +7,7 @@ namespace Pz.Connector.Http;
 internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? Authenticator,
     IReadOnlyDictionary<string, string> Headers, string? CheckPath, TimeSpan Timeout,
     long MaxResponseBytes, IReadOnlyList<string> AllowedHosts,
-    Func<TimeProvider, IRequestAuthenticator>? AuthFactory = null, string? CertificatePathInProject = null,
+    Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? AuthFactory = null, string? CertificatePathInProject = null,
     IReadOnlyList<string>? AuthWarnings = null)
 {
     /// <summary>HttpClient's own default is 100 seconds — far too long for one page of JSON, and it
@@ -28,6 +28,9 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     public const long MaxDownloadMbCap = 1048576;
 
     public long MaxDownloadBytes { get; init; } = DefaultMaxDownloadBytes;
+
+    /// <summary>The 'proxy:' and 'tls:' options; <see cref="HttpTransportOptions.Default"/> when neither is set.</summary>
+    public HttpTransportOptions Transport { get; init; } = HttpTransportOptions.Default;
 
     /// <summary>Highest legal 'max_response_mb'. HttpClient.MaxResponseContentBufferSize refuses any
     /// value above int.MaxValue bytes (2147483647); 2048 MiB (2147483648 bytes) already overflows
@@ -96,8 +99,33 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// validation never creates a credential or touches the network. The caller owns the result's
     /// authenticator when it came from <see cref="AuthFactory"/> and disposes it if it is
     /// <see cref="IDisposable"/>.</summary>
-    public HttpConnectionConfig Bind(TimeProvider time)
-        => this with { Authenticator = AuthFactory?.Invoke(time) ?? Authenticator };
+    /// <remarks>Binding also loads the 'tls:' files into <see cref="Bound"/>, which the caller owns and
+    /// disposes with the clients built from this copy.</remarks>
+    public HttpConnectionConfig Bind(TimeProvider time) => Bind(time, BoundTransport.Load(Transport));
+
+    /// <summary>Binds with TLS material the caller already loaded; the authenticator gets the handler source
+    /// for its token endpoint. On success the caller keeps owning <paramref name="bound"/>; if binding throws
+    /// (anything), <paramref name="bound"/> is disposed before the exception propagates.</summary>
+    internal HttpConnectionConfig Bind(TimeProvider time, BoundTransport? bound)
+    {
+        try
+        {
+            return this with
+            {
+                Bound = bound,
+                Authenticator = AuthFactory?.Invoke(time, HttpHandlerFactory.TokenEndpointHandlers(this, bound)) ?? Authenticator,
+            };
+        }
+        catch
+        {
+            bound?.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>The loaded 'tls:' material of a bound copy; null before binding and when neither 'proxy'
+    /// nor 'tls' is set.</summary>
+    public BoundTransport? Bound { get; init; }
 
     /// <summary>Non-blocking validation diagnostics. Credentials (an 'auth:' block or an
     /// Authorization header) sent to a cleartext http base URL travel unencrypted; that is legal —
@@ -170,6 +198,9 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
             }
         }
 
+        var transport = HttpTransportOptions.Parse(config.Values, baseDir, errors);
+        var hasTransport = !transport.IsDefault;
+
         HttpAuth.Parsed auth = new(null, null, null);
         var authBlock = config.Values.TryGetValue("auth", out var a)
             ? a as IReadOnlyDictionary<string, object?>
@@ -180,7 +211,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
         }
         else
         {
-            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors);
+            auth = HttpAuth.Parse(authBlock, baseDir, timeout, errors, hasTransport);
         }
 
         var maxResponseBytes = DefaultMaxResponseBytes;
@@ -247,6 +278,7 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
                 timeout, maxResponseBytes, allowedHosts, auth.Factory, CertificateInProject(auth.CertificatePath, baseDir), auth.Warnings)
             {
                 MaxDownloadBytes = maxDownloadBytes,
+                Transport = transport,
             };
     }
 

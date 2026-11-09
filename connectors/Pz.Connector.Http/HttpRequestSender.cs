@@ -110,6 +110,12 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
                     $"({connection.MaxResponseBytes / (1024 * 1024)} MiB)", isTransient: false,
                     innerException: ex);
             }
+            catch (HttpRequestException ex) when (HttpHandlerFactory.Describe(ex, connection, sendUri) is { } failure)
+            {
+                throw new PzConnectorException(
+                    $"{prefix}: request to {Target(sent, sendUri, serverChosen)} failed: {failure.Detail}",
+                    failure.Transient, innerException: ex);
+            }
             catch (HttpRequestException ex)
             {
                 throw new PzConnectorException(
@@ -123,6 +129,16 @@ internal sealed class HttpRequestSender(HttpClient client, HttpClient bareClient
             }
 
             var redirectStatus = (int)response.StatusCode;
+            if (redirectStatus == 407)
+            {
+                // A proxy's answer to a plain-http request (an https one fails its tunnel instead): retrying
+                // with the same credentials cannot succeed.
+                response.Dispose();
+                throw new PzConnectorException(
+                    $"{prefix}: request to {Target(sent, sendUri, serverChosen)} failed: {HttpHandlerFactory.ProxyAuthenticationFailed}",
+                    isTransient: false);
+            }
+
             if (!IsRedirect(redirectStatus))
             {
                 try

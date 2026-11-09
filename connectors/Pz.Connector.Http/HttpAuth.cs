@@ -32,11 +32,12 @@ internal static class HttpAuth
 
     internal sealed record Parsed(
         IRequestAuthenticator? Static,
-        Func<TimeProvider, IRequestAuthenticator>? Factory,
+        Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? Factory,
         string? CertificatePath,
         IReadOnlyList<string>? Warnings = null);
 
-    internal static Parsed Parse(IReadOnlyDictionary<string, object?>? auth, string? baseDir, TimeSpan timeout, List<string> errors)
+    internal static Parsed Parse(IReadOnlyDictionary<string, object?>? auth, string? baseDir, TimeSpan timeout, List<string> errors,
+        bool hasTransport = false)
     {
         var none = new Parsed(null, null, null);
         if (auth is null || auth.Count == 0)
@@ -48,12 +49,13 @@ internal static class HttpAuth
         switch (type)
         {
             case AzureAd:
-                return AzureAdOptions.TryParse(auth, baseDir, errors) is { } azure
-                    ? new Parsed(null, time => azure.CreateAuthenticator(timeout, time), azure.CertificatePath, azure.Warnings())
+                return AzureAdOptions.TryParse(auth, baseDir, errors, hasTransport) is { } azure
+                    ? new Parsed(null, (time, handlers) => azure.CreateAuthenticator(timeout, time, handlers), azure.CertificatePath, azure.Warnings())
                     : none;
             case OAuth2ClientCredentials:
                 return OAuth2ClientCredentialsOptions.TryParse(auth, errors) is { } oauth
-                    ? new Parsed(null, time => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time), null)
+                    ? new Parsed(null, (time, handlers) => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time,
+                        handlers?.Invoke(oauth.TokenUrl)), null)
                     : none;
             case "api_key" or "bearer" or "basic":
                 if (!Authenticators.TryCreate(auth, out var authenticator, out var error))

@@ -154,6 +154,11 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
         {
             response = await client.SendAsync(request, ct).ConfigureAwait(false);
         }
+        catch (HttpRequestException ex) when (HttpHandlerFactory.Describe(ex, connection, request.RequestUri ?? uri) is { } failure)
+        {
+            throw new PzConnectorException($"{Label}: request to {safeUri} failed: {failure.Detail}",
+                failure.Transient, innerException: ex);
+        }
         catch (HttpRequestException ex)
         {
             throw new PzConnectorException($"{Label}: request to {safeUri} failed: {ex.Message}",
@@ -168,6 +173,12 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
         using (response)
         {
             var status = (int)response.StatusCode;
+            if (status == 407)
+            {
+                throw new PzConnectorException(
+                    $"{Label}: request to {safeUri} failed: {HttpHandlerFactory.ProxyAuthenticationFailed}", isTransient: false);
+            }
+
             HttpAuth.ThrowIfTokenRejected(connection.Authenticator, request, status, Label);
             if (response.IsSuccessStatusCode)
             {

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Authentication;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -169,12 +170,23 @@ public sealed class OAuth2ClientCredentialsAuthenticator : CachedTokenAuthentica
     private readonly string _endpoint;
 
     public OAuth2ClientCredentialsAuthenticator(OAuth2ClientCredentialsOptions options, TimeSpan timeout, TimeProvider time)
+        : this(options, timeout, time, handler: null)
+    {
+    }
+
+    /// <param name="handler">The transport for the token request (a proxy, extra trust anchors, a client
+    /// certificate); the authenticator owns and disposes it. It must not follow redirects, or the secret
+    /// could follow a Location. Null builds the default handler, which follows none.</param>
+    /// <remarks>A separate overload rather than an optional parameter, so code compiled against the
+    /// three-argument constructor keeps binding to it.</remarks>
+    public OAuth2ClientCredentialsAuthenticator(OAuth2ClientCredentialsOptions options, TimeSpan timeout, TimeProvider time,
+        HttpMessageHandler? handler)
         : base(time)
     {
         _options = options;
         _time = time;
         _endpoint = options.TokenUrl.GetComponents(UriComponents.SchemeAndServer, UriFormat.UriEscaped);
-        _http = new HttpClient(new SocketsHttpHandler { AllowAutoRedirect = false }) { Timeout = timeout };
+        _http = new HttpClient(handler ?? new SocketsHttpHandler { AllowAutoRedirect = false }) { Timeout = timeout };
     }
 
     public override void Dispose()
@@ -220,8 +232,31 @@ public sealed class OAuth2ClientCredentialsAuthenticator : CachedTokenAuthentica
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException && !ct.IsCancellationRequested)
         {
-            throw new PzConnectorException($"token endpoint {_endpoint} could not be reached ({ex.GetType().Name})", isTransient: true);
+            throw Unreachable(ex);
         }
+    }
+
+    // A TLS verdict (an AuthenticationException anywhere in the chain) and a proxy's explicit 407 do not
+    // change on retry, so they are permanent; plain I/O, even during a handshake, stays transient.
+    private PzConnectorException Unreachable(Exception ex)
+    {
+        for (var current = ex; current is not null; current = current.InnerException)
+        {
+            if (current is AuthenticationException)
+            {
+                return new PzConnectorException($"token endpoint {_endpoint}: TLS failed (check tls.ca_file / tls.client_certificate)",
+                    isTransient: false, innerException: ex);
+            }
+        }
+
+        if (ex is HttpRequestException { StatusCode: HttpStatusCode.ProxyAuthenticationRequired })
+        {
+            return new PzConnectorException($"token endpoint {_endpoint}: proxy authentication failed (check proxy.user/proxy.password)",
+                isTransient: false, innerException: ex);
+        }
+
+        return new PzConnectorException($"token endpoint {_endpoint} could not be reached ({ex.GetType().Name})",
+            isTransient: true, innerException: ex);
     }
 
     private FetchedToken Interpret(HttpResponseMessage response, string body)

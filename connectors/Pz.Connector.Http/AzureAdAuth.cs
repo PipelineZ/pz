@@ -3,6 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
 using Azure;
 using Azure.Core;
+using Azure.Core.Pipeline;
 using Azure.Identity;
 using Microsoft.Identity.Client;
 using Pz.Connectors.Abstractions;
@@ -27,7 +28,7 @@ internal sealed record AzureAdOptions(
 
     /// <summary>Parses the YAML <c>auth:</c> map. Every problem is appended to <paramref name="errors"/>;
     /// the result is null when any was found.</summary>
-    public static AzureAdOptions? TryParse(IReadOnlyDictionary<string, object?> auth, string? baseDir, List<string> errors)
+    public static AzureAdOptions? TryParse(IReadOnlyDictionary<string, object?> auth, string? baseDir, List<string> errors, bool hasTransport = false)
     {
         var before = errors.Count;
         var refused = new HashSet<string>();
@@ -52,6 +53,11 @@ internal sealed record AzureAdOptions(
         else if (method is not null && !Methods.Contains(method))
         {
             errors.Add($"auth.method must be one of: {string.Join(", ", Methods)}");
+        }
+
+        if (method == "credential_chain" && hasTransport)
+        {
+            errors.Add("auth.method credential_chain cannot use proxy or tls: its developer-tool credentials run outside pz");
         }
 
         var scope = Text("scope");
@@ -100,7 +106,7 @@ internal sealed record AzureAdOptions(
 
         return errors.Count > before
             ? null
-            : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(ExpandHome(certificate), baseDir), password, scope!, authority);
+            : new AzureAdOptions(method!, tenantId, clientId, secret, ProjectRelativePath.Resolve(HomePath.Expand(certificate), baseDir), password, scope!, authority);
     }
 
     // The credential library accepts exactly ASCII letters, ASCII digits, '-' and '.' (so GUIDs, domains and the
@@ -108,20 +114,6 @@ internal sealed record AzureAdOptions(
     // reads tenant_id; the other methods never hand it to the library.
     private static bool IsValidTenantId(string tenantId)
         => tenantId.All(c => c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '-' or '.');
-
-    // Neither the shared project-relative resolver nor the credential library expands '~', so a home-relative
-    // certificate path would never be found.
-    private static string? ExpandHome(string? path)
-    {
-        if (path is null || path[0] != '~'
-            || (path.Length > 1 && path[1] != Path.DirectorySeparatorChar && path[1] != Path.AltDirectorySeparatorChar))
-        {
-            return path;
-        }
-
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return home.Length == 0 ? path : Path.Combine(home, path[1..].TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-    }
 
     /// <summary>Non-blocking <c>pz validate</c> diagnostics for these options.</summary>
     public IReadOnlyList<string> Warnings()
@@ -131,8 +123,12 @@ internal sealed record AzureAdOptions(
                 + "'<resource>/.default' form, e.g. 'https://graph.microsoft.com/.default'"];
 
     /// <summary>The options every credential is built from. Connectors never retry internally (the engine retries
-    /// the transient exception), and a black-holed authority must fail within the connection timeout.</summary>
-    internal TokenCredentialOptions CreateCredentialOptions(TimeSpan timeout)
+    /// the transient exception), and a black-holed authority must fail within the connection timeout.
+    /// <paramref name="handlers"/> (the connection's 'proxy'/'tls' handler source, null without either) becomes
+    /// service_principal's transport only. managed_identity talks to a local endpoint that a proxy must not see
+    /// (169.254.169.254 is link-local), and credential_chain runs developer tools outside pz, which validation
+    /// already refuses together with 'proxy'/'tls'.</summary>
+    internal TokenCredentialOptions CreateCredentialOptions(TimeSpan timeout, Func<Uri, HttpMessageHandler>? handlers = null)
     {
         TokenCredentialOptions options = Method switch
         {
@@ -150,16 +146,24 @@ internal sealed record AzureAdOptions(
 
         options.Retry.MaxRetries = 0;
         options.Retry.NetworkTimeout = timeout;
+        if (handlers is not null && Method == "service_principal")
+        {
+            options.Transport = new HttpClientTransport(handlers(AuthorityHost ?? AzureAuthorityHosts.AzurePublicCloud));
+        }
+
         return options;
     }
 
     /// <summary>Builds the Azure.Identity credential. <paramref name="owned"/> is the loaded certificate
     /// (null unless a password-protected certificate was loaded); the caller disposes it with the credential.
-    /// When construction is refused it is already disposed and a <see cref="PzConnectorException"/> is thrown.</summary>
-    public TokenCredential CreateCredential(TimeSpan timeout, out IDisposable? owned)
+    /// When construction is refused it is already disposed and a <see cref="PzConnectorException"/> is thrown.
+    /// A transport built from <paramref name="handlers"/> is owned the same way.</summary>
+    public TokenCredential CreateCredential(TimeSpan timeout, out IDisposable? owned,
+        Func<Uri, HttpMessageHandler>? handlers = null)
     {
-        owned = null;
-        var options = CreateCredentialOptions(timeout);
+        var options = CreateCredentialOptions(timeout, handlers);
+        // Only a transport built from the handler source is owned; the library's shared default never is.
+        owned = handlers is not null && Method == "service_principal" ? options.Transport as IDisposable : null;
         try
         {
             switch (options)
@@ -172,7 +176,7 @@ internal sealed record AzureAdOptions(
                     }
 
                     var certificate = LoadProtectedCertificate(path, pfxPassword);
-                    owned = certificate;
+                    owned = owned is null ? certificate : new DisposeBoth(certificate, owned);
                     return new ClientCertificateCredential(TenantId, ClientId, certificate, certOptions);
                 case ClientSecretCredentialOptions secretOptions:
                     return new ClientSecretCredential(TenantId, ClientId, ClientSecret, secretOptions);
@@ -182,21 +186,28 @@ internal sealed record AzureAdOptions(
                     return new DefaultAzureCredential((DefaultAzureCredentialOptions)options);
             }
         }
-        catch (ArgumentException)
+        catch (Exception ex)
         {
-            // The library's text can echo the refused settings; only the auth block is named. A loaded
-            // certificate is released here because the caller never receives a credential to own it.
+            // The caller never receives a credential to own them, so a loaded certificate and a transport
+            // built above are released here, whatever refused construction.
             owned?.Dispose();
-            throw new PzConnectorException(
-                "azure_ad: the credential could not be created from the auth settings (check tenant_id, client_id and authority_host)",
-                isTransient: false);
+            if (ex is ArgumentException)
+            {
+                // The library's text can echo the refused settings; only the auth block is named.
+                throw new PzConnectorException(
+                    "azure_ad: the credential could not be created from the auth settings (check tenant_id, client_id and authority_host)",
+                    isTransient: false);
+            }
+
+            throw;
         }
     }
 
     /// <summary>The authenticator for these options; it owns and disposes any certificate it loaded.</summary>
-    public AzureAdAuthenticator CreateAuthenticator(TimeSpan timeout, TimeProvider time)
+    public AzureAdAuthenticator CreateAuthenticator(TimeSpan timeout, TimeProvider time,
+        Func<Uri, HttpMessageHandler>? handlers = null)
     {
-        var credential = CreateCredential(timeout, out var owned);
+        var credential = CreateCredential(timeout, out var owned, handlers);
         return new AzureAdAuthenticator(credential, Scope, Method, time, owned);
     }
 

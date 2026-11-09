@@ -110,7 +110,7 @@ public class AzureAdAuthTests
             Auth(("method", "service_principal"), ("scope", Scope), ("tenant_id", "t"), ("client_id", "c"),
                 ("certificate_path", configured)),
             "/proj");
-        Assert.Equal(rest.Length == 0 ? home : Path.Combine(home, rest), o.CertificatePath);
+        Assert.Equal(Path.GetFullPath(Path.Combine(home, rest)), o.CertificatePath);
     }
 
     private static TokenCredential Create(AzureAdOptions o)

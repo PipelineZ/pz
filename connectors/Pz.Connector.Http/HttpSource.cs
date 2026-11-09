@@ -23,9 +23,12 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
         _connection = connection.Bind(time);
         _ownsAuthenticator = connection.AuthFactory is not null;
         _time = time;
-        _client = CreateClient(connection);
-        _bareClient = CreateBareClient(connection);
+        _client = CreateClient(_connection);
+        _bareClient = CreateBareClient(_connection);
     }
+
+    /// <summary>The bound connection: its authenticator and TLS material live as long as this source.</summary>
+    internal HttpConnectionConfig Connection => _connection;
 
     /// <summary>Redirects are followed by <see cref="HttpRequestSender"/> itself, not by the handler.
     /// HttpClient's automatic redirect strips only the <c>Authorization</c> header when the target
@@ -36,10 +39,13 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
     /// <remarks>Responses are requested compressed (gzip/deflate/brotli) and unpacked by the handler:
     /// JSON shrinks to 10–20% on the wire. The handler unpacks BEFORE HttpClient buffers the
     /// content, so <see cref="HttpClient.MaxResponseContentBufferSize"/> ('max_response_mb') caps the
-    /// unpacked size — a small compressed response cannot expand past it.</remarks>
+    /// unpacked size — a small compressed response cannot expand past it.
+    /// <paramref name="connection"/> must be bound when it sets 'proxy' or 'tls': the handler takes
+    /// the loaded material from <see cref="HttpConnectionConfig.Bound"/>. This client presents the client
+    /// certificate.</remarks>
     internal static HttpClient CreateClient(HttpConnectionConfig connection)
     {
-        var client = CreateBareClient(connection);
+        var client = NewClient(connection, withClientCertificate: true);
         client.BaseAddress = connection.BaseUrl;
         foreach (var (name, value) in connection.Headers)
         {
@@ -52,14 +58,14 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
     /// <summary>The client for requests to a host other than <c>base_url</c>'s origin: the same handler
     /// settings, timeout, buffer cap and user agent as <see cref="CreateClient"/>, but none of the
     /// connection's <c>headers:</c> (commonly where an API key lives) and no base address, so every
-    /// request names its absolute target.</summary>
+    /// request names its absolute target. It never presents the client certificate: that identifies pz to
+    /// the API, not to a host the endpoint chose.</summary>
     internal static HttpClient CreateBareClient(HttpConnectionConfig connection)
+        => NewClient(connection, withClientCertificate: false);
+
+    private static HttpClient NewClient(HttpConnectionConfig connection, bool withClientCertificate)
     {
-        var handler = new HttpClientHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = System.Net.DecompressionMethods.All,
-        };
+        var handler = HttpHandlerFactory.Create(connection, connection.Bound, withClientCertificate);
         var client = new HttpClient(handler)
         {
             Timeout = connection.Timeout,
@@ -130,6 +136,7 @@ internal sealed class HttpSource : ISource, IOperationGateAware, INoticeAware, I
             (_connection.Authenticator as IDisposable)?.Dispose();
         }
 
+        _connection.Bound?.Dispose();
         return ValueTask.CompletedTask;
     }
 }

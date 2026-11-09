@@ -24,8 +24,11 @@ internal sealed class HttpSink : ISink, IOperationGateAware
         _connection = connection.Bind(time);
         _ownsAuthenticator = connection.AuthFactory is not null;
         _time = time;
-        _client = HttpSource.CreateClient(connection);
+        _client = HttpSource.CreateClient(_connection);
     }
+
+    /// <summary>The bound connection: its authenticator and TLS material live as long as this sink.</summary>
+    internal HttpConnectionConfig Connection => _connection;
 
     public AbortSemantics AbortSemantics => AbortSemantics.None;
 
@@ -80,6 +83,7 @@ internal sealed class HttpSink : ISink, IOperationGateAware
             (_connection.Authenticator as IDisposable)?.Dispose();
         }
 
+        _connection.Bound?.Dispose();
         return ValueTask.CompletedTask;
     }
 }

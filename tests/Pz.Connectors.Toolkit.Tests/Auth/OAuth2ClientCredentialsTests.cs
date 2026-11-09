@@ -1,3 +1,5 @@
+using System.Net;
+using System.Security.Authentication;
 using System.Text;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit;
@@ -363,6 +365,102 @@ public class OAuth2ClientCredentialsTests
             var ex = await FailureAsync(server);
             Assert.DoesNotContain(Secret, ex.Message);
             Assert.DoesNotContain(Convert.ToBase64String(Encoding.UTF8.GetBytes($"my-id:{Secret}")), ex.Message);
+        }
+    }
+
+    /// <summary>Answers every request from <paramref name="respond"/> and records what it was sent.</summary>
+    private sealed class RecordingHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        public List<(HttpMethod Method, Uri? Url)> Requests { get; } = [];
+
+        public bool Disposed { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            Requests.Add((request.Method, request.RequestUri));
+            return Task.FromResult(respond(request));
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Disposed = true;
+            base.Dispose(disposing);
+        }
+    }
+
+    private static readonly Uri HandlerTokenUrl = new("https://login.example.test/tenant/token");
+
+    private static async Task<PzConnectorException> HandlerFailureAsync(Exception thrown)
+    {
+        using var auth = new OAuth2ClientCredentialsAuthenticator(Parse(Block(HandlerTokenUrl.ToString())),
+            TimeSpan.FromSeconds(10), new ManualClock(), new RecordingHandler(_ => throw thrown));
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.example.test/items");
+        return await Assert.ThrowsAsync<PzConnectorException>(
+            async () => await auth.ApplyAsync(request, CancellationToken.None).AsTask().WaitAsync(Timeout));
+    }
+
+    [Fact]
+    public async Task Custom_handler_is_used()
+    {
+        var handler = new RecordingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"access_token":"tok","token_type":"Bearer"}"""),
+        });
+        using (var auth = new OAuth2ClientCredentialsAuthenticator(Parse(Block(HandlerTokenUrl.ToString())),
+            TimeSpan.FromSeconds(10), new ManualClock(), handler))
+        {
+            using var api = new HttpRequestMessage(HttpMethod.Get, "https://api.example.test/items");
+            await auth.ApplyAsync(api, CancellationToken.None).AsTask().WaitAsync(Timeout);
+            Assert.Equal("Bearer tok", api.Headers.Authorization!.ToString());
+        }
+
+        Assert.Equal((HttpMethod.Post, HandlerTokenUrl), Assert.Single(handler.Requests));
+        Assert.True(handler.Disposed, "the authenticator owns the handler it is given");
+    }
+
+    [Fact]
+    public async Task Tls_failure_is_permanent_with_inner()
+    {
+        var thrown = new HttpRequestException(HttpRequestError.SecureConnectionError, "ssl",
+            new AuthenticationException("The remote certificate is invalid"));
+        var ex = await HandlerFailureAsync(thrown);
+        Assert.False(ex.IsTransient);
+        Assert.Equal("token endpoint https://login.example.test: TLS failed (check tls.ca_file / tls.client_certificate)", ex.Message);
+        Assert.Same(thrown, ex.InnerException);
+    }
+
+    [Fact]
+    public async Task Proxy_407_is_permanent_with_inner()
+    {
+        foreach (var thrown in new[]
+        {
+            new HttpRequestException(HttpRequestError.ProxyTunnelError, "tunnel", null, HttpStatusCode.ProxyAuthenticationRequired),
+            new HttpRequestException("407", null, HttpStatusCode.ProxyAuthenticationRequired),
+        })
+        {
+            var ex = await HandlerFailureAsync(thrown);
+            Assert.False(ex.IsTransient);
+            Assert.Equal("token endpoint https://login.example.test: proxy authentication failed (check proxy.user/proxy.password)", ex.Message);
+            Assert.Same(thrown, ex.InnerException);
+        }
+    }
+
+    [Fact]
+    public async Task Other_network_failure_stays_transient()
+    {
+        foreach (var thrown in new Exception[]
+        {
+            new HttpRequestException(HttpRequestError.ConnectionError, "refused", new IOException("refused")),
+            // A reset during the handshake is I/O, not a TLS verdict.
+            new HttpRequestException(HttpRequestError.SecureConnectionError, "ssl", new IOException("reset")),
+            new HttpRequestException(HttpRequestError.ProxyTunnelError, "tunnel", null, HttpStatusCode.BadGateway),
+            new IOException("reset"),
+        })
+        {
+            var ex = await HandlerFailureAsync(thrown);
+            Assert.True(ex.IsTransient);
+            Assert.Equal($"token endpoint https://login.example.test could not be reached ({thrown.GetType().Name})", ex.Message);
+            Assert.Same(thrown, ex.InnerException);
         }
     }
 }
