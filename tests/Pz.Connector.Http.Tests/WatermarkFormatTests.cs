@@ -214,7 +214,12 @@ public class WatermarkFormatTests
 
     // Samoa skipped 2011-12-30 entirely. Windows' zone data does not carry that history, so the two tests
     // that depend on the skipped day run only where the OS data has it.
-    private static void SkipUnlessApiaSkipsADay() =>
-        Skip.IfNot(Zone("Pacific/Apia").IsInvalidTime(new DateTime(2011, 12, 30, 12, 0, 0, DateTimeKind.Unspecified)),
-            "this OS's time zone data does not include Samoa's skipped 2011-12-30");
+    private static void SkipUnlessApiaSkipsADay()
+    {
+        // The switch happened at 2011-12-30T10:00Z, from UTC-10 to UTC+14: a 24-hour jump in offset.
+        var apia = Zone("Pacific/Apia");
+        var jump = apia.GetUtcOffset(new DateTimeOffset(2011, 12, 30, 11, 0, 0, TimeSpan.Zero))
+            - apia.GetUtcOffset(new DateTimeOffset(2011, 12, 30, 9, 0, 0, TimeSpan.Zero));
+        Skip.IfNot(jump >= TimeSpan.FromHours(23), "this OS's time zone data does not include Samoa's skipped 2011-12-30");
+    }
 }
