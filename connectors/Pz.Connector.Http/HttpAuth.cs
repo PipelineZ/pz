@@ -32,7 +32,7 @@ internal static class HttpAuth
 
     internal sealed record Parsed(
         IRequestAuthenticator? Static,
-        Func<TimeProvider, IRequestAuthenticator>? Factory,
+        Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? Factory,
         string? CertificatePath,
         IReadOnlyList<string>? Warnings = null);
 
@@ -50,11 +50,11 @@ internal static class HttpAuth
         {
             case AzureAd:
                 return AzureAdOptions.TryParse(auth, baseDir, errors, hasTransport) is { } azure
-                    ? new Parsed(null, time => azure.CreateAuthenticator(timeout, time), azure.CertificatePath, azure.Warnings())
+                    ? new Parsed(null, (time, handlers) => azure.CreateAuthenticator(timeout, time, handlers), azure.CertificatePath, azure.Warnings())
                     : none;
             case OAuth2ClientCredentials:
                 return OAuth2ClientCredentialsOptions.TryParse(auth, errors) is { } oauth
-                    ? new Parsed(null, time => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time), null)
+                    ? new Parsed(null, (time, _) => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time), null)
                     : none;
             case "api_key" or "bearer" or "basic":
                 if (!Authenticators.TryCreate(auth, out var authenticator, out var error))

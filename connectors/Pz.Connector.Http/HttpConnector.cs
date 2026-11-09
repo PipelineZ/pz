@@ -187,20 +187,32 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             return new ConnectionCheck(false, string.Join("; ", errors));
         }
 
+        // The 'tls:' files load first: their errors name the setting and are not sign-in failures.
+        BoundTransport? transport;
+        try
+        {
+            transport = BoundTransport.Load(connection.Transport);
+        }
+        catch (PzConnectorException ex)
+        {
+            return new ConnectionCheck(false, ex.Message);
+        }
+
         // Binding builds the credential (and loads a certificate), so its failures are sign-in failures too.
         HttpConnectionConfig bound;
         try
         {
-            bound = connection.Bind(TimeProvider.System);
+            bound = connection.Bind(TimeProvider.System, transport);
         }
         catch (PzConnectorException ex)
         {
+            transport?.Dispose();
             return new ConnectionCheck(false, "sign-in failed: " + ex.Message);
         }
 
         try
         {
-            using var client = HttpSource.CreateClient(connection);
+            using var client = HttpSource.CreateClient(bound);
             // Resolve check_path the same way dataset paths resolve (HttpFirstRequest.Build):
             // a relative segment against the slash-terminated base, not root-relative to the host —
             // otherwise a base_url path prefix (e.g. '/api/v2') is silently dropped.
@@ -237,6 +249,11 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 }
 
                 var status = (int)response.StatusCode;
+                if (status == 407)
+                {
+                    return new ConnectionCheck(false, $"GET {target}: {HttpHandlerFactory.ProxyAuthenticationFailed}");
+                }
+
                 if (status is not (301 or 302 or 303 or 307 or 308))
                 {
                     return new ConnectionCheck(false, $"GET {target} returned HTTP {status}");
@@ -266,7 +283,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         }
         catch (HttpRequestException ex)
         {
-            return new ConnectionCheck(false, $"could not reach '{connection.BaseUrl}': {ex.Message}");
+            var detail = HttpHandlerFactory.Describe(ex, connection.Transport)?.Detail ?? ex.Message;
+            return new ConnectionCheck(false, $"could not reach '{connection.BaseUrl}': {detail}");
         }
         catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
         {
@@ -281,6 +299,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             {
                 (bound.Authenticator as IDisposable)?.Dispose();
             }
+
+            transport?.Dispose();
         }
     }
 

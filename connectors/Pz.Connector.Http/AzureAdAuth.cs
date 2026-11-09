@@ -3,6 +3,7 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.RegularExpressions;
 using Azure;
 using Azure.Core;
+using Azure.Core.Pipeline;
 using Azure.Identity;
 using Microsoft.Identity.Client;
 using Pz.Connectors.Abstractions;
@@ -122,8 +123,12 @@ internal sealed record AzureAdOptions(
                 + "'<resource>/.default' form, e.g. 'https://graph.microsoft.com/.default'"];
 
     /// <summary>The options every credential is built from. Connectors never retry internally (the engine retries
-    /// the transient exception), and a black-holed authority must fail within the connection timeout.</summary>
-    internal TokenCredentialOptions CreateCredentialOptions(TimeSpan timeout)
+    /// the transient exception), and a black-holed authority must fail within the connection timeout.
+    /// <paramref name="handlers"/> (the connection's 'proxy'/'tls' handler source, null without either) becomes
+    /// service_principal's transport only. managed_identity talks to a local endpoint that a proxy must not see
+    /// (169.254.169.254 is link-local), and credential_chain runs developer tools outside pz, which validation
+    /// already refuses together with 'proxy'/'tls'.</summary>
+    internal TokenCredentialOptions CreateCredentialOptions(TimeSpan timeout, Func<Uri, HttpMessageHandler>? handlers = null)
     {
         TokenCredentialOptions options = Method switch
         {
@@ -141,16 +146,24 @@ internal sealed record AzureAdOptions(
 
         options.Retry.MaxRetries = 0;
         options.Retry.NetworkTimeout = timeout;
+        if (handlers is not null && Method == "service_principal")
+        {
+            options.Transport = new HttpClientTransport(handlers(AuthorityHost ?? AzureAuthorityHosts.AzurePublicCloud));
+        }
+
         return options;
     }
 
     /// <summary>Builds the Azure.Identity credential. <paramref name="owned"/> is the loaded certificate
     /// (null unless a password-protected certificate was loaded); the caller disposes it with the credential.
-    /// When construction is refused it is already disposed and a <see cref="PzConnectorException"/> is thrown.</summary>
-    public TokenCredential CreateCredential(TimeSpan timeout, out IDisposable? owned)
+    /// When construction is refused it is already disposed and a <see cref="PzConnectorException"/> is thrown.
+    /// A transport built from <paramref name="handlers"/> is owned the same way.</summary>
+    public TokenCredential CreateCredential(TimeSpan timeout, out IDisposable? owned,
+        Func<Uri, HttpMessageHandler>? handlers = null)
     {
-        owned = null;
-        var options = CreateCredentialOptions(timeout);
+        var options = CreateCredentialOptions(timeout, handlers);
+        // Only a transport built from the handler source is owned; the library's shared default never is.
+        owned = handlers is not null && Method == "service_principal" ? options.Transport as IDisposable : null;
         try
         {
             switch (options)
@@ -163,7 +176,7 @@ internal sealed record AzureAdOptions(
                     }
 
                     var certificate = LoadProtectedCertificate(path, pfxPassword);
-                    owned = certificate;
+                    owned = owned is null ? certificate : new DisposeBoth(certificate, owned);
                     return new ClientCertificateCredential(TenantId, ClientId, certificate, certOptions);
                 case ClientSecretCredentialOptions secretOptions:
                     return new ClientSecretCredential(TenantId, ClientId, ClientSecret, secretOptions);
@@ -172,6 +185,12 @@ internal sealed record AzureAdOptions(
                 default:
                     return new DefaultAzureCredential((DefaultAzureCredentialOptions)options);
             }
+        }
+        catch (PzConnectorException)
+        {
+            // A certificate that would not load: the transport built above is released with it.
+            owned?.Dispose();
+            throw;
         }
         catch (ArgumentException)
         {
@@ -185,9 +204,10 @@ internal sealed record AzureAdOptions(
     }
 
     /// <summary>The authenticator for these options; it owns and disposes any certificate it loaded.</summary>
-    public AzureAdAuthenticator CreateAuthenticator(TimeSpan timeout, TimeProvider time)
+    public AzureAdAuthenticator CreateAuthenticator(TimeSpan timeout, TimeProvider time,
+        Func<Uri, HttpMessageHandler>? handlers = null)
     {
-        var credential = CreateCredential(timeout, out var owned);
+        var credential = CreateCredential(timeout, out var owned, handlers);
         return new AzureAdAuthenticator(credential, Scope, Method, time, owned);
     }
 
@@ -212,6 +232,15 @@ internal sealed record AzureAdOptions(
                 + "a password-protected certificate must be PKCS#12 or an encrypted PEM)",
                 isTransient: false);
         }
+    }
+}
+
+internal sealed class DisposeBoth(IDisposable first, IDisposable second) : IDisposable
+{
+    public void Dispose()
+    {
+        first.Dispose();
+        second.Dispose();
     }
 }
 

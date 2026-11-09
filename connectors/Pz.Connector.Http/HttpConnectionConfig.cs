@@ -7,7 +7,7 @@ namespace Pz.Connector.Http;
 internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? Authenticator,
     IReadOnlyDictionary<string, string> Headers, string? CheckPath, TimeSpan Timeout,
     long MaxResponseBytes, IReadOnlyList<string> AllowedHosts,
-    Func<TimeProvider, IRequestAuthenticator>? AuthFactory = null, string? CertificatePathInProject = null,
+    Func<TimeProvider, Func<Uri, HttpMessageHandler>?, IRequestAuthenticator>? AuthFactory = null, string? CertificatePathInProject = null,
     IReadOnlyList<string>? AuthWarnings = null)
 {
     /// <summary>HttpClient's own default is 100 seconds — far too long for one page of JSON, and it
@@ -99,8 +99,34 @@ internal sealed record HttpConnectionConfig(Uri BaseUrl, IRequestAuthenticator? 
     /// validation never creates a credential or touches the network. The caller owns the result's
     /// authenticator when it came from <see cref="AuthFactory"/> and disposes it if it is
     /// <see cref="IDisposable"/>.</summary>
+    /// <remarks>Binding also loads the 'tls:' files into <see cref="Bound"/>, which the caller owns and
+    /// disposes with the clients built from this copy.</remarks>
     public HttpConnectionConfig Bind(TimeProvider time)
-        => this with { Authenticator = AuthFactory?.Invoke(time) ?? Authenticator };
+    {
+        var bound = BoundTransport.Load(Transport);
+        try
+        {
+            return Bind(time, bound);
+        }
+        catch
+        {
+            bound?.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>Binds with TLS material the caller already loaded (and keeps owning); the authenticator
+    /// gets the handler source for its token endpoint.</summary>
+    internal HttpConnectionConfig Bind(TimeProvider time, BoundTransport? bound)
+        => this with
+        {
+            Bound = bound,
+            Authenticator = AuthFactory?.Invoke(time, HttpHandlerFactory.TokenEndpointHandlers(this, bound)) ?? Authenticator,
+        };
+
+    /// <summary>The loaded 'tls:' material of a bound copy; null before binding and when neither 'proxy'
+    /// nor 'tls' is set.</summary>
+    public BoundTransport? Bound { get; init; }
 
     /// <summary>Non-blocking validation diagnostics. Credentials (an 'auth:' block or an
     /// Authorization header) sent to a cleartext http base URL travel unencrypted; that is legal —

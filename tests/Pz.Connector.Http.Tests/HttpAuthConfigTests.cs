@@ -245,7 +245,7 @@ public class HttpAuthConfigTests
         var errors = new List<string>();
         var connection = HttpConnectionConfig.Parse(Config("https://api.example.com", auth), errors)! with
         {
-            AuthFactory = time => new AzureAdOptions(
+            AuthFactory = (time, _) => new AzureAdOptions(
                 "service_principal", "bad tenant!", "c", "s", null, null, "api://x/.default", null)
                 .CreateAuthenticator(TimeSpan.FromSeconds(5), time),
         };
