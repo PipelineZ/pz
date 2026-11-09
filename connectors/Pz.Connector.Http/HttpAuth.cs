@@ -10,6 +10,7 @@ internal static class HttpAuth
 {
     private const string AzureAd = "azure_ad";
     private const string OAuth2ClientCredentials = "oauth2_client_credentials";
+    private const string OAuth2RefreshToken = "oauth2_refresh_token";
 
     /// <summary>Reports a final response to the authenticator and turns a rejected token into the
     /// exception the engine acts on: a token that was accepted before is discarded and the retry signs
@@ -57,6 +58,11 @@ internal static class HttpAuth
                     ? new Parsed(null, (time, handlers) => new OAuth2ClientCredentialsAuthenticator(oauth, timeout, time,
                         handlers?.Invoke(oauth.TokenUrl)), null)
                     : none;
+            case OAuth2RefreshToken:
+                return OAuth2RefreshTokenOptions.TryParse(auth, errors) is { } refresh
+                    ? new Parsed(null, (time, handlers) => new OAuth2RefreshTokenAuthenticator(refresh, timeout, time,
+                        handlers?.Invoke(refresh.TokenUrl)), null)
+                    : none;
             case "api_key" or "bearer" or "basic":
                 if (!Authenticators.TryCreate(auth, out var authenticator, out var error))
                 {
@@ -66,7 +72,7 @@ internal static class HttpAuth
 
                 return new Parsed(authenticator, null, null);
             default:
-                errors.Add($"unknown auth type '{type}' (accepted: api_key, bearer, basic, {AzureAd}, {OAuth2ClientCredentials})");
+                errors.Add($"unknown auth type '{type}' (accepted: api_key, bearer, basic, {AzureAd}, {OAuth2ClientCredentials}, {OAuth2RefreshToken})");
                 return none;
         }
     }

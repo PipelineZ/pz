@@ -36,7 +36,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
             "base_url": { "type": "string" },
             "check_path": { "type": "string" },
             "auth": { "type": "object", "properties": {
-                "type": { "enum": ["api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials"] },
+                "type": { "enum": ["api_key", "bearer", "basic", "azure_ad", "oauth2_client_credentials", "oauth2_refresh_token"] },
                 "token": { "type": "string" }, "user": { "type": "string" },
                 "password": { "type": "string" }, "key": { "type": "string" },
                 "header": { "type": "string" }, "param": { "type": "string" },
@@ -47,6 +47,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "certificate_password": { "type": "string", "writeOnly": true },
                 "scope": { "type": "string" }, "authority_host": { "type": "string" },
                 "token_url": { "type": "string" },
+                "refresh_token": { "type": "string", "writeOnly": true },
                 "client_auth": { "enum": ["body", "basic"] },
                 "params": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } } },
                 "required": ["type"], "additionalProperties": false },
