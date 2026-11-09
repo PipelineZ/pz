@@ -231,6 +231,17 @@ public class HttpItemColumnsTests
         Assert.Equal("""{"order_id":"o1","n":5}""", row[3]);
     }
 
+    [Fact]
+    public async Task Raw_pz_item_writes_every_declared_field()
+    {
+        // A fixed key set for downstream SQL: a field the list record lacks is JSON null, not absent.
+        var item = Item("""{"order_id":"o1","n":12.50,"gone":null}""", "order_id", "n", "gone", "absent");
+
+        var (rows, _) = await ReadPages(ItemOptions(["order_id", "n", "gone", "absent"]), item, """[{"qty":1}]""");
+
+        Assert.Equal("""{"order_id":"o1","n":12.50,"gone":null,"absent":null}""", Assert.Single(rows)[3]);
+    }
+
     [Theory]
     [InlineData("csv")]
     [InlineData("json")]
@@ -278,6 +289,18 @@ public class HttpItemColumnsTests
         var rows = await ReadFile("csv", options, item, "name,id\na,1\nb,2\n");
 
         Assert.Equal([[1, 77L, "a"], [2, 77L, "b"]], rows);
+    }
+
+    [Fact]
+    public async Task Csv_header_every_contract_column_from_item()
+    {
+        var options = FileOptions("csv", ["order_id", "n"],
+            columns: new() { ["order_id"] = "varchar", ["n"] = "bigint" });
+        var item = Item("""{"order_id":"o1","n":42}""", "order_id", "n");
+
+        var rows = await ReadFile("csv", options, item, "qty,other\n1,a\n2,b\n3,c\n");
+
+        Assert.Equal([["o1", 42L], ["o1", 42L], ["o1", 42L]], rows);
     }
 
     [Fact]
@@ -374,6 +397,7 @@ public class HttpItemColumnsTests
     public void Constant_columns_batch_owns_old_arrays()
     {
         var allocator = new Pz.Connectors.Abstractions.Memory.PooledNativeAllocator();
+        var constantAllocator = new Pz.Connectors.Abstractions.Memory.PooledNativeAllocator();
         var ids = new Int32Array.Builder().Append(1).Append(2).Build(allocator);
         var old = new RecordBatch(new Schema([new Field("id", Apache.Arrow.Types.Int32Type.Default, true)], null),
             [ids], 2);
@@ -384,14 +408,16 @@ public class HttpItemColumnsTests
             new Field("src", Apache.Arrow.Types.StringType.Default, true),
         ], null);
 
-        using (var batch = FileOutput.WithConstantColumns(old, target, [(0, 7L), (2, "a.csv")]))
+        using (var batch = FileOutput.WithConstantColumns(old, target, [(0, 7L), (2, "a.csv")], constantAllocator))
         {
             Assert.Same(target, batch.Schema);
             Assert.Same(ids, batch.Column(1));
             Assert.Equal([7L, 7L], new[] { FileReaderRows.Value(batch.Column(0), 0), FileReaderRows.Value(batch.Column(0), 1) });
             Assert.Equal("a.csv", FileReaderRows.Value(batch.Column(2), 1));
+            Assert.True(constantAllocator.RentedBytes > 0);
         }
 
         Assert.Equal(0, allocator.RentedBytes);
+        Assert.Equal(0, constantAllocator.RentedBytes);
     }
 }

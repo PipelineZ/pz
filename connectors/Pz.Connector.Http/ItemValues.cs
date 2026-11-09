@@ -48,17 +48,15 @@ internal sealed record ItemValues(IReadOnlyList<string> Order, IReadOnlyDictiona
             : ContractProjector.ConvertScalar(node, typeName, name, context);
     }
 
-    /// <summary>A JSON object of the resolved fields in declaration order; a missing field is absent.</summary>
+    /// <summary>A JSON object of every declared field in declaration order, so downstream SQL sees one key
+    /// set on every row: a field the list record lacks is JSON null.</summary>
     public string ToJsonString()
     {
         var obj = new JsonObject();
         foreach (var name in Order)
         {
-            if (Fields.TryGetValue(name, out var node))
-            {
-                // A node has one parent: the list record keeps its own.
-                obj[name] = node?.DeepClone();
-            }
+            // A node has one parent: the list record keeps its own.
+            obj[name] = Fields.TryGetValue(name, out var node) ? node?.DeepClone() : null;
         }
 
         return obj.ToJsonString();
