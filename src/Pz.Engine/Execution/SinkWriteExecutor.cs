@@ -24,7 +24,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
             var error = new PzError(PzErrorCode.ConnectorNotInstalled,
                 $"connector '{def.Sink.Connector}' is not installed", def.Sink.FilePath, null,
                 "run 'pz restore'");
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, error);
+            return NodeResult.Failed(node, error);
         }
 
         var relation = StagingNames.ForSinkInput(def.Output.Input);
@@ -94,7 +94,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     def.Sink.FilePath, null,
                     "coalesce or filter out the null merge keys in the pipeline (a null key can't identify a " +
                     "target row), or use write.strategy: append with duplicates: accept if duplicates are acceptable");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nullMergeKeyError);
+                return NodeResult.Failed(node, nullMergeKeyError);
             }
 
             // Duplicate merge keys within one staged batch collapse to a
@@ -230,7 +230,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     def.Sink.FilePath, null,
                     "on_delete: delete|soft requires the merge keys to flow unchanged from the cdc dataset " +
                     "(rename them in the pipeline's upsert view only)");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, missingKeyError);
+                return NodeResult.Failed(node, missingKeyError);
             }
 
             var nullPredicate = string.Join(" or ", def.Output.Keys.Select(k => ArrowInterop.QuoteQualified(k) + " is null"));
@@ -244,7 +244,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     def.Sink.FilePath, null,
                     "on_delete: delete|soft requires the merge keys to flow unchanged from the cdc dataset " +
                     "(rename them in the pipeline's upsert view only)");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nullKeyError);
+                return NodeResult.Failed(node, nullKeyError);
             }
         }
 

@@ -36,7 +36,7 @@ public sealed class PipelineExecutor : INodeExecutor
                     $"pipeline '{node.Name}': stored watermark for '{sub.SourceName}.{sub.Dataset}' has cursor type " +
                     $"'{stored.TypeName}' but the declared cursor type is '{sub.CursorType}'",
                     def.FilePath, null, "run with --full-refresh, or align columns: with the stored watermark's type");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, error);
+                return NodeResult.Failed(node, error);
             }
 
             var literal = stored is null ? "NULL" : CursorLiterals.Typed(stored.TypeName, stored.Value);

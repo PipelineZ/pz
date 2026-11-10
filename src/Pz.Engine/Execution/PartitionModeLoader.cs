@@ -120,10 +120,11 @@ internal static class PartitionModeLoader
     /// already-succeeded entries after each admission so it never grows unbounded over a
     /// millions-of-partitions source. A sync dataset can never reach here — the planner already
     /// refuses a streaming + sync combination (<see cref="PzErrorCode.SyncPartitionedReadConflict"/>),
-    /// so there is no done-skip exception to plumb through this path.</summary>
+    /// so there is no done-skip exception to plumb through this path. No partial prior copy is applied up
+    /// front for a lazily planned stream, so <see cref="PartitionStats.Reused"/> is always 0 here.</summary>
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadStreamingAsync(
         DagNode node, RunContext ctx, IAsyncEnumerable<IDatasetPartition> stream, Schema schema,
-        string mainTable, string? windowLower, string? windowUpper, long reusedCount, SourceDatasetDef def,
+        string mainTable, string? windowLower, string? windowUpper, SourceDatasetDef def,
         CancellationToken ct, SkippedReadGuard? skipGuard = null)
     {
         var duck = ctx.Duck;
@@ -247,7 +248,7 @@ internal static class PartitionModeLoader
             EmitRecordedFailuresNotice(ctx, failures);
 
             // Ordinals only — raw partition ids never surface in errors.
-            return (identityError, 0, new PartitionStats(observed, done.Count + admitted, reusedCount, resumedCount));
+            return (identityError, 0, new PartitionStats(observed, done.Count + admitted, 0, resumedCount));
         }
 
         try
@@ -272,7 +273,7 @@ internal static class PartitionModeLoader
         ThrowIfAnyFailed(failures, observed);
 
         var rows = await duck.ScalarAsync<long>($"select count(*) from {mainTable}", ct).ConfigureAwait(false);
-        var stats = new PartitionStats(observed, done.Count + admitted, reusedCount, resumedCount);
+        var stats = new PartitionStats(observed, done.Count + admitted, 0, resumedCount);
         return (null, rows, stats);
     }
 

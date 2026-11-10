@@ -218,7 +218,7 @@ public sealed class CheckExecutor : INodeExecutor
         var error = new PzError(PzErrorCode.CheckFailed,
             $"unknown check type '{type}'", null, null,
             "not_null | unique | row_count | freshness | accepted_values | custom_sql");
-        return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, error);
+        return NodeResult.Failed(node, error);
     }
 
     private static NodeResult Pass(DagNode node) =>

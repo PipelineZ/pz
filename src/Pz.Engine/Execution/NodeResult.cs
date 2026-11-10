@@ -87,6 +87,9 @@ public sealed record NodeResult(NodeId Id, NodeKind Kind, string Name, NodeStatu
 {
     public static NodeResult Skipped(DagNode node) =>
         new(node.Id, node.Kind, node.Name, NodeStatus.Skipped, 0, TimeSpan.Zero, null);
+
+    public static NodeResult Failed(DagNode node, PzError error) =>
+        new(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, error);
 }
 
 /// <summary>One SourceLoad's DESCRIBE'd staging schema plus the

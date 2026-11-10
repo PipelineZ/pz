@@ -43,7 +43,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             var error = new PzError(PzErrorCode.ConnectorNotInstalled,
                 $"connector '{def.Source.Connector}' is not installed", def.Source.FilePath, null,
                 "run 'pz restore'");
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, error);
+            return NodeResult.Failed(node, error);
         }
 
         await using var source = await connector.OpenAsync(
@@ -55,7 +55,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         if (ColumnPointerSupport.Refusal(def.Dataset.Options, connector.DatasetConfigSchema, def.Source.Connector,
                 def.Source.Name, def.Dataset.Name, def.Source.FilePath) is { } pointerRefusal)
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, pointerRefusal);
+            return NodeResult.Failed(node, pointerRefusal);
         }
 
         // Hand a gate-aware source its operation gate before any plan/read call. The gate exists even
@@ -119,8 +119,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             && CursorContract.ResolveDeclaredType(def.Dataset) is { } contractType
             && !CursorTypeGuard.Fits(stored.TypeName, contractType))
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
-                CursorTypeGuard.Mismatch(def, stored, "is declared as", contractType));
+            return NodeResult.Failed(node, CursorTypeGuard.Mismatch(def, stored, "is declared as", contractType));
         }
 
         // A windowed dataset (incremental.MaxWindow present -- DagCompiler
@@ -161,7 +160,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     def.Source.FilePath, null,
                     "run with --full-refresh to restart the windowed backfill from initial, or align " +
                     "columns: with the stored watermark's type");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, mismatchError);
+                return NodeResult.Failed(node, mismatchError);
             }
 
             lowerWm ??= new Watermark(incremental.Cursor, declaredType, incremental.Initial!, "initial");
@@ -337,7 +336,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 await CaptureWatermarkAsync(ctx, def, nativeTable, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
             if (nativeWatermarkError is not null)
             {
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nativeWatermarkError);
+                return NodeResult.Failed(node, nativeWatermarkError);
             }
 
             PzMeters.RowsMoved.Add(nativeRows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
@@ -400,8 +399,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             var span = shape == ResolvedReadShape.Cdc
                 ? "one log position cannot span partitions"
                 : "one opaque token cannot span partitions";
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
-                new PzError(PzErrorCode.SyncPartitionedReadConflict,
+            return NodeResult.Failed(node, new PzError(PzErrorCode.SyncPartitionedReadConflict,
                     $"source '{def.Source.Name}' dataset '{def.Dataset.Name}' is sync-state but its connector " +
                     $"returned {partitions.Count} partitions -- {span}",
                     def.Source.FilePath, null,
@@ -520,7 +518,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     .ConfigureAwait(false);
                 if (cdcError is not null)
                 {
-                    return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, cdcError);
+                    return NodeResult.Failed(node, cdcError);
                 }
 
                 cdcStats = cdcCounts;
@@ -559,7 +557,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 await CaptureWatermarkAsync(ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
             if (watermarkError is not null)
             {
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, watermarkError);
+                return NodeResult.Failed(node, watermarkError);
             }
 
             PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
@@ -803,7 +801,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // pre-validate up front the way the list branch below does.
             (loadError, rows, stats) = await PartitionModeLoader.LoadStreamingAsync(node, ctx,
                 streamingSource.PlanReadStreamingAsync(spec, hints, ct), schema, tableName,
-                windowLower, windowUpper, reusedCount: 0, def, ct, skipGuard).ConfigureAwait(false);
+                windowLower, windowUpper, def, ct, skipGuard).ConfigureAwait(false);
         }
         else
         {
@@ -833,8 +831,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             if (problems.Count > 0)
             {
                 // Ordinals only — raw partition ids never surface in errors.
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
-                    new PzError(PzErrorCode.PartitionIdentityInvalid,
+                return NodeResult.Failed(node, new PzError(PzErrorCode.PartitionIdentityInvalid,
                         $"source '{def.Source.Name}' dataset '{def.Dataset.Name}': connector declares " +
                         $"StablePartitionIds but its planned partitions violate the identity contract: " +
                         string.Join("; ", problems),
@@ -870,7 +867,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
         if (loadError is not null)
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, loadError);
+            return NodeResult.Failed(node, loadError);
         }
 
         // Epilogue: sync candidate, windowed trim (rows become the post-trim count), watermark capture,
@@ -897,7 +894,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
         if (watermarkError is not null)
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, watermarkError);
+            return NodeResult.Failed(node, watermarkError);
         }
 
         PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
