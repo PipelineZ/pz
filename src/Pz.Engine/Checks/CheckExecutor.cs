@@ -25,7 +25,7 @@ public sealed class CheckExecutor : INodeExecutor
     {
         var def = (CheckNodeDef)node.Definition;
         var check = def.Check;
-        var relation = $"staging.{QuoteIdentifier(def.PipelineName)}";
+        var relation = $"staging.{ArrowInterop.QuoteQualified(def.PipelineName)}";
 
         return check.Type switch
         {
@@ -43,7 +43,7 @@ public sealed class CheckExecutor : INodeExecutor
     private static async Task<NodeResult> RunNotNullAsync(
         DagNode node, IDuckSession duck, CheckNodeDef def, string relation, CancellationToken ct)
     {
-        var predicate = string.Join(" or ", def.Check.Columns.Select(c => $"{QuoteIdentifier(c)} is null"));
+        var predicate = string.Join(" or ", def.Check.Columns.Select(c => $"{ArrowInterop.QuoteQualified(c)} is null"));
         var violations = await duck.ScalarAsync<long>(
             $"select count(*) from {relation} where {predicate}", ct).ConfigureAwait(false);
 
@@ -70,7 +70,7 @@ public sealed class CheckExecutor : INodeExecutor
     private static async Task<NodeResult> RunUniqueAsync(
         DagNode node, IDuckSession duck, CheckNodeDef def, string relation, CancellationToken ct)
     {
-        var columns = string.Join(", ", def.Check.Columns.Select(QuoteIdentifier));
+        var columns = string.Join(", ", def.Check.Columns.Select(ArrowInterop.QuoteQualified));
         var dupeGroups = $"select {columns} from {relation} group by {columns} having count(*) > 1";
         var violations = await duck.ScalarAsync<long>($"select count(*) from ({dupeGroups}) q", ct)
             .ConfigureAwait(false);
@@ -115,7 +115,7 @@ public sealed class CheckExecutor : INodeExecutor
     private static async Task<NodeResult> RunFreshnessAsync(
         DagNode node, RunContext ctx, CheckNodeDef def, string relation, CancellationToken ct)
     {
-        var column = QuoteIdentifier(def.Check.Columns[0]);
+        var column = ArrowInterop.QuoteQualified(def.Check.Columns[0]);
         var maxAgeRaw = def.Check.Options["max_age"]!.ToString()!;
         DurationParser.TryParse(maxAgeRaw, out var maxAge);
         var cutoff = ctx.EffectiveTime.GetUtcNow().UtcDateTime - maxAge;
@@ -144,7 +144,7 @@ public sealed class CheckExecutor : INodeExecutor
     private static async Task<NodeResult> RunAcceptedValuesAsync(
         DagNode node, IDuckSession duck, CheckNodeDef def, string relation, CancellationToken ct)
     {
-        var column = QuoteIdentifier(def.Check.Columns[0]);
+        var column = ArrowInterop.QuoteQualified(def.Check.Columns[0]);
         var values = (List<object?>)def.Check.Options["values"]!;
         var literals = string.Join(", ", values.Select(FormatLiteral));
         var predicate = $"{column} is not null and {column} not in ({literals})";
@@ -302,9 +302,4 @@ public sealed class CheckExecutor : INodeExecutor
                 $"Arrow array type '{array.GetType()}' has no sample formatter in the v0 type matrix."),
         };
     }
-
-    /// <summary>Quotes a single (dot-free) identifier by reusing <c>ArrowInterop.QuoteQualified</c> --
-    /// the engine's one existing identifier-quoting helper -- rather than duplicating quoting logic
-    /// here. It splits on '.', which is a no-op for a plain name.</summary>
-    private static string QuoteIdentifier(string identifier) => ArrowInterop.QuoteQualified(identifier);
 }
