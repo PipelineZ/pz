@@ -54,9 +54,6 @@ public static class WatermarkInference
     private const string AcceptedShapeHint =
         "accepted shape: <cursor column> > / >= / < / <= <expression containing {{ watermark(source, dataset) }}>";
 
-    private static readonly string[] AllowedCursorTypes = ["int", "bigint", "decimal", "date", "timestamp"];
-    private const string AllowedCursorTypesList = "int, bigint, decimal, date, timestamp";
-
     /// <summary>One comparison that passed structural validation (dependency + table-tracing checks) --
     /// the unit the per-dataset fold and the per-pipeline substitution map both consume.</summary>
     private sealed record RecognizedComparison(
@@ -162,22 +159,16 @@ public static class WatermarkInference
             var declaringPipelines = string.Join(", ",
                 items.Select(i => i.Pipeline).Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal));
 
-            // A `sync:` dataset (opaque continuation token) referenced by
-            // watermark() in pipeline SQL. DagCompiler's PZ0315 only ever sees the two YAML blocks
-            // (incremental: + sync:) on the SAME dataset -- it cannot see a SQL-declared ordered cursor
-            // synthesized here, so a `sync: {}` dataset with no YAML `incremental:` block sails through
-            // that check and would otherwise become BOTH kinds at execution (PriorSyncState AND SQL
-            // watermark bounds both stamped; both advancement passes persist). Checked before the
+            // A dataset that declares `sync: {mode: auto | cdc}` holds opaque continuation state (a
+            // feed token, change-capture position), never an ordered cursor. DagCompiler's PZ0315 only
+            // sees the YAML blocks on one dataset, so it cannot see the SQL-declared cursor synthesized
+            // here; without this check the dataset would become BOTH kinds at execution (PriorSyncState
+            // AND SQL watermark bounds stamped, both advancement passes persisting). Checked before the
             // YAML either/or below so a sync dataset always gets this specific message.
-            // `SyncMode is { Mode: SyncMode.Auto }`
-            // only matches an EXPLICITLY declared `sync: {mode: auto}` block -- SyncMode is null
-            // (so this pattern doesn't match) when the block is omitted ("implicit auto"). Pz.Core has no
-            // connector-capability access, so an implicit-auto dataset that a connector resolves to Feed
-            // at plan time can never trip this conflict -- the "declares 'sync:' ..." message below is
-            // only ever true for an explicit declaration in the first place.
-            // `SyncMode.Cdc` is likewise opaque
-            // change-capture state, never an ordered cursor -- a declared `sync: {mode: cdc}` dataset
-            // referenced by a SQL watermark() trips the same conflict as `mode: auto`.
+            // `SyncMode` is null when the block is omitted ("implicit auto"), which does not match:
+            // Pz.Core has no connector-capability access, so an implicit-auto dataset that a connector
+            // resolves to a feed at plan time can never trip this -- the "declares 'sync:' ..." message
+            // below is only ever true for an explicit declaration.
             if (dataset?.SyncMode is { Mode: SyncMode.Auto or SyncMode.Cdc })
             {
                 errors.Add(new PzError(PzErrorCode.SyncStateConflict,
@@ -266,19 +257,19 @@ public static class WatermarkInference
                 continue;
             }
 
-            // Ordinal (exact-lowercase), matching the YAML route's stage-0 check
-            // (DagCompiler.Array.IndexOf(AllowedCursorTypes, ...)) and every downstream consumer
-            // (CursorLiterals.Typed, EvaluateSqlBoundsAsync, WindowMath, PipelineExecutor). A
-            // case-insensitive check here would let a mixed-case 'TIMESTAMP' compile then fail at
-            // runtime — PZ0227 must reject it at compile time, listing the allowed lowercase set.
-            if (cursorType is not null && !AllowedCursorTypes.Contains(cursorType, StringComparer.Ordinal))
+            // Ordinal (exact-lowercase), matching the YAML route's check in DagCompiler and every
+            // downstream consumer (CursorLiterals.Typed, EvaluateSqlBoundsAsync, WindowMath,
+            // PipelineExecutor). A case-insensitive check here would let a mixed-case 'TIMESTAMP'
+            // compile then fail at runtime — PZ0227 must reject it at compile time, listing the
+            // allowed lowercase set.
+            if (cursorType is not null && !CursorContract.AllowedTypes.Contains(cursorType, StringComparer.Ordinal))
             {
                 errors.Add(new PzError(PzErrorCode.WatermarkCursorUndeclared,
                     $"source '{group.Key.Source}.{group.Key.Dataset}': watermark() cursor '{cursor}' has " +
                     $"declared type '{cursorType}', which is not one of the allowed incremental cursor " +
-                    $"types ({AllowedCursorTypesList})",
+                    $"types ({CursorContract.AllowedTypesText})",
                     filePath, null,
-                    $"change '{cursor}''s declared type in columns: to one of {AllowedCursorTypesList}, or " +
+                    $"change '{cursor}''s declared type in columns: to one of {CursorContract.AllowedTypesText}, or " +
                     "remove the watermark() call(s)"));
                 continue;
             }

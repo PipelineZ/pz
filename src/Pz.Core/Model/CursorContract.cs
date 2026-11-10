@@ -13,6 +13,9 @@ public static class CursorContract
 {
     public static readonly string[] AllowedTypes = ["int", "bigint", "decimal", "date", "timestamp"];
 
+    /// <summary><see cref="AllowedTypes"/> as it reads in a validation message.</summary>
+    public static readonly string AllowedTypesText = string.Join(", ", AllowedTypes);
+
     public static string? ResolveDeclaredType(DatasetDef dataset)
     {
         if (dataset.SyncMode?.Incremental is not { } incremental)
