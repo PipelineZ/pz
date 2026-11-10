@@ -13,7 +13,7 @@ namespace Pz.Cli;
 /// connectors) a <see cref="ProcessConnectorHost"/> over .pz/packages verified against pz.lock.json.
 /// External connectors are hosted out of process only: a package whose manifest declares runtime
 /// <c>"dotnet"</c> — or ships no manifest, which means the same — is refused with PZ0360, never
-/// ALC-loaded into the engine process. Builtins are the only in-process connectors.</summary>
+/// loaded into the engine process. Builtins are the only in-process connectors.</summary>
 internal static class ConnectorRegistryFactory
 {
     /// <summary>Throws PzValidationException (PZ0321/PZ0322/host PZ03xx mapped) on lock/host problems.
