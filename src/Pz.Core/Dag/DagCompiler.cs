@@ -14,15 +14,6 @@ namespace Pz.Core.Dag;
 /// </summary>
 public static class DagCompiler
 {
-    /// <summary>Allowed <c>columns:</c> contract types for an <c>incremental: cursor</c>
-    /// -- a subset of the full v0 contract-type matrix (int, bigint, double,
-    /// decimal, varchar, boolean, date, timestamp; see Pz.Engine's <c>ContractTypes</c>, which
-    /// Pz.Core cannot reference: Pz.Engine depends on Pz.Core, not the reverse). double/varchar/boolean
-    /// have no well-defined "greater than" ordering a watermark cursor can rely on, so they're excluded.</summary>
-    private static readonly string[] AllowedCursorTypes = CursorContract.AllowedTypes;
-
-    private static readonly string AllowedCursorTypesText = string.Join(", ", AllowedCursorTypes);
-
     /// <summary>
     /// <paramref name="notices"/>, if provided, collects non-fatal informational messages produced
     /// while compiling -- currently only "cursor unverified" (see stage 0 below). Same channel as
@@ -197,7 +188,7 @@ public static class DagCompiler
             }
         }
 
-        //     1d. The read side of the same rule. An entity exists
+        // 1d. The read side of the same rule. An entity exists
         //     because something reads or writes it, so a source() naming an entity the connection does
         //     not declare synthesizes one from the call's kwargs -- exactly as 1c synthesizes an
         //     OutputDef. Declaring BOTH is PZ0341, the same either/or the write side enforces: there is
@@ -293,9 +284,8 @@ public static class DagCompiler
         // 0. Incremental cursor + merge-keys validation. Runs after stage 1c because the write options
         //    it validates come from the sink() call site. All aggregate (report every violation, not
         //    just the first) before throwing, matching every other stage below.
-        //    There is no PZ0228 "unknown write mode" check here: SinkFunction refuses a strategy
-        //    outside replace/append/merge at the call site (PZ0334), so an OutputDef cannot reach here
-        //    carrying one.
+        //    No "unknown write mode" check is needed: SinkFunction refuses a strategy outside
+        //    replace/append/merge at the call site (PZ0334), so an OutputDef cannot reach here carrying one.
         var incrementalErrors = new List<PzError>();
         foreach (var sink in project.Connections)
         {
@@ -336,9 +326,8 @@ public static class DagCompiler
             for (var di = 0; di < source.Datasets.Count; di++)
             {
                 var dataset = source.Datasets[di];
-                // No PZ0315 "declares both incremental: and sync:" check here: SyncModeDef carries
-                // exactly one Mode, so declaring two read modes is not representable at the loader
-                // (see PzErrorCode.SyncStateConflict's doc comment).
+                // SyncModeDef carries exactly one Mode, so declaring two read modes is not representable
+                // at the loader and needs no check here (see PzErrorCode.SyncStateConflict).
                 if (dataset.SyncMode?.Incremental is not { } incremental)
                 {
                     continue;
@@ -391,21 +380,21 @@ public static class DagCompiler
                     {
                         incrementalErrors.Add(new PzError(PzErrorCode.CursorInvalid,
                             $"source '{source.Name}.{dataset.Name}' declares incremental cursor '{cursor}' but it is " +
-                            $"not in the dataset's columns: contract -- allowed cursor types: {AllowedCursorTypesText}",
+                            $"not in the dataset's columns: contract -- allowed cursor types: {CursorContract.AllowedTypesText}",
                             source.FilePath, null,
-                            $"add '{cursor}' to columns: with one of the allowed cursor types ({AllowedCursorTypesText})"));
+                            $"add '{cursor}' to columns: with one of the allowed cursor types ({CursorContract.AllowedTypesText})"));
                     }
                 }
-                else if (Array.IndexOf(AllowedCursorTypes, cursorType) < 0)
+                else if (Array.IndexOf(CursorContract.AllowedTypes, cursorType) < 0)
                 {
                     // Same subsumption rationale as above.
                     if (incremental.MaxWindow is null)
                     {
                         incrementalErrors.Add(new PzError(PzErrorCode.CursorInvalid,
                             $"source '{source.Name}.{dataset.Name}' declares incremental cursor '{cursor}' as " +
-                            $"'{cursorType}', which cannot be used as a cursor -- allowed cursor types: {AllowedCursorTypesText}",
+                            $"'{cursorType}', which cannot be used as a cursor -- allowed cursor types: {CursorContract.AllowedTypesText}",
                             source.FilePath, null,
-                            $"declare '{cursor}' as one of the allowed cursor types ({AllowedCursorTypesText})"));
+                            $"declare '{cursor}' as one of the allowed cursor types ({CursorContract.AllowedTypesText})"));
                     }
                 }
                 else
@@ -439,7 +428,7 @@ public static class DagCompiler
                 {
                     windowErrors.Add($"'max_window' requires cursor '{cursor}' to be declared in columns: (or, for " +
                         "a raw-envelope dataset, via the connector's cursor:/cursor_type: options) with an " +
-                        $"allowed cursor type ({AllowedCursorTypesText}) — bounds must be computable before the first extraction");
+                        $"allowed cursor type ({CursorContract.AllowedTypesText}) — bounds must be computable before the first extraction");
                 }
 
                 // Scalar `query` = SQL-text query mode (postgres/sqlserver). A MAP-valued `query` is
@@ -550,7 +539,7 @@ public static class DagCompiler
                     // Fall through: still check the cursor/window below -- aggregate-all-errors rule.
                 }
 
-                var cursorType = ResolveCursorType(dataset);
+                var cursorType = CursorContract.ResolveDeclaredType(dataset);
                 if (cursorType is not ("date" or "timestamp"))
                 {
                     incrementalErrors.Add(new PzError(PzErrorCode.TemplatedPathCursorInvalid,
@@ -749,12 +738,12 @@ public static class DagCompiler
         project = project with { Connections = rewrittenConnections };
 
         // 5. Resolve every sink output's binding (inline `INSERT INTO {{ sink(...) }}` is the SOLE load
-        //    path — there is no YAML `input:` binding). First collect every pipeline's
+        //    path). First collect every pipeline's
         //    inline claim(s), validating the SINK each names actually exists (PZ0201, same code as
         //    ref()/source() lookups) — a pipeline may claim N outputs via the array fan-out form (stage
         //    1b already guarantees no duplicate output within one pipeline). Then walk every output
         //    once: more than one inline claimant is PZ0206 (ERROR). Errors aggregate and throw.
-        //    There is no output-existence check and no orphan-output warning: stage 1c builds an output
+        //    No output-existence check or orphan-output warning is needed: stage 1c builds an output
         //    precisely because a call site named it, so an output cannot exist without a writer, nor be
         //    named without existing.
         var sinkErrors = new List<PzError>();
@@ -808,7 +797,7 @@ public static class DagCompiler
             }
         }
 
-        var sinkInputs = new Dictionary<(ConnectionDef Sink, OutputDef Output), SinkInputResolution>();
+        var claimantByOutput = new Dictionary<(ConnectionDef Sink, OutputDef Output), string>();
         foreach (var sink in project.Connections)
         {
             foreach (var output in sink.Outputs)
@@ -826,7 +815,7 @@ public static class DagCompiler
                     continue;
                 }
 
-                sinkInputs[(sink, output)] = new SinkInputResolution.PipelineInput(claimants[0]);
+                claimantByOutput[(sink, output)] = claimants[0];
             }
         }
 
@@ -836,7 +825,7 @@ public static class DagCompiler
         }
 
         // 6. Determine which source datasets are actually referenced (directly, or inherited
-        //    through an inlined ephemeral pipeline). Sinks no longer drain a source directly — a
+        //    through an inlined ephemeral pipeline). Sinks never drain a source directly — a
         //    pass-through pipeline (`INSERT INTO {{ sink(...) }} select * from {{ source(...) }}`) is
         //    the only way a source reaches a sink, so its source ref is already captured below.
         //    Readers are collected per dataset, not merely counted, so
@@ -1142,16 +1131,16 @@ public static class DagCompiler
         }
 
         // 10. SinkWrite nodes, depending on their claimant pipeline's node. Every bound output is
-        //     inline-bound, declaring no YAML `input:`, so its Output.Input is synthesized here from the
-        //     resolution (the claimant pipeline's name) for every downstream consumer — the canonical
-        //     hash below and SinkWriteExecutor's staging-relation lookup — that expects it populated.
-        //     Only outputs with a claimant reach here, so isInlineBound is always true.
+        //     inline-bound, so its Output.Input is synthesized here from the claimant pipeline's name
+        //     for every downstream consumer — the canonical hash below and SinkWriteExecutor's
+        //     staging-relation lookup — that expects it populated. Only outputs with a claimant reach
+        //     here, so isInlineBound is always true.
         var sinkOptionErrors = new List<PzError>();
         foreach (var sink in project.Connections)
         {
             foreach (var output in sink.Outputs)
             {
-                if (!sinkInputs.TryGetValue((sink, output), out var resolution))
+                if (!claimantByOutput.TryGetValue((sink, output), out var pipelineName))
                 {
                     continue; // no resolved claimant — no SinkWrite node
                 }
@@ -1172,7 +1161,6 @@ public static class DagCompiler
                 }
 
                 var isInlineBound = string.IsNullOrEmpty(output.Input);
-                var pipelineName = ((SinkInputResolution.PipelineInput)resolution).PipelineName;
                 var effectiveOutput = isInlineBound ? output with { Input = pipelineName } : output;
                 var inputNodeId = pipelineNodeIds[pipelineName];
                 // Keys/AcceptDuplicates/OnDelete all change what a commit under this Id MEANS -- e.g.
@@ -1634,14 +1622,6 @@ public static class DagCompiler
         return result;
     }
 
-    /// <summary>The declared <c>columns:</c> contract type of a dataset's <c>incremental.cursor</c>,
-    /// or null if there is no incremental block, no columns contract, the cursor isn't in it, or its
-    /// declared type isn't one of <see cref="AllowedCursorTypes"/> -- the same resolution PZ0212 above
-    /// performs inline (it additionally emits PZ0212 for some of these null cases; this helper is
-    /// read-only and used only by the path-templating checks below, which raise their own codes).</summary>
-    private static string? ResolveCursorType(DatasetDef dataset) =>
-        CursorContract.ResolveDeclaredType(dataset);
-
     /// <summary>The exact "bounded window" PZ0213 above recognizes as valid: <c>max_window</c> and
     /// <c>initial</c> both set (<c>until</c> is an optional additional upper bound -- PZ0213's rules 1/2
     /// require max_window+initial together for ANY window config to be error-free, so this must mirror
@@ -1688,7 +1668,7 @@ public static class DagCompiler
     /// form `[ m1, m2, ... ]` (markers in the pipeline's recorded <see cref="InlineSinkBinding"/> render
     /// order), then whitespace separating it from the query. Names are matched by exact ordinal
     /// comparison against markers built from the bindings — deliberately not a regex with named capture
-    /// groups, since sink/output names may contain underscores that would make such a regex ambiguous
+    /// groups, since sink/output names may contain underscores that would make such a regex ambiguous.
     /// Returns the query verbatim — CTEs and all, the fixed prefix ends right after the
     /// closing marker/bracket — or null if the shape doesn't match, including any marker
     /// recurring anywhere in what would be the extracted query (a malformed/duplicated call the
@@ -1709,8 +1689,8 @@ public static class DagCompiler
             if (i == start) { break; }
         }
 
-        if (!TryMatchKeyword(sql, ref i, "insert") || !SkipRequiredWhitespace(sql, ref i) ||
-            !TryMatchKeyword(sql, ref i, "into") || !SkipRequiredWhitespace(sql, ref i))
+        if (!TryMatchKeyword(sql, ref i, "insert") || !SkipWhitespace(sql, ref i) ||
+            !TryMatchKeyword(sql, ref i, "into") || !SkipWhitespace(sql, ref i))
         {
             return null;
         }
@@ -1720,16 +1700,16 @@ public static class DagCompiler
             i++;
             for (var idx = 0; idx < markers.Count; idx++)
             {
-                SkipInlineWhitespace(sql, ref i);
+                SkipWhitespace(sql, ref i);
                 if (!TryMatchMarker(sql, ref i, markers[idx])) { return null; }
-                SkipInlineWhitespace(sql, ref i);
+                SkipWhitespace(sql, ref i);
                 if (idx < markers.Count - 1)
                 {
                     if (i >= sql.Length || sql[i] != ',') { return null; }
                     i++;
                 }
             }
-            SkipInlineWhitespace(sql, ref i);
+            SkipWhitespace(sql, ref i);
             if (i >= sql.Length || sql[i] != ']') { return null; }
             i++;
         }
@@ -1738,7 +1718,7 @@ public static class DagCompiler
             if (markers.Count != 1 || !TryMatchMarker(sql, ref i, markers[0])) { return null; }
         }
 
-        if (!SkipRequiredWhitespace(sql, ref i)) { return null; }
+        if (!SkipWhitespace(sql, ref i)) { return null; }
 
         var extracted = sql[i..];
         foreach (var marker in markers)
@@ -1758,11 +1738,6 @@ public static class DagCompiler
         return true;
     }
 
-    private static void SkipInlineWhitespace(string sql, ref int i)
-    {
-        while (i < sql.Length && char.IsWhiteSpace(sql[i])) { i++; }
-    }
-
     private static bool TryMatchKeyword(string sql, ref int i, string keyword)
     {
         if (i + keyword.Length > sql.Length ||
@@ -1775,7 +1750,8 @@ public static class DagCompiler
         return true;
     }
 
-    private static bool SkipRequiredWhitespace(string sql, ref int i)
+    /// <summary>Advances past whitespace; true when at least one character was skipped.</summary>
+    private static bool SkipWhitespace(string sql, ref int i)
     {
         var start = i;
         while (i < sql.Length && char.IsWhiteSpace(sql[i]))
@@ -1888,8 +1864,7 @@ public static class DagCompiler
     /// keyword. <paramref name="sqlAst"/> is null in tests that construct a project with no incremental
     /// SQL at all (every production caller supplies <c>DuckDbSqlAstReader</c>) — and
     /// <see cref="ISqlAstReader.PrependCtes"/> itself returns null if either side fails to parse — so a
-    /// textual splice (the ORIGINAL, simpler shape) is still the fallback: it handles the common case
-    /// exactly as before, and downstream tier-4 EXPLAIN/PREPARE reports a genuinely malformed pipeline
+    /// textual splice is the fallback: it handles the common case, and downstream tier-4 EXPLAIN/PREPARE reports a genuinely malformed pipeline
     /// with full context regardless of which route assembled it.</para>
     /// </summary>
     private static string BuildInlinedSql(
@@ -1943,15 +1918,6 @@ public static class DagCompiler
     {
         var normalized = sql.Replace("\r\n", "\n").Replace('\r', '\n').TrimEnd();
         return normalized.EndsWith(';') ? normalized[..^1].TrimEnd() : normalized;
-    }
-
-    /// <summary>How a sink output is fed. There is exactly one kind — an inline
-    /// `sink()` claim by a pipeline — but the wrapper is retained so stage 5's resolution map and stage
-    /// 10's node-building stay explicit about what a bound output carries.</summary>
-    private abstract record SinkInputResolution
-    {
-        private SinkInputResolution() { }
-        public sealed record PipelineInput(string PipelineName) : SinkInputResolution;
     }
 
     private static int KindRank(NodeKind kind) => kind switch
