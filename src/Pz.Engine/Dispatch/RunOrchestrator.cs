@@ -3,6 +3,7 @@ using System.Diagnostics;
 using Pz.Core.Dag;
 using Pz.Core.Validation;
 using Pz.Diagnostics.Otel;
+using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 
 namespace Pz.Engine.Dispatch;
@@ -283,7 +284,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
                             }
 
                             result = NodeFailureGuidance.FoldHint(result);
-                            nodeActivity?.SetTag("pz.node.status", StatusTag(result.Status));
+                            nodeActivity?.SetTag("pz.node.status", NodeResultJson.StatusName(result.Status));
                             NodeSpanTags.Apply(nodeActivity, result);
                             RemoteMetrics.Record(node, result);
 
@@ -537,16 +538,6 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
 
         return map;
     }
-
-    /// <summary>Lowercase primitive status value for the "node.&lt;kind&gt;" span's status tag —
-    /// mirrors the vocabulary <c>https://pipelinez.dev/events/</c> already uses for NDJSON's status field.</summary>
-    private static string StatusTag(NodeStatus status) => status switch
-    {
-        NodeStatus.Success => "success",
-        NodeStatus.Failed => "failed",
-        NodeStatus.Skipped => "skipped",
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "unknown node status"),
-    };
 
     /// <summary>Matches <c>DagCompiler</c>'s (kindRank, Name ordinal) tie-break so simultaneously-
     /// ready nodes are dispatched in the same deterministic order compile-time ordering uses.</summary>
