@@ -344,8 +344,8 @@ public static class PzErrorCode
     public const string SyncModeInvalid = "PZ0334";
     // A resolved read shape paired with a `write:` strategy the compile-time pairing matrix refuses.
     // Currently: an explicitly declared `sync: {mode: incremental}` dataset feeding
-    // `write.strategy: replace` (DagCompiler.CheckDeliveryMatrices) -- discards previously loaded rows every run,
-    // defeating the point of an ordered-cursor read.
+    // `write.strategy: replace` (DagCompiler.CheckDeliveryMatrices) -- discards previously loaded rows
+    // every run, defeating the point of an ordered-cursor read.
     public const string IncompatiblePair = "PZ0335";
     // A cdc-fed `write.strategy: merge` output has not declared `write.on_delete` -- deletes on the
     // source table need an explicit routing choice (delete/soft/ignore); there is no safe default.
