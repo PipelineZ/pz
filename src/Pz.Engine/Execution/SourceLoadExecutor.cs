@@ -742,7 +742,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     $"select * exclude (_pz_op, _pz_lsn, _pz_changed_at) from {changesTable} limit 0", ct)
                     .ConfigureAwait(false);
                 await ctx.Duck.ExecuteAsync(
-                    $"create or replace table {canonicalTable}__deletes as " +
+                    $"create or replace table {StagingNames.DeletesOf(canonicalTable)} as " +
                     $"select * exclude (_pz_op, _pz_lsn, _pz_changed_at) from {changesTable} limit 0", ct)
                     .ConfigureAwait(false);
                 return (null, new CdcStats(0, 0, 0));
@@ -762,7 +762,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             $"  select *, row_number() over (partition by {keyList} order by _pz_lsn desc) as _pz_rn " +
             $"  from {changesTable}) where _pz_rn = 1 and _pz_op <> 'delete'", ct).ConfigureAwait(false);
         await ctx.Duck.ExecuteAsync(
-            $"create or replace table {canonicalTable}__deletes as " +
+            $"create or replace table {StagingNames.DeletesOf(canonicalTable)} as " +
             $"select * exclude (_pz_op, _pz_lsn, _pz_changed_at, _pz_rn) from (" +
             $"  select *, row_number() over (partition by {keyList} order by _pz_lsn desc) as _pz_rn " +
             $"  from {changesTable}) where _pz_rn = 1 and _pz_op = 'delete'", ct).ConfigureAwait(false);
@@ -1208,8 +1208,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // ran). Probed via the attached catalog's information_schema so a non-cdc dataset (no deletes
             // table) simply copies nothing. table = "staging.<name>"; the deletes table's unqualified name
             // is "<name>__deletes" (alias is [A-Za-z0-9_] only, so a plain literal is injection-safe).
-            var deletesTable = table + "__deletes";
-            var deletesName = ArrowInterop.QuoteLiteral(table.Split('.', 2)[1] + "__deletes");
+            var deletesTable = StagingNames.DeletesOf(table);
+            var deletesName = ArrowInterop.QuoteLiteral(table.Split('.', 2)[1] + StagingNames.DeletesSuffix);
             var hasDeletes = await ctx.Duck.ScalarAsync<long>(
                 $"select count(*) from information_schema.tables where table_catalog = '{alias}' and table_name = {deletesName}", ct)
                 .ConfigureAwait(false);

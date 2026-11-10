@@ -218,7 +218,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
         // column exists in the deletes relation, and none of them is null in any row there.
         if (def.Output.OnDelete is "delete" or "soft" && def.CdcDeleteOrigin is { } cdcOrigin)
         {
-            var deletesRelation = StagingNames.ForSourceLoad(cdcOrigin.Source, cdcOrigin.Dataset) + "__deletes";
+            var deletesRelation = StagingNames.DeletesOf(StagingNames.ForSourceLoad(cdcOrigin.Source, cdcOrigin.Dataset));
             var deletesSchema = await ctx.Duck.GetResultSchemaAsync($"select * from {deletesRelation}", ct).ConfigureAwait(false);
             var deletesColumns = deletesSchema.FieldsList.Select(f => f.Name).ToHashSet();
             var missingKey = def.Output.Keys.FirstOrDefault(k => !deletesColumns.Contains(k));
@@ -445,7 +445,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                                 isTransient: false);
                         }
 
-                        var deletesRelation = StagingNames.ForSourceLoad(deleteOrigin.Source, deleteOrigin.Dataset) + "__deletes";
+                        var deletesRelation = StagingNames.DeletesOf(StagingNames.ForSourceLoad(deleteOrigin.Source, deleteOrigin.Dataset));
                         var keyList = string.Join(", ", def.Output.Keys.Select(ArrowInterop.QuoteQualified));
                         await foreach (var keyBatch in ctx.Duck.QueryArrowAsync(
                             $"select {keyList} from {deletesRelation}", ctx.EffectiveBatch.TargetBatchBytes, ct).ConfigureAwait(false))
@@ -643,4 +643,10 @@ public static class StagingNames
     /// universal (Arrow ingest) branches so the table name is computed exactly once.</summary>
     public static string ForSourceLoad(string sourceName, string datasetName) =>
         $"staging.{StagingName.ForSourceLoad(sourceName, datasetName)}";
+
+    /// <summary>Suffix of the side table a cdc SourceLoad lands its net-delete keys into, next to the
+    /// canonical upserts table.</summary>
+    public const string DeletesSuffix = "__deletes";
+
+    public static string DeletesOf(string stagingTable) => stagingTable + DeletesSuffix;
 }
