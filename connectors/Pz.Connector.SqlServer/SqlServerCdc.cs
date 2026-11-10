@@ -20,8 +20,7 @@ internal static class SqlServerCdc
     public const string SnapshotLsn = ZeroLsnHex + "-" + ZeroLsnHex;
 
     /// <summary>The cdc entity's schema and table, from the dataset NAME -- schema defaults to
-    /// <c>dbo</c> for an unqualified name. A cdc dataset cannot fail to name a table, so there is no
-    /// "change capture requires 'table'" guard.</summary>
+    /// <c>dbo</c> for an unqualified name.</summary>
     public static (string Schema, string Table) SchemaAndTable(DatasetSpec spec) =>
         MsDdl.SplitEntity(spec.Dataset);
 
@@ -70,7 +69,7 @@ internal static class SqlServerCdc
         "cast(null as datetime2) as _pz_changed_at, " +
         $"t.* from {MsDdl.Quote(schema)}.{MsDdl.Quote(table)} t";
 
-    /// <summary>The bounded change-window SELECT (spec's window SQL): maps <c>__$operation</c>
+    /// <summary>The bounded change-window SELECT: maps <c>__$operation</c>
     /// (1=delete, 2=insert, else=update per <c>N'all'</c> mode), concatenates start_lsn/seqval into the
     /// canonical <c>_pz_lsn</c> form, resolves <c>_pz_changed_at</c> via <c>fn_cdc_map_lsn_to_time</c>,
     /// then projects the data columns explicitly (never <c>t.*</c> -- that would also pull the

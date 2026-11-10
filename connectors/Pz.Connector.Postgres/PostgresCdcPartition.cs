@@ -476,7 +476,7 @@ internal sealed class PostgresCdcPartition(string connectionString, DatasetSpec 
     }
 
     // Decodes one replication value against the probed Arrow column type, using the CLR type the
-    // DataReaderSource v0 matrix maps that Arrow type from -- so a poll row is byte-identical to the same
+    // DataReaderSource matrix maps that Arrow type from -- so a poll row is byte-identical to the same
     // row read through the snapshot path.
     private static async Task<object?> DecodeAsync(ReplicationValue value, ArrowTypeId typeId, CancellationToken ct) =>
         typeId switch

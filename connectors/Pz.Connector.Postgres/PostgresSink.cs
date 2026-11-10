@@ -6,8 +6,8 @@ using Pz.Connectors.Abstractions.Batches;
 
 namespace Pz.Connector.Postgres;
 
-/// <summary>Postgres sink (append/replace/merge). Output options: <c>schema</c>
-/// (default <c>public</c>), <c>table</c> (default = the output's name). Session shape: open
+/// <summary>Postgres sink (append/replace/merge). The target is the entity name (<c>schema.table</c>,
+/// schema defaulting to <c>public</c>); the sink reads no connector-owned output option. Session shape: open
 /// an <see cref="NpgsqlConnection"/>, begin one transaction, ensure the target exists (creating it from
 /// the Arrow schema via <see cref="PgDdl"/>'s DDL map -- for merge, WITH a <c>unique(keys)</c> constraint
 /// -- or enforcing <c>schema_policy</c> [and, for merge, verifying a pre-existing unique constraint on
@@ -33,7 +33,7 @@ internal sealed class PostgresSink(string connectionString) : ISink
 {
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
-        // Universal path only in v0 -- no native COPY-based sink path exists yet for postgres.
+        // Universal path only: rows reach postgres through the Arrow stream, never a native copy.
         copy = null;
         return false;
     }
@@ -213,7 +213,7 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
 
     /// <summary>Streams one delete-key batch into a lazily-created keys-only
     /// temp table, mirroring <see cref="WriteBatchAsync"/>'s COPY machinery (same
-    /// <see cref="WriteCellAsync"/> cell writer, a fresh <see cref="NpgsqlBinaryImporter"/> scoped to
+    /// <see cref="WriteCell"/> cell writer, a fresh <see cref="NpgsqlBinaryImporter"/> scoped to
     /// this second temp table). Column order/quoting comes from <see cref="_quotedKeyColumns"/> (the
     /// output's declared merge keys); per-column <see cref="NpgsqlDbType"/>/DDL come from the ARRIVING
     /// batch's own schema (captured once, on the first call). Applied at <see cref="CommitAsync"/>,

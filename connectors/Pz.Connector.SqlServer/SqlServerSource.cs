@@ -175,7 +175,7 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
                 }
             }
 
-            // Validates 'table' presence (throws non-transient otherwise). One partition: cdc is
+            // Rejects a malformed entity name up front (SplitEntity throws). One partition: cdc is
             // inherently sequential (a single bounded LSN window per run).
             _ = SqlServerCdc.SchemaAndTable(spec);
             return [new SqlServerCdcPartition(connectionString, spec)];

@@ -24,7 +24,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
     private const int MinPartitions = 1;
     private const int MaxPartitions = 16;
 
-    // The v0 DataReaderSource type matrix's orderable CLR shapes (see PgTypeMap): every numeric and
+    // The DataReaderSource type matrix's orderable CLR shapes (see PgTypeMap): every numeric and
     // temporal type postgres can surface via Npgsql. string/bool (text/boolean) are deliberately
     // excluded -- there is no meaningful equal-width range over them.
     private static readonly HashSet<Type> OrderablePartitionColumnTypes =
@@ -91,8 +91,8 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
                 }
             }
 
-            // Validates 'table' presence (throws PZ-style non-transient otherwise). One partition: cdc
-            // is inherently sequential (a single slot / snapshot cut).
+            // Rejects a malformed entity name up front (SplitEntity throws). One partition: cdc is
+            // inherently sequential (a single slot / snapshot cut).
             _ = PostgresCdc.SchemaAndTable(spec);
             return [new PostgresCdcPartition(connectionString, spec)];
         }
