@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connectors.Toolkit.Sql;
 
@@ -32,6 +34,39 @@ public static class DuckDbSqlText
             ? canonical[..10] + ' ' + canonical[11..]
             : canonical;
         return $"'{EscapeLiteral(value)}'";
+    }
+
+    /// <summary>The native-scan fragment over <paramref name="relation"/> (a qualified table or a table
+    /// function call): a declared <c>columns:</c> contract projects only the declared columns, the
+    /// watermark's lower bound (strict or inclusive) and the window's upper bound become predicates. The
+    /// engine embeds the fragment after FROM, so a plain scan stays the bare relation and anything with a
+    /// projection or predicate becomes a parenthesized subquery.</summary>
+    public static string ScanFragment(string relation, DatasetSpec spec)
+    {
+        var columns = ColumnTypeCatalog.ContractColumns(spec);
+        var projection = columns is { Count: > 0 }
+            ? string.Join(", ", columns.Keys.Select(QuoteIdentifier))
+            : "*";
+
+        var predicates = new List<string>();
+        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
+        {
+            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
+            predicates.Add($"{QuoteIdentifier(cursor)} {op} {WatermarkLiteral(low)}");
+        }
+
+        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
+        {
+            predicates.Add($"{QuoteIdentifier(upperCursor)} <= {WatermarkLiteral(high)}");
+        }
+
+        if (projection == "*" && predicates.Count == 0)
+        {
+            return relation;
+        }
+
+        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
+        return $"(select {projection} from {relation}{where})";
     }
 
     /// <summary>A catalog alias or secret name for one connection: <c>{prefix}_{sanitized}_{hash}</c>.

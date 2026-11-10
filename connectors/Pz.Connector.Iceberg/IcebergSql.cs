@@ -346,7 +346,7 @@ internal static class IcebergSql
         }
 
         var table = QualifiedTable(alias, spec.Dataset) + TimeTravelClause(spec);
-        return Wrap(table, spec);
+        return DuckDbSqlText.ScanFragment(table, spec);
     }
 
     /// <summary>The <c>files</c> scan fragment: <c>iceberg_scan</c> over the table directory, always
@@ -373,36 +373,9 @@ internal static class IcebergSql
             arguments.Append($", snapshot_from_timestamp => timestamp '{DuckDbSqlText.EscapeLiteral(at)}'");
         }
 
-        return Wrap($"iceberg_scan({arguments})", spec);
+        return DuckDbSqlText.ScanFragment($"iceberg_scan({arguments})", spec);
     }
 
-    private static string Wrap(string table, DatasetSpec spec)
-    {
-        var columns = ColumnTypeCatalog.ContractColumns(spec);
-        var projection = columns is { Count: > 0 }
-            ? string.Join(", ", columns.Keys.Select(DuckDbSqlText.QuoteIdentifier))
-            : "*";
-
-        var predicates = new List<string>();
-        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
-        {
-            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(cursor)} {op} {DuckDbSqlText.WatermarkLiteral(low)}");
-        }
-
-        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
-        {
-            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(upperCursor)} <= {DuckDbSqlText.WatermarkLiteral(high)}");
-        }
-
-        if (projection == "*" && predicates.Count == 0)
-        {
-            return table;
-        }
-
-        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
-        return $"(select {projection} from {table}{where})";
-    }
 
     /// <summary><c>version:</c> pins a snapshot id, <c>timestamp:</c> the snapshot current at an
     /// instant; declaring both is contradictory and refused. Thrown from TryGetNativeScan, which the
@@ -518,5 +491,4 @@ internal static class IcebergSql
         config.GetString(key) is { Length: > 0 } s
             ? s
             : throw new PzConnectorException($"iceberg connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
-
 }

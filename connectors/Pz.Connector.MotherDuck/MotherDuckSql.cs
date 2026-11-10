@@ -70,31 +70,8 @@ internal static class MotherDuckSql
     /// server evaluates the predicate); the window ceiling is MUST-apply. The engine embeds the
     /// fragment after FROM, which is why a bare table is returned unwrapped — anything with a
     /// projection or predicate becomes a parenthesized subquery instead.</summary>
-    internal static string ScanFragment(string database, DatasetSpec spec)
-    {
-        var table = QualifiedTable(database, spec.Dataset);
-        var columns = ColumnTypeCatalog.ContractColumns(spec);
-        var projection = columns is { Count: > 0 } ? string.Join(", ", columns.Keys.Select(DuckDbSqlText.QuoteIdentifier)) : "*";
-
-        var predicates = new List<string>();
-        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
-        {
-            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(cursor)} {(spec.WatermarkLowerInclusive ? ">=" : ">")} {DuckDbSqlText.WatermarkLiteral(low)}");
-        }
-
-        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
-        {
-            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(upperCursor)} <= {DuckDbSqlText.WatermarkLiteral(high)}");
-        }
-
-        if (projection == "*" && predicates.Count == 0)
-        {
-            return table;
-        }
-
-        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
-        return $"(select {projection} from {table}{where})";
-    }
+    internal static string ScanFragment(string database, DatasetSpec spec) =>
+        DuckDbSqlText.ScanFragment(QualifiedTable(database, spec.Dataset), spec);
 
     /// <summary>The copy statement(s) for one output. <c>{{source}}</c> is the engine's placeholder
     /// for the staged relation (substituted by SinkWriteExecutor). Append and merge first create the

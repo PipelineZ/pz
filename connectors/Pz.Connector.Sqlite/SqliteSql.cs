@@ -58,34 +58,8 @@ internal static class SqliteSql
     /// The engine embeds the fragment after FROM (<c>create … as select * from &lt;fragment&gt;</c>),
     /// so a plain scan stays the bare table-function call (the read_csv/read_parquet shape) and
     /// anything with a projection or predicate becomes a parenthesized subquery.</summary>
-    internal static string ScanFragment(string resolvedPath, DatasetSpec spec)
-    {
-        var scan = $"sqlite_scan('{DuckDbSqlText.EscapeLiteral(resolvedPath)}', '{DuckDbSqlText.EscapeLiteral(spec.Dataset)}')";
-
-        var columns = ColumnTypeCatalog.ContractColumns(spec);
-        var projection = columns is { Count: > 0 }
-            ? string.Join(", ", columns.Keys.Select(DuckDbSqlText.QuoteIdentifier))
-            : "*";
-
-        var predicates = new List<string>();
-        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
-        {
-            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(cursor)} {op} {DuckDbSqlText.WatermarkLiteral(low)}");
-        }
-
-        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
-        {
-            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(upperCursor)} <= {DuckDbSqlText.WatermarkLiteral(high)}");
-        }
-
-        if (projection == "*" && predicates.Count == 0)
-        {
-            return scan;
-        }
-
-        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
-        return $"(select {projection} from {scan}{where})";
-    }
+    internal static string ScanFragment(string resolvedPath, DatasetSpec spec) =>
+        DuckDbSqlText.ScanFragment(
+            $"sqlite_scan('{DuckDbSqlText.EscapeLiteral(resolvedPath)}', '{DuckDbSqlText.EscapeLiteral(spec.Dataset)}')", spec);
 
 }
