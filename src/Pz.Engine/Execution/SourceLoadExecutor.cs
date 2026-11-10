@@ -339,7 +339,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 return NodeResult.Failed(node, nativeWatermarkError);
             }
 
-            PzMeters.RowsMoved.Add(nativeRows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
+            PzMeters.RowsMoved.Add(nativeRows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
             // Ops: universal tier only -- the native tier never routes through a .NET gate.
             var nativeSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null,
                 WatermarkCandidate: nativeWatermarkCandidate, SyncStateCandidate: null);
@@ -451,7 +451,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // the list path below starts ALL partition tasks at once, backpressured only by the bounded
         // channel(4) -- for a streaming source that would materialize millions of pending tasks up front,
         // defeating laziness. So the streaming variant gates in-flight partition reads with a SemaphoreSlim
-        // sized to Environment.ProcessorCount -- a bounded I/O fan-out default, no YAML knob. Determinism
+        // sized to PartitionModeLoader.MaxConcurrentPartitionReads. Determinism
         // is unaffected: partitions already funnel through the one bounded channel into the one serialized
         // DuckDB ingest, so cross-partition row order was never guaranteed either way.
         var skipGuard = new SkippedReadGuard(def, shape);
@@ -459,7 +459,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             ? PumpPartitionsAsync(partitions!, channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipGuard)
             : PumpStreamingPartitionsAsync(
                 streamingSource.PlanReadStreamingAsync(spec, hints, pumpCts.Token),
-                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, Environment.ProcessorCount, skipGuard);
+                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipGuard);
         Activity.Current = nodeActivity;
 
         try
@@ -560,7 +560,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 return NodeResult.Failed(node, watermarkError);
             }
 
-            PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
+            PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
 
             var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
@@ -897,7 +897,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             return NodeResult.Failed(node, watermarkError);
         }
 
-        PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
+        PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
         var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
         var partitionSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
@@ -1224,7 +1224,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 ? new Watermark(wm.Cursor, wm.Type, wm.Value, ctx.Paths.RunId)
                 : null;
 
-            PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
+            PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
             // Deliberately NOT routed through SchemaDriftGate: this table was landed by the FAILED
             // run, whose own gate pass already accepted/seeded its schema (or the run wouldn't have
             // produced a reusable ReuseEntry) — re-DESCRIBEing a byte-identical copy would only
@@ -1301,9 +1301,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// external cancel). A clean run completes the channel with no error.</summary>
     private static async Task PumpStreamingPartitionsAsync(
         IAsyncEnumerable<IDatasetPartition> partitions, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, int maxConcurrency, SkippedReadGuard skipGuard)
+        StallAccumulator stall, BatchOptions batchOptions, SkippedReadGuard skipGuard)
     {
-        using var gate = new SemaphoreSlim(maxConcurrency);
+        using var gate = new SemaphoreSlim(PartitionModeLoader.MaxConcurrentPartitionReads);
         var tasks = new List<Task>();
 
         try

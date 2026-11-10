@@ -38,19 +38,6 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
         [NodeKind.SinkWrite] = "node.SinkWrite",
     }.ToFrozenDictionary();
 
-    /// <summary>The <c>pz.node.kind</c> metric tag <see cref="KeyValuePair{TKey,TValue}"/>
-    /// is likewise constant per <see cref="NodeKind"/> — caching it avoids both the enum
-    /// <c>ToString()</c> allocation and a fresh boxed tag value on every
-    /// <c>PzMeters.NodeDuration.Record</c> call.</summary>
-    internal static readonly FrozenDictionary<NodeKind, KeyValuePair<string, object?>> NodeKindTags =
-        new Dictionary<NodeKind, KeyValuePair<string, object?>>
-        {
-            [NodeKind.SourceLoad] = new("pz.node.kind", "SourceLoad"),
-            [NodeKind.Pipeline] = new("pz.node.kind", "Pipeline"),
-            [NodeKind.Check] = new("pz.node.kind", "Check"),
-            [NodeKind.SinkWrite] = new("pz.node.kind", "SinkWrite"),
-        }.ToFrozenDictionary();
-
     /// <summary>Executes the dag topologically. Selection (when non-null) is expanded to include all
     /// required ancestors (run-time semantics — differs deliberately from compile's selection-exact).
     /// A failed node marks all descendants Skipped; independent branches continue unless FailFast.
@@ -302,7 +289,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
 
                             if (result.Status != NodeStatus.Skipped)
                             {
-                                PzMeters.NodeDuration.Record(result.Duration.TotalMilliseconds, NodeKindTags[result.Kind]);
+                                PzMeters.NodeDuration.Record(result.Duration.TotalMilliseconds, NodeMetricTags.Kind[result.Kind]);
                             }
 
                             RecordTerminal(result);

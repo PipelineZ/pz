@@ -182,7 +182,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                 File.Move(move.TempPath, move.FinalPath, overwrite: true);
             }
 
-            PzMeters.RowsMoved.Add(nativeRows, new KeyValuePair<string, object?>("pz.node.kind", "SinkWrite"));
+            PzMeters.RowsMoved.Add(nativeRows, NodeMetricTags.Kind[NodeKind.SinkWrite]);
             // Ops: universal tier only -- the native tier never routes through a .NET gate.
             return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null);
         }
@@ -535,7 +535,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
             // failure surfaces directly as a Failed NodeResult (KindDispatchingExecutor wraps it as
             // PZ0501) with no Abort call — see the comment above for why.
             var result = await session.CommitAsync(ct).ConfigureAwait(false);
-            PzMeters.RowsMoved.Add(result.RowsWritten, new KeyValuePair<string, object?>("pz.node.kind", "SinkWrite"));
+            PzMeters.RowsMoved.Add(result.RowsWritten, NodeMetricTags.Kind[NodeKind.SinkWrite]);
 
             var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
