@@ -39,43 +39,27 @@ public static partial class DagCompiler
                 continue;
             }
 
-            var seen = new HashSet<NodeId>();
-            var queue = new Queue<NodeId>(sinkNode.DependsOn);
-            while (queue.Count > 0)
+            foreach (var src in UpstreamSourceLoads(sinkNode, deliveryById)
+                .Where(s => s.Dataset.SyncMode is { Mode: SyncMode.Incremental }))
             {
-                var id = queue.Dequeue();
-                if (!seen.Add(id) || !deliveryById.TryGetValue(id, out var ancestor))
+                if (checkReplace)
                 {
-                    continue;
+                    deliveryErrors.Add(new PzError(PzErrorCode.IncompatiblePair,
+                        $"output '{sinkDef.Sink.Name}.{sinkDef.Output.Name}': write.strategy 'replace' fed by incremental dataset " +
+                        $"'{src.Source.Name}.{src.Dataset.Name}' would discard previously loaded rows each run.",
+                        sinkDef.Sink.FilePath, null,
+                        "use write.strategy: merge (effectively-once), or remove the dataset's sync block for a full re-read"));
                 }
-
-                if (ancestor.Definition is SourceDatasetDef src &&
-                    src.Dataset.SyncMode is { Mode: SyncMode.Incremental })
+                else
                 {
-                    if (checkReplace)
-                    {
-                        deliveryErrors.Add(new PzError(PzErrorCode.IncompatiblePair,
-                            $"output '{sinkDef.Sink.Name}.{sinkDef.Output.Name}': write.strategy 'replace' fed by incremental dataset " +
-                            $"'{src.Source.Name}.{src.Dataset.Name}' would discard previously loaded rows each run.",
-                            sinkDef.Sink.FilePath, null,
-                            "use write.strategy: merge (effectively-once), or remove the dataset's sync block for a full re-read"));
-                    }
-                    else
-                    {
-                        deliveryErrors.Add(new PzError(PzErrorCode.IncrementalAppendUnacknowledged,
-                            $"sink '{sinkDef.Sink.Name}.{sinkDef.Output.Name}' has write.strategy: append and is fed by " +
-                            $"incremental dataset '{src.Source.Name}.{src.Dataset.Name}' -- delivery is " +
-                            "at-least-once, so a retried or replayed slice can duplicate rows",
-                            sinkDef.Sink.FilePath, null,
-                            "use write.strategy: merge (with keys:) or write.strategy: replace, or set\n" +
-                            "write:\n  strategy: append\n  duplicates: accept\n" +
-                            "on the output to accept at-least-once delivery"));
-                    }
-                }
-
-                foreach (var dep in ancestor.DependsOn)
-                {
-                    queue.Enqueue(dep);
+                    deliveryErrors.Add(new PzError(PzErrorCode.IncrementalAppendUnacknowledged,
+                        $"sink '{sinkDef.Sink.Name}.{sinkDef.Output.Name}' has write.strategy: append and is fed by " +
+                        $"incremental dataset '{src.Source.Name}.{src.Dataset.Name}' -- delivery is " +
+                        "at-least-once, so a retried or replayed slice can duplicate rows",
+                        sinkDef.Sink.FilePath, null,
+                        "use write.strategy: merge (with keys:) or write.strategy: replace, or set\n" +
+                        "write:\n  strategy: append\n  duplicates: accept\n" +
+                        "on the output to accept at-least-once delivery"));
                 }
             }
         }
@@ -164,11 +148,11 @@ public static partial class DagCompiler
         }
     }
 
-    /// <summary>The cdc pairing-matrix pass's closure walk -- every
+    /// <summary>The closure walk of both pairing matrices -- every
     /// <see cref="SourceDatasetDef"/> reachable from a SinkWrite node's transitive DependsOn ancestry.
-    /// Mirrors the incremental pass's (and ExecutionPlanner's feed pass) HashSet-seen + Queue-over-DependsOn
-    /// shape; a dataset reachable via two paths in a diamond DAG is collected once because `seen`
-    /// gates on NodeId (one SourceLoad node per (source, dataset) pair), not on dataset identity.</summary>
+    /// HashSet-seen + Queue-over-DependsOn shape, also used by ExecutionPlanner's feed pass; a dataset
+    /// reachable via two paths in a diamond DAG is collected once because `seen` gates on NodeId (one
+    /// SourceLoad node per (source, dataset) pair), not on dataset identity.</summary>
     private static List<SourceDatasetDef> UpstreamSourceLoads(
         DagNode sinkNode, IReadOnlyDictionary<NodeId, DagNode> byId)
     {
