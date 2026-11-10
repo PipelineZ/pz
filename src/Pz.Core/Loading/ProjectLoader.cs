@@ -1423,76 +1423,25 @@ public static class ProjectLoader
             var redacted = GetRedactedColumns(yaml, pipelineName, relativePath, errors);
 
             var checks = new List<CheckDef>();
-            // Indices (into `checks`) whose `column:` value was already reported as malformed below --
+            // Indices (into `checks`) whose `column:` value was already reported as malformed --
             // ValidateChecks skips its own "requires exactly one 'column'" rule for these so the one
             // root cause (a bad `column:` value) doesn't also surface as a second PZ0113: one error per
             // root cause.
             var columnShapeErrorIndices = new HashSet<int>();
             foreach (var checkEntry in GetList(yaml, "checks"))
             {
-                if (checkEntry is not Dictionary<string, object?> checkDict || checkDict.Count == 0)
+                if (ParseCheckEntry(checkEntry, pipelineName, relativePath, errors, out var columnShapeError)
+                    is not { } check)
                 {
-                    errors.Add(new PzError(PzErrorCode.InvalidCheck,
-                        $"pipeline '{pipelineName}': check entry must be a mapping like `- not_null: [id]`.",
-                        relativePath, null, "each check is a single-key mapping: `- <type>: <options>`"));
                     continue;
                 }
 
-                if (checkDict.Count > 1)
+                if (columnShapeError)
                 {
-                    var keys = string.Join(", ", checkDict.Keys.Order(StringComparer.Ordinal));
-                    errors.Add(new PzError(PzErrorCode.InvalidCheck,
-                        $"pipeline '{pipelineName}': one check per list item, got keys: {keys}.",
-                        relativePath, null, "split into separate list items"));
-                    continue;
+                    columnShapeErrorIndices.Add(checks.Count);
                 }
 
-                var (checkType, checkValue) = checkDict.First();
-                var checkValueDict = checkValue as Dictionary<string, object?>;
-
-                // A check declared in dict form (e.g. `row_count: { min: 10 }`) may also carry
-                // `columns:`, so not_null/unique can combine columns with `sample_values:`, e.g.
-                // `not_null: { columns: [id], sample_values: false }`. The bare-list shape
-                // (`not_null: [id, email]`) carries no sample_values and inherits the project default.
-                // `columns`/`sample_values` are reserved keys, stripped from Options below so
-                // row_count's flat `{min, max}` shape is unaffected by the reservation.
-                var columns = checkValue is List<object?> columnsList
-                    ? columnsList.Select(c => c?.ToString() ?? string.Empty).ToList()
-                    : checkValueDict is not null && checkValueDict.TryGetValue("columns", out var columnsRaw)
-                        && columnsRaw is List<object?> dictColumnsList
-                        ? dictColumnsList.Select(c => c?.ToString() ?? string.Empty).ToList()
-                        : new List<string>();
-                // `column:` singular (dbt parity, used by freshness/accepted_values) normalizes into
-                // Columns so node naming and canonical
-                // hashing treat it exactly like `columns:`. Declaring both is refused below.
-                if (checkValueDict is not null && checkValueDict.TryGetValue("column", out var columnRaw))
-                {
-                    if (columns.Count > 0)
-                    {
-                        errors.Add(new PzError(PzErrorCode.InvalidCheck,
-                            $"pipeline '{pipelineName}': {checkType} check declares both 'column' and 'columns'.",
-                            relativePath, null, "keep exactly one of the two keys."));
-                    }
-                    else if (columnRaw is string { Length: > 0 } singleColumn)
-                    {
-                        columns = [singleColumn];
-                    }
-                    else
-                    {
-                        errors.Add(new PzError(PzErrorCode.InvalidCheck,
-                            $"pipeline '{pipelineName}': {checkType} check field 'column' must be a single column name.",
-                            relativePath, null, "'column' must be a single column name, e.g. `column: updated_at`"));
-                        columnShapeErrorIndices.Add(checks.Count);
-                    }
-                }
-
-                var sampleValues = checkValueDict is not null ? TryGetBool(checkValueDict, "sample_values") : null;
-                var options = checkValueDict is not null
-                    ? checkValueDict.Where(kv => kv.Key is not ("column" or "columns" or "sample_values"))
-                        .ToDictionary(kv => kv.Key, kv => kv.Value)
-                    : new Dictionary<string, object?>();
-
-                checks.Add(new CheckDef(checkType, columns, options, sampleValues));
+                checks.Add(check);
             }
 
             ValidateChecks(checks, pipelineName, relativePath, errors, columnShapeErrorIndices);
@@ -1505,6 +1454,79 @@ public static class ProjectLoader
                 RedactedColumns = redacted,
             };
         }
+    }
+
+    /// <summary>One <c>checks:</c> list item as a <see cref="CheckDef"/>, or null (after reporting) when
+    /// the item is not a single-key mapping. <paramref name="columnShapeError"/> is set when a malformed
+    /// <c>column:</c> value was already reported, so <see cref="ValidateChecks"/> does not raise a second
+    /// error for the columns it consequently lacks.</summary>
+    private static CheckDef? ParseCheckEntry(object? checkEntry, string pipelineName, string relativePath,
+        List<PzError> errors, out bool columnShapeError)
+    {
+        columnShapeError = false;
+        if (checkEntry is not Dictionary<string, object?> checkDict || checkDict.Count == 0)
+        {
+            errors.Add(new PzError(PzErrorCode.InvalidCheck,
+                $"pipeline '{pipelineName}': check entry must be a mapping like `- not_null: [id]`.",
+                relativePath, null, "each check is a single-key mapping: `- <type>: <options>`"));
+            return null;
+        }
+
+        if (checkDict.Count > 1)
+        {
+            var keys = string.Join(", ", checkDict.Keys.Order(StringComparer.Ordinal));
+            errors.Add(new PzError(PzErrorCode.InvalidCheck,
+                $"pipeline '{pipelineName}': one check per list item, got keys: {keys}.",
+                relativePath, null, "split into separate list items"));
+            return null;
+        }
+
+        var (checkType, checkValue) = checkDict.First();
+        var checkValueDict = checkValue as Dictionary<string, object?>;
+
+        // A check declared in dict form (e.g. `row_count: { min: 10 }`) may also carry
+        // `columns:`, so not_null/unique can combine columns with `sample_values:`, e.g.
+        // `not_null: { columns: [id], sample_values: false }`. The bare-list shape
+        // (`not_null: [id, email]`) carries no sample_values and inherits the project default.
+        // `columns`/`sample_values` are reserved keys, stripped from Options below so
+        // row_count's flat `{min, max}` shape is unaffected by the reservation.
+        var columns = checkValue is List<object?> columnsList
+            ? columnsList.Select(c => c?.ToString() ?? string.Empty).ToList()
+            : checkValueDict is not null && checkValueDict.TryGetValue("columns", out var columnsRaw)
+                && columnsRaw is List<object?> dictColumnsList
+                ? dictColumnsList.Select(c => c?.ToString() ?? string.Empty).ToList()
+                : new List<string>();
+        // `column:` singular (dbt parity, used by freshness/accepted_values) normalizes into
+        // Columns so node naming and canonical
+        // hashing treat it exactly like `columns:`. Declaring both is refused below.
+        if (checkValueDict is not null && checkValueDict.TryGetValue("column", out var columnRaw))
+        {
+            if (columns.Count > 0)
+            {
+                errors.Add(new PzError(PzErrorCode.InvalidCheck,
+                    $"pipeline '{pipelineName}': {checkType} check declares both 'column' and 'columns'.",
+                    relativePath, null, "keep exactly one of the two keys."));
+            }
+            else if (columnRaw is string { Length: > 0 } singleColumn)
+            {
+                columns = [singleColumn];
+            }
+            else
+            {
+                errors.Add(new PzError(PzErrorCode.InvalidCheck,
+                    $"pipeline '{pipelineName}': {checkType} check field 'column' must be a single column name.",
+                    relativePath, null, "'column' must be a single column name, e.g. `column: updated_at`"));
+                columnShapeError = true;
+            }
+        }
+
+        var sampleValues = checkValueDict is not null ? TryGetBool(checkValueDict, "sample_values") : null;
+        var options = checkValueDict is not null
+            ? checkValueDict.Where(kv => kv.Key is not ("column" or "columns" or "sample_values"))
+                .ToDictionary(kv => kv.Key, kv => kv.Value)
+            : new Dictionary<string, object?>();
+
+        return new CheckDef(checkType, columns, options, sampleValues);
     }
 
     private const string SidecarColumnsHint = "columns:\n  - name: email\n    redact: true";
