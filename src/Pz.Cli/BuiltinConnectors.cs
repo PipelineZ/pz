@@ -13,14 +13,15 @@ using Pz.Connector.Quack;
 using Pz.Connector.Sftp;
 using Pz.Connector.Sqlite;
 using Pz.Connector.SqlServer;
+using Pz.Connectors.Abstractions;
 using Pz.Engine.Execution;
 
 namespace Pz.Cli;
 
 /// <summary>
-/// Builtin connector registry: the CLI wires the connectors v0 needs directly, project-
-/// referencing <c>connectors/Pz.Connector.LocalFiles</c>, <c>connectors/Pz.Connector.Postgres</c>, and
-/// <c>connectors/Pz.Connector.S3</c>, rather than restoring them as NuGet packages.
+/// Builtin connector registry: the CLI wires the first-party connectors directly, project-referencing
+/// each <c>connectors/Pz.Connector.*</c> project (see <see cref="PackageIds"/>), rather than restoring
+/// them as NuGet packages.
 /// <see cref="ConnectorRegistry"/> itself stays host-agnostic (name → instance), so
 /// <see cref="ConnectorRegistryFactory"/> only adds to, never replaces, this construction site:
 /// builtins are always registered; non-builtin connectors declared in project.yml additionally come
@@ -49,51 +50,28 @@ internal static class BuiltinConnectors
     public static ConnectorRegistry CreateRegistry()
     {
         var registry = new ConnectorRegistry();
-        var localFiles = new LocalFilesConnector();
-        registry.AddSource("localfiles", localFiles);
-        registry.AddSink("localfiles", localFiles);
-        var postgres = new PostgresConnector();
-        registry.AddSource("postgres", postgres);
-        registry.AddSink("postgres", postgres);
-        var s3 = new S3Connector();
-        registry.AddSource("s3", s3);
-        registry.AddSink("s3", s3);
-        var sqlServer = new SqlServerConnector();
-        registry.AddSource("sqlserver", sqlServer);
-        registry.AddSink("sqlserver", sqlServer);
-        var azure = new AzureConnector();
-        registry.AddSource("azureblob", azure);
-        registry.AddSink("azureblob", azure);
-        var gcs = new GcsConnector();
-        registry.AddSource("gcs", gcs);
-        registry.AddSink("gcs", gcs);
-        var http = new HttpConnector();
-        registry.AddSource("http", http);
-        registry.AddSink("http", http);
-        var mysql = new MySqlConnector();
-        registry.AddSource("mysql", mysql);
-        registry.AddSink("mysql", mysql);
-        var sqlite = new SqliteConnector();
-        registry.AddSource("sqlite", sqlite);
-        registry.AddSink("sqlite", sqlite);
-        var duckdb = new DuckDbConnector();
-        registry.AddSource("duckdb", duckdb);
-        registry.AddSink("duckdb", duckdb);
-        var ducklake = new DuckLakeConnector();
-        registry.AddSource("ducklake", ducklake);
-        registry.AddSink("ducklake", ducklake);
-        var quack = new QuackConnector();
-        registry.AddSource("quack", quack);
-        registry.AddSink("quack", quack);
-        var motherduck = new MotherDuckConnector();
-        registry.AddSource("motherduck", motherduck);
-        registry.AddSink("motherduck", motherduck);
-        var iceberg = new IcebergConnector();
-        registry.AddSource("iceberg", iceberg);
-        registry.AddSink("iceberg", iceberg);
-        var sftp = new SftpConnector();
-        registry.AddSource("sftp", sftp);
-        registry.AddSink("sftp", sftp);
+        AddBoth(registry, "localfiles", new LocalFilesConnector());
+        AddBoth(registry, "postgres", new PostgresConnector());
+        AddBoth(registry, "s3", new S3Connector());
+        AddBoth(registry, "sqlserver", new SqlServerConnector());
+        AddBoth(registry, "azureblob", new AzureConnector());
+        AddBoth(registry, "gcs", new GcsConnector());
+        AddBoth(registry, "http", new HttpConnector());
+        AddBoth(registry, "mysql", new MySqlConnector());
+        AddBoth(registry, "sqlite", new SqliteConnector());
+        AddBoth(registry, "duckdb", new DuckDbConnector());
+        AddBoth(registry, "ducklake", new DuckLakeConnector());
+        AddBoth(registry, "quack", new QuackConnector());
+        AddBoth(registry, "motherduck", new MotherDuckConnector());
+        AddBoth(registry, "iceberg", new IcebergConnector());
+        AddBoth(registry, "sftp", new SftpConnector());
         return registry;
+    }
+
+    private static void AddBoth<T>(ConnectorRegistry registry, string name, T connector)
+        where T : ISourceConnector, ISinkConnector
+    {
+        registry.AddSource(name, connector);
+        registry.AddSink(name, connector);
     }
 }
