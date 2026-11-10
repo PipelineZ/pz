@@ -405,9 +405,8 @@ public sealed class ConnectorProcess : IAsyncDisposable
             if (!_process.HasExited)
             {
                 // net10's entireProcessTree walk covers the fixture's `sleep 300 &` child on both
-                // unix (via /proc) and windows; a Job Object with kill-on-close would be sturdier
-                // against a host crash between spawn and kill (kept as a hardening follow-up rather
-                // than added speculatively here).
+                // unix (via /proc) and windows. A host crash between spawn and kill is covered on
+                // Windows by the job object (_jobObject); on unix it is not.
                 _process.Kill(entireProcessTree: true);
             }
         }
