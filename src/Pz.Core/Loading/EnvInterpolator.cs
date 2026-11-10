@@ -46,28 +46,4 @@ public static partial class EnvInterpolator
     /// will not substitute, without performing the substitution itself.</summary>
     public static bool ContainsReference(string text) =>
         EnvVarPattern().Matches(text).Any(m => m.Groups[1].Success);
-
-    /// <summary>
-    /// Walks a dynamic YAML object tree (dictionaries/lists/scalars), interpolating every string scalar.
-    /// </summary>
-    public static object? InterpolateTree(object? node, IReadOnlyDictionary<string, string> env, string file, List<PzError> errors)
-    {
-        switch (node)
-        {
-            case string s:
-                return Interpolate(s, env, file, errors);
-            case Dictionary<string, object?> dict:
-                var mapped = new Dictionary<string, object?>();
-                foreach (var (key, value) in dict)
-                {
-                    mapped[key] = InterpolateTree(value, env, file, errors);
-                }
-
-                return mapped;
-            case List<object?> list:
-                return list.Select(item => InterpolateTree(item, env, file, errors)).ToList();
-            default:
-                return node;
-        }
-    }
 }
