@@ -49,8 +49,7 @@ public static partial class DagCompiler
                 continue;
             }
 
-            var markers = result.InlineBindings
-                .Select(b => $"__pz_sink__{b.Sink}__{b.Output}__").ToList();
+            var markers = result.InlineBindings.Select(b => b.Marker).ToList();
             var extracted = TryExtractInsertPrefix(result.Sql, markers);
             if (extracted is null)
             {

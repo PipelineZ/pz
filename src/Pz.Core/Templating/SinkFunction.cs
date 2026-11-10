@@ -60,8 +60,9 @@ internal sealed class SinkFunction : KeywordCallFunction
         }
 
         var write = ParseWriteOptions(context, callerContext, sink, output, out var declaredAtCallSite);
-        _bindings.Add(new InlineSinkBinding(sink, output, write, declaredAtCallSite));
-        return $"__pz_sink__{sink}__{output}__";
+        var binding = new InlineSinkBinding(sink, output, write, declaredAtCallSite);
+        _bindings.Add(binding);
+        return binding.Marker;
     }
 
     /// <summary><paramref name="declaredAtCallSite"/> is true when the author typed ANY keyword argument,

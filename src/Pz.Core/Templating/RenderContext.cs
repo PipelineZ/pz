@@ -39,6 +39,10 @@ public sealed record RenderResult(string Sql, IReadOnlySet<DepRef> Dependencies)
 public sealed record InlineSinkBinding(string Sink, string Output, SinkWriteOptions Write,
     bool DeclaredAtCallSite = false)
 {
+    /// <summary>The text <c>sink()</c> renders in place of the call; DagCompiler recognizes it verbatim
+    /// when it strips the leading INSERT statement.</summary>
+    public string Marker => $"__pz_sink__{Sink}__{Output}__";
+
     public InlineSinkBinding(string Sink, string Output)
         : this(Sink, Output, SinkWriteOptions.Default)
     {
