@@ -564,16 +564,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
 
-            // One Snapshot() call feeds both the pz.ops.* meters and NodeResult.Ops —
-            // never snapshot twice, since OpStats is a point-in-time read of mutable Interlocked counters.
-            var opStats = gate?.Snapshot();
-            if (opStats is { } stats)
-            {
-                var instanceTag = new KeyValuePair<string, object?>("pz.instance", InstanceKey.For(node));
-                PzMeters.OpsExecuted.Add(stats.Executed, instanceTag);
-                PzMeters.OpsRetried.Add(stats.Retried, instanceTag);
-                PzMeters.OpsThrottleWait.Add(stats.ThrottleWaitMs, instanceTag);
-            }
+            var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
             var legacySuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
                 stall.ToTimings(), watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats, Cdc: cdcStats);
@@ -789,9 +780,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// <summary>Partition-scoped mode entry point. Validates every planned partition's identity
     /// (StablePartitionIds contract) before any extraction starts, then hands the identified list to
     /// <see cref="PartitionModeLoader"/> for per-partition part-table staging + ledger-gated completion.
-    /// The epilogue below deliberately mirrors <see cref="ExecuteAsync"/>'s legacy-branch
-    /// trim/watermark/sync/meters statements — a parallel copy that keeps the legacy path byte-identical
-    /// rather than threading a shared helper through both.</summary>
+    /// The epilogue (trim, watermark capture, sync candidate, meters) follows the same sequence as the
+    /// channel branch of <see cref="ExecuteAsync"/>, but reports partition stats instead of stall timings.</summary>
     private static async Task<NodeResult> ExecutePartitionModeAsync(DagNode node, SourceDatasetDef def,
         RunContext ctx, ISource source, IReadOnlyList<IDatasetPartition>? partitions,
         IStreamingSource? streamingSource, DatasetSpec spec, ReadHints hints, Schema schema, OperationGate? gate,
@@ -883,10 +873,8 @@ public sealed class SourceLoadExecutor : INodeExecutor
             return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, loadError);
         }
 
-        // Epilogue — same statements as the legacy branch (windowed trim + recount, watermark
-        // capture, sync poll, meters); see the legacy branch above and mirror it exactly, with
-        // rows recomputed from the trim's count when windowed. Timings deliberately null and
-        // Partitions carrying the stats.
+        // Epilogue: sync candidate, windowed trim (rows become the post-trim count), watermark capture,
+        // meters. Timings are null; Partitions carries the stats.
         SyncState? syncCandidate = null;
         if (shape == ResolvedReadShape.Feed && partitions is { Count: 1 } &&
             partitions[0] is ISyncStatePartition syncPartition &&
@@ -913,14 +901,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
 
         PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
-        var opStats = gate?.Snapshot();
-        if (opStats is { } snapshot)
-        {
-            var instanceTag = new KeyValuePair<string, object?>("pz.instance", InstanceKey.For(node));
-            PzMeters.OpsExecuted.Add(snapshot.Executed, instanceTag);
-            PzMeters.OpsRetried.Add(snapshot.Retried, instanceTag);
-            PzMeters.OpsThrottleWait.Add(snapshot.ThrottleWaitMs, instanceTag);
-        }
+        var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
         var partitionSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
             Timings: null, watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats,

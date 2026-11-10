@@ -537,16 +537,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
             var result = await session.CommitAsync(ct).ConfigureAwait(false);
             PzMeters.RowsMoved.Add(result.RowsWritten, new KeyValuePair<string, object?>("pz.node.kind", "SinkWrite"));
 
-            // One Snapshot() call feeds both the pz.ops.* meters and NodeResult.Ops —
-            // never snapshot twice, since OpStats is a point-in-time read of mutable Interlocked counters.
-            var opStats = gate?.Snapshot();
-            if (opStats is { } stats)
-            {
-                var instanceTag = new KeyValuePair<string, object?>("pz.instance", InstanceKey.For(node));
-                PzMeters.OpsExecuted.Add(stats.Executed, instanceTag);
-                PzMeters.OpsRetried.Add(stats.Retried, instanceTag);
-                PzMeters.OpsThrottleWait.Add(stats.ThrottleWaitMs, instanceTag);
-            }
+            var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
             // A committed sink needs no resume state, and a stale row must
             // never survive into a later pz retry. CancellationToken.None + suppress, mirroring
