@@ -24,11 +24,8 @@ namespace Pz.Core.Templating;
 /// fail-one-at-a-time). Kwargs ride <see cref="InlineSinkBinding"/>, never the marker text, so
 /// DagCompiler's prefix extraction and the bracket fan-out form see a stable marker.
 /// </summary>
-internal sealed class SinkFunction : IScriptCustomFunction
+internal sealed class SinkFunction : KeywordCallFunction
 {
-    private const string CallHint =
-        "sink('<connection>', '<entity>', strategy: 'merge', keys: ['<column>'])";
-
     private static readonly string[] WriteStrategies = ["replace", "append", "merge"];
 
     /// <summary>The schema-drift vocabulary. A connector is free to refuse a policy it does not
@@ -43,70 +40,36 @@ internal sealed class SinkFunction : IScriptCustomFunction
     private static readonly string[] KnownKwargs =
         ["strategy", "keys", "duplicates", "on_delete", "schema_policy", "retry"];
 
-    private readonly PipelineDef _pipeline;
     private readonly List<InlineSinkBinding> _bindings;
-    private readonly List<PzError> _errors;
 
     public SinkFunction(PipelineDef pipeline, List<InlineSinkBinding> bindings, List<PzError> errors)
+        : base(pipeline, errors)
     {
-        _pipeline = pipeline;
         _bindings = bindings;
-        _errors = errors;
     }
 
-    public int RequiredParameterCount => 2;
+    protected override string FunctionName => "sink";
 
-    public int ParameterCount => 2;
+    protected override string OptionKind => "write";
 
-    /// <summary>Direct, not LastParameter: LastParameter collapses argument 2 into a ScriptArray and
-    /// drops named arguments entirely. Direct leaves the two positional arguments
-    /// alone and lets pz read the named ones off the caller node.</summary>
-    public ScriptVarParamKind VarParamKind => ScriptVarParamKind.Direct;
+    protected override string MalformedCallCode => PzErrorCode.InvalidSinkCall;
 
-    public Type ReturnType => typeof(string);
+    protected override string CallHint =>
+        "sink('<connection>', '<entity>', strategy: 'merge', keys: ['<column>'])";
 
-    public ScriptParameterInfo GetParameterInfo(int index) => index switch
-    {
-        0 => new ScriptParameterInfo(typeof(string), "connection"),
-        1 => new ScriptParameterInfo(typeof(string), "entity"),
-        _ => new ScriptParameterInfo(typeof(object), "options"),
-    };
-
-    public object? Invoke(TemplateContext context, ScriptNode? callerContext, ScriptArray arguments,
+    public override object? Invoke(TemplateContext context, ScriptNode? callerContext, ScriptArray arguments,
         ScriptBlockStatement? blockStatement)
     {
         var line = (callerContext?.Span.Start.Line ?? 0) + 1;
-        var sink = arguments.Count > 0 ? arguments[0] as string : null;
-        var output = arguments.Count > 1 ? arguments[1] as string : null;
-        if (sink is null || output is null)
+        if (!TryReadTarget(arguments, line, out var sink, out var output))
         {
-            Error(PzErrorCode.InvalidSinkCall, line,
-                "sink() expects (connection, entity) as two string arguments");
             return string.Empty;
-        }
-
-        if (EntityName.Problem(output) is { } problem)
-        {
-            Error(PzErrorCode.EntityNameInvalid, line,
-                $"sink('{sink}', '{output}'): entity name {problem}",
-                "sink('<connection>', 'schema.table')");
-        }
-
-        if (arguments.Count > 2)
-        {
-            Error(PzErrorCode.InvalidSinkCall, line,
-                $"sink('{sink}', '{output}') was passed {arguments.Count - 2} extra positional " +
-                "argument(s) — write options are keyword arguments");
         }
 
         var write = ParseWriteOptions(context, callerContext, sink, output, out var declaredAtCallSite);
         _bindings.Add(new InlineSinkBinding(sink, output, write, declaredAtCallSite));
         return $"__pz_sink__{sink}__{output}__";
     }
-
-    public ValueTask<object?> InvokeAsync(TemplateContext context, ScriptNode? callerContext,
-        ScriptArray arguments, ScriptBlockStatement? blockStatement) =>
-        new(Invoke(context, callerContext, arguments, blockStatement));
 
     /// <summary><paramref name="declaredAtCallSite"/> is true when the author typed ANY keyword argument,
     /// recorded before the first Take() empties the map. DagCompiler needs the distinction, not the parsed
@@ -116,8 +79,7 @@ internal sealed class SinkFunction : IScriptCustomFunction
         string sink, string output, out bool declaredAtCallSite)
     {
         var kwargs = ScriptKwargs.Read(context, callerContext, (name, argLine) =>
-            Error(PzErrorCode.InvalidSinkCall, argLine,
-                $"sink('{sink}', '{output}') passes '{name}' more than once"));
+            ReportDuplicateKwarg(sink, output, name, argLine));
 
         declaredAtCallSite = kwargs.Count > 0;
 
@@ -175,8 +137,7 @@ internal sealed class SinkFunction : IScriptCustomFunction
     /// the YAML <c>write:</c> wrapper an author might carry over verbatim.</summary>
     private void RefuseMovedKwargs(Dictionary<string, (object? Value, int Line)> kwargs, string sink, string output)
     {
-        foreach (var (name, code, hint) in new[]
-        {
+        RefuseKwargs(kwargs, sink, output,
             ("mode", PzErrorCode.RetiredWriteSurface, "strategy: 'merge'"),
             ("accept_duplicates", PzErrorCode.RetiredWriteSurface, "duplicates: 'accept'"),
             ("write", PzErrorCode.RetiredWriteSurface,
@@ -190,15 +151,7 @@ internal sealed class SinkFunction : IScriptCustomFunction
             ("table", PzErrorCode.RetiredEntityQualifier,
                 "the entity name is the table: sink('<connection>', 'schema.table')"),
             ("schema", PzErrorCode.RetiredEntityQualifier,
-                "the entity name carries the schema: sink('<connection>', 'schema.table')"),
-        })
-        {
-            if (Take(kwargs, name) is { } arg)
-            {
-                Error(code, arg.Line, $"sink('{sink}', '{output}'): '{name}' is not a sink() keyword argument",
-                    hint);
-            }
-        }
+                "the entity name carries the schema: sink('<connection>', 'schema.table')"));
     }
 
     private IReadOnlyList<string> ParseKeys(Dictionary<string, (object? Value, int Line)> kwargs,
@@ -268,8 +221,8 @@ internal sealed class SinkFunction : IScriptCustomFunction
     }
 
     /// <summary>The call-site twin of <c>ProjectLoader.ParseRetry</c> -- same fields, same validity
-    /// rules, same PZ0301 code; only the hint is call-site shaped. Deliberately not shared with the
-    /// loader: the loader's copy dies with the YAML surfaces it serves.</summary>
+    /// rules, same PZ0301 code; only the hint is call-site shaped. Kept apart from the loader's copy because
+    /// its messages name the <c>sink()</c> call and carry the call-site hint.</summary>
     private RetryDef? ParseRetry(Dictionary<string, (object? Value, int Line)> kwargs, string sink, string output)
     {
         if (Take(kwargs, "retry") is not { } arg)
@@ -361,8 +314,4 @@ internal sealed class SinkFunction : IScriptCustomFunction
         Dictionary<string, object?> map => "{" + string.Join(", ", map.Select(kv => $"{kv.Key}: {Show(kv.Value)}")) + "}",
         _ => value.ToString() ?? "",
     };
-
-    private void Error(string code, int line, string message, string? hint = null) =>
-        _errors.Add(new PzError(code, $"{_pipeline.FilePath}: {message}.", _pipeline.FilePath, line,
-            hint ?? CallHint));
 }

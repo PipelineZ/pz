@@ -16,7 +16,7 @@ internal sealed class ScalarFunction(string name, string[] parameters, Func<stri
 
     public int ParameterCount => parameters.Length;
 
-    /// <summary>Direct, not LastParameter — see <see cref="SinkFunction.VarParamKind"/>.</summary>
+    /// <summary>Direct, not LastParameter — see <see cref="KeywordCallFunction.VarParamKind"/>.</summary>
     public ScriptVarParamKind VarParamKind => ScriptVarParamKind.Direct;
 
     public Type ReturnType => typeof(object);

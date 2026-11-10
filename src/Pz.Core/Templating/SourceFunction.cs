@@ -12,7 +12,7 @@ namespace Pz.Core.Templating;
 /// The <c>source(connection, entity, ...read options)</c> call — the read-side twin of
 /// <see cref="SinkFunction"/>, and an <see cref="IScriptCustomFunction"/> for the same reason: Scriban
 /// 7.2.5 binds an unrecognized named argument into the next free positional slot rather than raising,
-/// so an imported delegate cannot tell a typo from a value. See <see cref="SinkFunction"/> for the
+/// so an imported delegate cannot tell a typo from a value. See <see cref="ScriptKwargs"/> for the
 /// full rationale.
 ///
 /// The sub-blocks (<c>sync:</c>, <c>retry:</c>, <c>columns:</c>) are parsed by the SAME loader code the
@@ -21,11 +21,8 @@ namespace Pz.Core.Templating;
 /// of messages, and no chance of the two surfaces drifting. Only the location is re-stamped: a loader
 /// error names a file with no line, and this call site has one.
 /// </summary>
-internal sealed class SourceFunction : IScriptCustomFunction
+internal sealed class SourceFunction : KeywordCallFunction
 {
-    private const string CallHint =
-        "source('<connection>', '<entity>', partitions: 8, sync: { mode: 'incremental', cursor: '<column>' })";
-
     /// <summary>Kwargs pz owns. Everything else is a connector read option and rides
     /// <see cref="SourceReadOptions.Options"/> unchecked, exactly as an unrecognized key under a YAML
     /// <c>read:</c> block does. <c>partition_column</c>/<c>partitions</c> are listed because they are
@@ -34,62 +31,34 @@ internal sealed class SourceFunction : IScriptCustomFunction
     internal static readonly string[] KnownKwargs =
         ["columns", "sync", "retry", "partition_column", "partitions"];
 
-    private readonly PipelineDef _pipeline;
     /// <summary>The renderer's dependency SET. Two bare calls to one entity still dedup --
     /// SourceReadOptions.Default is a singleton -- while two kwarg-bearing calls to one entity do not,
     /// because the record's collection members compare by reference. Harmless: DagCompiler groups by
     /// (connection, entity), and PZ0349 already refuses a dataset read by more than one pipeline.</summary>
     private readonly ISet<DepRef> _dependencies;
-    private readonly List<PzError> _errors;
 
     public SourceFunction(PipelineDef pipeline, ISet<DepRef> dependencies, List<PzError> errors)
+        : base(pipeline, errors)
     {
-        _pipeline = pipeline;
         _dependencies = dependencies;
-        _errors = errors;
     }
 
-    public int RequiredParameterCount => 2;
+    protected override string FunctionName => "source";
 
-    public int ParameterCount => 2;
+    protected override string OptionKind => "read";
 
-    /// <summary>Direct, not LastParameter — see <see cref="SinkFunction.VarParamKind"/>.</summary>
-    public ScriptVarParamKind VarParamKind => ScriptVarParamKind.Direct;
+    protected override string MalformedCallCode => PzErrorCode.UnresolvedRef;
 
-    public Type ReturnType => typeof(string);
+    protected override string CallHint =>
+        "source('<connection>', '<entity>', partitions: 8, sync: { mode: 'incremental', cursor: '<column>' })";
 
-    public ScriptParameterInfo GetParameterInfo(int index) => index switch
-    {
-        0 => new ScriptParameterInfo(typeof(string), "connection"),
-        1 => new ScriptParameterInfo(typeof(string), "entity"),
-        _ => new ScriptParameterInfo(typeof(object), "options"),
-    };
-
-    public object? Invoke(TemplateContext context, ScriptNode? callerContext, ScriptArray arguments,
+    public override object? Invoke(TemplateContext context, ScriptNode? callerContext, ScriptArray arguments,
         ScriptBlockStatement? blockStatement)
     {
         var line = (callerContext?.Span.Start.Line ?? 0) + 1;
-        var connection = arguments.Count > 0 ? arguments[0] as string : null;
-        var entity = arguments.Count > 1 ? arguments[1] as string : null;
-        if (connection is null || entity is null)
+        if (!TryReadTarget(arguments, line, out var connection, out var entity))
         {
-            Error(PzErrorCode.UnresolvedRef, line,
-                "source() expects (connection, entity) as two string arguments");
             return string.Empty;
-        }
-
-        if (EntityName.Problem(entity) is { } problem)
-        {
-            Error(PzErrorCode.EntityNameInvalid, line,
-                $"source('{connection}', '{entity}'): entity name {problem}",
-                "source('<connection>', 'schema.table')");
-        }
-
-        if (arguments.Count > 2)
-        {
-            Error(PzErrorCode.UnresolvedRef, line,
-                $"source('{connection}', '{entity}') was passed {arguments.Count - 2} extra positional " +
-                "argument(s) — read options are keyword arguments");
         }
 
         var read = ParseReadOptions(context, callerContext, connection, entity, line, out var declared);
@@ -97,16 +66,11 @@ internal sealed class SourceFunction : IScriptCustomFunction
         return $"staging.{StagingName.ForSourceLoad(connection, entity)}";
     }
 
-    public ValueTask<object?> InvokeAsync(TemplateContext context, ScriptNode? callerContext,
-        ScriptArray arguments, ScriptBlockStatement? blockStatement) =>
-        new(Invoke(context, callerContext, arguments, blockStatement));
-
     private SourceReadOptions ParseReadOptions(TemplateContext context, ScriptNode? callerContext,
         string connection, string entity, int line, out bool declaredAtCallSite)
     {
         var kwargs = ScriptKwargs.Read(context, callerContext, (name, argLine) =>
-            Error(PzErrorCode.UnresolvedRef, argLine,
-                $"source('{connection}', '{entity}') passes '{name}' more than once"));
+            ReportDuplicateKwarg(connection, entity, name, argLine));
 
         declaredAtCallSite = kwargs.Count > 0;
         RefuseMovedKwargs(kwargs, connection, entity);
@@ -115,19 +79,16 @@ internal sealed class SourceFunction : IScriptCustomFunction
         // report against a file with no line, so their errors are re-stamped with this call's line.
         var subErrors = new List<PzError>();
         var plain = kwargs.ToDictionary(kv => kv.Key, kv => kv.Value.Value, StringComparer.Ordinal);
-        var sync = ProjectLoader.ParseSyncMode(plain, entity, _pipeline.FilePath, subErrors);
-        var retry = ProjectLoader.ParseRetry(plain, _pipeline.FilePath, subErrors,
+        var sync = ProjectLoader.ParseSyncMode(plain, entity, Pipeline.FilePath, subErrors);
+        var retry = ProjectLoader.ParseRetry(plain, Pipeline.FilePath, subErrors,
             $"source('{connection}', '{entity}') ");
-        foreach (var error in subErrors)
-        {
-            _errors.Add(error with { Line = line });
-        }
+        AddAtLine(subErrors, line);
 
         var columns = ParseColumns(kwargs, connection, entity, line);
-        if (ColumnContract.RefuseHandWritten(kwargs.Keys, $"source('{connection}', '{entity}')", _pipeline.FilePath)
+        if (ColumnContract.RefuseHandWritten(kwargs.Keys, $"source('{connection}', '{entity}')", Pipeline.FilePath)
             is { } handWritten)
         {
-            _errors.Add(handWritten with { Line = line });
+            AddAtLine([handWritten], line);
         }
 
         var options = kwargs
@@ -147,8 +108,7 @@ internal sealed class SourceFunction : IScriptCustomFunction
     private void RefuseMovedKwargs(Dictionary<string, (object? Value, int Line)> kwargs,
         string connection, string entity)
     {
-        foreach (var (name, code, hint) in new[]
-        {
+        RefuseKwargs(kwargs, connection, entity,
             ("rate_limit", PzErrorCode.RateLimitConfigInvalid,
                 "rate_limit is instance-level; declare it on the connection in connections.yml"),
             ("max_concurrency", PzErrorCode.ConcurrencyConfigInvalid,
@@ -158,15 +118,7 @@ internal sealed class SourceFunction : IScriptCustomFunction
             ("schema", PzErrorCode.RetiredEntityQualifier,
                 "the entity name carries the schema: source('<connection>', 'schema.table')"),
             ("incremental", PzErrorCode.RetiredReadSurface,
-                "sync: { mode: 'incremental', cursor: '<column>' }"),
-        })
-        {
-            if (kwargs.Remove(name, out var arg))
-            {
-                Error(code, arg.Line,
-                    $"source('{connection}', '{entity}'): '{name}' is not a source() keyword argument", hint);
-            }
-        }
+                "sync: { mode: 'incremental', cursor: '<column>' }"));
     }
 
     private ColumnContract? ParseColumns(
@@ -183,11 +135,8 @@ internal sealed class SourceFunction : IScriptCustomFunction
             // no line, so they are re-stamped with this call's.
             var subErrors = new List<PzError>();
             var contract = ColumnContractParser.Parse(map, $"source('{connection}', '{entity}')",
-                _pipeline.FilePath, subErrors);
-            foreach (var error in subErrors)
-            {
-                _errors.Add(error with { Line = line });
-            }
+                Pipeline.FilePath, subErrors);
+            AddAtLine(subErrors, line);
 
             return contract;
         }
@@ -202,8 +151,4 @@ internal sealed class SourceFunction : IScriptCustomFunction
     /// plainly a connector option. The read-side twin of <see cref="SinkFunction.NearMissKwarg"/>.</summary>
     internal static string? NearMissKwarg(string option) =>
         ScriptKwargs.NearMiss(KnownKwargs, option);
-
-    private void Error(string code, int line, string message, string? hint = null) =>
-        _errors.Add(new PzError(code, $"{_pipeline.FilePath}: {message}.", _pipeline.FilePath, line,
-            hint ?? CallHint));
 }
