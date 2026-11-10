@@ -2,7 +2,7 @@ namespace Pz.Connectors.Sdk;
 
 /// <summary>Questions <c>pz connector test</c> asks of the SDK rather than of the connector built on
 /// it. Whether a whole number survives the wire as an integer is decided by this assembly's own
-/// <see cref="StructMapping"/>, so this assembly answers for it -- every connector built on the SDK
+/// <see cref="Pz.Shared.StructMapping"/>, so this assembly answers for it -- every connector built on the SDK
 /// proves the contract without its author writing a line, and no connector ever sees the probe key.</summary>
 internal static class ConformanceProbe
 {

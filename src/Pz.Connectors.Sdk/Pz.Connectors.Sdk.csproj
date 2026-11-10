@@ -34,6 +34,7 @@
     <!-- The positional shape guard the SDK's data plane and the engine's Arrow ingest share; the two
          assemblies may not reference each other, so the source is compiled into each. -->
     <Compile Include="..\Shared\ArrowSchemaShape.cs" Link="Shared\ArrowSchemaShape.cs" />
+    <Compile Include="..\Shared\Protocol\StructMapping.cs" Link="Shared\StructMapping.cs" />
     <!-- The OTLP headers-file handler the host's exporter also uses (compiled into each). -->
     <Compile Include="..\Shared\Otel\HeadersFileHandler.cs" Link="Shared\HeadersFileHandler.cs" />
   </ItemGroup>

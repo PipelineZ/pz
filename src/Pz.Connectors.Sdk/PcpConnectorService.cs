@@ -10,6 +10,7 @@ using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol;
 using Pz.Connectors.Protocol.V1;
 using Pz.Connectors.Sdk.Telemetry;
+using Pz.Shared;
 
 namespace Pz.Connectors.Sdk;
 

@@ -29,6 +29,7 @@
          data plane and the engine's Arrow ingest use; the assemblies may not reference each other, so
          the source is compiled into each. -->
     <Compile Include="..\Shared\ArrowSchemaShape.cs" Link="Shared\ArrowSchemaShape.cs" />
+    <Compile Include="..\Shared\Protocol\StructMapping.cs" Link="Shared\StructMapping.cs" />
   </ItemGroup>
 
   <ItemGroup>

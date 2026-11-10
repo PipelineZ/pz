@@ -1,5 +1,6 @@
 using Google.Protobuf.WellKnownTypes;
 using Pz.Connectors.Sdk;
+using Pz.Shared;
 
 namespace Pz.Connectors.Sdk.Tests;
 
