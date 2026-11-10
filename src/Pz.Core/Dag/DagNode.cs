@@ -26,19 +26,17 @@ public sealed record DagNode(NodeId Id, NodeKind Kind, string Name, IReadOnlyLis
 public sealed record SourceDatasetDef(ConnectionDef Source, DatasetDef Dataset, ReadHintPlan? Hints = null);
 
 /// <summary>Definition for SinkWrite. <see cref="Output"/>'s <c>Input</c> is always populated with the
-/// resolved binding (the feeding pipeline's name, or "source.dataset" for a passthrough drain) even
-/// when the output was bound inline by a pipeline's leading <c>INSERT INTO</c> rather than via
-/// YAML — the raw YAML output declared no `input:` in that case, so DagCompiler synthesizes it
-/// here for every downstream consumer (the
-/// executor's staging-relation lookup, the canonical NodeId hash) that expects it populated.
-/// <see cref="IsInlineBound"/> is the one place that distinction survives, for
+/// feeding pipeline's name: the output is bound by that pipeline's leading <c>INSERT INTO</c>, so
+/// DagCompiler synthesizes the value for every downstream consumer (the executor's staging-relation
+/// lookup, the canonical NodeId hash) that expects it populated.
+/// <see cref="IsInlineBound"/> is the one place the binding form survives, for
 /// <c>ManifestWriter</c>'s compiled-artifact binding header.
 ///
 /// <see cref="CdcDeleteOrigin"/> is stamped by DagCompiler's cdc pairing-matrix pass iff
 /// <c>Output.OnDelete</c> is <c>delete</c>/<c>soft</c> AND delete-key routing is valid (the SinkWrite's
 /// upstream closure has exactly one SourceLoad and it is the cdc one); it is read at execution time to
 /// route deletes. Set via `with` AFTER the node's NodeId is already computed from the plain canonical
-/// string (sink/output/input/mode/schema/options — see DagCompiler stage 10), so it is derived
+/// string (sink/output/input/mode/schema/options/keys — see DagCompiler stage 10), so it is derived
 /// presentation state that never feeds the hash.</summary>
 public sealed record SinkOutputDef(ConnectionDef Sink, OutputDef Output, bool IsInlineBound = false)
 {
