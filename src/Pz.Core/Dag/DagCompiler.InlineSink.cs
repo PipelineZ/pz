@@ -1,10 +1,76 @@
+using Pz.Core.Model;
 using Pz.Core.Templating;
+using Pz.Core.Validation;
 
 namespace Pz.Core.Dag;
 
 /// <summary>Recognizing the leading `INSERT INTO {{ sink(...) }}` statement of a pipeline and stripping it down to the query.</summary>
 public static partial class DagCompiler
 {
+    /// <summary>
+    /// Extracts the fixed `INSERT INTO {{ sink(...) }}` prefix from every pipeline carrying an inline
+    /// sink() binding, replacing its entry in <paramref name="rendered"/> with the extracted-SQL
+    /// RenderResult (InlineBindings carried over unchanged via `with`) so every later stage -- and the
+    /// compiled pipeline node itself -- sees only the SELECT that actually runs. PZ0208 covers every way
+    /// a sink() call can be malformed: more than one call to one output in a pipeline, a call on an
+    /// ephemeral pipeline (which produces no node for a sink to depend on), or a call that isn't the
+    /// pipeline's mandatory leading INSERT statement. Throws once, after checking every pipeline.
+    /// </summary>
+    private static void ExtractInlineSinkPrefixes(PzProject project, Dictionary<string, RenderResult> rendered)
+    {
+        var errors = new List<PzError>();
+        foreach (var pipeline in project.Pipelines)
+        {
+            var result = rendered[pipeline.Name];
+            if (result.InlineBindings.Count == 0)
+            {
+                continue;
+            }
+
+            if (pipeline.Materialization == "ephemeral")
+            {
+                var b = result.InlineBindings[0];
+                errors.Add(new PzError(PzErrorCode.InvalidSinkCall,
+                    $"pipeline '{pipeline.Name}' is ephemeral but calls sink('{b.Sink}', '{b.Output}') " +
+                    "— ephemeral pipelines produce no node for a sink to depend on",
+                    pipeline.FilePath, null, InsertFormHint));
+                continue;
+            }
+
+            var duplicate = result.InlineBindings
+                .GroupBy(b => (b.Sink, b.Output))
+                .FirstOrDefault(g => g.Count() > 1);
+            if (duplicate is not null)
+            {
+                errors.Add(new PzError(PzErrorCode.InvalidSinkCall,
+                    $"pipeline '{pipeline.Name}' binds sink('{duplicate.Key.Sink}', '{duplicate.Key.Output}') " +
+                    "more than once — list each sink output at most once",
+                    pipeline.FilePath, null, InsertFormHint));
+                continue;
+            }
+
+            var markers = result.InlineBindings
+                .Select(b => $"__pz_sink__{b.Sink}__{b.Output}__").ToList();
+            var extracted = TryExtractInsertPrefix(result.Sql, markers);
+            if (extracted is null)
+            {
+                var first = result.InlineBindings[0];
+                errors.Add(new PzError(PzErrorCode.InvalidSinkCall,
+                    $"pipeline '{pipeline.Name}' calls sink('{first.Sink}', '{first.Output}') but not as the " +
+                    "pipeline's leading INSERT INTO {{ sink(...) }} statement",
+                    pipeline.FilePath, null, InsertFormHint));
+                continue;
+            }
+
+            rendered[pipeline.Name] = result with { Sql = extracted };
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new PzValidationException(errors);
+        }
+    }
+
     private const string InsertFormHint =
         "bind the sink inline as the pipeline's leading statement: INSERT INTO {{ sink('<sink>', '<output>') }} <query>";
 
