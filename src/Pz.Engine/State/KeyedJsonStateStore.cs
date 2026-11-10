@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Pz.Core.Artifacts;
+using Pz.Engine.Artifacts;
 using Pz.Core.Validation;
 
 namespace Pz.Engine.State;
@@ -230,7 +231,7 @@ public sealed class KeyedJsonStateStore<T>(
 
         AtomicFile.Write(path, stream =>
         {
-            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
+            using (var writer = new Utf8JsonWriter(stream, StableJsonWriter.Options))
             {
                 writer.WriteStartObject();
                 writer.WriteNumber("version", 1);

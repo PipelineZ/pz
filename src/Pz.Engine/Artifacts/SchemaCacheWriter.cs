@@ -18,7 +18,7 @@ public static class SchemaCacheWriter
 
     private static void WriteTo(Stream stream, IReadOnlyDictionary<string, string> fetchedSchemas)
     {
-        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
+        using (var writer = new Utf8JsonWriter(stream, StableJsonWriter.Options))
         {
             writer.WriteStartObject();
             writer.WriteNumber("version", 1);

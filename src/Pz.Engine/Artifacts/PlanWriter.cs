@@ -17,7 +17,7 @@ public static class PlanWriter
 
     private static void WriteTo(Stream stream, ExecutionPlan plan)
     {
-        using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
+        using (var writer = new Utf8JsonWriter(stream, StableJsonWriter.Options))
         {
             writer.WriteStartObject();
             writer.WriteNumber("version", 1);
