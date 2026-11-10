@@ -15,7 +15,7 @@ namespace Pz.Connector.LocalFiles;
 /// layout. Also declares <see cref="ConnectorCapabilities.BoundedWindow"/> --
 /// <see cref="CsvSource.TryGetNativeScan"/>/<see cref="ParquetSource.TryGetNativeScan"/> push
 /// <see cref="DatasetSpec.WatermarkUpperBound"/> down into the native-scan fragment via
-/// <see cref="LocalFilesWindowSql"/>; the universal (non-native) read path does not, so a windowed
+/// <see cref="NativeScanWindow"/>; the universal (non-native) read path does not, so a windowed
 /// LocalFiles dataset requires the native tier (see <see cref="CsvPartition.ReadAsync"/>'s doc comment).</summary>
 public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema
 {

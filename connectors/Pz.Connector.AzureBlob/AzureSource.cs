@@ -1,14 +1,15 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Text.RegularExpressions;
+using System.Text;
 using Apache.Arrow;
-using Azure;
 using Azure.Storage.Blobs.Models;
 using Azure.Storage.Files.DataLake.Models;
-using Pz.Connectors.Abstractions;
+using Azure;
 using Pz.Connectors.Abstractions.Paths;
+using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.AzureBlob;
@@ -87,7 +88,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// <summary>Emits <c>read_parquet('&lt;url&gt;')</c> / <c>read_csv('&lt;url&gt;', header = true,
     /// auto_detect = true | auto_detect = false, columns = {…})</c> / <c>read_json('&lt;url&gt;',
     /// auto_detect = true | columns = {…}, format = 'newline_delimited')</c> wrapped by
-    /// <see cref="AzureWindowSql.Wrap"/> for windowed datasets. When `path` is date-templated and the
+    /// <see cref="NativeScanWindow.Wrap"/> for windowed datasets. When `path` is date-templated and the
     /// dataset is windowed (both watermark bounds present), scans the watermark-window's minimal cover
     /// instead of the single literal path, emitting a DuckDB list literal (<c>read_parquet(['url1',
     /// 'url2'])</c>) so a query never re-reads out-of-window partitions; a single-element cover (or a
@@ -115,13 +116,13 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
             $"'{AzureUrl.Escape(AzureUrl.Render(loc with { Key = k }))}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Source));
-        var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
+        var declared = ColumnTypeCatalog.ContractColumns(spec); // null (contract-less) or declared (partial or full)
         var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 
         scan = new NativeScan(
-            AzureWindowSql.Wrap(fragment, spec),
+            NativeScanWindow.Wrap(fragment, spec),
             ["install azure", "load azure", secret, .. AzureAuth.TransportStatements(), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
@@ -356,11 +357,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// callers) or "csv/tsv/json" (the shared universal-tier-refusal precheck). Missing contract is a
     /// permanent failure.</summary>
     private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec, string formatName) =>
-        ExtractColumns(spec) ?? throw new PzConnectorException(
+        ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': azure {formatName} requires a declared columns: contract", isTransient: false, code: PzConnectorErrorCodes.Config);
 
-    private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 }

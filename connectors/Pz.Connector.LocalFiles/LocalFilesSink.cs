@@ -1,13 +1,13 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
-using Apache.Arrow;
 using Apache.Arrow.Types;
-using Parquet;
+using Apache.Arrow;
 using Parquet.Schema;
+using Parquet;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
+using Pz.Connectors.Toolkit;
 
 namespace Pz.Connector.LocalFiles;
 
@@ -26,7 +26,7 @@ internal sealed class LocalFilesSink(string baseDir, bool rootDeclared) : ISink
         var finalPath = ResolveFinalPath(spec);
         var tempPath = Path.Combine(Path.GetDirectoryName(finalPath)!, $".pz-native-{Guid.NewGuid():N}{Path.GetExtension(finalPath)}");
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to '{EscapeSqlLiteral(tempPath)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            $"copy (select * from {{{{source}}}}) to '{DuckDbSqlText.EscapeLiteral(tempPath)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             FileFormatCatalog.SetupStatements(format))
         {
             Mechanism = $"COPY TO {format.Name}",
@@ -50,8 +50,6 @@ internal sealed class LocalFilesSink(string baseDir, bool rootDeclared) : ISink
             ? Path.Combine(outputDir, $"{spec.Output}-{Guid.NewGuid():N}.{ext}")
             : Path.Combine(outputDir, fileName);
     }
-
-    private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {

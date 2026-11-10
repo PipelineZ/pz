@@ -1,10 +1,11 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
-using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
-using Pz.Connectors.Toolkit;
+using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
+using Pz.Connectors.Toolkit;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.LocalFiles;
@@ -128,7 +129,7 @@ internal sealed class CsvSource(string baseDir, bool rootDeclared) : ISource
         var format = FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", context);
         var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, context);
         var absPath = ResolvePath(spec); // existing helper resolving against base_dir
-        var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
+        var declared = ColumnTypeCatalog.ContractColumns(spec); // null (contract-less) or declared (partial or full)
         if (declared is { Count: > 0 })
         {
             ValidateHeaderMatchesContract(absPath, spec.Dataset, declared, delimiter);
@@ -147,11 +148,15 @@ internal sealed class CsvSource(string baseDir, bool rootDeclared) : ISource
                 isTransient: false);
         }
 
-        var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
+        var urlArg = $"'{DuckDbSqlText.EscapeLiteral(absPath)}'";
         var request = new FormatReadRequest(urlArg, 1, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
-        scan = new NativeScan(WrapWindowed(fragment, spec), FileFormatCatalog.SetupStatements(format))
+        // A windowed dataset's bounds are pushed into the native CTAS, so only the window's slice lands.
+        // The universal path (CsvPartition.ReadAsync) never filters: a windowed localfiles dataset needs
+        // the native tier, and under engine.force_universal the engine caps the watermark candidate at
+        // the window's upper bound, so over-extraction can never advance the cursor past the window.
+        scan = new NativeScan(NativeScanWindow.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
             SchemaInferred = inferred,
@@ -159,32 +164,6 @@ internal sealed class CsvSource(string baseDir, bool rootDeclared) : ISource
         };
         return true;
     }
-
-    /// <summary>Wraps a native-scan fragment with the windowed bound predicate when both
-    /// <see cref="DatasetSpec.WatermarkCursor"/> and
-    /// <see cref="DatasetSpec.WatermarkUpperBound"/> are set (only ever true for a windowed dataset --
-    /// <c>SpecBuilder.ForSourceLoad</c>'s three-arg overload, stamped only by <c>SourceLoadExecutor</c>) --
-    /// DuckDB applies the filter as part of the native CTAS, so the "extraction" (which for local files IS
-    /// DuckDB reading the file) only lands the windowed slice, not the whole file. Shared verbatim between
-    /// <see cref="CsvSource"/> and <see cref="ParquetSource"/> (same seam, same contract, same escaping
-    /// discipline) via <see cref="LocalFilesWindowSql"/>.
-    ///
-    /// Deliberately does NOT fire for plain (unwindowed) incremental -- <see
-    /// cref="DatasetSpec.WatermarkCursor"/> set alone, no <see cref="DatasetSpec.WatermarkUpperBound"/>:
-    /// ignoring the lower-bound watermark on the native tier is correct here (merge dedups; see
-    /// <see cref="DatasetSpec.WatermarkCursor"/>'s doc comment) -- there is nothing to push down until a
-    /// bound actually makes correctness depend on it. The fragment returned for that case, and for a spec
-    /// with no watermark fields at all, is byte-identical to the unwrapped fragment.
-    ///
-    /// The universal (non-native) path -- <see cref="CsvPartition.ReadAsync"/> -- deliberately does NOT
-    /// filter at all, windowed or not: windowed LocalFiles datasets require the native path (this method),
-    /// and the engine's candidate-cap rule (a non-empty slice's watermark candidate is always
-    /// <c>Min(landedMax, windowUpper)</c>) keeps watermark advancement correct even under
-    /// <c>engine.force_universal</c>, where a connector that ignores the bound would over-extract but could
-    /// never advance the cursor past the window it was supposed to extract.</summary>
-    private static string WrapWindowed(string fragment, DatasetSpec spec) => LocalFilesWindowSql.Wrap(fragment, spec);
-
-    private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");
 
     /// <summary><c>read_csv(..., auto_detect = false, columns = {...})</c> binds the contract to
     /// the file BY POSITION -- DuckDB ignores the header names entirely when auto_detect is off. A contract
@@ -345,18 +324,10 @@ internal sealed class CsvSource(string baseDir, bool rootDeclared) : ISource
     /// <see cref="DatasetSpec.Options"/>["columns"]. Missing contract is a permanent failure: this path
     /// does no type inference.</summary>
     private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec) =>
-        ExtractColumns(spec) ?? throw new PzConnectorException(
+        ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': localfiles csv requires a declared columns: contract in v0",
             isTransient: false, code: PzConnectorErrorCodes.Config);
 
-    /// <summary>Same lookup as <see cref="GetColumnsContract"/> but returns null instead of throwing —
-    /// used by <see cref="TryGetNativeScan"/> to tell no-contract-at-all from partial-or-full, since
-    /// native scan does not require a contract at all. The universal path
-    /// (<see cref="GetColumnsContract"/>) still requires a full contract.</summary>
-    private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 }
 
 /// <summary>One readable slice of a CSV dataset: the whole file, or — when <see cref="CsvSplitPlan"/>

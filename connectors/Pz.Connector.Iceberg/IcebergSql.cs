@@ -1,7 +1,8 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
 
 namespace Pz.Connector.Iceberg;
 
@@ -13,15 +14,14 @@ namespace Pz.Connector.Iceberg;
 /// the attach string — a failed ATTACH echoes its warehouse and endpoint verbatim into the engine
 /// error — they ride DuckDB secrets, which the engine describes without echoing. A <c>files</c>
 /// connection has no catalog to attach: every read is an <c>iceberg_scan</c> over the table's
-/// directory under <c>root</c>. Kept in lockstep with the duckdb/ducklake/quack/motherduck
-/// connectors' Sql classes (replicated, never referenced).</summary>
+/// directory under <c>root</c>.</summary>
 internal static class IcebergSql
 {
     /// <summary>Sanitized connection name plus the first 8 lowercase hex chars of SHA-256 of the RAW
     /// name, so "prod-db" and "prod_db" (both sanitize to "prod_db") never share an alias —
     /// <c>attach if not exists</c> is first-wins.</summary>
     internal static string Alias(string connectionName) =>
-        $"pz_iceberg_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_iceberg", connectionName);
 
     internal static string SecretName(string alias) => alias + "_secret";
 
@@ -103,7 +103,7 @@ internal static class IcebergSql
     internal static string QualifiedTable(string alias, string entity)
     {
         var (ns, table) = SplitEntity(entity, namespaceRequired: true);
-        return $"{alias}.{QuoteIdent(ns!)}.{QuoteIdent(table)}";
+        return $"{alias}.{DuckDbSqlText.QuoteIdentifier(ns!)}.{DuckDbSqlText.QuoteIdentifier(table)}";
     }
 
     /// <summary>The table directory under a <c>files</c> root: <c>root/namespace/table</c>, or
@@ -119,66 +119,6 @@ internal static class IcebergSql
 
         return ns is null ? Path.Combine(root, table) : Path.Combine(root, ns, table);
     }
-
-    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
-    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal:
-    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
-    /// becoming a space so it coerces against DATE/TIMESTAMP columns.</summary>
-    internal static string RenderWatermarkLiteral(string canonical)
-    {
-        if (IsCanonicalNumeric(canonical))
-        {
-            return canonical;
-        }
-
-        var value = IsCanonicalTimestamp(canonical)
-            ? canonical[..10] + ' ' + canonical[11..]
-            : canonical;
-        return $"'{EscapeLiteral(value)}'";
-    }
-
-    private static bool IsCanonicalNumeric(string value)
-    {
-        var i = value.StartsWith('-') ? 1 : 0;
-        var sawDigit = false;
-        var sawDot = false;
-        for (; i < value.Length; i++)
-        {
-            if (value[i] == '.')
-            {
-                if (sawDot)
-                {
-                    return false;
-                }
-
-                sawDot = true;
-            }
-            else if (char.IsAsciiDigit(value[i]))
-            {
-                sawDigit = true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return sawDigit;
-    }
-
-    private static bool IsCanonicalTimestamp(string value) =>
-        value.Length >= 19 && value[10] == 'T' &&
-        value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
-
-    internal static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
-
-    internal static string EscapeLiteral(string value) => value.Replace("'", "''");
-
-    internal static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 
     /// <summary>Setup for either direction, in order: extension installs/loads (iceberg; httpfs for
     /// every catalog and for an object-store <c>files</c> root; azure under <c>storage: azure</c>, in
@@ -248,7 +188,7 @@ internal static class IcebergSql
         switch (catalog)
         {
             case IcebergCatalog.Rest:
-                var options = new List<string> { "type iceberg", $"endpoint '{EscapeLiteral(Require(config, "endpoint"))}'" };
+                var options = new List<string> { "type iceberg", $"endpoint '{DuckDbSqlText.EscapeLiteral(Require(config, "endpoint"))}'" };
                 if (IcebergCatalog.HasCatalogCredentials(config))
                 {
                     statements.Add(CatalogSecretSql(config, SecretName(alias)));
@@ -265,15 +205,15 @@ internal static class IcebergSql
                 }
 
                 statements.Add(
-                    $"attach if not exists '{EscapeLiteral(Warehouse(config) ?? "")}' as {alias} ({string.Join(", ", options)}{nested})");
+                    $"attach if not exists '{DuckDbSqlText.EscapeLiteral(Warehouse(config) ?? "")}' as {alias} ({string.Join(", ", options)}{nested})");
                 break;
             case IcebergCatalog.Glue:
                 statements.Add(
-                    $"attach if not exists '{EscapeLiteral(Warehouse(config) ?? ":")}' as {alias} (type iceberg, endpoint_type 'glue'{nested})");
+                    $"attach if not exists '{DuckDbSqlText.EscapeLiteral(Warehouse(config) ?? ":")}' as {alias} (type iceberg, endpoint_type 'glue'{nested})");
                 break;
             case IcebergCatalog.S3Tables:
                 statements.Add(
-                    $"attach if not exists '{EscapeLiteral(Require(config, "warehouse"))}' as {alias} (type iceberg, endpoint_type 's3_tables'{nested})");
+                    $"attach if not exists '{DuckDbSqlText.EscapeLiteral(Require(config, "warehouse"))}' as {alias} (type iceberg, endpoint_type 's3_tables'{nested})");
                 break;
             case IcebergCatalog.Files:
                 break;
@@ -291,19 +231,19 @@ internal static class IcebergSql
     {
         if (config.GetString("token") is { Length: > 0 } token)
         {
-            return $"create or replace secret {secretName} (type iceberg, token '{EscapeLiteral(token)}')";
+            return $"create or replace secret {secretName} (type iceberg, token '{DuckDbSqlText.EscapeLiteral(token)}')";
         }
 
         var body = new StringBuilder(
-            $"client_id '{EscapeLiteral(Require(config, "client_id"))}', client_secret '{EscapeLiteral(Require(config, "client_secret"))}'");
+            $"client_id '{DuckDbSqlText.EscapeLiteral(Require(config, "client_id"))}', client_secret '{DuckDbSqlText.EscapeLiteral(Require(config, "client_secret"))}'");
         if (config.GetString("oauth2_server_uri") is { Length: > 0 } serverUri)
         {
-            body.Append(", oauth2_server_uri '").Append(EscapeLiteral(serverUri)).Append('\'');
+            body.Append(", oauth2_server_uri '").Append(DuckDbSqlText.EscapeLiteral(serverUri)).Append('\'');
         }
 
         if (config.GetString("oauth2_scope") is { Length: > 0 } scope)
         {
-            body.Append(", oauth2_scope '").Append(EscapeLiteral(scope)).Append('\'');
+            body.Append(", oauth2_scope '").Append(DuckDbSqlText.EscapeLiteral(scope)).Append('\'');
         }
 
         return $"create or replace secret {secretName} (type iceberg, {body})";
@@ -326,11 +266,11 @@ internal static class IcebergSql
         var useSsl = config.GetBool("storage_use_ssl", defaultValue: true);
 
         return $"create or replace secret {StorageSecretName(alias)} (type s3, " +
-            $"key_id '{EscapeLiteral(Require(config, "storage_key_id"))}', " +
-            $"secret '{EscapeLiteral(Require(config, "storage_secret_key"))}', region '{EscapeLiteral(region)}'" +
-            (endpoint is null ? "" : $", endpoint '{EscapeLiteral(endpoint)}'") +
-            $", url_style '{EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}" +
-            (scope is null ? "" : $", scope '{EscapeLiteral(scope)}'") + ")";
+            $"key_id '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_key_id"))}', " +
+            $"secret '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_secret_key"))}', region '{DuckDbSqlText.EscapeLiteral(region)}'" +
+            (endpoint is null ? "" : $", endpoint '{DuckDbSqlText.EscapeLiteral(endpoint)}'") +
+            $", url_style '{DuckDbSqlText.EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}" +
+            (scope is null ? "" : $", scope '{DuckDbSqlText.EscapeLiteral(scope)}'") + ")";
     }
 
     /// <summary>On Linux the azure extension's default transport cannot find the system CA bundle, so every
@@ -353,20 +293,20 @@ internal static class IcebergSql
         var auth = IcebergCatalog.StorageAuth(config);
         var body = auth switch
         {
-            "connection_string" => $"connection_string '{EscapeLiteral(Require(config, "storage_connection_string"))}'",
-            "account_key" => $"connection_string '{EscapeLiteral(AssembleAzureConnectionString(config))}'",
+            "connection_string" => $"connection_string '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_connection_string"))}'",
+            "account_key" => $"connection_string '{DuckDbSqlText.EscapeLiteral(AssembleAzureConnectionString(config))}'",
             "service_principal" =>
-                $"provider service_principal, tenant_id '{EscapeLiteral(Require(config, "storage_tenant_id"))}', " +
-                $"client_id '{EscapeLiteral(Require(config, "storage_client_id"))}', " +
-                $"client_secret '{EscapeLiteral(Require(config, "storage_client_secret"))}', " +
-                $"account_name '{EscapeLiteral(Require(config, "storage_account_name"))}'",
+                $"provider service_principal, tenant_id '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_tenant_id"))}', " +
+                $"client_id '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_client_id"))}', " +
+                $"client_secret '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_client_secret"))}', " +
+                $"account_name '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_account_name"))}'",
             "credential_chain" => "provider credential_chain" +
-                (config.GetString("storage_chain") is { Length: > 0 } chain ? $", chain '{EscapeLiteral(chain)}'" : "") +
-                $", account_name '{EscapeLiteral(Require(config, "storage_account_name"))}'",
+                (config.GetString("storage_chain") is { Length: > 0 } chain ? $", chain '{DuckDbSqlText.EscapeLiteral(chain)}'" : "") +
+                $", account_name '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_account_name"))}'",
             _ => throw new PzConnectorException($"iceberg connection: unsupported storage_auth '{auth}'", isTransient: false, code: PzConnectorErrorCodes.Config),
         };
 
-        var scoped = scope is null ? "" : $", scope '{EscapeLiteral(scope.TrimEnd('/') + "/")}'";
+        var scoped = scope is null ? "" : $", scope '{DuckDbSqlText.EscapeLiteral(scope.TrimEnd('/') + "/")}'";
         return $"create or replace secret {StorageSecretName(alias)} (type azure, {body}{scoped})";
     }
 
@@ -387,8 +327,8 @@ internal static class IcebergSql
     internal static string CredentialChainSecretSql(ConnectorConfig config, string alias, string? scope)
     {
         var region = config.GetString("storage_region") ?? "us-east-1";
-        return $"create or replace secret {StorageSecretName(alias)} (type s3, provider credential_chain, region '{EscapeLiteral(region)}'" +
-            (scope is null ? "" : $", scope '{EscapeLiteral(scope)}'") + ")";
+        return $"create or replace secret {StorageSecretName(alias)} (type s3, provider credential_chain, region '{DuckDbSqlText.EscapeLiteral(region)}'" +
+            (scope is null ? "" : $", scope '{DuckDbSqlText.EscapeLiteral(scope)}'") + ")";
     }
 
     /// <summary>The catalog scan fragment: a declared <c>columns:</c> contract prunes the read; the
@@ -417,10 +357,10 @@ internal static class IcebergSql
     internal static string FilesScanFragment(string root, DatasetSpec spec)
     {
         var (snapshot, timestamp) = TimeTravelOptions(spec);
-        var arguments = new StringBuilder($"'{EscapeLiteral(TablePath(root, spec.Dataset))}', allow_moved_paths = true");
+        var arguments = new StringBuilder($"'{DuckDbSqlText.EscapeLiteral(TablePath(root, spec.Dataset))}', allow_moved_paths = true");
         if (spec.Options.TryGetValue("metadata_version", out var metadataVersion) && metadataVersion is not null)
         {
-            arguments.Append($", version => '{EscapeLiteral(Convert.ToString(metadataVersion, CultureInfo.InvariantCulture) ?? "")}'");
+            arguments.Append($", version => '{DuckDbSqlText.EscapeLiteral(Convert.ToString(metadataVersion, CultureInfo.InvariantCulture) ?? "")}'");
         }
 
         if (snapshot is { } id)
@@ -430,7 +370,7 @@ internal static class IcebergSql
 
         if (timestamp is { } at)
         {
-            arguments.Append($", snapshot_from_timestamp => timestamp '{EscapeLiteral(at)}'");
+            arguments.Append($", snapshot_from_timestamp => timestamp '{DuckDbSqlText.EscapeLiteral(at)}'");
         }
 
         return Wrap($"iceberg_scan({arguments})", spec);
@@ -438,21 +378,21 @@ internal static class IcebergSql
 
     private static string Wrap(string table, DatasetSpec spec)
     {
-        var columns = ExtractColumns(spec);
+        var columns = ColumnTypeCatalog.ContractColumns(spec);
         var projection = columns is { Count: > 0 }
-            ? string.Join(", ", columns.Keys.Select(QuoteIdent))
+            ? string.Join(", ", columns.Keys.Select(DuckDbSqlText.QuoteIdentifier))
             : "*";
 
         var predicates = new List<string>();
         if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
         {
             var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{QuoteIdent(cursor)} {op} {RenderWatermarkLiteral(low)}");
+            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(cursor)} {op} {DuckDbSqlText.WatermarkLiteral(low)}");
         }
 
         if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
         {
-            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
+            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(upperCursor)} <= {DuckDbSqlText.WatermarkLiteral(high)}");
         }
 
         if (projection == "*" && predicates.Count == 0)
@@ -476,7 +416,7 @@ internal static class IcebergSql
             return $" at (version => {id})";
         }
 
-        return timestamp is { } at ? $" at (timestamp => timestamp '{EscapeLiteral(at)}')" : "";
+        return timestamp is { } at ? $" at (timestamp => timestamp '{DuckDbSqlText.EscapeLiteral(at)}')" : "";
     }
 
     /// <summary>An Iceberg snapshot id is an unsigned 64-bit value. The timestamp literal must be
@@ -533,7 +473,7 @@ internal static class IcebergSql
         var (ns, _) = SplitEntity(entity, namespaceRequired: true);
         var table = QualifiedTable(alias, entity);
         var prelude =
-            $"create schema if not exists {alias}.{QuoteIdent(ns!)};\n" +
+            $"create schema if not exists {alias}.{DuckDbSqlText.QuoteIdentifier(ns!)};\n" +
             $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n";
         var insert = $"insert into {table} by name select * from {{{{source}}}};";
         switch (mode)
@@ -553,7 +493,7 @@ internal static class IcebergSql
                         $"output '{entity}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
-                var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
+                var on = string.Join(" and ", keys.Select(k => $"t.{DuckDbSqlText.QuoteIdentifier(k)} = s.{DuckDbSqlText.QuoteIdentifier(k)}"));
 
                 // DuckDB's MERGE matches every source row independently against the target as it stood
                 // before the statement ran: two staged rows sharing a key the target lacks would BOTH take
@@ -561,7 +501,7 @@ internal static class IcebergSql
                 // in an undefined order. The sink contract says duplicate keys within one batch collapse
                 // to a single connector-determined survivor, so the staged side is made key-unique
                 // (qualify row_number() per key group) before MERGE ever sees it.
-                var partitionBy = string.Join(", ", keys.Select(k => $"s.{QuoteIdent(k)}"));
+                var partitionBy = string.Join(", ", keys.Select(k => $"s.{DuckDbSqlText.QuoteIdentifier(k)}"));
                 var dedupedSource = $"(select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1)";
                 sql = prelude + $"merge into {table} as t using {dedupedSource} as s on {on} " +
                     "when matched then update when not matched then insert;";
@@ -579,8 +519,4 @@ internal static class IcebergSql
             ? s
             : throw new PzConnectorException($"iceberg connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
-    private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
-
-    private static string HashSuffix(string name) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 }

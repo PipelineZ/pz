@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Sql;
 
 namespace Pz.Connector.Sqlite;
 
@@ -17,7 +18,7 @@ internal sealed class SqliteSink(ConnectorConfig config) : ISink
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
         var alias = SqliteSql.SinkAlias(spec.Sink);
-        var table = $"{alias}.{SqliteSql.QuoteIdent(spec.Output)}";
+        var table = $"{alias}.{DuckDbSqlText.QuoteIdentifier(spec.Output)}";
         (string Sql, string Mechanism)? statement = spec.Mode switch
         {
             "append" =>

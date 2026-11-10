@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Sql;
 
 namespace Pz.Connector.Sqlite.Tests;
 
@@ -116,19 +117,6 @@ public sealed class SqliteSqlGenTests
             SqliteSql.ScanFragment(DbPath, spec));
     }
 
-    [Theory]
-    [InlineData("42", "42")]
-    [InlineData("-7", "-7")]
-    [InlineData("3.50", "3.50")]
-    [InlineData("2026-08-19", "'2026-08-19'")]
-    [InlineData("2026-08-19T12:30:00.000001", "'2026-08-19 12:30:00.000001'")]
-    public void Watermark_literals_render_by_canonical_shape(string canonical, string expected)
-    {
-        // The T→space conversion matters more here than for MySQL: a text-stored sqlite cursor
-        // compares LEXICALLY, and sqlite's own timestamp convention is the space form.
-        Assert.Equal(expected, SqliteSql.RenderWatermarkLiteral(canonical));
-    }
-
     [Fact]
     public void Identifiers_literals_and_paths_are_injection_safe()
     {
@@ -225,7 +213,7 @@ public sealed class SqliteSqlGenTests
         }));
 
         Assert.True(sink.TryGetNativeCopy(spec, out var copy));
-        var expected = SqliteSql.EscapeLiteral(Path.GetFullPath(Path.Combine("/proj", "data/app.db")));
+        var expected = DuckDbSqlText.EscapeLiteral(Path.GetFullPath(Path.Combine("/proj", "data/app.db")));
         Assert.Equal($"attach if not exists '{expected}' as {WhSinkAlias} (type sqlite)", copy!.SetupStatements[2]);
     }
 }

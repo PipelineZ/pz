@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Sql;
 
 namespace Pz.Connector.MySql;
 
@@ -14,7 +15,10 @@ internal sealed class MySqlSink(ConnectorConfig config) : ISink
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
         var alias = MySqlSql.SinkAlias(spec.Sink);
-        var table = $"{alias}.{MySqlSql.QuoteDuckIdent(spec.Output)}";
+        // DuckDB parses this statement, not MySQL, and DuckDB has no backtick-quoted identifiers: the
+        // table reference takes DuckDB's double quotes, unlike MySqlSql.QuoteIdent's backticks for SQL
+        // that rides inside mysql_query('alias', '…') and reaches MySQL itself.
+        var table = $"{alias}.{DuckDbSqlText.QuoteIdentifier(spec.Output)}";
         (string Sql, string Mechanism)? statement = spec.Mode switch
         {
             "append" =>

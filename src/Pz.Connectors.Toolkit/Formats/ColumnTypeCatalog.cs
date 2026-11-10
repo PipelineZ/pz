@@ -4,17 +4,21 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Connectors.Toolkit.Formats;
 
-/// <summary>The one `columns:` contract type matrix shared by every file-place connector
-/// (localfiles, s3, gcs, azureblob): fixed v0 set -- int, bigint, double, decimal, varchar, boolean,
-/// date, timestamp -- mapped to an Arrow type (for a contract-is-the-schema answer) and to a DuckDB
-/// type name (for a native scan's strict <c>columns = {…}</c> map or a cast projection). Previously
-/// replicated per connector (LocalFiles' <c>TypeNameMap</c>, <c>AzureTypeNameMap</c>,
-/// <c>GcsTypeNameMap</c>, <c>S3TypeNameMap</c>) under the no-cross-connector-reference rule; that rule
-/// is about connectors not referencing EACH OTHER, and does not require re-deriving something every
-/// one of them already gets from this shared toolkit, the same way they already share
-/// <see cref="FileFormatCatalog"/> itself.</summary>
+/// <summary>The one `columns:` contract type matrix every connector shares: the fixed v0 set (int,
+/// bigint, double, decimal, varchar, boolean, date, timestamp) mapped to an Arrow type (for a
+/// contract-is-the-schema answer) and to a DuckDB type name (for a native scan's strict
+/// <c>columns = {…}</c> map or a cast projection). Connectors never reference each other, so the matrix
+/// lives here rather than in any one of them.</summary>
 public static class ColumnTypeCatalog
 {
+    /// <summary>The dataset's declared `columns:` contract (column name to contract type name), or
+    /// null when it declares none.</summary>
+    public static IReadOnlyDictionary<string, string>? ContractColumns(DatasetSpec spec) =>
+        spec.Options.TryGetValue("columns", out var value) &&
+        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
+            ? columns
+            : null;
+
     /// <summary>Resolves one contract type name to its Arrow type. Throws a permanent
     /// <see cref="PzConnectorException"/> naming <paramref name="columnName"/> for an unknown type name.</summary>
     public static IArrowType ToArrowType(string typeName, string columnName) => typeName switch

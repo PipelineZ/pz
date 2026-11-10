@@ -1,9 +1,10 @@
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
-using Parquet;
 using Parquet.Schema;
-using Pz.Connectors.Abstractions;
+using Parquet;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Sftp;
 
@@ -192,7 +193,7 @@ internal static class SftpParquetReader
     }
 
     private static Schema BuildArrowSchema(IReadOnlyList<DataField> fields, string context) =>
-        new(fields.Select(f => SftpTypeNameMap.ToArrowField(f.Name, ToV0TypeName(f, context))).ToArray(), null);
+        new(fields.Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ToV0TypeName(f, context))).ToArray(), null);
 
     /// <summary>Mirrors <c>AzureParquetTypeMap.ToV0TypeName</c>/LocalFiles' <c>ParquetTypeMap</c> field
     /// by field, except decimal: those two only ever build a schema (row reading for parquet runs on

@@ -1,9 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
-using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
-using Pz.Connectors.Toolkit;
+using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
+using Pz.Connectors.Toolkit;
 
 namespace Pz.Connector.S3;
 
@@ -11,7 +12,7 @@ namespace Pz.Connector.S3;
 /// path — <c>read_parquet</c>/<c>read_csv</c>/<c>read_json</c> over <c>s3://</c> URLs with the shared
 /// scoped secret, the azure two-state contract model (declared `columns:` prunes via the strict
 /// <c>columns = {…}</c> map; contract-less auto-detects with <see cref="NativeScan.SchemaInferred"/>/
-/// <see cref="NativeScan.SniffFragment"/>), <see cref="S3WindowSql.Wrap"/> for windowed datasets, and
+/// <see cref="NativeScan.SniffFragment"/>), <see cref="NativeScanWindow.Wrap"/> for windowed datasets, and
 /// the date-template watermark-window cover (<see cref="PathTemplate.WindowCover"/>) emitting a DuckDB
 /// list literal so a query never re-reads out-of-window partitions.
 ///
@@ -24,7 +25,7 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
 {
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var columns = ExtractColumns(spec) ?? throw new PzConnectorException(
+        var columns = ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': s3 is native-only with no offline schema probe -- " +
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
             isTransient: false, code: PzConnectorErrorCodes.Config);
@@ -39,15 +40,15 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "s3", context);
         var (bucket, key) = ResolveLocation(spec);
         var keyPatterns = CoverKeys(key, spec);
-        var urlList = string.Join(", ", keyPatterns.Select(k => $"'s3://{S3Sql.Esc(bucket)}/{S3Sql.Esc(k)}'"));
+        var urlList = string.Join(", ", keyPatterns.Select(k => $"'s3://{DuckDbSqlText.EscapeLiteral(bucket)}/{DuckDbSqlText.EscapeLiteral(k)}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
-        var declared = ExtractColumns(spec);
+        var declared = ColumnTypeCatalog.ContractColumns(spec);
         var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 
         scan = new NativeScan(
-            S3WindowSql.Wrap(fragment, spec),
+            NativeScanWindow.Wrap(fragment, spec),
             [.. S3Sql.SetupStatements(config, S3Sql.SourceSecretName(spec.Source)), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
@@ -116,9 +117,4 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
     private static string GetFormat(DatasetSpec spec) =>
         FileFormatCatalog.Resolve(spec.Options, "parquet", "s3", $"dataset '{spec.Dataset}'").Extension;
 
-    private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 }

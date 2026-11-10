@@ -1,6 +1,6 @@
-using System.Security.Cryptography;
-using System.Text;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
 
 namespace Pz.Connector.Quack;
 
@@ -23,9 +23,7 @@ namespace Pz.Connector.Quack;
 /// <c>create or replace table</c> itself is atomic is the server's guarantee, not pz's — a failed
 /// rewrite can leave the target missing or partial until the next run, which recomputes the same
 /// result (the merge is idempotent). Cost grows with the target table's size, since the whole table
-/// crosses the wire on every merge. Kept in lockstep with the duckdb/ducklake/motherduck connectors'
-/// Sql classes for append/replace (replicated, never referenced); merge necessarily diverges for the
-/// reasons above.</summary>
+/// crosses the wire on every merge.</summary>
 internal static class QuackSql
 {
     /// <summary>Sanitized connection name plus the first 8 lowercase hex chars of SHA-256 of the RAW
@@ -33,7 +31,7 @@ internal static class QuackSql
     /// the hash suffix, a second connection could silently reuse the first's attach, since
     /// <c>attach if not exists</c> is first-wins.</summary>
     internal static string Alias(string connectionName) =>
-        $"pz_quack_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_quack", connectionName);
 
     internal static string SecretName(string alias) => alias + "_secret";
 
@@ -58,8 +56,8 @@ internal static class QuackSql
         [
             "install quack",
             "load quack",
-            $"create or replace secret {SecretName(alias)} (type quack, token '{EscapeLiteral(token)}', scope '{EscapeLiteral(canonical)}')",
-            $"attach if not exists '{EscapeLiteral(canonical)}' as {alias}",
+            $"create or replace secret {SecretName(alias)} (type quack, token '{DuckDbSqlText.EscapeLiteral(token)}', scope '{DuckDbSqlText.EscapeLiteral(canonical)}')",
+            $"attach if not exists '{DuckDbSqlText.EscapeLiteral(canonical)}' as {alias}",
         ];
     }
 
@@ -90,8 +88,8 @@ internal static class QuackSql
     {
         var (schema, table) = SplitEntity(entity);
         return schema is null
-            ? $"{alias}.{QuoteIdent(table)}"
-            : $"{alias}.{QuoteIdent(schema)}.{QuoteIdent(table)}";
+            ? $"{alias}.{DuckDbSqlText.QuoteIdentifier(table)}"
+            : $"{alias}.{DuckDbSqlText.QuoteIdentifier(schema)}.{DuckDbSqlText.QuoteIdentifier(table)}";
     }
 
     /// <summary>Contract prunes the projection; the plain incremental watermark is pushed down (the
@@ -101,18 +99,18 @@ internal static class QuackSql
     internal static string ScanFragment(string alias, DatasetSpec spec)
     {
         var table = QualifiedTable(alias, spec.Dataset);
-        var columns = ExtractColumns(spec);
-        var projection = columns is { Count: > 0 } ? string.Join(", ", columns.Keys.Select(QuoteIdent)) : "*";
+        var columns = ColumnTypeCatalog.ContractColumns(spec);
+        var projection = columns is { Count: > 0 } ? string.Join(", ", columns.Keys.Select(DuckDbSqlText.QuoteIdentifier)) : "*";
 
         var predicates = new List<string>();
         if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
         {
-            predicates.Add($"{QuoteIdent(cursor)} {(spec.WatermarkLowerInclusive ? ">=" : ">")} {RenderWatermarkLiteral(low)}");
+            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(cursor)} {(spec.WatermarkLowerInclusive ? ">=" : ">")} {DuckDbSqlText.WatermarkLiteral(low)}");
         }
 
         if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
         {
-            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
+            predicates.Add($"{DuckDbSqlText.QuoteIdentifier(upperCursor)} <= {DuckDbSqlText.WatermarkLiteral(high)}");
         }
 
         if (projection == "*" && predicates.Count == 0)
@@ -143,7 +141,7 @@ internal static class QuackSql
                     throw new PzConnectorException($"output '{table}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
-                var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
+                var on = string.Join(" and ", keys.Select(k => $"t.{DuckDbSqlText.QuoteIdentifier(k)} = s.{DuckDbSqlText.QuoteIdentifier(k)}"));
 
                 // Two source rows sharing a key within one batch would otherwise both survive into
                 // the union (neither is "the target row" so neither takes the not-exists branch) and
@@ -151,9 +149,9 @@ internal static class QuackSql
                 // perspective. qualify row_number() keeps exactly one row per key group before the
                 // union runs — connector-determined, not first/last-wins — which is the sink
                 // contract's Absorb behaviour that a real MERGE gives the siblings for free.
-                var partitionBy = string.Join(", ", keys.Select(k => $"s.{QuoteIdent(k)}"));
+                var partitionBy = string.Join(", ", keys.Select(k => $"s.{DuckDbSqlText.QuoteIdentifier(k)}"));
                 var dedupedSource = $"select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1";
-                var scratch = "pz_quack_merge_" + HashSuffix(table);
+                var scratch = "pz_quack_merge_" + DuckDbSqlText.StableSuffix(table);
                 sql = create +
                     $"create or replace temp table {scratch} as {dedupedSource} union all by name select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s where {on});\n" +
                     $"create or replace table {table} as select * from {scratch};\n" +
@@ -167,64 +165,7 @@ internal static class QuackSql
         }
     }
 
-    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
-    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal:
-    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
-    /// becoming a space so it coerces against DATE/TIMESTAMP columns.</summary>
-    internal static string RenderWatermarkLiteral(string canonical)
-    {
-        if (IsCanonicalNumeric(canonical))
-        {
-            return canonical;
-        }
-
-        var value = IsCanonicalTimestamp(canonical) ? canonical[..10] + ' ' + canonical[11..] : canonical;
-        return $"'{EscapeLiteral(value)}'";
-    }
-
-    private static bool IsCanonicalNumeric(string value)
-    {
-        var i = value.StartsWith('-') ? 1 : 0;
-        var sawDigit = false;
-        var sawDot = false;
-        for (; i < value.Length; i++)
-        {
-            if (value[i] == '.')
-            {
-                if (sawDot)
-                {
-                    return false;
-                }
-
-                sawDot = true;
-            }
-            else if (char.IsAsciiDigit(value[i]))
-            {
-                sawDigit = true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return sawDigit;
-    }
-
-    private static bool IsCanonicalTimestamp(string value) =>
-        value.Length >= 19 && value[10] == 'T' && value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
-
-    internal static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
-
-    internal static string EscapeLiteral(string value) => value.Replace("'", "''");
-
-    internal static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns ? columns : null;
-
     private static string Require(ConnectorConfig config, string key) =>
         config.GetString(key) is { Length: > 0 } s ? s : throw new PzConnectorException($"quack connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
-    private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
-
-    private static string HashSuffix(string name) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 }

@@ -9,11 +9,11 @@ namespace Pz.Connector.Sftp;
 
 /// <summary>Row-level bounded-window filter for the universal-tier sftp read path. SSH.NET streams
 /// remote files through managed format readers rather than a DuckDB native scan, so there is no
-/// FROM fragment to wrap the way <c>S3WindowSql.Wrap</c> does — this applies the same
+/// FROM fragment to wrap the way <c>NativeScanWindow.Wrap</c> does — this applies the same
 /// <c>cursor &gt; lo AND cursor &lt;= hi</c> window to each landed row instead, which is what lets a
 /// connector with no native tier still declare <see cref="ConnectorCapabilities.BoundedWindow"/>.
-/// Activation gate and the value-null invariant guard mirror S3WindowSql.Wrap exactly; only the
-/// enforcement mechanism (typed row comparison vs. rendered SQL) differs.</summary>
+/// The activation gate and the missing-lower-bound guard match NativeScanWindow.Wrap; only the
+/// enforcement (typed row comparison instead of rendered SQL) differs.</summary>
 internal sealed class SftpWindowFilter
 {
     private readonly Func<IArrowArray, int, bool>? _rowKept;
@@ -36,8 +36,7 @@ internal sealed class SftpWindowFilter
             return;
         }
 
-        // Self-defending guard on the caller-discipline invariant (the S3WindowSql precedent): the
-        // engine always stamps WatermarkCursor/WatermarkUpperBound and WatermarkValue together for a
+        // The engine always stamps WatermarkCursor/WatermarkUpperBound and WatermarkValue together for a
         // windowed dataset — never one without the other.
         if (spec.WatermarkValue is null)
         {

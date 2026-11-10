@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.DuckDb;
 
@@ -14,12 +15,12 @@ internal sealed class DuckDbSource(ConnectorConfig config) : ISource
     /// `pz validate --connect`'s drift precheck.</summary>
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var columns = DuckDbSql.ExtractColumns(spec) ?? throw new PzConnectorException(
+        var columns = ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': duckdb is native-only and has no offline schema probe -- " +
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
             isTransient: false, code: PzConnectorErrorCodes.Config);
 
-        var fields = columns.Select(kv => DuckDbTypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+        var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new ValueTask<DatasetSchema>(new DatasetSchema(new Schema(fields, null)));
     }
 

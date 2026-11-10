@@ -1,27 +1,24 @@
-using System.Security.Cryptography;
-using System.Text;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Sql;
 
 namespace Pz.Connector.Gcs;
 
 /// <summary>Shared text generation for the gcs connector's native tier: the scoped
 /// <c>CREATE SECRET</c> (DuckDB's <c>type gcs</c> — HMAC interop keys, DuckDB's own
 /// storage.googleapis.com default endpoint) both the source's native scan and the sink's native COPY
-/// ride, plus the ratified `root:` composition rules. Replicated (not shared) from
-/// <c>Pz.Connector.S3.S3Sql</c> per the no-cross-connector-reference rule; gcs drops region (none
-/// exists) and emits endpoint/url_style/use_ssl only when configured, so DuckDB's gcs defaults stay
-/// DuckDB's. Secret names carry the s3 determinism/collision rule: a direction prefix plus the first
-/// 8 lowercase hex chars of SHA-256(raw connection name) — <c>create or replace secret</c> is
-/// last-wins, so two connections whose names sanitize identically ("prod-db"/"prod_db") would
-/// otherwise silently share one secret. Secret names are internal: nothing in plan.json, Reason
+/// ride, plus the `root:` composition rules. Unlike s3 there is no region, and
+/// endpoint/url_style/use_ssl are emitted only when configured, so DuckDB's gcs defaults stay
+/// DuckDB's. Secret names are per direction and per raw connection name
+/// (<see cref="DuckDbSqlText.ConnectionAlias"/>): <c>create or replace secret</c> is last-wins, so two
+/// connections whose names sanitize identically ("prod-db"/"prod_db") must never share one. Secret names are internal: nothing in plan.json, Reason
 /// strings, or events carries them.</summary>
 internal static class GcsSql
 {
     internal static string SourceSecretName(string connectionName) =>
-        $"pz_gcs_src_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_gcs_src", connectionName);
 
     internal static string SinkSecretName(string connectionName) =>
-        $"pz_gcs_snk_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_gcs_snk", connectionName);
 
     /// <summary>The full setup-statement list for either direction: install/load httpfs (no-ops when
     /// present) + the scoped secret (<c>create or replace</c>, last-wins — all idempotent
@@ -39,10 +36,10 @@ internal static class GcsSql
             ? (bool?)config.GetBool("use_ssl", defaultValue: true)
             : null;
 
-        return $"create or replace secret {secretName} (type gcs, key_id '{Esc(keyId)}', " +
-            $"secret '{Esc(secret)}'" +
-            (endpoint is null ? "" : $", endpoint '{Esc(endpoint)}'") +
-            (urlStyle is null ? "" : $", url_style '{Esc(urlStyle)}'") +
+        return $"create or replace secret {secretName} (type gcs, key_id '{DuckDbSqlText.EscapeLiteral(keyId)}', " +
+            $"secret '{DuckDbSqlText.EscapeLiteral(secret)}'" +
+            (endpoint is null ? "" : $", endpoint '{DuckDbSqlText.EscapeLiteral(endpoint)}'") +
+            (urlStyle is null ? "" : $", url_style '{DuckDbSqlText.EscapeLiteral(urlStyle)}'") +
             (useSsl is null ? "" : $", use_ssl {(useSsl.Value ? "true" : "false")}") + ")";
     }
 
@@ -63,16 +60,9 @@ internal static class GcsSql
     internal static string Join(string left, string right) =>
         left.Length == 0 ? right : right.Length == 0 ? left : $"{left}/{right}";
 
-    internal static string Esc(string value) => value.Replace("'", "''");
-
     private static string Require(ConnectorConfig config, string key) =>
         config.GetString(key) is { Length: > 0 } s
             ? s
             : throw new PzConnectorException($"gcs connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
-    private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
-
-    /// <summary>First 8 lowercase hex chars of SHA-256(name) — deterministic across runs and processes.</summary>
-    private static string HashSuffix(string name) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 }

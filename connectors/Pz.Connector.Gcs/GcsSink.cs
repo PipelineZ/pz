@@ -1,11 +1,12 @@
-using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
-using Apache.Arrow;
+using System.Diagnostics;
 using Apache.Arrow.Types;
+using Apache.Arrow;
 using Google.Cloud.Storage.V1;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
+using Pz.Connectors.Toolkit;
 
 namespace Pz.Connector.Gcs;
 
@@ -56,7 +57,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         var context = $"output '{spec.Output}'";
         FileFormatCatalog.EnsureRemoteWritable(format, "gcs", context);
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to 'gs://{GcsSql.Esc(bucket)}/{GcsSql.Esc(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            $"copy (select * from {{{{source}}}}) to 'gs://{DuckDbSqlText.EscapeLiteral(bucket)}/{DuckDbSqlText.EscapeLiteral(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             [.. GcsSql.SetupStatements(config, GcsSql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO gcs {format.Name}",

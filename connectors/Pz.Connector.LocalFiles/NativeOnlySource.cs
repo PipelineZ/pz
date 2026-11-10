@@ -1,7 +1,8 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
+using Pz.Connectors.Toolkit;
 
 namespace Pz.Connector.LocalFiles;
 
@@ -40,11 +41,11 @@ internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISou
         var context = $"dataset '{spec.Dataset}'";
         var format = FileFormatCatalog.Resolve(spec.Options, "csv", "localfiles", context);
         var absPath = ResolvePath(spec, format);
-        var declared = ExtractColumns(spec);
-        var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
+        var declared = ColumnTypeCatalog.ContractColumns(spec);
+        var urlArg = $"'{DuckDbSqlText.EscapeLiteral(absPath)}'";
         var request = new FormatReadRequest(urlArg, 1, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
-        scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
+        scan = new NativeScan(NativeScanWindow.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
             SchemaInferred = FileFormatCatalog.SchemaInferred(format, declared),
@@ -84,11 +85,11 @@ internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISou
                 : Path.Combine(baseDir, relative);
     }
 
-    /// <summary>Same lookup pair as <see cref="CsvSource"/>'s: <see cref="ExtractColumns"/> tells
+    /// <summary>Same lookup pair as <see cref="CsvSource"/>'s: <see cref="ColumnTypeCatalog.ContractColumns"/> tells
     /// no-contract-at-all from declared (native scan needs no contract), while this throwing variant
     /// serves <see cref="GetSchemaAsync"/>, which has nothing to infer a schema from without one.</summary>
     private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec, FileFormat format) =>
-        ExtractColumns(spec) ?? throw new PzConnectorException(
+        ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': localfiles {format.Name} requires a declared columns: contract for " +
             $"schema fetch -- {SchemaFetchReason(format.Name)}",
             isTransient: false, code: PzConnectorErrorCodes.Config);
@@ -104,10 +105,4 @@ internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISou
         _ => "there is no header row or footer to infer one from",
     };
 
-    private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
-
-    private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");
 }

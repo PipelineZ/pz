@@ -5,13 +5,8 @@ using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connectors.Toolkit.Tests.Formats;
 
-/// <summary>Characterization test for the `columns:` contract's fixed v0 type matrix (int, bigint,
-/// double, decimal, varchar, boolean, date, timestamp), pinning it BEFORE it becomes the one shared
-/// implementation every file-place connector (localfiles, s3, gcs, azureblob) uses in place of its own
-/// copy (<c>TypeNameMap</c>/<c>S3TypeNameMap</c>/<c>GcsTypeNameMap</c>/<c>AzureTypeNameMap</c> --
-/// CONN-6). Those four copies were textually identical, byte for byte, including the unknown-type
-/// error message -- this is that one matrix, verified against exactly what all four already agreed
-/// on, so consolidating them changes no connector's observable behavior.</summary>
+/// <summary>Pins the `columns:` contract's fixed v0 type matrix (int, bigint, double, decimal,
+/// varchar, boolean, date, timestamp) that every connector shares, including the unknown-type error.</summary>
 public sealed class ColumnTypeCatalogTests
 {
     [Fact]

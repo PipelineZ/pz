@@ -221,17 +221,6 @@ public sealed class MySqlSqlGenTests
             "AND `updated_at` <= '2026-01-02 00:00:00.000000'", MySqlSql.InnerSelect(spec));
     }
 
-    [Theory]
-    [InlineData("42", "42")]
-    [InlineData("-7", "-7")]
-    [InlineData("3.50", "3.50")]
-    [InlineData("2026-08-14", "'2026-08-14'")]
-    [InlineData("2026-08-14T12:30:00.000001", "'2026-08-14 12:30:00.000001'")]
-    public void Watermark_literals_render_by_canonical_shape(string canonical, string expected)
-    {
-        Assert.Equal(expected, MySqlSql.RenderWatermarkLiteral(canonical));
-    }
-
     [Fact]
     public void Identifiers_and_literals_are_injection_safe()
     {

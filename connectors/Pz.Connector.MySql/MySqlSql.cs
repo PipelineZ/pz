@@ -1,6 +1,7 @@
-using System.Security.Cryptography;
 using System.Text;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Toolkit.Sql;
 
 namespace Pz.Connector.MySql;
 
@@ -22,17 +23,15 @@ namespace Pz.Connector.MySql;
 internal static class MySqlSql
 {
     /// <summary>Direction-specific attach aliases so the source attach stays READ_ONLY even when the
-    /// same connection also writes (one DuckDB session cannot hold one alias both ways). A short stable
-    /// hash of the RAW connection name is appended: <see cref="Sanitize"/> maps
-    /// every non-alphanumeric to '_', so distinct names like "prod-db" and "prod_db" would otherwise
-    /// collide on one alias — and <c>attach if not exists</c> is first-wins, a silent wrong-server I/O
-    /// bug. The hash is deterministic (SHA-256 of the exact connection name, first 8 lowercase hex
-    /// chars) — no randomness, so aliases stay stable across runs and processes.</summary>
+    /// same connection also writes (one DuckDB session cannot hold one alias both ways). Aliases must
+    /// stay distinct per raw connection name: <c>attach if not exists</c> is first-wins, so two
+    /// connections sharing one would silently talk to the wrong server (see
+    /// <see cref="DuckDbSqlText.ConnectionAlias"/>).</summary>
     internal static string SourceAlias(string connectionName) =>
-        $"pz_mysql_src_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_mysql_src", connectionName);
 
     internal static string SinkAlias(string connectionName) =>
-        $"pz_mysql_snk_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_mysql_snk", connectionName);
 
     /// <summary>The secret backing one alias's attach — <c>create or replace secret</c> is last-wins
     /// and idempotent should a node retry re-issue it (the engine runs each setup statement once per
@@ -51,20 +50,20 @@ internal static class MySqlSql
             throw new PzConnectorException("mysql connection requires 'database'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
         var body = new StringBuilder(
-            $"host '{EscapeLiteral(host)}', port {config.GetInt("port") ?? 3306}, database '{EscapeLiteral(database)}'");
+            $"host '{DuckDbSqlText.EscapeLiteral(host)}', port {config.GetInt("port") ?? 3306}, database '{DuckDbSqlText.EscapeLiteral(database)}'");
         if (config.GetString("user") is { Length: > 0 } user)
         {
-            body.Append(", user '").Append(EscapeLiteral(user)).Append('\'');
+            body.Append(", user '").Append(DuckDbSqlText.EscapeLiteral(user)).Append('\'');
         }
 
         if (config.GetString("password") is { Length: > 0 } password)
         {
-            body.Append(", password '").Append(EscapeLiteral(password)).Append('\'');
+            body.Append(", password '").Append(DuckDbSqlText.EscapeLiteral(password)).Append('\'');
         }
 
         if (config.GetString("ssl_mode") is { Length: > 0 } sslMode)
         {
-            body.Append(", ssl_mode '").Append(EscapeLiteral(sslMode)).Append('\'');
+            body.Append(", ssl_mode '").Append(DuckDbSqlText.EscapeLiteral(sslMode)).Append('\'');
         }
 
         return $"create or replace secret {secretName} (type mysql, {body})";
@@ -90,7 +89,7 @@ internal static class MySqlSql
     /// <summary>The scan fragment: always <c>mysql_query('alias', '…')</c>, never a bare attached-table
     /// scan, so projection and the watermark window are guaranteed to execute inside MySQL.</summary>
     internal static string ScanFragment(string alias, DatasetSpec spec, IReadOnlyList<string>? projected = null) =>
-        $"mysql_query('{EscapeLiteral(alias)}', '{EscapeLiteral(InnerSelect(spec, projected))}')";
+        $"mysql_query('{DuckDbSqlText.EscapeLiteral(alias)}', '{DuckDbSqlText.EscapeLiteral(InnerSelect(spec, projected))}')";
 
     /// <summary>The MySQL-side SELECT: a declared <c>columns:</c> contract prunes the read (only
     /// declared columns are projected — the csv/json rule); <c>query:</c> replaces the table as the
@@ -101,7 +100,7 @@ internal static class MySqlSql
     /// of a database source, and DatasetSpec's contract explicitly permits it.</summary>
     internal static string InnerSelect(DatasetSpec spec, IReadOnlyList<string>? projected = null)
     {
-        var columns = ExtractColumns(spec);
+        var columns = ColumnTypeCatalog.ContractColumns(spec);
         if (projected is { Count: > 0 } && columns is { Count: > 0 })
         {
             projected = [.. projected
@@ -122,12 +121,12 @@ internal static class MySqlSql
         if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
         {
             var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{QuoteIdent(cursor)} {op} {RenderWatermarkLiteral(low)}");
+            predicates.Add($"{QuoteIdent(cursor)} {op} {DuckDbSqlText.WatermarkLiteral(low)}");
         }
 
         if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
         {
-            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
+            predicates.Add($"{QuoteIdent(upperCursor)} <= {DuckDbSqlText.WatermarkLiteral(high)}");
         }
 
         if (query is { Length: > 0 })
@@ -150,81 +149,5 @@ internal static class MySqlSql
         return $"SELECT {projection} FROM {from}{where}";
     }
 
-    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
-    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a MySQL literal:
-    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
-    /// becoming the space form MySQL universally accepts.</summary>
-    internal static string RenderWatermarkLiteral(string canonical)
-    {
-        if (IsCanonicalNumeric(canonical))
-        {
-            return canonical; // int/bigint/decimal canonical form
-        }
-
-        var value = IsCanonicalTimestamp(canonical)
-            ? canonical[..10] + ' ' + canonical[11..]
-            : canonical;
-        return $"'{EscapeLiteral(value)}'";
-    }
-
-    /// <summary>Optional leading '-', digits, at most one '.'. A canonical date ("2020-01-01") has an
-    /// interior '-', so it never matches and falls through to the quoted form.</summary>
-    private static bool IsCanonicalNumeric(string value)
-    {
-        var i = value.StartsWith('-') ? 1 : 0;
-        var sawDigit = false;
-        var sawDot = false;
-        for (; i < value.Length; i++)
-        {
-            if (value[i] == '.')
-            {
-                if (sawDot)
-                {
-                    return false;
-                }
-
-                sawDot = true;
-            }
-            else if (char.IsAsciiDigit(value[i]))
-            {
-                sawDigit = true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return sawDigit;
-    }
-
-    private static bool IsCanonicalTimestamp(string value) =>
-        value.Length >= 19 && value[10] == 'T' &&
-        value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
-
     internal static string QuoteIdent(string name) => $"`{name.Replace("`", "``")}`";
-
-    /// <summary>Quotes an identifier for a statement DuckDB itself parses (the sink's CopySql: the
-    /// table reference in <c>create table alias.&lt;name&gt; ...</c>) -- DuckDB's own grammar has no
-    /// backtick-quoted-identifier production at all (verified against DuckDB v1.5.5: <c>create table
-    /// x (`a` int)</c> is a bare parser error, independent of any attached catalog), so
-    /// <see cref="QuoteIdent"/>'s MySQL backticks are wrong here even though they are correct for
-    /// every other identifier in this file, which all ride inside the <c>mysql_query('alias', '…')</c>
-    /// string literal that MySQL itself parses.</summary>
-    internal static string QuoteDuckIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
-
-    internal static string EscapeLiteral(string value) => value.Replace("'", "''");
-
-    internal static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
-
-    private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
-
-    /// <summary>First 8 lowercase hex chars of SHA-256(name) — deterministic, no randomness, so an
-    /// alias/secret name is stable across runs and processes.</summary>
-    private static string HashSuffix(string name) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 }
