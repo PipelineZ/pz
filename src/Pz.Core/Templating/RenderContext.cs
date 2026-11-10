@@ -45,7 +45,7 @@ public sealed record InlineSinkBinding(string Sink, string Output, SinkWriteOpti
     }
 }
 
-/// <summary>One watermark(<source>, <dataset>) call recorded by TemplateRenderer. The
+/// <summary>One <c>watermark(&lt;source&gt;, &lt;dataset&gt;)</c> call recorded by TemplateRenderer. The
 /// sentinel is the deterministic string literal the call renders to — DagCompiler's inference and
 /// the executors' substitution both key on it verbatim.</summary>
 public sealed record WatermarkRef(string SourceName, string Dataset)
