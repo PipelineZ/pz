@@ -7,6 +7,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **sftp: parquet writes keep microsecond timestamps.** The universal-tier parquet writer declared timestamp columns
+  in a way Parquet.Net stores at millisecond precision, so `12:30:15.123456` landed as `12:30:15.123`. They are now
+  written as microseconds, like the localfiles, azureblob and gcs parquet writers.
+
 ## [0.18.0] - 2026-11-09
 
 ### Breaking

@@ -413,8 +413,10 @@ internal sealed class SftpParquetWriteSession : SftpWriteSessionBase
         BooleanType => new DataField(field.Name, typeof(bool), isNullable: true),
         StringType => new DataField(field.Name, typeof(string), isNullable: true),
         Date32Type => new DateTimeDataField(field.Name, DateTimeFormat.Date, isNullable: true),
-        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTime,
-            isAdjustedToUTC: true, unit: DateTimeTimeUnit.Micros, isNullable: true),
+        // DateAndTimeMicros, not DateAndTime: Parquet.Net's DateTimeDataField hardcodes millisecond units
+        // for DateAndTime whatever `unit:` says, which would truncate every timestamp to milliseconds.
+        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTimeMicros,
+            isAdjustedToUTC: true, isNullable: true),
         Decimal128Type => throw new PzConnectorException(
             $"column '{field.Name}': the sftp sink cannot write decimal parquet columns — " +
             "use csv or json format instead, or cast the column upstream", isTransient: false),
