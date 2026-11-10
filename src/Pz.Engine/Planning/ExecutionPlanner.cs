@@ -34,12 +34,12 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         var errors = new List<PzError>();
 
         // rate_limit is connection-level, but planning runs per dataset/output node: one set per PlanAsync
-        // call, threaded into both node arms below, de-dupes the PZ0317 gate to one error per connection
-        // however many dataset/output nodes share it.
+        // call, threaded into both node arms below, de-dupes the PZ0317 gate to one error per connection and
+        // direction however many dataset/output nodes share it.
         var pacingRefused = new HashSet<string>();
 
         // CheckpointableReads without StablePartitionIds is a connector defect (checkpoints are keyed by
-        // stable partition identity). Static capability read, aggregated, de-duped per connection like the
+        // stable partition identity). Static capability read, aggregated, de-duped per source connection like the
         // PZ0317 gates above.
         var identityRefused = new HashSet<string>();
 
@@ -233,7 +233,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         }
 
         // Pacing capability gate. Static read (no OpenAsync). Connection-level config, per-dataset
-        // planning pass: pacingRefused de-dupes to one error per connection.
+        // planning pass: pacingRefused de-dupes to one error per connection and direction.
         if (def.Source.RateLimit is not null && connectorFound &&
             !connector!.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations) &&
             pacingRefused.Add("source:" + def.Source.Name))
@@ -268,7 +268,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         }
 
         // CheckpointableReads without StablePartitionIds is a connector defect (checkpoints are keyed by
-        // stable partition identity). Static capability read, aggregated, de-duped per connection like the
+        // stable partition identity). Static capability read, aggregated, de-duped per source connection like the
         // PZ0317 gates above.
         if (connectorFound &&
             connector!.Capabilities.HasFlag(ConnectorCapabilities.CheckpointableReads) &&
@@ -695,7 +695,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         // Pacing capability gate, sink-side mirror of the source check in PlanSourceLoadAsync above.
         // Static Capabilities read (no OpenAsync). Connection-level config, per-output planning pass:
-        // pacingRefused de-dupes to one error per connection.
+        // pacingRefused de-dupes to one error per connection and direction.
         if (def.Sink.RateLimit is not null &&
             !connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations) &&
             pacingRefused.Add("sink:" + def.Sink.Name))
