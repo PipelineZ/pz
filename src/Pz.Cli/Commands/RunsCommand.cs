@@ -54,33 +54,9 @@ internal static class RunsCommand
             return ExitCodes.ConfigError;
         }
 
-        if (!File.Exists(Path.Combine(projectDir, "project.yml")))
+        if (!SharedInputHelpers.ProjectYmlExists("runs", projectDir) ||
+            !SharedInputHelpers.TryResolveStateBackends(projectDir, TimeProvider.System, out var backends))
         {
-            Console.Error.WriteLine(
-                $"error {PzErrorCode.YamlShape}: project.yml is missing — run pz runs from a project directory " +
-                "or pass --project <dir>");
-            return ExitCodes.ConfigError;
-        }
-
-        StateBackends backends;
-        try
-        {
-            var (name, state, connections) =
-                ProjectLoader.LoadStateOnly(projectDir, SharedInputHelpers.SnapshotEnvironment());
-            backends = StateBackendFactory.Create(state, name, connections, projectDir, TimeProvider.System);
-        }
-        catch (PzValidationException ex)
-        {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
-
-            return ExitCodes.ConfigError;
-        }
-        catch (PzConfigException ex)
-        {
-            Console.Error.WriteLine($"error {ex.Error}");
             return ExitCodes.ConfigError;
         }
 

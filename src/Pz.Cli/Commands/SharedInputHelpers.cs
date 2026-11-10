@@ -1,7 +1,13 @@
 using System.Collections;
 using System.Text.Json;
+using Pz.Core.Dag;
 using Pz.Core.Loading;
+using Pz.Core.Model;
+using Pz.Core.Templating;
 using Pz.Core.Validation;
+using Pz.DuckDb;
+using Pz.Engine.Execution;
+using Pz.Engine.Validation;
 using Pz.PackageManagement.Hosting;
 
 namespace Pz.Cli.Commands;
@@ -83,6 +89,128 @@ internal static class SharedInputHelpers
                 $"warning: {w.Code} {w.Message}" +
                 (w.File is null ? "" : $" ({w.File})") +
                 (w.Hint is null ? "" : $" — {w.Hint}"));
+        }
+    }
+
+    /// <summary>Loads, anchors and compiles the project the way `pz test` and `pz retry` start: any
+    /// load/compile failure (or a bad <c>--state-url</c>) is printed and reported as <c>false</c>, which the
+    /// caller maps to <see cref="ExitCodes.ConfigError"/>; on success the compile notices are printed as
+    /// <c>note:</c> lines.</summary>
+    internal static bool TryLoadAndCompile(
+        string projectDir, string? varsJson, string? stateUrlRaw,
+        out PzProject project, out CompiledDag dag)
+    {
+        project = null!;
+        dag = null!;
+        var compileNotices = new List<string>();
+        try
+        {
+            var env = SnapshotEnvironment();
+            project = AnchorToProjectDir(ProjectLoader.Load(projectDir, env, ParseVars(varsJson)), projectDir);
+            if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
+            {
+                Console.Error.WriteLine($"error: {stateUrlError}");
+                return false;
+            }
+
+            var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
+            using var sqlAst = new DuckDbSqlAstReader();
+            dag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
+        }
+        catch (PzValidationException ex)
+        {
+            WriteErrors(ex.Errors);
+            return false;
+        }
+
+        foreach (var notice in compileNotices)
+        {
+            Console.WriteLine($"note: {notice}");
+        }
+
+        return true;
+    }
+
+    /// <summary>The `project.yml is missing` refusal shared by the verbs that read only the <c>state:</c>
+    /// key (`pz state`, `pz runs`, `pz clean`): they must not be pointable at a stray `.pz`.</summary>
+    internal static bool ProjectYmlExists(string verb, string projectDir)
+    {
+        if (File.Exists(Path.Combine(projectDir, "project.yml")))
+        {
+            return true;
+        }
+
+        Console.Error.WriteLine(
+            $"error {PzErrorCode.YamlShape}: project.yml is missing — run pz {verb} from a project directory " +
+            "or pass --project <dir>");
+        return false;
+    }
+
+    /// <summary>Resolves the state backends from project.yml's <c>state:</c> key alone
+    /// (<see cref="ProjectLoader.LoadStateOnly"/>), so a broken pipeline or connections file never stops
+    /// a state-only verb. Prints the error and returns <c>false</c> when resolution fails.</summary>
+    internal static bool TryResolveStateBackends(string projectDir, TimeProvider time, out StateBackends backends)
+    {
+        backends = null!;
+        try
+        {
+            var (name, state, connections) = ProjectLoader.LoadStateOnly(projectDir, SnapshotEnvironment());
+            backends = StateBackendFactory.Create(state, name, connections, projectDir, time);
+            return true;
+        }
+        catch (PzValidationException ex)
+        {
+            WriteErrors(ex.Errors);
+        }
+        catch (PzConfigException ex)
+        {
+            Console.Error.WriteLine($"error {ex.Error}");
+        }
+
+        return false;
+    }
+
+    /// <summary>Loads and compiles the project without anchoring or state overrides -- the read-only
+    /// verbs' (`pz compile`, `pz ls`) start -- printing the compile notices as <c>note:</c> lines. Load and
+    /// compile failures surface as <see cref="PzValidationException"/>.</summary>
+    internal static (PzProject Project, CompiledDag Dag) LoadAndCompile(string projectDir, string? varsJson)
+    {
+        var env = SnapshotEnvironment();
+        var project = ProjectLoader.Load(projectDir, env, ParseVars(varsJson));
+        var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
+        var compileNotices = new List<string>();
+        using var sqlAst = new DuckDbSqlAstReader();
+        var dag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
+        foreach (var notice in compileNotices)
+        {
+            Console.WriteLine($"note: {notice}");
+        }
+
+        return (project, dag);
+    }
+
+    /// <summary>The implicit pre-run SQL dry-compile (validation tier 4): prints any errors and returns
+    /// <c>false</c> so a broken pipeline is rejected before a run starts, never as a node failure inside
+    /// one. Quiet on success.</summary>
+    internal static async Task<bool> DryCompilePassesAsync(CompiledDag dag, PzProject project, CancellationToken ct)
+    {
+        var dry = await SqlDryCompiler.RunAsync(dag, project.Extensions, ct);
+        if (dry.Errors.Count == 0)
+        {
+            return true;
+        }
+
+        WriteErrors(dry.Errors);
+        return false;
+    }
+
+    /// <summary>Prints each error to stderr as <c>error CODE: message</c>, one per line -- the shape every
+    /// verb uses for a failed load, compile or validation.</summary>
+    internal static void WriteErrors(IEnumerable<PzError> errors)
+    {
+        foreach (var error in errors)
+        {
+            Console.Error.WriteLine($"error {error}");
         }
     }
 

@@ -1,10 +1,6 @@
 using System.CommandLine;
 using Pz.Core.Dag;
-using Pz.Core.Loading;
-using Pz.Core.Model;
-using Pz.Core.Templating;
 using Pz.Core.Validation;
-using Pz.Engine.Validation;
 
 namespace Pz.Cli.Commands;
 
@@ -60,51 +56,17 @@ internal static class TestCommand
             return ExitCodes.ConfigError;
         }
 
-        PzProject project;
-        CompiledDag fullDag;
-        var compileNotices = new List<string>();
-        try
+        if (!SharedInputHelpers.TryLoadAndCompile(projectDir, varsJson, stateUrlRaw, out var project, out var fullDag))
         {
-            var env = SharedInputHelpers.SnapshotEnvironment();
-            var overrides = SharedInputHelpers.ParseVars(varsJson);
-            project = ProjectLoader.Load(projectDir, env, overrides);
-            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
-            if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
-            {
-                Console.Error.WriteLine($"error: {stateUrlError}");
-                return ExitCodes.ConfigError;
-            }
-            var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
-        }
-        catch (PzValidationException ex)
-        {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
-
             return ExitCodes.ConfigError;
-        }
-
-        foreach (var notice in compileNotices)
-        {
-            Console.WriteLine($"note: {notice}");
         }
 
         try
         {
             // Same implicit pre-run dry-compile `pz run` does (validation tier 4) -- a broken
             // pipeline is rejected before any real run starts, never as a node failure inside one.
-            var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct);
-            if (dry.Errors.Count > 0)
+            if (!await SharedInputHelpers.DryCompilePassesAsync(fullDag, project, ct))
             {
-                foreach (var error in dry.Errors)
-                {
-                    Console.Error.WriteLine($"error {error}");
-                }
-
                 return ExitCodes.ConfigError;
             }
 
@@ -115,10 +77,7 @@ internal static class TestCommand
             }
             catch (PzValidationException ex)
             {
-                foreach (var error in ex.Errors)
-                {
-                    Console.Error.WriteLine($"error {error}");
-                }
+                SharedInputHelpers.WriteErrors(ex.Errors);
 
                 return ExitCodes.ConfigError;
             }
@@ -144,12 +103,8 @@ internal static class TestCommand
             // Mirrors RunCommand.Execute's outer catch: an unexpected exception must never surface
             // as a raw stack trace, and PzValidationException from --select parsing above is already
             // handled locally. The same three diagnosable local I/O shapes get fingerprinted.
-            Console.Error.WriteLine(EngineFailureMapper.TryMap(ex) is { } mapped
-                ? $"error {mapped}"
-                : $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
+            Console.Error.WriteLine($"error {EngineFailureMapper.Map(ex)}");
             return ExitCodes.Fatal;
         }
     }
-
-
 }

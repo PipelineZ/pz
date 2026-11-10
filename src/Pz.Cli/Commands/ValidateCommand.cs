@@ -72,10 +72,7 @@ internal static class ValidateCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return ExitCodes.ConfigError;
         }
@@ -95,10 +92,7 @@ internal static class ValidateCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return ExitCodes.ConfigError;
         }
@@ -113,10 +107,7 @@ internal static class ValidateCommand
         SharedInputHelpers.WriteWarnings(tier3Warnings);
         if (tier3Errors.Count > 0)
         {
-            foreach (var error in tier3Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(tier3Errors);
 
             return ExitCodes.ConfigError;
         }
@@ -125,10 +116,7 @@ internal static class ValidateCommand
         var dry = await SqlDryCompiler.RunAsync(dag, project.Extensions, ct);
         if (dry.Errors.Count > 0)
         {
-            foreach (var error in dry.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(dry.Errors);
 
             return ExitCodes.ConfigError;
         }
@@ -158,10 +146,7 @@ internal static class ValidateCommand
 
             if (connectivity.Errors.Count > 0)
             {
-                foreach (var error in connectivity.Errors)
-                {
-                    Console.Error.WriteLine($"error {error}");
-                }
+                SharedInputHelpers.WriteErrors(connectivity.Errors);
 
                 return ExitCodes.ConfigError;
             }

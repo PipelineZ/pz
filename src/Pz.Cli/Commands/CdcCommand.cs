@@ -187,10 +187,7 @@ internal static class CdcCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return (ExitCodes.ConfigError, null!, null!, null, null!);
         }

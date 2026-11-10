@@ -1,8 +1,6 @@
 using System.CommandLine;
 using Pz.Core.Artifacts;
 using Pz.Core.Dag;
-using Pz.Core.Loading;
-using Pz.Core.Templating;
 using Pz.Core.Validation;
 
 namespace Pz.Cli.Commands;
@@ -28,18 +26,7 @@ internal static class CompileCommand
     {
         try
         {
-            var env = SharedInputHelpers.SnapshotEnvironment();
-            var overrides = SharedInputHelpers.ParseVars(varsJson);
-            var project = ProjectLoader.Load(projectDir, env, overrides);
-            var ctx = new RenderContext(project, Guid.NewGuid().ToString("N"),
-                DateTimeOffset.UtcNow) { Env = env };
-            var compileNotices = new List<string>();
-            using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
-            var dag = DagCompiler.Compile(project, ctx, compileNotices, sqlAst);
-            foreach (var notice in compileNotices)
-            {
-                Console.WriteLine($"note: {notice}");
-            }
+            var (project, dag) = SharedInputHelpers.LoadAndCompile(projectDir, varsJson);
 
             var nodesToWrite = dag.Nodes;
             if (!string.IsNullOrWhiteSpace(select))
@@ -55,8 +42,7 @@ internal static class CompileCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-                Console.Error.WriteLine($"error {error}");
+            SharedInputHelpers.WriteErrors(ex.Errors);
             return ExitCodes.ConfigError;
         }
     }

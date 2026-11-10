@@ -166,10 +166,7 @@ internal static class PlanCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return ExitCodes.ForPlanFailure(ex);
         }

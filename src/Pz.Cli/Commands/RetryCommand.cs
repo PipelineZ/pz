@@ -1,12 +1,9 @@
 using System.CommandLine;
 using Pz.Core.Dag;
-using Pz.Core.Loading;
 using Pz.Core.Model;
-using Pz.Core.Templating;
 using Pz.Core.Validation;
 using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
-using Pz.Engine.Validation;
 
 namespace Pz.Cli.Commands;
 
@@ -87,49 +84,16 @@ internal static class RetryCommand
             return ExitCodes.ConfigError;
         }
 
-        PzProject project;
-        CompiledDag fullDag;
-        var compileNotices = new List<string>();
-        try
+        if (!SharedInputHelpers.TryLoadAndCompile(projectDir, varsJson: null, stateUrlRaw, out var project, out var fullDag))
         {
-            var env = SharedInputHelpers.SnapshotEnvironment();
-            project = ProjectLoader.Load(projectDir, env);
-            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
-            if (!StateUrlOverride.TryApply(project, stateUrlRaw, env, out project, out var stateUrlError))
-            {
-                Console.Error.WriteLine($"error: {stateUrlError}");
-                return ExitCodes.ConfigError;
-            }
-            var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            using var sqlAst = new Pz.DuckDb.DuckDbSqlAstReader();
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
-        }
-        catch (PzValidationException ex)
-        {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
-
             return ExitCodes.ConfigError;
-        }
-
-        foreach (var notice in compileNotices)
-        {
-            Console.WriteLine($"note: {notice}");
         }
 
         try
         {
             // Same implicit pre-run dry-compile `pz run`/`pz test` perform (validation tier 4).
-            var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct);
-            if (dry.Errors.Count > 0)
+            if (!await SharedInputHelpers.DryCompilePassesAsync(fullDag, project, ct))
             {
-                foreach (var error in dry.Errors)
-                {
-                    Console.Error.WriteLine($"error {error}");
-                }
-
                 return ExitCodes.ConfigError;
             }
 
@@ -182,9 +146,7 @@ internal static class RetryCommand
         {
             // Mirrors RunCommand.Execute's outer catch: an unexpected exception must never surface as a
             // raw stack trace, and the same three diagnosable local I/O shapes get fingerprinted.
-            Console.Error.WriteLine(EngineFailureMapper.TryMap(ex) is { } mapped
-                ? $"error {mapped}"
-                : $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
+            Console.Error.WriteLine($"error {EngineFailureMapper.Map(ex)}");
             return ExitCodes.Fatal;
         }
     }
@@ -296,6 +258,4 @@ internal static class RetryCommand
         var (reuse, carriedForward) = RetryReusePlanner.Plan(fullDag, prior, selection, projectDir, fullRefresh);
         return new RetryPlan(prior, selection, reuse, carriedForward);
     }
-
-
 }

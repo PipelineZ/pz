@@ -68,10 +68,7 @@ internal static class SchemaCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return ExitCodes.ConfigError;
         }
