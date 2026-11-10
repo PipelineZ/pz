@@ -86,7 +86,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
                 {
                     throw new PzConnectorException(
                         $"dataset '{spec.Dataset}': option '{forbidden}' is not allowed with change capture " +
-                        "-- a cdc dataset reads its 'table' directly; remove it",
+                        "-- a cdc dataset reads its entity's table directly; remove it",
                         isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
             }
