@@ -359,10 +359,8 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
 
 /// <summary>One independently readable slice: opens its own connection (sibling partitions drain
 /// concurrently). SequentialAccess + SingleResult: the typed column plans read ordinals strictly in
-/// order, letting SqlClient stream wide nvarchar values without whole-row buffering.
-/// Manual enumerator: yield cannot live inside try/catch, so MoveNextAsync is wrapped alone —
-/// mid-stream SqlExceptions surface classified, and `await using` disposes the connection on every
-/// exit path including abandoned enumeration.</summary>
+/// order, letting SqlClient stream wide nvarchar values without whole-row buffering. `await using`
+/// disposes the connection on every exit path including abandoned enumeration.</summary>
 internal sealed class SqlServerPartition(string connectionString, string selectSql) : IDatasetPartition
 {
     public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
@@ -382,34 +380,10 @@ internal sealed class SqlServerPartition(string connectionString, string selectS
             throw new PzConnectorException($"sqlserver read failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
 
-        var enumerator = SqlServerArrowReader.ReadBatchesAsync(reader, options, ct).GetAsyncEnumerator(ct);
-        try
+        await foreach (var batch in SqlServerBatchStream.ReadAsync(
+            reader, options, SqlServerBatchStream.MidStreamFailure, ct).ConfigureAwait(false))
         {
-            while (true)
-            {
-                bool moved;
-                try
-                {
-                    moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
-                }
-                catch (SqlException ex)
-                {
-                    throw new PzConnectorException(
-                        $"sqlserver read failed mid-stream: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
-                }
-
-                if (!moved)
-                {
-                    yield break;
-                }
-
-                yield return enumerator.Current;
-            }
-        }
-        finally
-        {
-            await enumerator.DisposeAsync().ConfigureAwait(false);
-            await reader.DisposeAsync().ConfigureAwait(false);
+            yield return batch;
         }
     }
 }
