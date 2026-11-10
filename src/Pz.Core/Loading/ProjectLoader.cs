@@ -8,6 +8,13 @@ namespace Pz.Core.Loading;
 
 public static class ProjectLoader
 {
+    private const string ProjectFileName = "project.yml";
+
+    private static PzError MissingProjectFileError() =>
+        new(PzErrorCode.YamlShape, $"{ProjectFileName} is missing.", ProjectFileName, null,
+            "run this from a pz project directory (or pass --project <dir>); to start a new " +
+            "project, run 'pz init <name>'");
+
     // env: injected (never Environment.GetEnvironmentVariables directly) for testability
     public static PzProject Load(string projectDir, IReadOnlyDictionary<string, string> env,
         IReadOnlyDictionary<string, object?>? varOverrides = null)
@@ -65,15 +72,11 @@ public static class ProjectLoader
     public static (string ProjectName, StateConfig State, IReadOnlyList<ConnectionDef> Connections) LoadStateOnly(
         string projectDir, IReadOnlyDictionary<string, string> env)
     {
-        const string relativePath = "project.yml";
+        const string relativePath = ProjectFileName;
         var path = Path.Combine(projectDir, relativePath);
         if (!File.Exists(path))
         {
-            throw new PzValidationException([
-                new PzError(PzErrorCode.YamlShape, "project.yml is missing.", relativePath, null,
-                    "run this from a pz project directory (or pass --project <dir>); to start a new " +
-                    "project, run 'pz init <name>'")
-            ]);
+            throw new PzValidationException([MissingProjectFileError()]);
         }
 
         Dictionary<string, object?> yaml;
@@ -111,8 +114,8 @@ public static class ProjectLoader
         IReadOnlyList<string> Extensions) LoadProjectFile(
             string projectDir, IReadOnlyDictionary<string, string> env, List<PzError> errors)
     {
-        const string relativePath = "project.yml";
-        var path = Path.Combine(projectDir, "project.yml");
+        const string relativePath = ProjectFileName;
+        var path = Path.Combine(projectDir, relativePath);
 
         var name = string.Empty;
         var version = string.Empty;
@@ -126,9 +129,7 @@ public static class ProjectLoader
 
         if (!File.Exists(path))
         {
-            errors.Add(new PzError(PzErrorCode.YamlShape, "project.yml is missing.", relativePath, null,
-                "run this from a pz project directory (or pass --project <dir>); to start a new " +
-                "project, run 'pz init <name>'"));
+            errors.Add(MissingProjectFileError());
             return (name, version, connectors, vars, engine, retention, state, onSourceDrift, extensions);
         }
 
@@ -286,14 +287,16 @@ public static class ProjectLoader
             name.Length > 0 && name.All(c => c is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_');
     }
 
-    /// <summary>A mistyped project.yml key is refused rather than silently ignored, matching
-    /// connections.yml. <c>outputs:</c> gets the targeted retirement code (PZ0347) instead of the
-    /// generic unknown-key error.</summary>
-    /// <remarks>"pz" is the documented engine-version-constraint key (project-yml.md); accepted here
-    /// because projects written to the docs must keep loading, though no constraint check reads it yet.</remarks>
+    /// <summary>"pz" is the documented engine-version-constraint key; accepted here because projects
+    /// written to the docs must keep loading, though no constraint check reads it yet. "feeds" is
+    /// listed so that <see cref="LoadProjectFile"/> can report its dedicated error instead of the
+    /// generic unknown-key one.</summary>
     private static readonly string[] KnownProjectKeys =
         ["name", "version", "pz", "connectors", "extensions", "vars", "engine", "retention", "state", "on_source_drift", "feeds"];
 
+    /// <summary>A mistyped project.yml key is refused rather than silently ignored, matching
+    /// connections.yml. <c>outputs:</c> gets the targeted retirement code (PZ0347) instead of the
+    /// generic unknown-key error.</summary>
     private static void RefuseUnknownProjectKeys(Dictionary<string, object?> yaml, string relativePath,
         List<PzError> errors)
     {
@@ -311,7 +314,7 @@ public static class ProjectLoader
 
     /// <summary>Refuses every key in <paramref name="dict"/> that is not in <paramref name="allowed"/>,
     /// one aggregated <see cref="PzError"/> per unknown key, with a near-miss suggestion
-    /// (<see cref="ScriptKwargs.NearMiss"/>) when the key is one edit -- or a case difference -- away
+    /// (<see cref="NearMiss.Find"/>) when the key is one edit -- or a case difference -- away
     /// from an allowed one. The one "unknown key" check every YAML block with a closed key set shares,
     /// so a typo reads and sounds the same wherever it is caught. <paramref name="where"/> is the
     /// message prefix (e.g. <c>"project.yml: "</c>, <c>"connection 'x' engine.breaker: "</c>) and is
@@ -467,7 +470,7 @@ public static class ProjectLoader
         }
 
         var keepLast = TryGetInt(retentionYaml, "keep_last");
-        if (keepLast is not { } value2 || value2 < 1)
+        if (keepLast is not { } keepLastValue || keepLastValue < 1)
         {
             var got = retentionYaml.TryGetValue("keep_last", out var raw) ? $"'{raw}'" : "nothing";
             errors.Add(new PzError(PzErrorCode.RetentionConfigInvalid,
@@ -477,7 +480,7 @@ public static class ProjectLoader
             return null;
         }
 
-        return new RetentionConfig(value2);
+        return new RetentionConfig(keepLastValue);
     }
 
     /// <summary>The default when `retention:` is absent. Ten runs is well past what anyone
@@ -921,8 +924,8 @@ public static class ProjectLoader
 
     private static readonly string[] IncrementalOnlyKeys = ["cursor", "max_window", "initial", "until"];
 
-    /// <summary>The unified dataset <c>sync:</c> block. Absent
-    /// entirely -> null (mode: auto, omitted form). Present but not a mapping, missing/unknown
+    /// <summary>The unified dataset <c>sync:</c> block (an entity's <c>read:</c> block or the
+    /// <c>source()</c> kwarg). Absent entirely -> null (mode: auto, omitted form). Present but not a mapping, missing/unknown
     /// 'mode', 'mode: incremental' missing 'cursor', a non-scalar 'sync.slot', or an unknown
     /// sub-key under the resolved mode -> PZ0334 (SyncModeInvalid).
     /// 'mode: cdc' accepts only 'mode' and the optional 'slot'; whether the named
@@ -976,7 +979,7 @@ public static class ProjectLoader
                     }
                     else
                     {
-                        slot = Convert.ToString(slotRaw, System.Globalization.CultureInfo.InvariantCulture);
+                        slot = Convert.ToString(slotRaw, CultureInfo.InvariantCulture);
                     }
                 }
 
@@ -1036,17 +1039,16 @@ public static class ProjectLoader
             return null;
         }
 
-        return Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture);
+        return Convert.ToString(value, CultureInfo.InvariantCulture);
     }
 
-    /// <summary>The <c>retry:</c> block — one parser for BOTH levels: instance (sources/sinks file top
-    /// level) and dataset/output. Absent -> null. All
-    /// three keys optional; absent keys stay null and the engine cascades dataset/output -> instance ->
-    /// <c>RetryPolicy.Default</c> field-wise. The max_delay >= base_delay relation is checked only when
+    /// <summary>The <c>retry:</c> block — one parser for BOTH levels: the connection and an entity's
+    /// read/write side. Absent -> null. All three keys optional; absent keys stay null and the engine
+    /// cascades read/write side -> connection -> <c>RetryPolicy.Default</c> field-wise. The max_delay >= base_delay relation is checked only when
     /// BOTH are declared in the SAME block: a single declared key that crosses a coarser level is
     /// harmless (ComputeDelay caps at MaxDelay), and Pz.Core cannot see the engine default to compare
     /// against (layering). Errors are PZ0121, aggregate, and name the file — <paramref name="context"/>
-    /// additionally names the dataset/output block per the repo's error rule; instance-level call sites
+    /// additionally names the entity block per the repo's error rule; connection-level call sites
     /// pass "".</summary>
     internal static RetryDef? ParseRetry(Dictionary<string, object?> yaml, string relativePath, List<PzError> errors,
         string context = "")
@@ -1124,7 +1126,7 @@ public static class ProjectLoader
     /// skeleton, but simpler (two int fields, both bounded 1..1_000_000, no cross-field relation). Absent -> null.
     /// `requests_per_minute` is required; `burst` optional (absent -> engine derives it via
     /// <see cref="RateLimitDef.EffectiveBurst"/>). Errors are PZ0318, aggregate, and name the file. `rate_limit:`
-    /// is instance-level only -- callers at the dataset/output level don't invoke this parser at all; instead
+    /// is connection-level only -- the entity-level callers don't invoke this parser at all; instead
     /// they refuse the key outright (see the `ContainsKey("rate_limit")` check in
     /// <see cref="ConnectionsLoader"/>'s read block).</summary>
     internal static RateLimitDef? ParseRateLimit(Dictionary<string, object?> yaml, string relativePath,
@@ -1185,7 +1187,7 @@ public static class ProjectLoader
         return valid ? new RateLimitDef(rpm!.Value, burst) : null;
     }
 
-    /// <summary>Top-level `max_concurrency:` on a source/sink file — caps how
+    /// <summary>Connection-level `max_concurrency:` — caps how
     /// many of this instance's nodes the dispatcher runs concurrently. Loader validates shape+bound only;
     /// enforcement is RunOrchestrator's. Absent -> null (unbounded, engine.threads still governs).</summary>
     internal static int? ParseMaxConcurrency(Dictionary<string, object?> yaml, string relativePath, List<PzError> errors)
@@ -1304,8 +1306,7 @@ public static class ProjectLoader
             }
 
             firstFileByName[pipelineName] = relativePath;
-            byName[pipelineName] = new PipelineDef(pipelineName, rawSql, "table",
-                Array.Empty<string>(), Array.Empty<CheckDef>(), relativePath);
+            byName[pipelineName] = new PipelineDef(pipelineName, rawSql, "table", [], [], relativePath);
         }
 
         ApplySidecars(projectDir, byName, errors, warnings);
@@ -1744,7 +1745,7 @@ public static class ProjectLoader
                 null => null,
                 string s => s,
                 bool b => b ? "true" : "false",
-                IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+                IFormattable f => f.ToString(null, CultureInfo.InvariantCulture),
                 _ => value.ToString(),
             }
             : null;
