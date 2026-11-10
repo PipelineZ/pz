@@ -7,9 +7,9 @@ namespace Pz.Mcp.Handlers;
 /// <summary>pz_docs_list / pz_docs_search / pz_docs_get — read-only access to the published
 /// documentation.
 ///
-/// These replaced the embedded doc resources. The documentation is published on the website, so
-/// serving it from there means an agent reads what is currently true rather than whatever shipped
-/// with the user's build of pz. The trade is that these three tools need network access -- they are
+/// The documentation is published on the website, so serving it from there means an agent reads
+/// what is currently true rather than whatever shipped with the user's build of pz. The trade is
+/// that these three tools need network access -- they are
 /// the only ones that do -- unless <c>PZ_DOCS_URL</c> names a <c>file:</c> mirror (a local directory
 /// holding the site's own <c>llms.txt</c>/<c>llms-full.txt</c>, the documented air-gapped route; see
 /// <see cref="DocsCatalog"/>), and they say so with PZ0607 rather than returning an empty result that

@@ -14,10 +14,10 @@ public sealed record DocPage(string Slug, string Title, string Description, stri
 /// <summary>Reads the published documentation from the site rather than from files shipped inside
 /// this assembly.
 ///
-/// The docs used to be embedded resources. They are fetched now because the documentation lives on
-/// the website, and a tool that carried its own copy would answer from whatever was true when the
-/// user's version of pz was built — quietly wrong for anyone not on the latest release. The cost is
-/// that these tools need network access, which they report honestly instead of degrading to silence.
+/// The documentation lives on the website, and a tool that carried its own copy would answer from
+/// whatever was true when the user's version of pz was built — quietly wrong for anyone not on the
+/// latest release. The cost is that these tools need network access, which they report honestly
+/// instead of degrading to silence.
 ///
 /// Two endpoints back this, and their formats are a contract the site deliberately keeps stable:
 ///   /llms.txt       an index: "- [Title](url): description" lines under "## Group" headings.

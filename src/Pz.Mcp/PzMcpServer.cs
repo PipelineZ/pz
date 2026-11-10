@@ -27,6 +27,11 @@ public static class PzMcpServer
         Timeout = TimeSpan.FromSeconds(15),
     });
 
+    /// <summary>The description every option-map parameter publishes.</summary>
+    private const string OptionMapDescription =
+        "YAML option keys and values for this block, nested exactly as they appear in " +
+        "connections.yml (see pz_connector_reference for the connector's own schema).";
+
     /// <summary>The schema the SDK infers for a <see cref="JsonElement"/> parameter is the boolean
     /// schema <c>true</c> — "any value", which tells a reader nothing about the one shape the handler
     /// accepts. Every such parameter here (<c>connection</c>, <c>read</c>, <c>write</c>) is a mapping
@@ -35,10 +40,6 @@ public static class PzMcpServer
     ///
     /// Deliberately narrow — it rewrites a node only when that node is the untyped one and the
     /// parameter really is a JsonElement, so no other tool's schema is touched.</summary>
-    private const string OptionMapDescription =
-        "YAML option keys and values for this block, nested exactly as they appear in " +
-        "connections.yml (see pz_connector_reference for the connector's own schema).";
-
     private static readonly Microsoft.Extensions.AI.AIJsonSchemaCreateOptions OptionMapSchema = new()
     {
         TransformSchemaNode = static (context, node) =>

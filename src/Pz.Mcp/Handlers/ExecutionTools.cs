@@ -126,10 +126,9 @@ internal static class ExecutionTools
             var project = ProjectPhases.Load(projectDir);
             var stores = services.CreateStateStores(project, projectDir);
             // outcome.RunId is null exactly for pz_retry's "nothing to retry" outcome (no run
-            // happened) -- ReadRun's null-id branch then reads whatever is latest, matching the prior
-            // behavior that case still needs. Every other outcome reaching here DID just execute a
-            // run, so its own id -- not whatever ReadLatest() happens to return -- is the one this
-            // envelope must report.
+            // happened) -- ReadRun's null-id branch then reads whatever is latest. Every other outcome
+            // reaching here DID just execute a run, so its own id -- not whatever ReadLatest() happens
+            // to return -- is the one this envelope must report.
             var run = ReadRun(stores, outcome.RunId);
 
             return ToolEnvelope.Ok(json =>
@@ -141,8 +140,8 @@ internal static class ExecutionTools
                 }
 
                 json.WriteNumber("exit_code", outcome.ExitCode);
-                WriteStringArray(json, "notices", outcome.Notices ?? []);
-                WriteWarnings(json, outcome.Warnings ?? []);
+                EnvelopeJson.WriteStringArray(json, "notices", outcome.Notices ?? []);
+                EnvelopeJson.WriteWarnings(json, outcome.Warnings ?? []);
                 if (outcome.Note is not null)
                 {
                     json.WriteString("note", outcome.Note);
@@ -171,49 +170,6 @@ internal static class ExecutionTools
             ? stores.Artifacts.ReadLatest()
             : stores.Artifacts.ReadAllNewestFirst()
                 .FirstOrDefault(r => string.Equals(r.RunId, runId, StringComparison.Ordinal));
-
-    private static void WriteStringArray(Utf8JsonWriter json, string propertyName, IReadOnlyList<string> values)
-    {
-        json.WriteStartArray(propertyName);
-        foreach (var value in values)
-        {
-            json.WriteStringValue(value);
-        }
-
-        json.WriteEndArray();
-    }
-
-    // Field shape matches VerifyTools.CompileAsync's own "warnings" array exactly (code/message/file?/
-    // line?/hint?) -- same PzWarning source, same JSON shape, two independent writers because Pz.Mcp's
-    // handler files don't share a JSON-writing base.
-    private static void WriteWarnings(Utf8JsonWriter json, IReadOnlyList<PzWarning> warnings)
-    {
-        json.WriteStartArray("warnings");
-        foreach (var w in warnings)
-        {
-            json.WriteStartObject();
-            json.WriteString("code", w.Code);
-            json.WriteString("message", w.Message);
-            if (w.File is { } file)
-            {
-                json.WriteString("file", file);
-            }
-
-            if (w.Line is { } line)
-            {
-                json.WriteNumber("line", line);
-            }
-
-            if (w.Hint is { } hint)
-            {
-                json.WriteString("hint", hint);
-            }
-
-            json.WriteEndObject();
-        }
-
-        json.WriteEndArray();
-    }
 
     private static void WriteRun(Utf8JsonWriter json, PriorRun run)
     {

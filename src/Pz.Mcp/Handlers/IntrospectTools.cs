@@ -51,7 +51,7 @@ internal static class IntrospectTools
 
             return ToolEnvelope.Ok(json =>
             {
-                WriteErrorsField(json, compileEx.Errors);
+                EnvelopeJson.WriteErrors(json, compileEx.Errors);
                 WriteOverview(json, project, project.Connections, dag: null);
             });
         }
@@ -547,27 +547,7 @@ internal static class IntrospectTools
     private static void WriteDagNodes(Utf8JsonWriter json, CompiledDag? dag)
     {
         json.WriteStartObject("dag");
-        json.WriteStartArray("nodes");
-        if (dag is not null)
-        {
-            foreach (var node in dag.Nodes)
-            {
-                json.WriteStartObject();
-                json.WriteString("id", node.Id.Value);
-                json.WriteString("name", node.Name);
-                json.WriteString("kind", node.Kind.ToString());
-                json.WriteStartArray("dependsOn");
-                foreach (var dep in node.DependsOn)
-                {
-                    json.WriteStringValue(dep.Value);
-                }
-
-                json.WriteEndArray();
-                json.WriteEndObject();
-            }
-        }
-
-        json.WriteEndArray();
+        EnvelopeJson.WriteDagNodes(json, dag?.Nodes ?? []);
         json.WriteEndObject();
     }
 
@@ -579,27 +559,5 @@ internal static class IntrospectTools
         json.WritePropertyName(propertyName);
         using var doc = JsonDocument.Parse(rawJson);
         doc.RootElement.WriteTo(json);
-    }
-
-    /// <summary>The top-level `errors` array, in the exact shape <see cref="ToolEnvelope.Errors"/>
-    /// itself writes (code/message/file?/line?/next_step) — duplicated here rather than reused because
-    /// <see cref="ToolEnvelope"/> exposes no way to combine <c>ok:true</c> with a populated
-    /// <c>errors</c> array (its <c>Errors</c> factory always writes <c>ok:false</c>), which is exactly
-    /// what pz_project_overview's best-effort fallback needs.</summary>
-    private static void WriteErrorsField(Utf8JsonWriter json, IReadOnlyList<PzError> errors)
-    {
-        json.WriteStartArray("errors");
-        foreach (var e in errors)
-        {
-            json.WriteStartObject();
-            json.WriteString("code", e.Code);
-            json.WriteString("message", e.Message);
-            if (e.File is { } file) { json.WriteString("file", file); }
-            if (e.Line is { } line) { json.WriteNumber("line", line); }
-            json.WriteString("next_step", e.Hint);
-            json.WriteEndObject();
-        }
-
-        json.WriteEndArray();
     }
 }
