@@ -842,47 +842,8 @@ public static partial class DagCompiler
             Connections = project.Connections,
         };
 
-        // 12. Effectively-once advisory NOTICE -- non-fatal, same `notices`
-        //     mechanism as the "cursor unverified" notice above. The effectively-once guarantee an
-        //     `incremental:` dataset relies on holds only if every sink its lineage reaches is
-        //     idempotent (mode: merge): a crash/retry, or a no-pushdown source re-running the same
-        //     extract, must not duplicate rows downstream. Trace each incremental SourceLoad's
-        //     structural descendants (the real project DAG, via the just-built CompiledDag) to every
-        //     SinkWrite it reaches and warn on each non-merge one. Deliberately NOT a hard error --
-        //     append-only sources with pushdown support can legitimately use mode: append, and a hard
-        //     error would over-block those legitimate cases.
-        foreach (var node in ordered.Where(n => n.Kind == NodeKind.SourceLoad))
-        {
-            // Same explicit-only scope as stage 10b above -- an implicit `mode: auto` dataset (SyncMode
-            // null) that a connector resolves to Feed is a planner-only concern (no connector access
-            // here); this advisory notice never fires for it, mirroring PZ0214's split. Only
-            // `SyncMode.Auto` can reach this: an Incremental dataset cannot land on a non-merge sink --
-            // PZ0335 refuses replace and PZ0214 refuses append-without-consent, while
-            // append-with-consent is filtered by the AcceptDuplicates check below.
-            if (node.Definition is not SourceDatasetDef sourceDef ||
-                sourceDef.Dataset.SyncMode is not { Mode: SyncMode.Auto })
-            {
-                continue;
-            }
-
-            foreach (var sinkNode in compiled.Descendants(node.Id).Where(d => d.Kind == NodeKind.SinkWrite))
-            {
-                var sinkDef = (SinkOutputDef)sinkNode.Definition;
-                // Consent recorded via accept_duplicates: true (PZ0214's own offered escape hatch,
-                // stage 10b above) must silence this recurring nag -- PZ0214 already surfaced merge
-                // as the alternative at decision time, so repeating that hint here would contradict
-                // the consent the operator just gave.
-                if (sinkDef.Output.Mode == "merge" || sinkDef.Output.AcceptDuplicates)
-                {
-                    continue;
-                }
-
-                notices?.Add(
-                    $"incremental/sync dataset '{sourceDef.Source.Name}.{sourceDef.Dataset.Name}' feeds non-merge sink " +
-                    $"'{sinkDef.Sink.Name}.{sinkDef.Output.Name}' (mode: {sinkDef.Output.Mode}); effectively-once " +
-                    "is not guaranteed -- a crash or retry may duplicate rows. Use write.strategy: merge for idempotency.");
-            }
-        }
+        // 12. Advisory notices and warnings derived from the finished DAG.
+        AddEffectivelyOnceNotices(compiled, notices);
 
         var coarse = CoarseWatermarkFormatWarnings(compiled, ordered);
         return coarse.Count == 0 ? compiled : compiled with { Warnings = [.. compiled.Warnings, .. coarse] };
