@@ -8,8 +8,8 @@ public sealed record DatasetDef(string Name, IReadOnlyDictionary<string, object?
     public IReadOnlyList<string> RedactedColumns { get; init; } = [];
 }
 
-/// <summary>The unified read-mode declaration (<c>sync: { mode: incremental | cdc | auto }</c> in
-/// sources/*.yml). Null on DatasetDef ⇔ the block is omitted ⇔ <c>mode: auto</c> (the connector's
+/// <summary>The unified read-mode declaration (<c>sync: { mode: incremental | cdc | auto }</c> under an
+/// entity's <c>read:</c> block or the <c>source()</c> kwarg). Null on DatasetDef ⇔ the block is omitted ⇔ <c>mode: auto</c> (the connector's
 /// natural read). <see cref="Incremental"/> carries the cursor/window payload and is non-null exactly
 /// when <see cref="Mode"/> is <see cref="SyncMode.Incremental"/>. Declaring two read modes is
 /// unrepresentable in this shape. <see cref="Slot"/> is cdc-only (non-null only when
@@ -29,10 +29,9 @@ public sealed record SyncModeDef(SyncMode Mode, IncrementalDef? Incremental, str
 public sealed record SqlWatermarkBound(string Pipeline, bool Inclusive, string ValueExprSql, string Sentinel,
     bool IsUpper = false);
 
-/// <summary>Dataset-level incremental extraction config (<c>incremental: { cursor: &lt;col&gt; }</c> in
-/// sources/*.yml); a <c>watermark()</c> comparison in pipeline SQL is the equivalent SQL-declared
-/// route. DagCompiler validates the
-/// cursor at compile time (PZ0212) against the dataset's <c>columns:</c> contract, when one is declared --
+/// <summary>Dataset-level incremental extraction config (<c>sync: { mode: incremental, cursor: &lt;col&gt; }</c>);
+/// a <c>watermark()</c> comparison in pipeline SQL is the equivalent SQL-declared
+/// route. DagCompiler validates the cursor at compile time (PZ0212) against the dataset's <c>columns:</c> contract, when one is declared --
 /// allowed cursor types are <c>int</c>/<c>bigint</c>/<c>decimal</c>/<c>date</c>/<c>timestamp</c>. The optional
 /// bounded-window trio (MaxWindow/Initial/Until) is RAW strings here — the loader only enforces scalar
 /// shape (PZ0101); every semantic rule is DagCompiler's job (PZ0213). <c>DeclaredInSql</c>

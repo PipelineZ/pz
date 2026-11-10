@@ -6,7 +6,7 @@ namespace Pz.Core.Model;
 /// cursor like any other column (contract mode), or — for raw-envelope connectors (http) whose
 /// records land as untyped payload text — the connector's <c>cursor</c>/<c>cursor_type</c>
 /// dataset options (the raw-mode cursor convention; the option must name the SAME column as
-/// <c>incremental.cursor</c>, which the connector itself also enforces). When a non-empty
+/// <c>sync.cursor</c>, which the connector itself also enforces). When a non-empty
 /// contract is declared it owns cursor typing outright — raw-mode options are never consulted
 /// (the http connector rejects that combination as a config error anyway).</summary>
 public static class CursorContract
