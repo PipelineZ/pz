@@ -6,8 +6,7 @@ namespace Pz.Connector.Sqlite;
 
 /// <summary>Native-only SQLite source: <see cref="TryGetNativeScan"/> always succeeds with a
 /// self-contained <c>sqlite_scan('&lt;path&gt;', '&lt;table&gt;')</c> fragment — no attach, no alias,
-/// no setup beyond the extension itself; <see cref="PlanReadAsync"/> is the PZ0312 refusal stub
-/// (ParquetSource/MySqlSource precedent).
+/// no setup beyond the extension itself; <see cref="PlanReadAsync"/> is the PZ0312 refusal stub.
 ///
 /// The PLAIN (unwindowed) incremental watermark IS pushed down (the database-source rule the MySQL
 /// connector established): DatasetSpec's contract explicitly permits it, and DuckDB's sqlite scanner

@@ -11,7 +11,7 @@ namespace Pz.Connector.Sqlite;
 /// copies, and the connector ships with zero .NET SQLite driver — pure SQL-fragment generation
 /// (<see cref="INativeOnlySource"/> + <see cref="INativeOnlySink"/>; engine.force_universal fails at
 /// plan time with PZ0312). There is no server and no credential: the connection is a file path,
-/// resolved against the CLI-injected <c>base_dir</c> (localfiles precedent), so
+/// resolved against the CLI-injected <c>base_dir</c>, so
 /// <see cref="CheckConnectionAsync"/> is a real local check (the 16-byte header magic) rather than
 /// MySQL's blind TCP probe. `pz validate --connect`'s schema fetch works only for datasets with a
 /// declared `columns:` contract. Registered under the logical name "sqlite". Connection

@@ -11,7 +11,7 @@ namespace Pz.Connector.MySql;
 /// SELECT is escaped again when embedded into the <c>mysql_query('alias', '…')</c> DuckDB literal.
 /// This is the typed-literals + Quote injection-safety pattern the other connectors follow.
 ///
-/// Credentials ride a DuckDB secret (S3/Azure precedent), never the attach path: a failed ATTACH
+/// Credentials ride a DuckDB secret, never the attach path: a failed ATTACH
 /// connect echoes its path VERBATIM, in double quotes, into the thrown engine error
 /// (<c>Failed to connect to MySQL database with parameters "…"</c>) — a shape
 /// <see cref="Pz.Engine.Execution.NativeStatementRedactor.SanitizeEngineMessage"/>'s single-quote

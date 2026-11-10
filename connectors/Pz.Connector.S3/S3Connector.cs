@@ -48,7 +48,7 @@ public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlyS
 
     /// <summary>Offline cross-field validation: both credential fields must be present,
     /// and <c>url_style</c> — when given — must be one of DuckDB's two accepted values. Never touches
-    /// the network; deep connectivity is <see cref="CheckConnectionAsync"/>'s job (deferred, see there).</summary>
+    /// the network.</summary>
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct)
     {
         var errors = new List<string>();
@@ -73,13 +73,12 @@ public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlyS
             errors.Count == 0 ? ValidationResult.Success : ValidationResult.Failed([.. errors]));
     }
 
-    /// <summary>No deep probe in v0: the native COPY path either succeeds or fails at run
-    /// time, and that failure is already reported (PZ0311) with the same clarity a dedicated connectivity
-    /// check would add. Always reports Ok — a real online probe arrives with `pz validate --connect` in a
-    /// later version.</summary>
+    /// <summary>Does not probe: the native scan or COPY either succeeds or fails at run time, and that
+    /// failure is reported (PZ0311) as clearly as a dedicated connectivity check would report it. Always
+    /// reports Ok, saying that nothing was checked.</summary>
     public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
         new(new ConnectionCheck(true,
-            "s3 connectivity is verified at run time (native COPY); deep probe arrives with pz validate --connect in a later version"));
+            "s3 connectivity is not probed; credentials and reachability are verified at run time (native COPY)"));
 
     ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
         new(new S3Source(config));

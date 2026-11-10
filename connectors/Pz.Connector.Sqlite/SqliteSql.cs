@@ -17,7 +17,7 @@ internal static class SqliteSql
         DuckDbSqlText.ConnectionAlias("pz_sqlite_snk", connectionName);
 
     /// <summary>Resolves the connection's <c>path:</c> to an absolute path: relative paths join the
-    /// CLI-injected <c>base_dir</c> (the localfiles precedent — never user-written), falling back to
+    /// CLI-injected <c>base_dir</c> (never user-written), falling back to
     /// the process working directory for hosts that don't inject it. Fragments always embed the
     /// absolute form — the engine's DuckDB session must not depend on process cwd.</summary>
     internal static string ResolvePath(ConnectorConfig config)

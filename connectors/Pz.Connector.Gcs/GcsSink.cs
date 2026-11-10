@@ -143,8 +143,8 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         return (format, objectName);
     }
 
-    /// <summary>(bucket, key prefix) under the ratified `root:` composition — the source's rule,
-    /// reused: an output naming its OWN bucket does not inherit the root's prefix.</summary>
+    /// <summary>(bucket, key prefix) under the `root:` composition rules, the same as the source's:
+    /// an output naming its OWN bucket does not inherit the root's prefix.</summary>
     private (string Bucket, string Prefix) ResolvePrefix(OutputSpec spec)
     {
         var (rootBucket, rootPrefix) = GcsSql.SplitRoot(config.GetString("root"));

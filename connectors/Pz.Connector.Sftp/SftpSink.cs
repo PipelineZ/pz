@@ -9,13 +9,13 @@ using Pz.Shared.Sinks;
 namespace Pz.Connector.Sftp;
 
 /// <summary>Sftp sink: universal-tier-only write dispatch (csv/json/parquet, via
-/// <see cref="SftpWriteSessionBase"/>'s three format sessions), replace/append naming (transcribed
-/// from <c>LocalFilesSink</c>'s convention: stable <c>&lt;output&gt;.&lt;ext&gt;</c> for replace,
+/// <see cref="SftpWriteSessionBase"/>'s three format sessions), replace/append naming (the localfiles
+/// convention: stable <c>&lt;output&gt;.&lt;ext&gt;</c> for replace,
 /// guid-suffixed for append), and single-column <c>partition_by</c> fan-out
 /// (<see cref="PartitionedWriteSession"/>). SFTP has no native tier in either direction (see
 /// <see cref="SftpConnector"/>'s doc comment), so <see cref="TryGetNativeCopy"/> always returns
 /// false. <paramref name="connect"/> is the unit-test seam (production wires
-/// <c>SftpClientFactory.Open</c>), mirroring <see cref="SftpSource"/>'s factory shape.
+/// <c>SftpClientFactory.Open</c>), the same shape as <see cref="SftpSource"/>'s.
 ///
 /// GatedOperations: the engine calls <see cref="UseOperationGate"/> exactly once after this sink is
 /// opened, before any <see cref="BeginWriteAsync"/> call. The stored gate threads into every session
@@ -162,8 +162,8 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
         return format;
     }
 
-    /// <summary>The final file name a write would commit to, per the replace/append naming
-    /// convention transcribed from <c>LocalFilesSink</c>: "replace" is a stable name
+    /// <summary>The final file name a write would commit to, per the localfiles replace/append naming
+    /// convention: "replace" is a stable name
     /// (<c>&lt;output&gt;.&lt;ext&gt;</c>); "append" lands under a run-unique guid-suffixed name
     /// instead so repeated runs accumulate files. Computed once per <see cref="BeginWriteAsync"/> call
     /// so every folder a partitioned fan-out opens shares the exact same object name.</summary>

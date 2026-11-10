@@ -69,7 +69,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
 
     public ValueTask DisposeAsync() => default;
 
-    /// <summary>The dataset's (bucket, key) under the ratified `root:` composition (the same one the
+    /// <summary>The dataset's (bucket, key) under the `root:` composition rules (the same one the
     /// sink uses): bucket = the dataset's own `bucket:` else the root's; the key = root prefix +
     /// `path:` — and a read with no
     /// `path:` is <c>&lt;prefix&gt;/&lt;entity&gt;.&lt;format&gt;</c>. A dataset naming its OWN bucket

@@ -8,7 +8,7 @@ namespace Pz.Connector.Sqlite;
 /// append is a CREATE-IF-NOT-EXISTS + INSERT batch (a first run needs no pre-created table; attaching
 /// a missing file is valid sqlite semantics and creates it on first write), replace is a single
 /// CREATE OR REPLACE TABLE … AS. <see cref="BeginWriteAsync"/> always throws (the
-/// <see cref="INativeOnlySink"/> contract, S3/MySql precedent). DATE/TIMESTAMP/BOOLEAN/DECIMAL
+/// <see cref="INativeOnlySink"/> contract). DATE/TIMESTAMP/BOOLEAN/DECIMAL
 /// columns are stored as TEXT/TEXT/BIGINT/TEXT by the extension (SQLite has no such storage classes)
 /// — values round-trip losslessly as text, only the declared type flattens; documented in the
 /// connector README. The sqlite-side OR REPLACE is drop+create, so the Transactional
