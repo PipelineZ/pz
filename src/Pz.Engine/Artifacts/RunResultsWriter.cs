@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Globalization;
 using System.Text.Json;
 using Pz.Core.Artifacts;
 using Pz.Diagnostics.Events;
@@ -49,8 +48,7 @@ public sealed class RunResultsWriter(RunPaths paths, string startedAtIso, TimePr
             if (status != "running")
             {
                 writer.WriteString("finishedAt",
-                    (time ?? TimeProvider.System).GetUtcNow().UtcDateTime
-                        .ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture));
+                    ArtifactTimestamp.Render((time ?? TimeProvider.System).GetUtcNow().UtcDateTime));
                 WritePhases(writer, phases);
                 WriteExtensions(writer, extensions);
             }

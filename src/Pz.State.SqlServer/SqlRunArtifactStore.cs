@@ -443,8 +443,8 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 }
 
                 status = reader.GetString(0);
-                startedAtIso = FormatIso(reader.GetDateTime(1));
-                finishedAtIso = reader.IsDBNull(2) ? null : FormatIso(reader.GetDateTime(2));
+                startedAtIso = ArtifactTimestamp.Render(reader.GetDateTime(1));
+                finishedAtIso = reader.IsDBNull(2) ? null : ArtifactTimestamp.Render(reader.GetDateTime(2));
             }
 
             var nodes = new List<PriorNode>();
@@ -511,9 +511,9 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// so a genuine connectivity failure is never mistaken for skip-the-unreadable.</summary>
     private sealed class UnreadableRunException : Exception;
 
-    /// <summary>Parses the <c>observed_schema</c> object out of a node's <c>payload</c> column, mirroring
-    /// <see cref="RunResultsReader"/>'s <c>TryParse</c> local-store logic -- <see cref="PriorNode.Observed"/>
-    /// must be populated for a SQL-backed run too, or <c>pz schema accept</c> is a no-op under
+    /// <summary>Parses the <c>observed_schema</c> object out of a node's <c>payload</c> column through the
+    /// same reader the local store uses (<see cref="NodeResultJson.ReadObservedSchema"/>) --
+    /// <see cref="PriorNode.Observed"/> must be populated for a SQL-backed run too, or <c>pz schema accept</c> is a no-op under
     /// <c>state: {backend: sqlserver}</c>.
     /// Omit-when-absent: null payload, no <c>observed_schema</c> property, or a shape missing
     /// <c>hintsHash</c>/<c>columns</c> all yield null rather than throwing -- <see cref="ValidatePayload"/>
@@ -534,25 +534,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
             return null;
         }
 
-        var hintsHash = obsElement.TryGetProperty("hintsHash", out var hh) ? hh.GetString() : null;
-        if (hintsHash is null || !obsElement.TryGetProperty("columns", out var colsElement) ||
-            colsElement.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        var columns = new List<SchemaColumn>();
-        foreach (var col in colsElement.EnumerateArray())
-        {
-            var name = col.TryGetProperty("name", out var n) ? n.GetString() : null;
-            var type = col.TryGetProperty("type", out var t) ? t.GetString() : null;
-            if (name is not null && type is not null)
-            {
-                columns.Add(new SchemaColumn(name, type));
-            }
-        }
-
-        return new ObservedSchema(columns, hintsHash);
+        return NodeResultJson.ReadObservedSchema(obsElement);
     }
 
     private static void ValidatePayload(string? payload)
@@ -623,12 +605,6 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     private static DateTime ParseIso(string iso) =>
         DateTimeOffset.Parse(iso, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal).UtcDateTime;
-
-    /// <summary>Inverse of <see cref="ParseIso"/>, in the same shape <c>RunResultsWriter</c> writes to
-    /// <c>run_results.json</c>'s <c>startedAt</c>/<c>finishedAt</c> -- so `pz runs` renders identically
-    /// whether the backend is local or SQL Server.</summary>
-    private static string FormatIso(DateTime utc) =>
-        utc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
 
     /// <summary>Mirrors <c>RunResultsWriter.WriteSnapshot</c>'s contract: every status but "running" is
     /// terminal (RunResultsReader.cs's <see cref="PriorRun"/> doc lists "running" as the one

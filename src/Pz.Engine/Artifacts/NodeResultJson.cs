@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Pz.Engine.Execution;
+using Pz.Engine.State;
 
 namespace Pz.Engine.Artifacts;
 
@@ -107,5 +108,30 @@ public static class NodeResultJson
             writer.WriteString("hintsHash", observed.HintsHash);
             writer.WriteEndObject();
         }
+    }
+
+    /// <summary>Reads back an <c>observed_schema</c> object written by <see cref="WriteStatsBlocks"/>. Lenient:
+    /// null when the hints hash or the column list is missing, and a column lacking a name or type is skipped.</summary>
+    public static ObservedSchema? ReadObservedSchema(JsonElement observed)
+    {
+        var hintsHash = observed.TryGetProperty("hintsHash", out var hh) ? hh.GetString() : null;
+        if (hintsHash is null || !observed.TryGetProperty("columns", out var cols) ||
+            cols.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        var columns = new List<SchemaColumn>();
+        foreach (var col in cols.EnumerateArray())
+        {
+            var name = col.TryGetProperty("name", out var n) ? n.GetString() : null;
+            var type = col.TryGetProperty("type", out var t) ? t.GetString() : null;
+            if (name is not null && type is not null)
+            {
+                columns.Add(new SchemaColumn(name, type));
+            }
+        }
+
+        return new ObservedSchema(columns, hintsHash);
     }
 }

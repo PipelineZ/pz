@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Pz.Engine.Execution;
-using Pz.Engine.State;
 
 namespace Pz.Engine.Artifacts;
 
@@ -36,8 +35,8 @@ public sealed record PriorNode(string Id, string Name, string Status,
 /// even though the run never finished, so selecting on node status alone would misreport "nothing to
 /// retry".
 ///
-/// <see cref="StartedAtIso"/> and <see cref="FinishedAtIso"/> are additive (both null for a
-/// `run_results.json` written before this pair existed): <see cref="FinishedAtIso"/> stays null while
+/// <see cref="StartedAtIso"/> and <see cref="FinishedAtIso"/> are additive (null when the
+/// file carries no such key): <see cref="FinishedAtIso"/> stays null while
 /// <see cref="Status"/> is "running" -- <see cref="RunResultsWriter.WriteSnapshot"/> only stamps it on
 /// the terminal write, mirroring <c>SqlRunArtifactStore</c>'s <c>finished_at</c> column, which is the
 /// same "null until terminal" shape. `pz runs` is their only reader.</summary>
@@ -45,7 +44,7 @@ public sealed record PriorRun(string RunId, string Status, IReadOnlyList<PriorNo
     string? StartedAtIso = null, string? FinishedAtIso = null);
 
 /// <summary>Reads the most recent parseable <c>run_results.json</c> under <c>.pz/runs/</c> for
-/// <c>pz retry</c>. Run ids sort lexicographically by design (<see cref="Pz.Cli"/>'s run id
+/// <c>pz retry</c>. Run ids sort lexicographically by design (the CLI's run id
 /// format is a zero-padded UTC timestamp), so "most recent" is simply "greatest by ordinal string
 /// comparison" — no need to parse <c>startedAt</c>. A run dir whose file is missing, mid-write (a stray
 /// <c>.tmp</c> only, no committed file — <see cref="RunResultsWriter"/>'s atomic-rename discipline means
@@ -112,28 +111,10 @@ public static class RunResultsReader
                     }
                 }
 
-                ObservedSchema? observed = null;
-                if (node.TryGetProperty("observed_schema", out var obsElement) &&
-                    obsElement.ValueKind == JsonValueKind.Object)
-                {
-                    var hintsHash = obsElement.TryGetProperty("hintsHash", out var hh) ? hh.GetString() : null;
-                    if (hintsHash is not null && obsElement.TryGetProperty("columns", out var colsElement) &&
-                        colsElement.ValueKind == JsonValueKind.Array)
-                    {
-                        var columns = new List<SchemaColumn>();
-                        foreach (var col in colsElement.EnumerateArray())
-                        {
-                            var name = col.TryGetProperty("name", out var n) ? n.GetString() : null;
-                            var type = col.TryGetProperty("type", out var t) ? t.GetString() : null;
-                            if (name is not null && type is not null)
-                            {
-                                columns.Add(new SchemaColumn(name, type));
-                            }
-                        }
-
-                        observed = new ObservedSchema(columns, hintsHash);
-                    }
-                }
+                var observed = node.TryGetProperty("observed_schema", out var obsElement) &&
+                    obsElement.ValueKind == JsonValueKind.Object
+                    ? NodeResultJson.ReadObservedSchema(obsElement)
+                    : null;
 
                 PriorError? error = null;
                 if (node.TryGetProperty("error", out var errElement) && errElement.ValueKind == JsonValueKind.Object)
