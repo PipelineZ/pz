@@ -1,10 +1,10 @@
 using System.Diagnostics.CodeAnalysis;
 using Apache.Arrow;
-using Pz.Connectors.Abstractions.Paths;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit.Formats;
+using Pz.Connectors.Abstractions.Paths;
 using Pz.Connectors.Toolkit.Sql;
 using Pz.Connectors.Toolkit;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.S3;
 

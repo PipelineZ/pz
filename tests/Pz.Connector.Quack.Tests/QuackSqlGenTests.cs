@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Quack;
 
 namespace Pz.Connector.Quack.Tests;
 

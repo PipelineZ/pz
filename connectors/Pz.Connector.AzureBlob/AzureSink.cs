@@ -4,6 +4,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Sinks;
 
 namespace Pz.Connector.AzureBlob;
 
@@ -97,7 +98,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         OutputSpec spec, Schema schema, FileFormat format, char delimiter, string objectName, AzureLocation loc,
         string partitionBy, CancellationToken ct)
     {
-        var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
+        var partitionColIndex = PartitionedWriteSession.ResolvePartitionColumn(spec.Output, schema, partitionBy);
 
         var container = AzureAuth.CreateBlobContainerClient(config, loc.Container);
         var pathTemplate = Str(spec.Options, "path") ?? "";
@@ -121,35 +122,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
             };
         }
 
-        return new AzurePartitionedWriteSession(Open, pathTemplate, partitionColIndex, schema);
-    }
-
-    /// <summary>Runtime fail-fast for the partition column: it must exist in the write schema AND be a
-    /// timestamp/date Arrow type. Same shape as <c>PostgresSink.BeginWriteAsync</c>'s merge-key check --
-    /// permanent, names the output and column, thrown before any resource is opened.</summary>
-    private static int ResolvePartitionColumn(string output, Schema schema, string partitionBy)
-    {
-        var fields = schema.FieldsList;
-        for (var i = 0; i < fields.Count; i++)
-        {
-            if (!string.Equals(fields[i].Name, partitionBy, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (fields[i].DataType.TypeId is not (ArrowTypeId.Timestamp or ArrowTypeId.Date32))
-            {
-                throw new PzConnectorException(
-                    $"output '{output}': partition_by column '{partitionBy}' is not a timestamp/date column " +
-                    $"(got '{fields[i].DataType}')", isTransient: false);
-            }
-
-            return i;
-        }
-
-        throw new PzConnectorException(
-            $"output '{output}': partition_by column '{partitionBy}' is not present in the write schema",
-            isTransient: false);
+        return new PartitionedWriteSession(Open, pathTemplate, partitionColIndex, schema, maxConcurrentWrites: Environment.ProcessorCount);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

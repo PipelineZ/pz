@@ -5,7 +5,7 @@ using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.Abstractions.Memory;
 using Sylvan.Data.Csv;
 
-namespace Pz.Connector.Http;
+namespace Pz.Shared.Csv;
 
 /// <summary>Pivots a Sylvan CSV reader into the universal Arrow batch stream, one declared contract
 /// column at a time, without boxing.
@@ -27,7 +27,7 @@ namespace Pz.Connector.Http;
 /// boundaries, and the same <see cref="PzConnectorException"/> message naming file, line, column, value
 /// and type.
 ///
-/// Replicated in Pz.Connector.LocalFiles, Pz.Connector.Sftp and Pz.Connector.Http per the no-cross-connector-reference rule; keep the three copies in lockstep.</summary>
+/// <para>Compiled into the localfiles, sftp and http connectors from this one source file: connectors never reference each other.</para></summary>
 internal static class CsvArrowReader
 {
     /// <summary>Streams <paramref name="csv"/>'s rows as Arrow batches, reading exactly the columns of

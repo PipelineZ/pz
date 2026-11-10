@@ -1,13 +1,13 @@
 using System.Diagnostics;
 using System.Globalization;
-using Apache.Arrow.Types;
 using Apache.Arrow;
-using Parquet.Schema;
+using Apache.Arrow.Types;
 using Parquet;
+using Parquet.Schema;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit.Formats;
 using Pz.Connectors.Toolkit.Sql;
 using Pz.Connectors.Toolkit;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
 

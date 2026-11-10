@@ -4,6 +4,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Sinks;
 
 namespace Pz.Connector.Sftp;
 
@@ -11,7 +12,7 @@ namespace Pz.Connector.Sftp;
 /// <see cref="SftpWriteSessionBase"/>'s three format sessions), replace/append naming (transcribed
 /// from <c>LocalFilesSink</c>'s convention: stable <c>&lt;output&gt;.&lt;ext&gt;</c> for replace,
 /// guid-suffixed for append), and single-column <c>partition_by</c> fan-out
-/// (<see cref="SftpPartitionedWriteSession"/>). SFTP has no native tier in either direction (see
+/// (<see cref="PartitionedWriteSession"/>). SFTP has no native tier in either direction (see
 /// <see cref="SftpConnector"/>'s doc comment), so <see cref="TryGetNativeCopy"/> always returns
 /// false. <paramref name="connect"/> is the unit-test seam (production wires
 /// <c>SftpClientFactory.Open</c>), mirroring <see cref="SftpSource"/>'s factory shape.
@@ -54,7 +55,7 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
         var objectName = ResolveObjectName(spec, format);
         var delimiter = FileFormatCatalog.Delimiter(format, spec.Options, $"output '{spec.Output}'");
 
-        // Exactly one column: PathTemplate.Render (used both here and by SftpPartitionedWriteSession)
+        // Exactly one column: PathTemplate.Render (used both here and by PartitionedWriteSession)
         // renders one timestamp per row into a folder, and DagCompiler's PZ0219 has already refused a
         // multi-column partition_by against a templated path.
         if (PartitionColumns.Read(spec.Options) is [var partitionBy])
@@ -80,19 +81,19 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
     }
 
     /// <summary>Builds the fan-out write session for a <c>partition_by</c> output. Validates the
-    /// partition column (present + timestamp/date-typed) BEFORE opening any resource -- transcribed
-    /// from <c>AzureSink.ResolvePartitionColumn</c> -- so a bad <c>partition_by</c> fails without ever
-    /// dialing the SSH connection. One <see cref="ISftpFileSystem"/> is opened here for the whole
-    /// fan-out (a single serialized SSH channel shared by every inner session,
-    /// <c>ownsFileSystem: false</c>); <see cref="SftpPartitionedWriteSession"/> disposes it once,
-    /// after every inner session's own cleanup has run. Each inner session lands at
+    /// partition column (present + timestamp/date-typed) BEFORE opening any resource, so a bad
+    /// <c>partition_by</c> fails without ever dialing the SSH connection. One
+    /// <see cref="ISftpFileSystem"/> is opened here for the whole fan-out: a single serialized SSH channel
+    /// shared by every inner session (<c>ownsFileSystem: false</c>), so folders are written one at a
+    /// time and <see cref="PartitionedWriteSession"/> disposes the file system once, after every inner
+    /// session's own cleanup has run. Each inner session lands at
     /// <c>&lt;root&gt;/&lt;renderedFolder&gt;/&lt;objectName&gt;</c>, sharing the exact object name the
     /// single-output path uses so replace/append naming is identical per folder.</summary>
     private ISinkWriteSession BeginPartitionedWrite(
         OutputSpec spec, Schema schema, FileFormat format, char delimiter, string objectName, string partitionBy,
         CancellationToken ct)
     {
-        var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
+        var partitionColIndex = PartitionedWriteSession.ResolvePartitionColumn(spec.Output, schema, partitionBy);
 
         var fs = connect(settings);
         var pathTemplate = Str(spec.Options, "path") ?? "";
@@ -113,7 +114,7 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
                 $"output '{spec.Output}'", ct).ConfigureAwait(false);
         }
 
-        return new SftpPartitionedWriteSession(Open, fs, pathTemplate, partitionColIndex, schema);
+        return new PartitionedWriteSession(Open, pathTemplate, partitionColIndex, schema, maxConcurrentWrites: 1, sharedResource: fs);
     }
 
     /// <summary>Dispatches to the one format-specific session, gate threaded through. Format was
@@ -146,35 +147,6 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
         {
             throw SftpErrors.Map(ex, $"output '{output}': mkdir '{dir}' failed");
         }
-    }
-
-    /// <summary>Runtime fail-fast for the partition column: it must exist in the write schema AND be a
-    /// timestamp/date Arrow type. Lockstep copy of <c>AzureSink.ResolvePartitionColumn</c>
-    /// (connectors/Pz.Connector.AzureBlob/AzureSink.cs) -- permanent, names the output and column,
-    /// thrown before any resource is opened.</summary>
-    private static int ResolvePartitionColumn(string output, Schema schema, string partitionBy)
-    {
-        var fields = schema.FieldsList;
-        for (var i = 0; i < fields.Count; i++)
-        {
-            if (!string.Equals(fields[i].Name, partitionBy, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (fields[i].DataType.TypeId is not (ArrowTypeId.Timestamp or ArrowTypeId.Date32))
-            {
-                throw new PzConnectorException(
-                    $"output '{output}': partition_by column '{partitionBy}' is not a timestamp/date column " +
-                    $"(got '{fields[i].DataType}')", isTransient: false);
-            }
-
-            return i;
-        }
-
-        throw new PzConnectorException(
-            $"output '{output}': partition_by column '{partitionBy}' is not present in the write schema",
-            isTransient: false);
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

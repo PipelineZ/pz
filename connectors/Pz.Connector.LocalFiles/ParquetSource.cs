@@ -1,9 +1,9 @@
 using Apache.Arrow;
 using Parquet;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit.Formats;
 using Pz.Connectors.Toolkit.Sql;
 using Pz.Connectors.Toolkit;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.LocalFiles;
 

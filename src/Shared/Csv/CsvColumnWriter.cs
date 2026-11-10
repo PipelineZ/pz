@@ -6,7 +6,7 @@ using Apache.Arrow.Memory;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 
-namespace Pz.Connector.Http;
+namespace Pz.Shared.Csv;
 
 /// <summary>One declared contract column's accumulator: parses cells straight out of the CSV reader's
 /// char buffer and lays the values down in Arrow's own memory layout, emitting a finished
@@ -31,7 +31,7 @@ namespace Pz.Connector.Http;
 /// epoch-relative calendar arithmetic) are exactly the kind of conversion that is a correctness risk to
 /// re-derive for a few percent — the same line <c>CsvWriteCodec</c> draws on the write side.</para>
 ///
-/// Replicated in Pz.Connector.LocalFiles, Pz.Connector.Sftp and Pz.Connector.Http per the no-cross-connector-reference rule; keep the three copies in lockstep.</summary>
+/// <para>Compiled into the localfiles, sftp and http connectors from this one source file: connectors never reference each other.</para></summary>
 internal abstract class CsvColumnWriter
 {
     /// <summary>Parses and appends one cell, returning the value's estimated width in EIGHTHS of a byte.

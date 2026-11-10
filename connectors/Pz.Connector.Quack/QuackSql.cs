@@ -1,6 +1,7 @@
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
 using Pz.Connectors.Toolkit.Sql;
+using Pz.Shared.Quack;
 
 namespace Pz.Connector.Quack;
 

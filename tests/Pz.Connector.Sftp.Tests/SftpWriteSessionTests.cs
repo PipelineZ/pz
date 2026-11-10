@@ -2,6 +2,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit;
+using Pz.Shared.Csv;
 using Renci.SshNet.Common;
 using Sylvan.Data.Csv;
 

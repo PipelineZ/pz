@@ -1,9 +1,11 @@
-namespace Pz.Connector.Quack;
+namespace Pz.Shared.Quack;
 
 /// <summary>Parses a server URI: <c>quack:host</c>, <c>quack:host:port</c> or <c>quack://host[:port]</c>,
 /// where host is a name, an IPv4 literal, or a bracketed IPv6 literal (<c>quack:[::1]:9494</c>). The
-/// port defaults to the quack server's own default. Kept in lockstep with the ducklake connector's
-/// catalog URI parser.</summary>
+/// port defaults to the quack server's own default.
+///
+/// <para>Compiled into the quack connector and the ducklake connector (whose catalog may be a quack
+/// server) from this one source file: connectors never reference each other.</para></summary>
 internal static class QuackUri
 {
     internal const int DefaultPort = 9494;

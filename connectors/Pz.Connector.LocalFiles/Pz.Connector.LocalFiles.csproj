@@ -43,4 +43,10 @@
     <None Include="pz.connector.json" Pack="true" PackagePath="" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Shared connector mechanics compiled from one source file; connectors never reference each other. -->
+    <Compile Include="..\..\src\Shared\Csv\CsvArrowReader.cs" Link="Shared\Csv\CsvArrowReader.cs" />
+    <Compile Include="..\..\src\Shared\Csv\CsvColumnWriter.cs" Link="Shared\Csv\CsvColumnWriter.cs" />
+  </ItemGroup>
+
 </Project>

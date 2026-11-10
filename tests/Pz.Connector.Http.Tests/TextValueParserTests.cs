@@ -3,6 +3,7 @@ using Pz.Connector.Http;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Memory;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Csv;
 
 namespace Pz.Connector.Http.Tests;
 

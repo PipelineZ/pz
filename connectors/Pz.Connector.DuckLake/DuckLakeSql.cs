@@ -3,6 +3,7 @@ using System.Text;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
 using Pz.Connectors.Toolkit.Sql;
+using Pz.Shared.Quack;
 
 namespace Pz.Connector.DuckLake;
 
@@ -166,7 +167,7 @@ internal static class DuckLakeSql
                 break;
             case DuckLakeCatalog.Quack:
                 var uri = Require(config, "uri");
-                if (!DuckLakeCatalog.TryParseQuackUri(uri, out var host, out var port))
+                if (!QuackUri.TryParse(uri, out var host, out var port))
                 {
                     throw new PzConnectorException(
                         "ducklake connection 'uri' must be of the form quack:host[:port]", isTransient: false, code: PzConnectorErrorCodes.Config);

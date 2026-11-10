@@ -170,7 +170,7 @@ internal abstract class SftpWriteSessionBase(
         }
         finally
         {
-            // Only single-output sessions own the fs; a partitioned fan-out (SftpPartitionedWriteSession)
+            // Only single-output sessions own the fs; a partitioned fan-out (PartitionedWriteSession)
             // shares one fs across inner sessions and disposes it itself once, after every inner
             // session is done.
             if (ownsFileSystem)

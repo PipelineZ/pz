@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Quack;
 
 namespace Pz.Connector.DuckLake.Tests;
 
@@ -113,7 +114,7 @@ public sealed class DuckLakeCatalogTests
     [InlineData("quack://[fe80::1%25eth0]:9494/", "[fe80::1%25eth0]", 9494)]
     public void Quack_uris_parse_host_and_port(string uri, string host, int port)
     {
-        Assert.True(DuckLakeCatalog.TryParseQuackUri(uri, out var h, out var p));
+        Assert.True(QuackUri.TryParse(uri, out var h, out var p));
         Assert.Equal(host, h);
         Assert.Equal(port, p);
     }
@@ -131,6 +132,6 @@ public sealed class DuckLakeCatalogTests
     [InlineData("quack:host:1:2")]
     public void Non_quack_uris_do_not_parse(string uri)
     {
-        Assert.False(DuckLakeCatalog.TryParseQuackUri(uri, out _, out _));
+        Assert.False(QuackUri.TryParse(uri, out _, out _));
     }
 }

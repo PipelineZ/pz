@@ -1,9 +1,9 @@
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
-using Parquet.Schema;
 using Parquet;
-using Pz.Connectors.Abstractions.Batches;
+using Parquet.Schema;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Sftp;
