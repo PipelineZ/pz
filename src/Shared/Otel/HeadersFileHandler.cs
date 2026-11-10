@@ -1,12 +1,12 @@
 using System.IO.Compression;
 
-namespace Pz.Cli.Otel;
+namespace Pz.Shared;
 
-/// <summary>The OTLP/HTTP exporter's client handler: gzips each body (Azure Monitor caps a request at 1 MB) and sets
-/// the headers read from <c>path</c> just before the request goes out, so a token the caller rewrites mid-run is used by
+/// <summary>The OTLP/HTTP exporter's client handler, shared by the host and the connector SDK: gzips each body (Azure Monitor caps a request at 1 MB) and sets
+/// the headers read from <c>path</c> just before the request goes out, so a token the caller (host or connector) rewrites mid-run is used by
 /// the next export. A missing, unreadable or malformed file sends the request without it and says so once per run,
 /// naming the file and the problem, never its content.</summary>
-public sealed class HeadersFileHandler(string? path, Action<string> notice) : DelegatingHandler
+internal sealed class HeadersFileHandler(string? path, Action<string> notice) : DelegatingHandler
 {
     private int _noted;
 

@@ -7,6 +7,7 @@ using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Sdk.Telemetry;
+using Pz.Shared;
 
 namespace Pz.Connectors.Sdk;
 

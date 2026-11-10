@@ -1,5 +1,5 @@
 using System.Net;
-using Pz.Connectors.Sdk.Telemetry;
+using Pz.Shared;
 
 namespace Pz.Connectors.Sdk.Tests;
 
