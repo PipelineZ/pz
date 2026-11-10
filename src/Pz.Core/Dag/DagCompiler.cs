@@ -1533,7 +1533,7 @@ public static class DagCompiler
     /// one) when nothing is close enough to guess.</summary>
     private static string NearMissHint(IEnumerable<string> known, string requested, string fallback)
     {
-        var nearMiss = ScriptKwargs.NearMiss(known, requested);
+        var nearMiss = NearMiss.Find(known, requested);
         return nearMiss is null ? fallback : $"did you mean '{nearMiss}'?";
     }
 

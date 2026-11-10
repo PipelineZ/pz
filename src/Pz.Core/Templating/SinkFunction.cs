@@ -110,7 +110,7 @@ internal sealed class SinkFunction : KeywordCallFunction
             else
             {
                 var nearMiss = policyArg.Value is string bad
-                    ? ScriptKwargs.NearMiss(WriteOptionsLoader.SchemaPolicies, bad)
+                    ? NearMiss.Find(WriteOptionsLoader.SchemaPolicies, bad)
                     : null;
                 Error(PzErrorCode.SyncModeInvalid, policyArg.Line,
                     $"sink('{sink}', '{output}'): 'schema_policy' must be one of: " +
@@ -299,7 +299,7 @@ internal sealed class SinkFunction : KeywordCallFunction
 
     /// <summary>The pz-owned kwarg name <paramref name="option"/> is a near miss of, or null if it is
     /// plainly a connector option. Used by DagCompiler to warn rather than refuse.</summary>
-    internal static string? NearMissKwarg(string option) => ScriptKwargs.NearMiss(KnownKwargs, option);
+    internal static string? NearMissKwarg(string option) => NearMiss.Find(KnownKwargs, option);
 
     private static (object? Value, int Line)? Take(Dictionary<string, (object? Value, int Line)> kwargs, string name) =>
         kwargs.Remove(name, out var arg) ? arg : null;

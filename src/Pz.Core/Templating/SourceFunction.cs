@@ -150,5 +150,5 @@ internal sealed class SourceFunction : KeywordCallFunction
     /// <summary>A pz-owned kwarg name <paramref name="option"/> is a near miss of, or null if it is
     /// plainly a connector option. The read-side twin of <see cref="SinkFunction.NearMissKwarg"/>.</summary>
     internal static string? NearMissKwarg(string option) =>
-        ScriptKwargs.NearMiss(KnownKwargs, option);
+        NearMiss.Find(KnownKwargs, option);
 }

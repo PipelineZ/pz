@@ -225,7 +225,7 @@ public static class TemplateRenderer
         if (UnknownVarPattern.Match(message) is { Success: true } varMatch)
         {
             var name = varMatch.Groups["name"].Value;
-            var nearMiss = ScriptKwargs.NearMiss(ctx.Project.Vars.Keys, name);
+            var nearMiss = NearMiss.Find(ctx.Project.Vars.Keys, name);
             var hint = nearMiss is null
                 ? $"declare '{name}' under project.yml's vars:, or pass it with --vars"
                 : $"did you mean '{nearMiss}'?";

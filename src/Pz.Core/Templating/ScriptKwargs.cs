@@ -56,12 +56,4 @@ internal static class ScriptKwargs
         ScriptObject obj => obj.ToDictionary(kv => kv.Key, kv => Convert(kv.Value), StringComparer.Ordinal),
         _ => value,
     };
-
-    /// <summary>The name in <paramref name="known"/> that <paramref name="option"/> is one edit (or a
-    /// case difference) away from, or null when it is plainly a connector option. pz cannot REFUSE an
-    /// unrecognized kwarg — no connector publishes an option vocabulary to check against — but a name
-    /// one character from a pz-owned key is worth saying out loud. Thin forwarder: the match itself is
-    /// <see cref="Pz.Core.Validation.NearMiss"/>, shared with tier 3's unknown-output-option message.</summary>
-    public static string? NearMiss(IEnumerable<string> known, string option) =>
-        Pz.Core.Validation.NearMiss.Find(known, option);
 }

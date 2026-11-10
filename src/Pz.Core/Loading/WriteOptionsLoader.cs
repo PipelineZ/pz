@@ -71,7 +71,7 @@ internal static class WriteOptionsLoader
             }
             else
             {
-                var nearMiss = policyValue is string bad ? ScriptKwargs.NearMiss(SchemaPolicies, bad) : null;
+                var nearMiss = policyValue is string bad ? NearMiss.Find(SchemaPolicies, bad) : null;
                 Error(errors, PzErrorCode.SyncModeInvalid, where,
                     $"'schema_policy' must be one of: {string.Join(", ", SchemaPolicies)} (got '{policyValue}')" +
                     (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'"),

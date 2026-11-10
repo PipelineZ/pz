@@ -322,7 +322,7 @@ public static class ProjectLoader
         foreach (var key in dict.Keys.Where(k => !allowed.Contains(k, StringComparer.Ordinal))
             .OrderBy(k => k, StringComparer.Ordinal))
         {
-            var nearMiss = ScriptKwargs.NearMiss(allowed, key);
+            var nearMiss = NearMiss.Find(allowed, key);
             errors.Add(new PzError(code,
                 $"{where}unknown key '{key}'" + (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'") + ".",
                 relativePath, null,
@@ -1335,7 +1335,7 @@ public static class ProjectLoader
             return raw;
         }
 
-        var nearMiss = ScriptKwargs.NearMiss(Materializations, raw);
+        var nearMiss = NearMiss.Find(Materializations, raw);
         errors.Add(new PzError(PzErrorCode.MaterializationInvalid,
             $"{relativePath}: pipeline '{pipelineName}': 'materialization' must be one of: " +
             $"{string.Join(", ", Materializations)} (got '{raw}')" +

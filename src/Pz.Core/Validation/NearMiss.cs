@@ -1,10 +1,11 @@
 namespace Pz.Core.Validation;
 
 /// <summary>Single-edit-distance "did you mean" matching, shared across every layer that refuses an
-/// unrecognized key and wants to name the likely typo rather than just listing every accepted one --
-/// <c>Pz.Core.Templating.ScriptKwargs.NearMiss</c> (kept as a thin forwarder for its existing call
-/// sites) and <c>Pz.Engine.Validation.ConnectorConfigValidator</c>'s unknown-output-option message both
-/// go through this one implementation.</summary>
+/// unrecognized key and wants to name the likely typo rather than just listing every accepted one:
+/// the loaders, the <c>source()</c>/<c>sink()</c> kwarg surfaces, the compiler, and
+/// <c>Pz.Engine.Validation.ConnectorConfigValidator</c>'s unknown-option message.
+/// pz cannot REFUSE an unrecognized option -- no connector publishes an option vocabulary to check
+/// against -- but a name one character from a pz-owned key is worth saying out loud.</summary>
 public static class NearMiss
 {
     /// <summary>The name in <paramref name="known"/> that <paramref name="candidate"/> is one edit (or
