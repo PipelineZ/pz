@@ -37,9 +37,9 @@ public static class MessageRedaction
     /// SQL, a statement fragment, or other data verbatim, so its message is redacted via
     /// <see cref="Redact(string)"/>.
     ///
-    /// The guarantee is unchanged by this narrowing: METADATA-level hardening, not a PII-proof
-    /// guarantee. A Pz exception that -- contrary to the discipline above -- embeds unsanitized raw
-    /// engine/data text would pass through unredacted.</summary>
+    /// The guarantee is the same METADATA-level hardening, not a PII-proof guarantee: a Pz exception that
+    /// -- contrary to the discipline above -- embeds unsanitized raw engine/data text would pass through
+    /// unredacted.</summary>
     public static string Redact(Exception ex) => IsTrusted(ex) ? ex.Message : Redact(ex.Message);
 
     private static bool IsTrusted(Exception ex) =>
