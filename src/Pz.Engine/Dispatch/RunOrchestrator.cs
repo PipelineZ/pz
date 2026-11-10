@@ -8,7 +8,7 @@ using Pz.Engine.Execution;
 namespace Pz.Engine.Dispatch;
 
 /// <summary>
-/// Topological, max-concurrency-gated scheduler over a <see cref="CompiledDag"/>. Every node
+/// Topological, max-concurrency-gated dispatcher over a <see cref="CompiledDag"/>. Every node
 /// tracked by this run (the "effective set" — see <see cref="ExecuteAsync"/>) transitions exactly
 /// once into a terminal <see cref="NodeStatus"/> (Success, Failed, or Skipped); each transition
 /// appends one <see cref="NodeResult"/> to the run's result list and fires
@@ -148,7 +148,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
 
             if (recorded)
             {
-                // Best-effort: a throwing subscriber must not break scheduler control flow (in
+                // Best-effort: a throwing subscriber must not break dispatcher control flow (in
                 // particular, must not prevent the Skip-cascade the caller runs right after this).
                 ctx.Events.SafeNodeCompleted(result);
             }
