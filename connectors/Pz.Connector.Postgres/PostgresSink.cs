@@ -193,14 +193,7 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
             // just millions of async state-machine transitions dominating sink CPU. Cancellation is
             // batch-granular, per the same batch-boundary contract DataReaderSource documents.
             ct.ThrowIfCancellationRequested();
-            for (var row = 0; row < batch.Length; row++)
-            {
-                _importer.StartRow();
-                for (var col = 0; col < _columnTypes.Length; col++)
-                {
-                    WriteCell(_importer, batch, col, row, _columnTypes[col]);
-                }
-            }
+            WriteRows(_importer, batch, _columnTypes);
 
             _rowsWritten += batch.Length;
             _batchesWritten++;
@@ -255,21 +248,25 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
                     .ConfigureAwait(false);
             }
 
-            // Same sync row loop as WriteBatchAsync (see the comment there); ct is batch-granular.
-            ct.ThrowIfCancellationRequested();
-            for (var row = 0; row < keyBatch.Length; row++)
-            {
-                _deleteImporter.StartRow();
-                for (var col = 0; col < _deleteKeyTypes!.Length; col++)
-                {
-                    WriteCell(_deleteImporter, keyBatch, col, row, _deleteKeyTypes[col]);
-                }
-            }
+            ct.ThrowIfCancellationRequested(); // batch-granular, as in WriteBatchAsync
+            WriteRows(_deleteImporter, keyBatch, _deleteKeyTypes!);
         }
         catch (NpgsqlException ex)
         {
             throw new PzConnectorException(
                 $"postgres sink delete-key apply failed: {ex.Message}", ex.IsTransient, innerException: ex);
+        }
+    }
+
+    private static void WriteRows(NpgsqlBinaryImporter importer, RecordBatch batch, NpgsqlDbType[] columnTypes)
+    {
+        for (var row = 0; row < batch.Length; row++)
+        {
+            importer.StartRow();
+            for (var col = 0; col < columnTypes.Length; col++)
+            {
+                WriteCell(importer, batch, col, row, columnTypes[col]);
+            }
         }
     }
 
@@ -456,9 +453,17 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
     {
         EnsureOpen("abort");
 
+        await DisposeImportersAsync().ConfigureAwait(false);
+        await RollbackTolerantlyAsync(ct).ConfigureAwait(false);
+        _state = PgSinkSessionState.Aborted;
+    }
+
+    /// <summary>Disposes the upsert and delete-key importers WITHOUT completing them, which aborts any COPY
+    /// still in progress.</summary>
+    private async ValueTask DisposeImportersAsync()
+    {
         if (_importer is not null)
         {
-            // Dispose WITHOUT Complete() -- aborts the COPY instead of flushing it.
             await _importer.DisposeAsync().ConfigureAwait(false);
             _importer = null;
         }
@@ -468,9 +473,6 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
             await _deleteImporter.DisposeAsync().ConfigureAwait(false);
             _deleteImporter = null;
         }
-
-        await RollbackTolerantlyAsync(ct).ConfigureAwait(false);
-        _state = PgSinkSessionState.Aborted;
     }
 
     /// <summary>A write cancelled mid-<c>BeginBinaryImportAsync</c> can leave Npgsql's own transaction
@@ -493,38 +495,13 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
     {
         if (_state == PgSinkSessionState.Open)
         {
-            if (_commitAttempted)
+            // Importers are always released. Without a commit attempt this is an implicit abort; after one
+            // (which threw) its true outcome is unknown, so commit-xor-abort forbids counting it as an
+            // abort -- the transaction is disposed unconditionally below, which rolls back anything
+            // uncommitted.
+            await DisposeImportersAsync().ConfigureAwait(false);
+            if (!_commitAttempted)
             {
-                // Commit was attempted (and threw) -- per commit-xor-abort this must NOT count as an
-                // implicit abort (Commit's true outcome is unknown). Just release the importer if it's
-                // still open; the transaction is disposed unconditionally below, which rolls back an
-                // uncommitted transaction automatically.
-                if (_importer is not null)
-                {
-                    await _importer.DisposeAsync().ConfigureAwait(false);
-                    _importer = null;
-                }
-
-                if (_deleteImporter is not null)
-                {
-                    await _deleteImporter.DisposeAsync().ConfigureAwait(false);
-                    _deleteImporter = null;
-                }
-            }
-            else
-            {
-                if (_importer is not null)
-                {
-                    await _importer.DisposeAsync().ConfigureAwait(false);
-                    _importer = null;
-                }
-
-                if (_deleteImporter is not null)
-                {
-                    await _deleteImporter.DisposeAsync().ConfigureAwait(false);
-                    _deleteImporter = null;
-                }
-
                 await RollbackTolerantlyAsync(CancellationToken.None).ConfigureAwait(false);
                 _state = PgSinkSessionState.Aborted;
             }

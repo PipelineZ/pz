@@ -242,9 +242,7 @@ internal static class PostgresCdc
 
         // Existing pz pgoutput slot on a first run / --full-refresh: drop it so the snapshot is taken
         // against a fresh consistent point.
-        await using var drop = new NpgsqlCommand("select pg_drop_replication_slot(@name)", conn);
-        drop.Parameters.AddWithValue("name", slotName);
-        await drop.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        await DropSlotAsync(conn, slotName, ct).ConfigureAwait(false);
     }
 
     /// <summary>`pz cdc drop`: drops <paramref name="slotName"/> if it exists; a missing slot
@@ -254,11 +252,14 @@ internal static class PostgresCdc
         var exists = await ScalarAsync(
             conn, "select 1 from pg_replication_slots where slot_name = @name", ct, ("name", slotName))
             .ConfigureAwait(false) is not null;
-        if (!exists)
+        if (exists)
         {
-            return;
+            await DropSlotAsync(conn, slotName, ct).ConfigureAwait(false);
         }
+    }
 
+    private static async Task DropSlotAsync(NpgsqlConnection conn, string slotName, CancellationToken ct)
+    {
         await using var drop = new NpgsqlCommand("select pg_drop_replication_slot(@name)", conn);
         drop.Parameters.AddWithValue("name", slotName);
         await drop.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
