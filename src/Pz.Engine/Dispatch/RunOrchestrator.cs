@@ -51,7 +51,6 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
             [NodeKind.SinkWrite] = new("pz.node.kind", "SinkWrite"),
         }.ToFrozenDictionary();
 
-
     /// <summary>Executes the dag topologically. Selection (when non-null) is expanded to include all
     /// required ancestors (run-time semantics — differs deliberately from compile's selection-exact).
     /// A failed node marks all descendants Skipped; independent branches continue unless FailFast.

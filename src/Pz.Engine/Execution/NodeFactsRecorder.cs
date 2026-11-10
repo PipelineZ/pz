@@ -17,7 +17,6 @@ public sealed class NodeFactsRecorder(TimeProvider? time = null)
     private TimeSpan? _extractStart, _ingestStart, _egressStart, _writeStart;
     private long _nodeStart = (time ?? TimeProvider.System).GetTimestamp();
 
-
     public string? Strategy { get; set; }
 
     /// <summary>Starts the named stage's span (a child of whatever is ambient, as before) and its clock.</summary>

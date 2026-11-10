@@ -5,7 +5,6 @@ using Apache.Arrow;
 using Apache.Arrow.Memory;
 using DuckDB.NET.Data;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.Abstractions.Memory;
 
 namespace Pz.DuckDb;

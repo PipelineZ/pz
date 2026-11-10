@@ -1,5 +1,4 @@
 using Pz.Core.Dag;
-using Pz.Core.Model;
 using Pz.DuckDb;
 
 namespace Pz.Engine.Execution;

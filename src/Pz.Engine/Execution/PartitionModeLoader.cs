@@ -3,7 +3,6 @@ using System.Runtime.ExceptionServices;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
-using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.DuckDb;
 

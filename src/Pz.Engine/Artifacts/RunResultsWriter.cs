@@ -5,7 +5,6 @@ using Pz.Core.Artifacts;
 using Pz.Diagnostics.Events;
 using Pz.DuckDb;
 using Pz.Engine.Execution;
-using Pz.Engine.State;
 
 namespace Pz.Engine.Artifacts;
 

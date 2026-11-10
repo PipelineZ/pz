@@ -475,7 +475,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
         var kept = new List<string>();
         foreach (var conjunct in Conjuncts(whereClause))
         {
-            if (IsPushable(duck, conjunct, scope, cursorColumn))
+            if (IsPushable(conjunct, scope, cursorColumn))
             {
                 kept.Add(RegenerateExprSql(duck, StripQualifiers(conjunct.DeepClone())));
             }
@@ -506,7 +506,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
         yield return node;
     }
 
-    private bool IsPushable(DuckDbSync duck, JsonNode conjunct, HintScope scope, string? cursorColumn)
+    private bool IsPushable(JsonNode conjunct, HintScope scope, string? cursorColumn)
     {
         // The sentinel is substituted per-run by PipelineExecutor, long after compile — pushing a
         // conjunct carrying it would send the placeholder text itself to the source. Watermark bounds

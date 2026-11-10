@@ -76,7 +76,6 @@ public static class PreviewSampler
         !number.Contains("nan", StringComparison.OrdinalIgnoreCase)
         && !number.Contains("inf", StringComparison.OrdinalIgnoreCase);
 
-
     /// <summary>Runs a query whose every column is VARCHAR and returns its rows as strings (null for
     /// SQL NULL).</summary>
     private static async Task<List<string?[]>> QueryStringsAsync(IDuckSession duck, string sql, CancellationToken ct)

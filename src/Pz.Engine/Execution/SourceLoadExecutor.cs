@@ -418,7 +418,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         if (connector.Capabilities.HasFlag(ConnectorCapabilities.StablePartitionIds) && shape != ResolvedReadShape.Cdc
             && ctx.SourceSliceRows is null)
         {
-            return Stamp(await ExecutePartitionModeAsync(node, def, ctx, source, partitions, streamingSource,
+            return Stamp(await ExecutePartitionModeAsync(node, def, ctx, partitions, streamingSource,
                 spec, hints, schema, gate, windowLower, windowUpper, upperInclusive, declaredType, caughtUp, shape,
                 plainFloor, ct).ConfigureAwait(false));
         }
@@ -781,7 +781,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// The epilogue (trim, watermark capture, sync candidate, meters) follows the same sequence as the
     /// channel branch of <see cref="ExecuteAsync"/>, but reports partition stats instead of stall timings.</summary>
     private static async Task<NodeResult> ExecutePartitionModeAsync(DagNode node, SourceDatasetDef def,
-        RunContext ctx, ISource source, IReadOnlyList<IDatasetPartition>? partitions,
+        RunContext ctx, IReadOnlyList<IDatasetPartition>? partitions,
         IStreamingSource? streamingSource, DatasetSpec spec, ReadHints hints, Schema schema, OperationGate? gate,
         string? windowLower, string? windowUpper, bool upperInclusive, string? declaredType, bool caughtUp,
         ResolvedReadShape shape,
