@@ -933,9 +933,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // exact. windowLower is null only for a SQL ceiling whose floor evaluated to NULL (first run, bare
         // watermark()); then there is no lower half to cut.
         var upperOp = upperInclusive ? ">" : ">=";
-        var lowerHalf = windowLower is null ? "" : $"{quoted} <= '{windowLower.Replace("'", "''")}' or ";
+        var lowerHalf = windowLower is null ? "" : $"{quoted} <= {ArrowInterop.QuoteLiteral(windowLower)} or ";
         await ctx.Duck.ExecuteAsync(
-            $"delete from {tableName} where {lowerHalf}{quoted} {upperOp} '{windowUpper.Replace("'", "''")}'",
+            $"delete from {tableName} where {lowerHalf}{quoted} {upperOp} {ArrowInterop.QuoteLiteral(windowUpper)}",
             ct).ConfigureAwait(false);
 
         return await ctx.Duck.ScalarAsync<long>($"select count(*) from {tableName}", ct).ConfigureAwait(false);
@@ -951,7 +951,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // A floor of the wrong type would fail the delete below on a bare conversion error. A type outside the
         // cursor set is left to CaptureWatermarkAsync, which reports it for every incremental read.
         var duckType = await ctx.Duck.ScalarAsync<string>(
-            $"select column_type from (describe {tableName}) where lower(column_name) = lower('{cursor.Replace("'", "''")}')", ct)
+            $"select column_type from (describe {tableName}) where lower(column_name) = lower({ArrowInterop.QuoteLiteral(cursor)})", ct)
             .ConfigureAwait(false);
         if (TryMapDuckToCursorType(duckType, out var landedType) && !CursorTypeGuard.Fits(floor.TypeName, landedType))
         {
@@ -960,7 +960,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
         var quoted = ArrowInterop.QuoteQualified(cursor);
         await ctx.Duck.ExecuteAsync(
-            $"delete from {tableName} where {quoted} <= '{floor.Value.Replace("'", "''")}'", ct).ConfigureAwait(false);
+            $"delete from {tableName} where {quoted} <= {ArrowInterop.QuoteLiteral(floor.Value)}", ct).ConfigureAwait(false);
         return await ctx.Duck.ScalarAsync<long>($"select count(*) from {tableName}", ct).ConfigureAwait(false);
     }
 
@@ -1177,7 +1177,6 @@ public sealed class SourceLoadExecutor : INodeExecutor
     {
         var table = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
         var datasetLabel = $"{def.Source.Name}.{def.Dataset.Name}";
-        var pathLiteral = entry.PriorStagingPath.Replace("'", "''");
 
         // The dispatcher runs nodes concurrently and DuckSession serializes per-STATEMENT, not
         // per-sequence (the run's one DuckDB connection is gated by a semaphore around a single statement's
@@ -1187,12 +1186,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // reuse exists to avoid. A per-node alias (derived from the node's own content-addressed ID)
         // removes the shared mutable name entirely, so concurrent reuses never collide.
         var alias = "pz_prior_" + new string(node.Id.Value.Where(char.IsLetterOrDigit).ToArray());
-        var quotedAlias = ArrowInterop.QuoteQualified(alias);
-        var attached = false;
+        PzMeta.AttachScope? priorScope = null;
         try
         {
-            await ctx.Duck.ExecuteAsync($"attach '{pathLiteral}' as {quotedAlias} (read_only)", ct).ConfigureAwait(false);
-            attached = true;
+            priorScope = await PzMeta.AttachReadOnlyAsync(ctx.Duck, alias, entry.PriorStagingPath, ct).ConfigureAwait(false);
+            var quotedAlias = priorScope.QuotedAlias;
 
             await ctx.Duck.ExecuteAsync($"create or replace table {table} as select * from {quotedAlias}.{table}", ct)
                 .ConfigureAwait(false);
@@ -1214,9 +1212,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // table) simply copies nothing. table = "staging.<name>"; the deletes table's unqualified name
             // is "<name>__deletes" (alias is [A-Za-z0-9_] only, so a plain literal is injection-safe).
             var deletesTable = table + "__deletes";
-            var deletesName = (table.Split('.', 2)[1] + "__deletes").Replace("'", "''");
+            var deletesName = ArrowInterop.QuoteLiteral(table.Split('.', 2)[1] + "__deletes");
             var hasDeletes = await ctx.Duck.ScalarAsync<long>(
-                $"select count(*) from information_schema.tables where table_catalog = '{alias}' and table_name = '{deletesName}'", ct)
+                $"select count(*) from information_schema.tables where table_catalog = '{alias}' and table_name = {deletesName}", ct)
                 .ConfigureAwait(false);
             if (hasDeletes > 0)
             {
@@ -1261,16 +1259,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
         finally
         {
-            if (attached)
+            if (priorScope is not null)
             {
-                try
-                {
-                    await ctx.Duck.ExecuteAsync($"detach {quotedAlias}", CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort: a failed detach must never mask the reuse result/fallback decision.
-                }
+                await priorScope.DisposeAsync().ConfigureAwait(false);
             }
         }
     }
@@ -1579,7 +1570,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         try
         {
             duckType = await ctx.Duck.ScalarAsync<string>(
-                $"select column_type from (describe {tableName}) where lower(column_name) = lower('{cursor.Replace("'", "''")}')", ct)
+                $"select column_type from (describe {tableName}) where lower(column_name) = lower({ArrowInterop.QuoteLiteral(cursor)})", ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1641,10 +1632,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // the comparison.
         if (windowUpper is not null)
         {
-            var upperLiteral = windowUpper.Replace("'", "''");
             var upperOp = upperInclusive ? "<=" : "<";
-            var lowerHalf = windowLower is null ? "" : $"{q} > '{windowLower.Replace("'", "''")}' and ";
-            maxSql += $" where {lowerHalf}{q} {upperOp} '{upperLiteral}'";
+            var lowerHalf = windowLower is null ? "" : $"{q} > {ArrowInterop.QuoteLiteral(windowLower)} and ";
+            maxSql += $" where {lowerHalf}{q} {upperOp} {ArrowInterop.QuoteLiteral(windowUpper)}";
         }
 
         string? value;

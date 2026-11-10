@@ -200,7 +200,7 @@ public sealed class CheckExecutor : INodeExecutor
     /// codebase's literal injection-safety idiom.</summary>
     private static string FormatLiteral(object? value) => value switch
     {
-        string s => "'" + s.Replace("'", "''") + "'",
+        string s => ArrowInterop.QuoteLiteral(s),
         long l => l.ToString(CultureInfo.InvariantCulture),
         double d => d.ToString(CultureInfo.InvariantCulture),
         bool b => b ? "true" : "false",

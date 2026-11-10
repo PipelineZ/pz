@@ -290,9 +290,7 @@ internal static class PartitionModeLoader
         var nodeKey = PartitionLedger.NodeKey(node);
         var datasetLabel = $"{def.Source.Name}.{def.Dataset.Name}";
         var alias = "pz_prior4_" + nodeKey;
-        var quotedAlias = ArrowInterop.QuoteQualified(alias);
-        var pathLiteral = entry.PriorStagingPath.Replace("'", "''");
-        var attached = false;
+        PzMeta.AttachScope? priorScope = null;
         var copiedMain = false;
         var copiedLedger = false;
         var copiedParts = new List<string>();
@@ -323,8 +321,8 @@ internal static class PartitionModeLoader
 
         try
         {
-            await duck.ExecuteAsync($"attach '{pathLiteral}' as {quotedAlias} (read_only)", ct).ConfigureAwait(false);
-            attached = true;
+            priorScope = await PzMeta.AttachReadOnlyAsync(duck, alias, entry.PriorStagingPath, ct).ConfigureAwait(false);
+            var quotedAlias = priorScope.QuotedAlias;
 
             Dictionary<string, long> priorDone;
             try
@@ -458,16 +456,9 @@ internal static class PartitionModeLoader
         }
         finally
         {
-            if (attached)
+            if (priorScope is not null)
             {
-                try
-                {
-                    await duck.ExecuteAsync($"detach {quotedAlias}", CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort: a failed detach must never mask the outcome.
-                }
+                await priorScope.DisposeAsync().ConfigureAwait(false);
             }
         }
     }

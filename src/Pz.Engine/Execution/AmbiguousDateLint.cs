@@ -1,5 +1,6 @@
 using Pz.Core.Dag;
 using Pz.Core.Model;
+using Pz.DuckDb;
 
 namespace Pz.Engine.Execution;
 
@@ -76,7 +77,7 @@ internal static class AmbiguousDateLint
             // A parsed day > 12 means the source text itself forced the field order for the whole
             // file; all-NULL or zero-row columns collapse to 'false' via the coalesce.
             var verdicts = columns.Select(c =>
-                $"coalesce((count({Quote(c)}) > 0 and max(day({Quote(c)})) <= 12)::varchar, 'false')");
+                $"coalesce((count({ArrowInterop.QuoteIdentifier(c)}) > 0 and max(day({ArrowInterop.QuoteIdentifier(c)})) <= 12)::varchar, 'false')");
             var verdictPacked = await ctx.Duck.ScalarAsync<string>(
                 $"select concat_ws(chr(30), {string.Join(", ", verdicts)}) from {tableName}", ct)
                 .ConfigureAwait(false);
@@ -96,6 +97,4 @@ internal static class AmbiguousDateLint
 
     private static bool IsAmbiguousFamily(string format) =>
         format.StartsWith("%d", StringComparison.Ordinal) || format.StartsWith("%m", StringComparison.Ordinal);
-
-    private static string Quote(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
 }

@@ -1,3 +1,5 @@
+using Pz.DuckDb;
+
 namespace Pz.Engine.State;
 
 /// <summary>Renders a canonical cursor value (WindowMath forms) as a typed DuckDB/SQL literal for
@@ -7,8 +9,8 @@ public static class CursorLiterals
 {
     public static string Typed(string cursorType, string canonicalValue) => cursorType switch
     {
-        "timestamp" => $"TIMESTAMP '{canonicalValue.Replace("'", "''")}'",
-        "date" => $"DATE '{canonicalValue.Replace("'", "''")}'",
+        "timestamp" => $"TIMESTAMP {ArrowInterop.QuoteLiteral(canonicalValue)}",
+        "date" => $"DATE {ArrowInterop.QuoteLiteral(canonicalValue)}",
         _ => canonicalValue,
     };
 }

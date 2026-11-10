@@ -1,5 +1,6 @@
 using Pz.Core.Dag;
 using Pz.Core.Model;
+using Pz.DuckDb;
 
 namespace Pz.Engine.Execution;
 
@@ -41,10 +42,10 @@ internal static class IntegerInferenceLint
         // count as non-integral (their source text was never an integer); a zero-row or all-NULL
         // column's max(abs) is NULL, so the conjunction collapses to 'false' via the coalesce.
         var verdicts = columns.Select(c =>
-            $"coalesce((count(*) filter (where {Quote(c)} is not null and " +
-            $"(not isfinite({Quote(c)}) or {Quote(c)} != trunc({Quote(c)}))) = 0 " +
-            $"and max(abs({Quote(c)})) > 9007199254740992 " +
-            $"and max(abs({Quote(c)})) < 1.7014118346046923e38)::varchar, 'false')");
+            $"coalesce((count(*) filter (where {ArrowInterop.QuoteIdentifier(c)} is not null and " +
+            $"(not isfinite({ArrowInterop.QuoteIdentifier(c)}) or {ArrowInterop.QuoteIdentifier(c)} != trunc({ArrowInterop.QuoteIdentifier(c)}))) = 0 " +
+            $"and max(abs({ArrowInterop.QuoteIdentifier(c)})) > 9007199254740992 " +
+            $"and max(abs({ArrowInterop.QuoteIdentifier(c)})) < 1.7014118346046923e38)::varchar, 'false')");
         var verdictPacked = await ctx.Duck.ScalarAsync<string>(
             $"select concat_ws(chr(30), {string.Join(", ", verdicts)}) from {tableName}", ct)
             .ConfigureAwait(false);
@@ -59,6 +60,4 @@ internal static class IntegerInferenceLint
             ctx.Events.SafeLossyIntegerInferenceDetected(node, def.Source.Name, def.Dataset.Name, offending);
         }
     }
-
-    private static string Quote(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
 }
