@@ -47,6 +47,8 @@
     <!-- Shared connector mechanics compiled from one source file; connectors never reference each other. -->
     <Compile Include="..\..\src\Shared\Csv\CsvArrowReader.cs" Link="Shared\Csv\CsvArrowReader.cs" />
     <Compile Include="..\..\src\Shared\Csv\CsvColumnWriter.cs" Link="Shared\Csv\CsvColumnWriter.cs" />
+    <Compile Include="..\..\src\Shared\Parquet\ParquetBatchWriter.cs" Link="Shared\Parquet\ParquetBatchWriter.cs" />
+    <Compile Include="..\..\src\Shared\Parquet\ParquetTypeMap.cs" Link="Shared\Parquet\ParquetTypeMap.cs" />
   </ItemGroup>
 
 </Project>

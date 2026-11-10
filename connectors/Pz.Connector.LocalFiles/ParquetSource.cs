@@ -4,6 +4,7 @@ using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Sql;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Parquet;
 
 namespace Pz.Connector.LocalFiles;
 
@@ -37,7 +38,7 @@ internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
 
         var footer = await ParquetReader.ReadSchemaAsync(path).ConfigureAwait(false);
         var fields = footer.GetDataFields()
-            .Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f)))
+            .Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f, "localfiles parquet source")))
             .ToArray();
         return new DatasetSchema(new Schema(fields, null));
     }

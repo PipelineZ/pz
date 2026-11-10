@@ -4,6 +4,7 @@ using Parquet;
 using Parquet.Schema;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Parquet;
 
 namespace Pz.Connector.Sftp;
 
@@ -364,6 +365,8 @@ internal sealed class SftpJsonWriteSession : SftpWriteSessionBase
 /// (csv/json) or an upstream cast, not a different pz tier.</summary>
 internal sealed class SftpParquetWriteSession : SftpWriteSessionBase
 {
+    private const string SinkName = "sftp parquet sink v0";
+
     private readonly DataField[] _fields;
     private Stream? _stream;
     private ParquetWriter? _writer;
@@ -384,7 +387,8 @@ internal sealed class SftpParquetWriteSession : SftpWriteSessionBase
     {
         // Validated before any remote resource is touched, so a decimal column fails fast without
         // ever opening (and having to clean up) a temp file.
-        var fields = arrowSchema.FieldsList.Select(BuildDataField).ToArray();
+        var fields = ParquetBatchWriter.BuildDataFields(arrowSchema, SinkName,
+            "the sftp sink cannot write decimal parquet columns — use csv or json format instead, or cast the column upstream");
         var parquetSchema = new ParquetSchema(fields);
 
         Stream? stream = null;
@@ -401,73 +405,8 @@ internal sealed class SftpParquetWriteSession : SftpWriteSessionBase
         }
     }
 
-    // Lockstep copy of LocalFilesSink.ParquetSinkWriteSession.BuildDataField
-    // (connectors/Pz.Connector.LocalFiles/LocalFilesSink.cs) except the decimal message: sftp has no
-    // native COPY path to send decimal writers to, so it names a format/cast workaround instead. Keep
-    // the two mappings in sync if the v0 type matrix changes.
-    private static DataField BuildDataField(Apache.Arrow.Field field) => field.DataType switch
-    {
-        Int32Type => new DataField(field.Name, typeof(int), isNullable: true),
-        Int64Type => new DataField(field.Name, typeof(long), isNullable: true),
-        DoubleType => new DataField(field.Name, typeof(double), isNullable: true),
-        BooleanType => new DataField(field.Name, typeof(bool), isNullable: true),
-        StringType => new DataField(field.Name, typeof(string), isNullable: true),
-        Date32Type => new DateTimeDataField(field.Name, DateTimeFormat.Date, isNullable: true),
-        // DateAndTimeMicros, not DateAndTime: Parquet.Net's DateTimeDataField hardcodes millisecond units
-        // for DateAndTime whatever `unit:` says, which would truncate every timestamp to milliseconds.
-        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTimeMicros,
-            isAdjustedToUTC: true, isNullable: true),
-        Decimal128Type => throw new PzConnectorException(
-            $"column '{field.Name}': the sftp sink cannot write decimal parquet columns — " +
-            "use csv or json format instead, or cast the column upstream", isTransient: false),
-        _ => throw new NotSupportedException(
-            $"sftp parquet sink v0 does not support Arrow type '{field.DataType}' for column '{field.Name}'"),
-    };
-
-    protected override async ValueTask WriteBatchCoreAsync(RecordBatch batch, CancellationToken ct)
-    {
-        using var rowGroup = _writer!.CreateRowGroup();
-        for (var i = 0; i < _fields.Length; i++)
-        {
-            await WriteColumnAsync(rowGroup, _fields[i], batch.Column(i), ct).ConfigureAwait(false);
-        }
-    }
-
-    private static Task WriteColumnAsync(ParquetRowGroupWriter rowGroup, DataField field, IArrowArray array, CancellationToken ct) =>
-        array switch
-        {
-            Int32Array a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (int?)null : a.GetValue(i)), cancellationToken: ct),
-            Int64Array a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (long?)null : a.GetValue(i)), cancellationToken: ct),
-            DoubleArray a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (double?)null : a.GetValue(i)), cancellationToken: ct),
-            BooleanArray a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (bool?)null : a.GetValue(i)), cancellationToken: ct),
-            Date32Array a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (DateTime?)null : a.GetDateTime(i)!.Value.Date), cancellationToken: ct),
-            TimestampArray a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (DateTime?)null : a.GetTimestamp(i)!.Value.UtcDateTime), cancellationToken: ct),
-            StringArray a => rowGroup.WriteAsync(field, BuildStrings(a)),
-            _ => throw new NotSupportedException(
-                $"sftp parquet sink v0 does not support array type '{array.GetType()}' for column '{field.Name}'"),
-        };
-
-    private static ReadOnlyMemory<T?> BuildNullable<T>(int length, Func<int, T?> selector) where T : struct
-    {
-        var values = new T?[length];
-        for (var i = 0; i < length; i++)
-        {
-            values[i] = selector(i);
-        }
-
-        return values;
-    }
-
-    private static List<string?> BuildStrings(StringArray array)
-    {
-        var values = new List<string?>(array.Length);
-        for (var i = 0; i < array.Length; i++)
-        {
-            values.Add(array.IsNull(i) ? null : array.GetString(i));
-        }
-
-        return values;
-    }
+    protected override ValueTask WriteBatchCoreAsync(RecordBatch batch, CancellationToken ct) =>
+        new(ParquetBatchWriter.WriteRowGroupAsync(_writer!, _fields, batch, SinkName, ct));
 
     protected override async ValueTask CloseWriterAsync()
     {

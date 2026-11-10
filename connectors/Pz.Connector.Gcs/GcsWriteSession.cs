@@ -4,6 +4,7 @@ using Parquet;
 using Parquet.Schema;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Parquet;
 
 namespace Pz.Connector.Gcs;
 
@@ -138,6 +139,8 @@ internal abstract class GcsWriteSession(
 /// written per received batch.</summary>
 internal sealed class GcsParquetWriteSession : GcsWriteSession
 {
+    private const string SinkName = "gcs universal parquet sink";
+
     private readonly DataField[] _fields;
     private ParquetWriter? _writer;
     private bool _closed;
@@ -154,11 +157,12 @@ internal sealed class GcsParquetWriteSession : GcsWriteSession
         StorageClient client, string bucket, string objectName, Schema arrowSchema,
         CancellationToken ct, IOperationGate? gate)
     {
-        var fields = GcsFormat.BuildDataFields(arrowSchema);
+        var fields = ParquetBatchWriter.BuildDataFields(arrowSchema, SinkName,
+            "gcs universal parquet write does not support decimal128 -- use 'hmac' auth so the native COPY path carries this output");
         var spool = OpenSpool();
         try
         {
-            var writer = await GcsFormat.CreateParquetWriterAsync(spool, fields, ct).ConfigureAwait(false);
+            var writer = await ParquetBatchWriter.CreateWriterAsync(spool, fields, ct).ConfigureAwait(false);
             return new GcsParquetWriteSession(client, bucket, objectName, spool, fields, writer, gate);
         }
         catch
@@ -169,7 +173,7 @@ internal sealed class GcsParquetWriteSession : GcsWriteSession
     }
 
     protected override ValueTask WriteBatchCoreAsync(RecordBatch batch, CancellationToken ct) =>
-        new(GcsFormat.WriteRowGroupAsync(_writer!, _fields, batch, ct));
+        new(ParquetBatchWriter.WriteRowGroupAsync(_writer!, _fields, batch, SinkName, ct));
 
     protected override async ValueTask CloseWriterAsync()
     {
