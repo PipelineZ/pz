@@ -81,9 +81,8 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     public WatermarkAnalysis Analyze(string sql, IReadOnlyList<string> sentinels)
     {
         var duck = Session();
-        var serialized = duck.Scalar($"select json_serialize_sql({ArrowInterop.QuoteLiteral(sql)})");
-        var root = JsonNode.Parse(serialized)!;
-        if (root["error"]?.GetValue<bool>() == true)
+        var root = SerializeSql(duck, sql);
+        if (IsParseError(root))
         {
             // Unparseable SQL is tier-4's problem (EXPLAIN reports it with full context); here we
             // just can't analyze — report every sentinel as unanalyzable so the caller errors loudly.
@@ -156,9 +155,8 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     public ReadHintPlan ExtractReadHints(string sql, string baseTable, string? cursorColumn)
     {
         var duck = Session();
-        var serialized = duck.Scalar($"select json_serialize_sql({ArrowInterop.QuoteLiteral(sql)})");
-        var root = JsonNode.Parse(serialized)!;
-        if (root["error"]?.GetValue<bool>() == true)
+        var root = SerializeSql(duck, sql);
+        if (IsParseError(root))
         {
             return ReadHintPlan.None; // unparseable is tier-4's problem; here we simply push nothing
         }
@@ -268,15 +266,14 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     /// mid-string semicolon -- never silently picking the first one).</summary>
     private static JsonNode? ParseSingleStatement(DuckDbSync duck, string sql)
     {
-        var serialized = duck.Scalar($"select json_serialize_sql({ArrowInterop.QuoteLiteral(sql)})");
-        var root = JsonNode.Parse(serialized)!;
-        if (root["error"]?.GetValue<bool>() == true || root["statements"] is not JsonArray { Count: 1 })
-        {
-            return null;
-        }
-
-        return root;
+        var root = SerializeSql(duck, sql);
+        return IsParseError(root) || root["statements"] is not JsonArray { Count: 1 } ? null : root;
     }
+
+    private static JsonNode SerializeSql(DuckDbSync duck, string sql) =>
+        JsonNode.Parse(duck.Scalar($"select json_serialize_sql({ArrowInterop.QuoteLiteral(sql)})"))!;
+
+    private static bool IsParseError(JsonNode root) => root["error"]?.GetValue<bool>() == true;
 
     /// <summary>The name scope read hints resolve column references against: every outer-FROM base
     /// table alias, which of them are the target, whether the target is the FROM's only relation, and
@@ -647,8 +644,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
             .Select(n => n!)
             .Distinct(StringComparer.OrdinalIgnoreCase)];
 
-    /// <summary>Empirical volatility probe:
-    /// asks DuckDB's own catalog which of the collected names are non-deterministic — total-or-error,
+    /// <summary>Empirical volatility probe: asks DuckDB's own catalog which of the collected names are non-deterministic — total-or-error,
     /// same as every other shape rule in this reader. <c>duckdb_functions().stability</c> classifies
     /// each CATALOGED function as CONSISTENT (pure), CONSISTENT_WITHIN_QUERY (stable inside one query
     /// but varying between queries — e.g. now(), current_timestamp), or VOLATILE (e.g. random(),
@@ -658,9 +654,9 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     /// parses without resolving to the catalog at all, so a typo'd or nonexistent function (e.g. the
     /// Postgres-ism <c>clock_timestamp()</c>, which DuckDB has no builtin for) would otherwise bind at
     /// EXPLAIN time and slip this guard with unverifiable determinism. Answered from a function
-    /// catalog loaded once per reader; deterministic;
-    /// returns the lowest offending name (ordinal) for a deterministic message, tagged with whether it
-    /// was found-but-non-consistent or missing entirely, or null when every name is CONSISTENT.</summary>
+    /// catalog loaded once per reader. Returns the lowest offending name (ordinal), so the message is
+    /// stable, tagged with whether it was found-but-non-consistent or missing entirely; null when every
+    /// name is CONSISTENT.</summary>
     private FunctionDeterminismIssue? FindNonDeterministicFunction(IReadOnlyList<string> names)
     {
         if (names.Count == 0)
@@ -930,9 +926,8 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     private static string Deserialize(DuckDbSync duck, JsonNode root) =>
         duck.Scalar($"select json_deserialize_sql({ArrowInterop.QuoteLiteral(root.ToJsonString())})");
 
-    /// <summary>Thin synchronous wrapper over <see cref="DuckSession"/> — Analyze must be sync
-    /// because DagCompiler.Compile is. One parse-only in-memory session per reader instance; parsing
-    /// reads no catalog, so reuse cannot change a result.</summary>
+    /// <summary>Thin synchronous wrapper over <see cref="DuckSession"/> — the reader's members are sync
+    /// because DagCompiler.Compile is.</summary>
     private sealed class DuckDbSync : IDisposable
     {
         private readonly DuckSession _session;

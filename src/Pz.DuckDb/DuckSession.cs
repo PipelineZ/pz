@@ -156,6 +156,31 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
+    /// <summary>Waits for the gate (under <paramref name="ct"/>), runs the blocking <paramref name="work"/> on a
+    /// pool thread, and releases the gate. The pool task gets <see cref="CancellationToken.None"/>: a
+    /// token-cancelled <see cref="Task.Run(Action)"/> may never start its body, and the gate-release
+    /// <c>finally</c> must run either way. <paramref name="work"/> interrupts on the token itself where it
+    /// can.</summary>
+    private async Task<T> RunGatedAsync<T>(Func<T> work, CancellationToken ct)
+    {
+        await WaitForGateAsync(ct).ConfigureAwait(false);
+        try
+        {
+            return await Task.Run(work, CancellationToken.None).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private Task RunGatedAsync(Action work, CancellationToken ct) =>
+        RunGatedAsync(() =>
+        {
+            work();
+            return 0;
+        }, ct);
+
     private void ExecuteSync(string sql, CancellationToken ct = default)
     {
         using var command = _connection.CreateCommand();
@@ -183,41 +208,19 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
-    public async Task ExecuteAsync(string sql, CancellationToken ct = default)
-    {
-        await WaitForGateAsync(ct).ConfigureAwait(false);
-        try
-        {
-            // CancellationToken.None: a token-cancelled Task.Run may never start its body, so the
-            // finally that releases the gate would not run. ExecuteSync interrupts on ct itself.
-            await Task.Run(() => ExecuteSync(sql, ct), CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task ExecuteAsync(string sql, CancellationToken ct = default) =>
+        RunGatedAsync(() => ExecuteSync(sql, ct), ct);
 
-    public async Task<T> ScalarAsync<T>(string sql, CancellationToken ct = default)
-    {
-        await WaitForGateAsync(ct).ConfigureAwait(false);
-        try
-        {
-            return await Task.Run(
-                () =>
-                {
-                    using var command = _connection.CreateCommand();
-                    command.CommandText = sql;
-                    var result = Interruptible(command, ct, static c => c.ExecuteScalar());
-                    return (T)Convert.ChangeType(result!, typeof(T), CultureInfo.InvariantCulture);
-                },
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<T> ScalarAsync<T>(string sql, CancellationToken ct = default) =>
+        RunGatedAsync(
+            () =>
+            {
+                using var command = _connection.CreateCommand();
+                command.CommandText = sql;
+                var result = Interruptible(command, ct, static c => c.ExecuteScalar());
+                return (T)Convert.ChangeType(result!, typeof(T), CultureInfo.InvariantCulture);
+            },
+            ct);
 
     public async ValueTask DisposeAsync()
     {
@@ -247,7 +250,7 @@ public sealed class DuckSession : IDuckSession
     public Task<long> IngestArrowAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct = default)
     {
-        return Task.Run(() => IngestArrowPerBatchAsync(targetTable, schema, batches, ct), ct);
+        return Task.Run(() => IngestHoldingGateAsync(targetTable, schema, batches, ct), ct);
     }
 
     /// <summary>Rows after which an ingest's gate hold ends even when nothing else is waiting for the gate.
@@ -262,7 +265,7 @@ public sealed class DuckSession : IDuckSession
     /// appended before they took the gate. A successful return is the only way the table survives: a failed
     /// ingest drops it before returning; a cancelled one returns at once and, when the gate is busy, drops it
     /// once the gate is free.</summary>
-    private async Task<long> IngestArrowPerBatchAsync(
+    private async Task<long> IngestHoldingGateAsync(
         string targetTable, Schema schema, IAsyncEnumerable<RecordBatch> batches, CancellationToken ct)
     {
         await WaitForGateAsync(ct).ConfigureAwait(false);
@@ -557,20 +560,8 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
-    public async Task CreateEmptyTableAsync(string targetTable, Schema schema, CancellationToken ct = default)
-    {
-        await WaitForGateAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await Task.Run(
-                () => ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema)),
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task CreateEmptyTableAsync(string targetTable, Schema schema, CancellationToken ct = default) =>
+        RunGatedAsync(() => ExecuteSync(ArrowInterop.BuildCreateTableSql(targetTable, schema)), ct);
 
     public async Task<long> AppendArrowBatchAsync(string targetTable, RecordBatch batch, Schema? schema = null,
         CancellationToken ct = default)
@@ -599,46 +590,36 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
-    public async Task ExecuteTransactionAsync(IReadOnlyList<string> statements, CancellationToken ct = default)
-    {
-        await WaitForGateAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await Task.Run(
-                () =>
+    public Task ExecuteTransactionAsync(IReadOnlyList<string> statements, CancellationToken ct = default) =>
+        RunGatedAsync(
+            () =>
+            {
+                ExecuteSync("BEGIN TRANSACTION");
+                try
                 {
-                    ExecuteSync("BEGIN TRANSACTION");
+                    foreach (var sql in statements)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        ExecuteSync(sql, ct);
+                    }
+
+                    ExecuteSync("COMMIT");
+                }
+                catch
+                {
                     try
                     {
-                        foreach (var sql in statements)
-                        {
-                            ct.ThrowIfCancellationRequested();
-                            ExecuteSync(sql, ct);
-                        }
-
-                        ExecuteSync("COMMIT");
+                        ExecuteSync("ROLLBACK");
                     }
                     catch
                     {
-                        try
-                        {
-                            ExecuteSync("ROLLBACK");
-                        }
-                        catch
-                        {
-                            // Best-effort by design: never mask the original transaction failure.
-                        }
-
-                        throw;
+                        // Best-effort by design: never mask the original transaction failure.
                     }
-                },
-                CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+
+                    throw;
+                }
+            },
+            ct);
 
     /// <summary>Binds/plans <paramref name="sql"/> without fetching any rows (<c>limit 0</c>) and derives
     /// its result <see cref="Schema"/> via <see cref="DuckDBCommand.ExecuteArrowStream"/> +
@@ -663,18 +644,8 @@ public sealed class DuckSession : IDuckSession
         return ArrowInterop.NormalizeNativeArrowSchema(stream.Schema);
     }
 
-    public async Task<Schema> GetResultSchemaAsync(string sql, CancellationToken ct = default)
-    {
-        await WaitForGateAsync(ct).ConfigureAwait(false);
-        try
-        {
-            return await Task.Run(() => PeekSchema(sql), CancellationToken.None).ConfigureAwait(false);
-        }
-        finally
-        {
-            _gate.Release();
-        }
-    }
+    public Task<Schema> GetResultSchemaAsync(string sql, CancellationToken ct = default) =>
+        RunGatedAsync(() => PeekSchema(sql), ct);
 
     /// <summary>Test-only hook invoked (on the egress producer thread) each time a batch is written to the
     /// channel, with the cumulative number of rows read from the DuckDB reader so far (including the batch
