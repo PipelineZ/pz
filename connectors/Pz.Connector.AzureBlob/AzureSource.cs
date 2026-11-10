@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Text.RegularExpressions;
 using Apache.Arrow;
 using Azure;
@@ -10,6 +9,7 @@ using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
 using Pz.Connectors.Toolkit.Formats;
 using Pz.Connectors.Toolkit.Sql;
+using Pz.Shared.Paths;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.AzureBlob;
@@ -23,8 +23,7 @@ namespace Pz.Connector.AzureBlob;
 /// tier.</summary>
 internal sealed class AzureSource(ConnectorConfig config) : ISource
 {
-    /// <summary>Mirrors <c>Pz.Connector.LocalFiles.CsvSource.GetSchemaAsync</c>'s cross-connector-replicated
-    /// pattern: for csv, peek the first matched blob's actual header and report only the declared `columns:`
+    /// <summary>For csv, peek the first matched blob's actual header and report only the declared `columns:`
     /// contract entries also present there (the contract-pruning rule). For parquet,
     /// download the first matched blob and read its footer via <see cref="AzureParquetReader.ReadSchema"/>.
     /// For json/xlsx/avro, there is no header row to peek and no footer to read (xlsx's header row names
@@ -212,7 +211,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     {
         foreach (var key in CoverKeys(loc.Key, spec))
         {
-            var regex = new Regex(GlobToRegexPattern(key), RegexOptions.None);
+            var regex = new Regex(PathGlob.ToRegexPattern(key), RegexOptions.None);
             await foreach (var name in EnumeratePrefixAsync(loc, PathTemplate.StaticPrefix(key), ct).ConfigureAwait(false))
             {
                 if (regex.IsMatch(name))
@@ -282,40 +281,8 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// <see cref="PathTemplate.StaticPrefix"/>; this applies the wildcard portion.</summary>
     internal static IReadOnlyList<string> MatchGlob(IEnumerable<string> blobNames, string pattern)
     {
-        var regex = new Regex(GlobToRegexPattern(pattern), RegexOptions.None);
+        var regex = new Regex(PathGlob.ToRegexPattern(pattern), RegexOptions.None);
         return blobNames.Where(n => regex.IsMatch(n)).ToArray();
-    }
-
-    private static string GlobToRegexPattern(string pattern)
-    {
-        var sb = new StringBuilder("^");
-        for (var i = 0; i < pattern.Length; i++)
-        {
-            var c = pattern[i];
-            if (c == '*')
-            {
-                if (i + 1 < pattern.Length && pattern[i + 1] == '*')
-                {
-                    sb.Append(".*");
-                    i++;
-                }
-                else
-                {
-                    sb.Append("[^/]*");
-                }
-            }
-            else if (c == '?')
-            {
-                sb.Append("[^/]");
-            }
-            else
-            {
-                sb.Append(Regex.Escape(c.ToString()));
-            }
-        }
-
-        sb.Append('$');
-        return sb.ToString();
     }
 
     /// <summary>The directory portion of a listing prefix, for the DataLake (<c>abfss</c>) directory-scoped
@@ -332,9 +299,8 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     private static PzConnectorException NoMatch(DatasetSpec spec, AzureLocation loc) =>
         new($"dataset '{spec.Dataset}': no blobs matched '{AzureUrl.Render(loc)}'", isTransient: false);
 
-    /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/> (mirrors
-    /// <c>Pz.Connector.LocalFiles.CsvSource.ReadHeaderAsync</c>, replicated per this connector's
-    /// no-cross-connector-reference rule). Leaves no data rows consumed beyond the header.</summary>
+    /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/>. Leaves no data
+    /// rows consumed beyond the header.</summary>
     private static async Task<HashSet<string>> ReadCsvHeaderAsync(Stream blob, char delimiter, CancellationToken ct)
     {
         using var textReader = new StreamReader(blob, leaveOpen: true);

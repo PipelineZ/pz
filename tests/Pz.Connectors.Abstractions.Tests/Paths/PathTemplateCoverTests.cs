@@ -27,10 +27,9 @@ public class PathTemplateCoverTests
     {
         var cover = PathTemplate.WindowCover("e/{yyyy}/{MM}/{dd}/*.parquet",
             T("2025-01-01"), T("2026-12-31"));
-        // Whole year: {MM} and {dd} both coarsen to '*', but each remains its own path segment (a single
-        // '*' only matches within one segment — see AzureSource.GlobToRegexPattern/GlobToRegexPattern-style
-        // glob matchers used downstream): a whole year is "events/2026/*/*/*.parquet", not a
-        // cross-segment collapse.
+        // Whole year: {MM} and {dd} both coarsen to '*', but each remains its own path segment, since the
+        // connectors' glob matchers (PathGlob) match a single '*' within one segment only: a whole year is
+        // "events/2026/*/*/*.parquet", not a cross-segment collapse.
         Assert.Contains("e/2025/*/*/*.parquet", cover);   // whole year 2025
         Assert.Contains("e/2026/*/*/*.parquet", cover);   // whole year 2026
         Assert.Equal(2, cover.Count);

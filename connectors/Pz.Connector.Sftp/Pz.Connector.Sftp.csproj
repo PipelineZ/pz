@@ -40,6 +40,7 @@
     <Compile Include="..\..\src\Shared\Csv\CsvColumnWriter.cs" Link="Shared\Csv\CsvColumnWriter.cs" />
     <Compile Include="..\..\src\Shared\Sinks\PartitionedWriteSession.cs" Link="Shared\Sinks\PartitionedWriteSession.cs" />
     <Compile Include="..\..\src\Shared\Parquet\ParquetBatchWriter.cs" Link="Shared\Parquet\ParquetBatchWriter.cs" />
+    <Compile Include="..\..\src\Shared\Paths\PathGlob.cs" Link="Shared\Paths\PathGlob.cs" />
   </ItemGroup>
 
 </Project>

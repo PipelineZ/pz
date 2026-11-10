@@ -1,7 +1,7 @@
-using System.Text;
 using System.Text.RegularExpressions;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
+using Pz.Shared.Paths;
 
 namespace Pz.Connector.Sftp;
 
@@ -46,7 +46,7 @@ internal static class SftpPaths
             var remainder = coverPattern[prefix.Length..];
             var recursive = remainder.Contains('/') || remainder.Contains("**");
 
-            var regex = new Regex(GlobToRegexPattern(coverPattern), RegexOptions.None);
+            var regex = new Regex(PathGlob.ToRegexPattern(coverPattern), RegexOptions.None);
             foreach (var file in fs.ListFiles(directory, recursive))
             {
                 if (regex.IsMatch(file))
@@ -81,40 +81,5 @@ internal static class SftpPaths
         var lo = PathTemplate.ParseCanonical(spec.WatermarkValue);
         var hi = PathTemplate.ParseCanonical(spec.WatermarkUpperBound);
         return PathTemplate.WindowCover(pattern, lo, hi);
-    }
-
-    // Lockstep copy of AzureSource.GlobToRegexPattern (connectors/Pz.Connector.AzureBlob/AzureSource.cs) —
-    // keep the two in sync if glob semantics ever change. '**' crosses a '/' boundary; '*'/'?' do not;
-    // everything else is escaped so a literal name (e.g. containing '+') never leaks as a regex metachar.
-    internal static string GlobToRegexPattern(string pattern)
-    {
-        var sb = new StringBuilder("^");
-        for (var i = 0; i < pattern.Length; i++)
-        {
-            var c = pattern[i];
-            if (c == '*')
-            {
-                if (i + 1 < pattern.Length && pattern[i + 1] == '*')
-                {
-                    sb.Append(".*");
-                    i++;
-                }
-                else
-                {
-                    sb.Append("[^/]*");
-                }
-            }
-            else if (c == '?')
-            {
-                sb.Append("[^/]");
-            }
-            else
-            {
-                sb.Append(Regex.Escape(c.ToString()));
-            }
-        }
-
-        sb.Append('$');
-        return sb.ToString();
     }
 }

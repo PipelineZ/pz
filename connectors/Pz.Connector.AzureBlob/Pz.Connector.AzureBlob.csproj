@@ -37,6 +37,7 @@
     <Compile Include="..\..\src\Shared\Sinks\PartitionedWriteSession.cs" Link="Shared\Sinks\PartitionedWriteSession.cs" />
     <Compile Include="..\..\src\Shared\Parquet\ParquetBatchWriter.cs" Link="Shared\Parquet\ParquetBatchWriter.cs" />
     <Compile Include="..\..\src\Shared\Parquet\ParquetTypeMap.cs" Link="Shared\Parquet\ParquetTypeMap.cs" />
+    <Compile Include="..\..\src\Shared\Paths\PathGlob.cs" Link="Shared\Paths\PathGlob.cs" />
   </ItemGroup>
 
 </Project>
