@@ -24,6 +24,12 @@ namespace Pz.Engine.Execution;
 /// <see cref="Task.WhenAll(Task[])"/> observes the fault.</summary>
 internal static class PartitionModeLoader
 {
+    /// <summary>Bound on partition reads in flight at once, for both this loader and the channel path's
+    /// streaming pump: a bounded I/O fan-out default with no YAML knob. Without the shared bounded channel
+    /// there is no backpressure, and a lazily enumerated source must not materialize millions of pending
+    /// reads up front.</summary>
+    internal static int MaxConcurrentPartitionReads => Environment.ProcessorCount;
+
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadAsync(
         DagNode node, RunContext ctx, IReadOnlyList<(IIdentifiedPartition Partition, string Id)> partitions,
         Schema schema, string mainTable, string? windowLower, string? windowUpper, long reusedCount,
@@ -78,9 +84,7 @@ internal static class PartitionModeLoader
 
         var failures = new ConcurrentQueue<PzConnectorException>();
 
-        // Bounded fan-out: without the shared bounded channel there is no backpressure, so the
-        // same ProcessorCount bound the streaming path uses applies here.
-        using var admission = new SemaphoreSlim(Environment.ProcessorCount);
+        using var admission = new SemaphoreSlim(MaxConcurrentPartitionReads);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var tasks = pending.Select(p => RunAdmittedAsync(duck, p.Partition, p.Id, nodeId, nodeKey, mainTable,
             schema, ctx.EffectiveBatch, admission, loadCts, failures, checkpoints, OnResumed, skipGuard)).ToArray();
@@ -115,7 +119,7 @@ internal static class PartitionModeLoader
     /// validated AT ADMISSION time — one partition at a time — instead of up front over a whole
     /// materialized list. Admission mirrors <c>SourceLoadExecutor.PumpStreamingPartitionsAsync</c>:
     /// enumerate under <c>loadCts.Token</c>, a <see cref="SemaphoreSlim"/> of
-    /// <see cref="Environment.ProcessorCount"/> bounds in-flight reads, and the task list is pruned of
+    /// <see cref="MaxConcurrentPartitionReads"/> bounds in-flight reads, and the task list is pruned of
     /// already-succeeded entries after each admission so it never grows unbounded over a
     /// millions-of-partitions source. A sync dataset can never reach here — the planner already
     /// refuses a streaming + sync combination (<see cref="PzErrorCode.SyncPartitionedReadConflict"/>),
@@ -148,7 +152,7 @@ internal static class PartitionModeLoader
         void OnResumed() => Interlocked.Increment(ref resumedCount);
 
         var failures = new ConcurrentQueue<PzConnectorException>();
-        using var admission = new SemaphoreSlim(Environment.ProcessorCount);
+        using var admission = new SemaphoreSlim(MaxConcurrentPartitionReads);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         var tasks = new List<Task>();
