@@ -19,7 +19,7 @@ public sealed class NodeFactsRecorder(TimeProvider? time = null)
 
     public string? Strategy { get; set; }
 
-    /// <summary>Starts the named stage's span (a child of whatever is ambient, as before) and its clock.</summary>
+    /// <summary>Starts the named stage's span (a child of whatever is ambient) and its clock.</summary>
     public StageScope Stage(string name)
     {
         if (name is not ("extract" or "ingest" or "egress" or "write"))

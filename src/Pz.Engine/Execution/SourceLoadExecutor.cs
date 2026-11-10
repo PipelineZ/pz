@@ -1182,7 +1182,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // with a duplicate-ATTACH error, sending the loser through the exact fallback-to-connector path
         // reuse exists to avoid. A per-node alias (derived from the node's own content-addressed ID)
         // removes the shared mutable name entirely, so concurrent reuses never collide.
-        var alias = "pz_prior_" + new string(node.Id.Value.Where(char.IsLetterOrDigit).ToArray());
+        var alias = "pz_prior_" + PartitionLedger.NodeKey(node);
         PzMeta.AttachScope? priorScope = null;
         try
         {

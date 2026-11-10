@@ -293,7 +293,7 @@ internal static class PartitionModeLoader
         var nodeId = node.Id.Value;
         var nodeKey = PartitionLedger.NodeKey(node);
         var datasetLabel = $"{def.Source.Name}.{def.Dataset.Name}";
-        var alias = "pz_prior4_" + nodeKey;
+        var alias = "pz_priorpart_" + nodeKey;
         PzMeta.AttachScope? priorScope = null;
         var copiedMain = false;
         var copiedLedger = false;
@@ -375,18 +375,18 @@ internal static class PartitionModeLoader
             copiedMain = true;
 
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.DoneTable} where node_id = '{PartitionLedger.Escape(nodeId)}'", ct)
+                $"delete from {PartitionLedger.DoneTable} where node_id = '{PzMeta.Escape(nodeId)}'", ct)
                 .ConfigureAwait(false);
             await duck.ExecuteAsync(
                 $"insert into {PartitionLedger.DoneTable} select * from {quotedAlias}.pz_meta.partitions_done " +
-                $"where node_id = '{PartitionLedger.Escape(nodeId)}'", ct).ConfigureAwait(false);
+                $"where node_id = '{PzMeta.Escape(nodeId)}'", ct).ConfigureAwait(false);
             copiedLedger = true;
 
             // Checkpointed prefixes ride along when intact; a torn one just restarts fresh.
             var priorCheckpoints = await PartitionLedger.ReadCheckpointsAsync(duck, nodeId, ct, quotedAlias)
                 .ConfigureAwait(false);
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}'", ct)
+                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}'", ct)
                 .ConfigureAwait(false);
             foreach (var (pid, (checkpoint, rows)) in priorCheckpoints)
             {
@@ -409,8 +409,8 @@ internal static class PartitionModeLoader
                     }
 
                     await duck.ExecuteAsync(
-                        $"insert into {PartitionLedger.CheckpointTable} values ('{PartitionLedger.Escape(nodeId)}', " +
-                        $"'{PartitionLedger.Escape(pid)}', '{PartitionLedger.Escape(checkpoint)}', {rows})", ct)
+                        $"insert into {PartitionLedger.CheckpointTable} values ('{PzMeta.Escape(nodeId)}', " +
+                        $"'{PzMeta.Escape(pid)}', '{PzMeta.Escape(checkpoint)}', {rows})", ct)
                         .ConfigureAwait(false);
                     copiedParts.Add(partTable);
                 }
@@ -436,10 +436,10 @@ internal static class PartitionModeLoader
                 try
                 {
                     await duck.ExecuteAsync(
-                        $"delete from {PartitionLedger.DoneTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
+                        $"delete from {PartitionLedger.DoneTable} where node_id = '{PzMeta.Escape(nodeId)}'",
                         CancellationToken.None).ConfigureAwait(false);
                     await duck.ExecuteAsync(
-                        $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
+                        $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}'",
                         CancellationToken.None).ConfigureAwait(false);
                 }
                 catch
@@ -471,7 +471,7 @@ internal static class PartitionModeLoader
         IDuckSession duck, string quotedAlias, string nodeId, CancellationToken ct)
     {
         var count = await duck.ScalarAsync<long>(
-            $"select count(*) from {quotedAlias}.pz_meta.node_window where node_id = '{PartitionLedger.Escape(nodeId)}'",
+            $"select count(*) from {quotedAlias}.pz_meta.node_window where node_id = '{PzMeta.Escape(nodeId)}'",
             ct).ConfigureAwait(false);
         if (count == 0)
         {
@@ -479,10 +479,10 @@ internal static class PartitionModeLoader
         }
 
         var lower = await duck.ScalarAsync<string>(
-            $"select lower from {quotedAlias}.pz_meta.node_window where node_id = '{PartitionLedger.Escape(nodeId)}'",
+            $"select lower from {quotedAlias}.pz_meta.node_window where node_id = '{PzMeta.Escape(nodeId)}'",
             ct).ConfigureAwait(false);
         var upper = await duck.ScalarAsync<string>(
-            $"select upper from {quotedAlias}.pz_meta.node_window where node_id = '{PartitionLedger.Escape(nodeId)}'",
+            $"select upper from {quotedAlias}.pz_meta.node_window where node_id = '{PzMeta.Escape(nodeId)}'",
             ct).ConfigureAwait(false);
         return (lower, upper);
     }
@@ -624,8 +624,8 @@ internal static class PartitionModeLoader
             var partTable = PartitionLedger.PartTable(nodeKey, pid);
             await duck.ExecuteAsync($"drop table if exists {partTable}", loadCts.Token).ConfigureAwait(false);
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-                $"and partition_id = '{PartitionLedger.Escape(pid)}'", loadCts.Token).ConfigureAwait(false);
+                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+                $"and partition_id = '{PzMeta.Escape(pid)}'", loadCts.Token).ConfigureAwait(false);
             await duck.CreateEmptyTableAsync(partTable, schema, loadCts.Token).ConfigureAwait(false);
 
             var rows = 0L;
@@ -739,8 +739,8 @@ internal static class PartitionModeLoader
         {
             await duck.ExecuteAsync($"drop table if exists {partTable}", token).ConfigureAwait(false);
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-                $"and partition_id = '{PartitionLedger.Escape(pid)}'", token).ConfigureAwait(false);
+                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+                $"and partition_id = '{PzMeta.Escape(pid)}'", token).ConfigureAwait(false);
             await duck.CreateEmptyTableAsync(partTable, schema, token).ConfigureAwait(false);
         }
 
@@ -812,7 +812,7 @@ internal static class PartitionModeLoader
         var name = table.Split('.')[1];
         var exists = await duck.ScalarAsync<long>(
             "select count(*) from information_schema.tables where table_schema = 'staging' " +
-            $"and table_name = '{PartitionLedger.Escape(name)}'", ct).ConfigureAwait(false);
+            $"and table_name = '{PzMeta.Escape(name)}'", ct).ConfigureAwait(false);
         return exists == 0
             ? null
             : await duck.ScalarAsync<long>($"select count(*) from {table}", ct).ConfigureAwait(false);
@@ -844,10 +844,10 @@ internal static class PartitionModeLoader
         await duck.ExecuteTransactionAsync(
         [
             $"delete from {mainTable}",
-            $"delete from {PartitionLedger.DoneTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-            $"and partition_id = '{PartitionLedger.Escape(pid)}'",
-            $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-            $"and partition_id = '{PartitionLedger.Escape(pid)}'",
+            $"delete from {PartitionLedger.DoneTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+            $"and partition_id = '{PzMeta.Escape(pid)}'",
+            $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+            $"and partition_id = '{PzMeta.Escape(pid)}'",
         ], ct).ConfigureAwait(false);
 
         await DropBestEffortAsync(duck, PartitionLedger.PartTable(nodeKey, pid)).ConfigureAwait(false);
@@ -859,7 +859,7 @@ internal static class PartitionModeLoader
         var name = mainTable.Split('.')[1];
         var exists = await duck.ScalarAsync<long>(
             "select count(*) from information_schema.tables where table_schema = 'staging' " +
-            $"and table_name = '{PartitionLedger.Escape(name)}'", ct).ConfigureAwait(false);
+            $"and table_name = '{PzMeta.Escape(name)}'", ct).ConfigureAwait(false);
         if (exists == 0)
         {
             await duck.CreateEmptyTableAsync(mainTable, schema, ct).ConfigureAwait(false);

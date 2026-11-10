@@ -23,8 +23,6 @@ internal static class SinkDeliveryLedger
 
     public sealed record DeliveryRow(long AcknowledgedRows, long RelationCount, string RelationHash);
 
-    public static string Escape(string s) => PzMeta.Escape(s);
-
     public static async Task EnsureAsync(IDuckSession duck, CancellationToken ct)
     {
         await PzMeta.EnsureSchemaAsync(duck, ct).ConfigureAwait(false);
@@ -54,7 +52,7 @@ internal static class SinkDeliveryLedger
         DeliveryRow? result = null;
         await foreach (var batch in duck.QueryArrowAsync(
             "select acknowledged_rows, relation_count, relation_hash from " +
-            $"{table} where node_id = '{Escape(nodeId)}'", ct: ct).ConfigureAwait(false))
+            $"{table} where node_id = '{PzMeta.Escape(nodeId)}'", ct: ct).ConfigureAwait(false))
         {
             using (batch)
             {
@@ -76,12 +74,12 @@ internal static class SinkDeliveryLedger
     /// <see cref="IDuckSession.ExecuteTransactionAsync"/>.</summary>
     public static IReadOnlyList<string> UpsertStatements(string nodeId, long acknowledgedRows, Fingerprint fp) =>
     [
-        $"delete from {Table} where node_id = '{Escape(nodeId)}'",
-        $"insert into {Table} values ('{Escape(nodeId)}', {acknowledgedRows}, {fp.Count}, '{Escape(fp.Hash)}')",
+        $"delete from {Table} where node_id = '{PzMeta.Escape(nodeId)}'",
+        $"insert into {Table} values ('{PzMeta.Escape(nodeId)}', {acknowledgedRows}, {fp.Count}, '{PzMeta.Escape(fp.Hash)}')",
     ];
 
     public static Task ClearAsync(IDuckSession duck, string nodeId, CancellationToken ct) =>
-        duck.ExecuteAsync($"delete from {Table} where node_id = '{Escape(nodeId)}'", ct);
+        duck.ExecuteAsync($"delete from {Table} where node_id = '{PzMeta.Escape(nodeId)}'", ct);
 
     /// <summary>Seeds the local ledger from a failed prior run's row.
     /// Guards in order, any failure => silent scratch (return without seeding): (1) a local
@@ -103,7 +101,7 @@ internal static class SinkDeliveryLedger
             return; // guard 1: local row wins
         }
 
-        var alias = "pz_prior5_" + nodeKey;
+        var alias = "pz_priorsink_" + nodeKey;
         try
         {
             await using var scope = await PzMeta.AttachReadOnlyAsync(duck, alias, priorStagingPath, ct)
