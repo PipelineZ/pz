@@ -3,7 +3,7 @@ using Pz.Core.Model;
 namespace Pz.Engine.Resilience;
 
 /// <summary>One instance's Closed -&gt; Open -&gt; HalfOpen machine. Engine-owned —
-/// connectors never see it (architecture §14's single-retry-owner rule extends to breaking). Thread-safe
+/// connectors never see it (the engine is the single retry owner, and that extends to breaking). Thread-safe
 /// via a plain lock; all time through <see cref="TimeProvider"/> (<c>GetTimestamp</c>/<c>GetElapsedTime</c>
 /// — never <c>DateTime</c>/<c>Stopwatch</c>). State changes surface
 /// through <c>onStateChanged(old, new, trigger, coolDown)</c> — wired to the event bus by the registry.
