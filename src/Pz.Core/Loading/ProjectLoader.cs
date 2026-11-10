@@ -1732,24 +1732,6 @@ public static class ProjectLoader
         name.Length > 0 && char.IsAsciiLetterLower(name[0]) &&
         name.All(ch => char.IsAsciiLetterLower(ch) || char.IsAsciiDigit(ch) || ch == '_');
 
-    internal static bool RegisterName(Dictionary<string, string> seenNames, string name, string relativePath,
-        List<PzError> errors, string kind)
-    {
-        if (seenNames.TryGetValue(name, out var firstFile))
-        {
-            errors.Add(new PzError(
-                PzErrorCode.DuplicateName,
-                $"Duplicate {kind} name '{name}' defined in {firstFile} and {relativePath}.",
-                relativePath,
-                null,
-                $"rename one of the {kind}s so names are unique within the project."));
-            return false;
-        }
-
-        seenNames[name] = relativePath;
-        return true;
-    }
-
     internal static string RelativePath(string projectDir, string fullPath) =>
         Path.GetRelativePath(projectDir, fullPath).Replace(Path.DirectorySeparatorChar, '/');
 
