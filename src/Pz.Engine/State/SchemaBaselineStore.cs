@@ -8,7 +8,7 @@ public sealed record SchemaColumn(string Name, string Type);
 public sealed record SchemaBaseline(IReadOnlyList<SchemaColumn> Columns, string HintsHash, string RunId);
 
 /// <summary>Reads and writes <c>&lt;project&gt;/.pz/state/schemas.json</c> -- the per-dataset accepted
-/// schema store (schema-drift design). Byte-stable per <see cref="KeyedJsonStateStore{T}"/>'s discipline:
+/// schema store. Byte-stable per <see cref="KeyedJsonStateStore{T}"/>'s discipline:
 /// 2-space indentation, LF newlines, a trailing newline byte, and entries sorted ordinal by key. Mirrors
 /// <see cref="WatermarkStore"/> exactly -- same lenient-corrupt-read, same local/SQL/HTTP composition
 /// shape.</summary>
