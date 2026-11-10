@@ -526,5 +526,12 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
         {
             throw new InvalidOperationException($"cannot {action} a session already {_state.ToString().ToLowerInvariant()}");
         }
+
+        // A failed commit leaves the state Open, but its outcome is unknown: no further write, commit or
+        // abort may follow it.
+        if (_commitAttempted)
+        {
+            throw new InvalidOperationException($"cannot {action} a session whose commit was already attempted");
+        }
     }
 }
