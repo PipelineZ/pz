@@ -116,7 +116,7 @@ public sealed class DuckSession : IDuckSession
 
     private void AttachDatabase(string databasePath, bool readOnly = false)
     {
-        ExecuteSync($"ATTACH {QuoteLiteral(databasePath)} AS {CatalogAlias}{(readOnly ? " (READ_ONLY)" : "")}");
+        ExecuteSync($"ATTACH {ArrowInterop.QuoteLiteral(databasePath)} AS {CatalogAlias}{(readOnly ? " (READ_ONLY)" : "")}");
         ExecuteSync($"USE {CatalogAlias}");
     }
 
@@ -129,7 +129,7 @@ public sealed class DuckSession : IDuckSession
 
         if (options.MemoryLimit is not null)
         {
-            ExecuteSync($"SET memory_limit = {QuoteLiteral(options.MemoryLimit)}");
+            ExecuteSync($"SET memory_limit = {ArrowInterop.QuoteLiteral(options.MemoryLimit)}");
         }
 
         if (options.Threads is not null)
@@ -139,7 +139,7 @@ public sealed class DuckSession : IDuckSession
 
         if (options.TempDirectory is not null)
         {
-            ExecuteSync($"SET temp_directory = {QuoteLiteral(options.TempDirectory)}");
+            ExecuteSync($"SET temp_directory = {ArrowInterop.QuoteLiteral(options.TempDirectory)}");
         }
     }
 
@@ -156,8 +156,6 @@ public sealed class DuckSession : IDuckSession
             Interlocked.Decrement(ref _gateWaiters);
         }
     }
-
-    private static string QuoteLiteral(string value) => "'" + value.Replace("'", "''") + "'";
 
     private void ExecuteSync(string sql, CancellationToken ct = default)
     {

@@ -81,7 +81,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     public WatermarkAnalysis Analyze(string sql, IReadOnlyList<string> sentinels)
     {
         var duck = Session();
-        var serialized = duck.Scalar($"select json_serialize_sql('{Escape(sql)}')");
+        var serialized = duck.Scalar($"select json_serialize_sql({ArrowInterop.QuoteLiteral(sql)})");
         var root = JsonNode.Parse(serialized)!;
         if (root["error"]?.GetValue<bool>() == true)
         {
@@ -156,7 +156,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     public ReadHintPlan ExtractReadHints(string sql, string baseTable, string? cursorColumn)
     {
         var duck = Session();
-        var serialized = duck.Scalar($"select json_serialize_sql('{Escape(sql)}')");
+        var serialized = duck.Scalar($"select json_serialize_sql({ArrowInterop.QuoteLiteral(sql)})");
         var root = JsonNode.Parse(serialized)!;
         if (root["error"]?.GetValue<bool>() == true)
         {
@@ -268,7 +268,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     /// mid-string semicolon -- never silently picking the first one).</summary>
     private static JsonNode? ParseSingleStatement(DuckDbSync duck, string sql)
     {
-        var serialized = duck.Scalar($"select json_serialize_sql('{Escape(sql)}')");
+        var serialized = duck.Scalar($"select json_serialize_sql({ArrowInterop.QuoteLiteral(sql)})");
         var root = JsonNode.Parse(serialized)!;
         if (root["error"]?.GetValue<bool>() == true || root["statements"] is not JsonArray { Count: 1 })
         {
@@ -564,8 +564,6 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     }
 
     // -- walker helpers ------------------------------------------------------------------------
-
-    private static string Escape(string value) => value.Replace("'", "''");
 
     // Guarded against nodes whose "class"/"type" field is itself an object (e.g. a CONSTANT's nested
     // type descriptor) rather than a string — MapComparisonScopes probes every JsonObject, not only
@@ -930,7 +928,7 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
     }
 
     private static string Deserialize(DuckDbSync duck, JsonNode root) =>
-        duck.Scalar($"select json_deserialize_sql('{Escape(root.ToJsonString())}')");
+        duck.Scalar($"select json_deserialize_sql({ArrowInterop.QuoteLiteral(root.ToJsonString())})");
 
     /// <summary>Thin synchronous wrapper over <see cref="DuckSession"/> — Analyze must be sync
     /// because DagCompiler.Compile is. One parse-only in-memory session per reader instance; parsing

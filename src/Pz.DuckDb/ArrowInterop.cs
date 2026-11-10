@@ -88,7 +88,11 @@ internal static class ArrowInterop
         return $"CREATE TABLE {QuoteQualified(targetTable)} ({string.Join(", ", columns)})";
     }
 
-    private static string QuoteIdentifier(string part) => "\"" + part.Replace("\"", "\"\"") + "\"";
+    /// <summary>One identifier part, double-quoted with embedded quotes doubled. Does not split on '.'.</summary>
+    internal static string QuoteIdentifier(string part) => "\"" + part.Replace("\"", "\"\"") + "\"";
+
+    /// <summary>A single-quoted SQL string literal with embedded quotes doubled.</summary>
+    internal static string QuoteLiteral(string value) => "'" + value.Replace("'", "''") + "'";
 
     /// <summary>Splits "a.b" into schema "a" / table "b"; a bare "b" yields a null schema (current schema).</summary>
     internal static (string? Schema, string Table) SplitQualified(string qualifiedName)
