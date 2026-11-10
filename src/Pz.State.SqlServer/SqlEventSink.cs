@@ -143,8 +143,8 @@ public sealed class SqlEventSink : IAsyncDisposable
     /// enqueues; all I/O happens later, on the background drain task.</summary>
     public void Write(RunEvent evt)
     {
-        // Resolved SQL can carry a value env() inlined, and nothing masks it on the way into pz.run_events. It is never
-        // persisted, and skipping it is not a drop.
+        // Resolved SQL can carry a value env() inlined, and nothing masks it on the way into run_events, so it is never
+        // persisted; skipping it is not a drop.
         if (evt is NodeSqlEvent)
         {
             return;
@@ -168,8 +168,7 @@ public sealed class SqlEventSink : IAsyncDisposable
         }
         catch (ArgumentOutOfRangeException)
         {
-            // An event type outside the closed set this mapping knows (spec drift, not expected in
-            // practice) must not make Write throw: RunEventBus.Publish's never-throw contract has to
+            // An event type outside the closed set this mapping knows (not expected in practice) must not make Write throw: RunEventBus.Publish's never-throw contract has to
             // hold through this pump exactly as it does through JsonRenderer's.
             Interlocked.Decrement(ref _pending);
             Interlocked.Increment(ref _dropped);

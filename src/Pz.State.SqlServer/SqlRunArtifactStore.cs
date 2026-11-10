@@ -58,7 +58,6 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
 
     private const int MaxWatermarkValueLength = 256;
 
-
     /// <summary>Serializes concurrent <see cref="WriteSnapshot"/> calls for the SAME run id within this
     /// store instance -- mirrors <c>LocalRunArtifactStore</c>'s per-run <c>RunResultsWriter</c> lock
     /// (that class's doc comment): two <c>NodeCompleted</c> callbacks racing on the same run must never
@@ -68,10 +67,11 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     private readonly Lock _runLocksGate = new();
 
     /// <summary>The per-node fingerprint (see <see cref="NodeFingerprint"/>) this store last
-    /// successfully upserted, keyed by run id then node id -- what turns <see cref="SnapshotRunEvents"/>'s
+    /// successfully upserted, keyed by run id then node id -- what turns <c>SnapshotRunEvents</c>'s
     /// cumulative node list (every node completed so far, re-sent whole on every call) back into a
-    /// delta. A 300-node run used to cost ~45k round trips (1+2+...+300 upserts across 300 snapshots);
-    /// a node's row is now upserted once when new, then again only if its content genuinely changes.
+    /// delta. Without it a 300-node run would cost ~45k round trips (1+2+...+300 upserts across 300
+    /// snapshots); with it a node's row is upserted once when new, then again only if its content
+    /// genuinely changes.
     /// Guarded by <see cref="LockFor"/> the same as the rest of a run's state -- every read/write of an
     /// entry happens inside that run's <c>lock</c> block in <see cref="WriteSnapshot"/>.</summary>
     private readonly Dictionary<string, Dictionary<string, string>> _lastWritten = new(StringComparer.Ordinal);
