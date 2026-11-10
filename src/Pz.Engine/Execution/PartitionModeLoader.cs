@@ -19,7 +19,7 @@ namespace Pz.Engine.Execution;
 /// partition's part table dropped, but siblings keep running. An ENGINE-side fault (append/ledger
 /// statement failure) is a different regime entirely: it escapes <see cref="RunPartitionAsync"/> raw
 /// and self-cancels the shared <see cref="CancellationTokenSource"/> from INSIDE the faulting task,
-/// mirroring how the legacy channel path's <c>PumpPartitionAsync</c> self-cancels <c>pumpCts</c> in its
+/// mirroring how the channel path's <c>PumpPartitionAsync</c> self-cancels <c>pumpCts</c> in its
 /// own catch — siblings tear down immediately rather than only once the orchestration's
 /// <see cref="Task.WhenAll(Task[])"/> observes the fault.</summary>
 internal static class PartitionModeLoader
@@ -679,7 +679,7 @@ internal static class PartitionModeLoader
         {
             // Engine-side fault (a setup statement, AppendArrowBatchAsync, or the completion
             // transaction) escaped the isolated read-fault handling above. Self-cancel loadCts from
-            // INSIDE this faulting task — mirroring the legacy channel path's PumpPartitionAsync
+            // INSIDE this faulting task — mirroring the channel path's PumpPartitionAsync
             // self-cancelling pumpCts in its own catch — so every in-flight sibling tears down
             // immediately instead of only once the orchestration's Task.WhenAll observes this fault.
             loadCts.Cancel();

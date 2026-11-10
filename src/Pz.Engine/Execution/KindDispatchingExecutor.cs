@@ -35,7 +35,7 @@ namespace Pz.Engine.Execution;
 /// Retry safety (full narrative in https://pipelinez.dev/events/'s "Retry safety" section, next to
 /// `retry_scheduled`): only <see cref="NodeKind.SourceLoad"/> and <see cref="NodeKind.SinkWrite"/> nodes
 /// are ever retried in practice, and both are safe to retry. SourceLoad retry safety has two regimes.
-/// Legacy (no StablePartitionIds): ingest is all-or-nothing — IngestArrowAsync drops the target staging
+/// Without StablePartitionIds: ingest is all-or-nothing — IngestArrowAsync drops the target staging
 /// table on any failure, so a retried attempt always starts from a clean table. Partition mode:
 /// completed partitions' rows persist in the main staging table across attempts BY DESIGN, with the
 /// pz_meta ledger recording exactly which partitions they came from (updated atomically with the data);

@@ -564,9 +564,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
             var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
-            var legacySuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
+            var channelSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
                 stall.ToTimings(), watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats, Cdc: cdcStats);
-            return Stamp(await SchemaDriftGate.ApplyAsync(legacySuccess, node, def, hints, tableName, ctx, ct)
+            return Stamp(await SchemaDriftGate.ApplyAsync(channelSuccess, node, def, hints, tableName, ctx, ct)
                 .ConfigureAwait(false));
         }
         catch
@@ -609,14 +609,14 @@ public sealed class SourceLoadExecutor : INodeExecutor
     internal static ReadHints NativeHints(SourceDatasetDef def) =>
         def.Hints is { } plan ? new ReadHints(plan.Columns, plan.PredicateSql) : ReadHints.None;
 
-    /// <summary>The compiler decided what the single reading pipeline
-    /// makes pushable; this decides whether THIS connector gets it. The two halves are gated
+    /// <summary>The compiler decided what the single reading pipeline makes pushable; this decides whether
+    /// THIS connector gets it. The two halves are gated
     /// independently because a connector may honour one and not the other. An absent capability means
     /// push nothing for that half, silently — this is an optimisation, and the pipeline's own SQL still
     /// runs in DuckDB over whatever landed, so a connector that receives nothing produces exactly the
     /// same rows, just after moving more of them.</summary>
-    /// <paramref name="limit"/> (a fresh preview's slice) reaches every connector whatever it advertises: the
-    /// engine re-applies it, so honouring it is only an optimisation.
+    /// <param name="limit">A fresh preview's slice. It reaches every connector whatever it advertises: the
+    /// engine re-applies it, so honouring it is only an optimisation.</param>
     internal static ReadHints HintsFor(SourceDatasetDef def, ConnectorCapabilities caps, long? limit = null)
     {
         if (def.Hints is not { } plan)
@@ -908,7 +908,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
     }
 
     /// <summary>Universal-path engine backstop, shared by the
-    /// legacy and streaming branches. The candidate-cap (WindowMath.Min in CaptureWatermarkAsync) and
+    /// channel and partition-mode paths. The candidate-cap (WindowMath.Min in CaptureWatermarkAsync) and
     /// window-scoped MAX keep the WATERMARK value safe against an over-delivering connector, but neither
     /// removes the out-of-window rows from staging CONTENT -- honoring DatasetSpec.WatermarkLowerBound/
     /// WatermarkUpperBound is MAY, not MUST, and a force_universal tier flip can land the whole backlog
