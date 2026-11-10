@@ -23,6 +23,7 @@
          assemblies may not reference each other (connector-to-state and state-to-connector are both
          forbidden), so the classifier is linked into each. -->
     <Compile Include="..\..\src\Shared\MsTransient.cs" Link="Shared\MsTransient.cs" />
+    <Compile Include="..\..\src\Shared\Partitioning\EqualWidth.cs" Link="Shared\Partitioning\EqualWidth.cs" />
   </ItemGroup>
 
   <ItemGroup>

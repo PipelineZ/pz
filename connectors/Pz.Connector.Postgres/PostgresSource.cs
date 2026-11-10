@@ -1,10 +1,10 @@
 using System.Globalization;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Npgsql;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Shared.Partitioning;
 
 namespace Pz.Connector.Postgres;
 
@@ -225,7 +225,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
     /// <c>boundaries[0]</c> is the exact min, <c>boundaries[n]</c> is the exact max, interior values are
     /// equal-width interpolations. Dispatches on the min/max value's runtime CLR type (already validated
     /// orderable by <see cref="ProbeRangeAsync"/>).</summary>
-    private static string[] ComputeBoundaryLiterals(object min, object max, int n) => min switch
+    internal static string[] ComputeBoundaryLiterals(object min, object max, int n) => min switch
     {
         int or long => BuildIntegerBoundaries(
             Convert.ToInt64(min, CultureInfo.InvariantCulture), Convert.ToInt64(max, CultureInfo.InvariantCulture), n),
@@ -238,57 +238,24 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
             $"unreachable: {min.GetType()} should already have been rejected as non-orderable"),
     };
 
-    // Exact integer-domain interpolation via BigInteger (avoids overflow for a huge bigint range times a
-    // small partition count) -- boundary(i) = min + floor(width * i / n), a pure function of i, so calling
-    // it for partition k's hi and partition k+1's lo (same i, same formula) yields identical values.
-    private static long[] BuildLongBoundaries(long min, long max, int n)
-    {
-        var result = new long[n + 1];
-        var width = (BigInteger)max - min;
-        for (var i = 0; i <= n; i++)
-        {
-            result[i] = i == n ? max : (long)(min + (width * i / n));
-        }
-
-        return result;
-    }
-
     private static string[] BuildIntegerBoundaries(long min, long max, int n) =>
-        BuildLongBoundaries(min, max, n).Select(b => b.ToString(CultureInfo.InvariantCulture)).ToArray();
+        EqualWidth.Longs(min, max, n).Select(b => b.ToString(CultureInfo.InvariantCulture)).ToArray();
 
-    private static string[] BuildDoubleBoundaries(double min, double max, int n)
-    {
-        var result = new string[n + 1];
-        for (var i = 0; i <= n; i++)
-        {
-            var boundary = i == n ? max : min + ((max - min) * i / n);
-            result[i] = boundary.ToString("G17", CultureInfo.InvariantCulture);
-        }
+    private static string[] BuildDoubleBoundaries(double min, double max, int n) =>
+        EqualWidth.Doubles(min, max, n).Select(b => b.ToString("G17", CultureInfo.InvariantCulture)).ToArray();
 
-        return result;
-    }
-
-    private static string[] BuildDecimalBoundaries(decimal min, decimal max, int n)
-    {
-        var result = new string[n + 1];
-        for (var i = 0; i <= n; i++)
-        {
-            var boundary = i == n ? max : min + ((max - min) * i / n);
-            result[i] = boundary.ToString(CultureInfo.InvariantCulture);
-        }
-
-        return result;
-    }
+    private static string[] BuildDecimalBoundaries(decimal min, decimal max, int n) =>
+        EqualWidth.Decimals(min, max, n).Select(b => b.ToString(CultureInfo.InvariantCulture)).ToArray();
 
     private static string[] BuildDateBoundaries(DateOnly min, DateOnly max, int n) =>
-        BuildLongBoundaries(min.DayNumber, max.DayNumber, n)
+        EqualWidth.Longs(min.DayNumber, max.DayNumber, n)
             .Select(day => $"date '{DateOnly.FromDayNumber((int)day).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}'")
             .ToArray();
 
     // pg `timestamp` (no time zone) is trusted-UTC per PgTypeMap -- ticks arithmetic needs no
     // time zone conversion, only the two endpoints' wall-clock values.
     private static string[] BuildTimestampBoundaries(DateTime min, DateTime max, int n) =>
-        BuildLongBoundaries(min.Ticks, max.Ticks, n)
+        EqualWidth.Longs(min.Ticks, max.Ticks, n)
             .Select(ticks => $"timestamp '{new DateTime(ticks, DateTimeKind.Unspecified)
                 .ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}'")
             .ToArray();
@@ -296,7 +263,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
     // Explicit UTC conversion (not merely trusting Npgsql's default session time zone) -- probe and
     // boundary math both operate in UTC regardless of the connection's configured time zone.
     private static string[] BuildTimestamptzBoundaries(DateTimeOffset min, DateTimeOffset max, int n) =>
-        BuildLongBoundaries(min.UtcDateTime.Ticks, max.UtcDateTime.Ticks, n)
+        EqualWidth.Longs(min.UtcDateTime.Ticks, max.UtcDateTime.Ticks, n)
             .Select(ticks => $"timestamptz '{new DateTime(ticks, DateTimeKind.Utc)
                 .ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}+00'")
             .ToArray();
