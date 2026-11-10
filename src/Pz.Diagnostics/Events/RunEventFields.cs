@@ -10,7 +10,7 @@ namespace Pz.Diagnostics.Events;
 /// <see cref="RunEvent"/> and stays BCL-only -- both <c>Pz.Cli</c> and <c>Pz.State.SqlServer</c>
 /// already reach it.
 ///
-/// <c>https://pipelinez.dev/events/</c> is a stability contract on the stdout shape this feeds, and
+/// <c>docs/events.md</c> is a stability contract on the stdout shape this feeds, and
 /// <c>JsonRenderer</c>'s own tests (plus <c>EventsDocReflectionTests</c>) hold it to the byte.</summary>
 public static class RunEventFields
 {
@@ -84,8 +84,8 @@ public static class RunEventFields
                 json.WriteString("status", e.Status);
                 json.WriteNumber("rows", e.Rows);
                 json.WriteNumber("durationMs", e.DurationMs);
-                WriteNullableString(json, "errorCode", e.ErrorCode);
-                WriteNullableString(json, "errorMessage", e.ErrorMessage);
+                json.WriteString("errorCode", e.ErrorCode);
+                json.WriteString("errorMessage", e.ErrorMessage);
                 if (e.Timings is { } timings)
                 {
                     json.WriteStartObject("timings");
@@ -98,7 +98,7 @@ public static class RunEventFields
                     json.WriteNull("timings");
                 }
 
-                // Additive-optional (https://pipelinez.dev/events/ append-only rule): omitted when null so pre-existing
+                // Additive-optional (docs/events.md's append-only rule): omitted when null so pre-existing
                 // node_completed lines stay byte-identical -- the `timings` omission precedent, not the
                 // errorCode/WriteNull one, because absence (not null) is what keeps old consumers' bytes stable.
                 if (e.Provenance is { } provenance)
@@ -140,7 +140,7 @@ public static class RunEventFields
                     json.WriteNumber("inserts", cdcPayload.Inserts);
                     json.WriteNumber("updates", cdcPayload.Updates);
                     json.WriteNumber("deletes", cdcPayload.Deletes);
-                    WriteNullableString(json, "position", cdcPayload.Position);
+                    json.WriteString("position", cdcPayload.Position);
                     json.WriteEndObject();
                 }
 
@@ -234,8 +234,8 @@ public static class RunEventFields
                     json.WriteStartObject();
                     json.WriteString("kind", change.Kind);
                     json.WriteString("column", change.Column);
-                    WriteNullableString(json, "from", change.From);
-                    WriteNullableString(json, "to", change.To);
+                    json.WriteString("from", change.From);
+                    json.WriteString("to", change.To);
                     json.WriteEndObject();
                 }
                 json.WriteEndArray();
@@ -313,17 +313,5 @@ public static class RunEventFields
     private static void WriteOptionalNumber(Utf8JsonWriter json, string name, long? value)
     {
         if (value is { } v) json.WriteNumber(name, v);
-    }
-
-    private static void WriteNullableString(Utf8JsonWriter json, string name, string? value)
-    {
-        if (value is null)
-        {
-            json.WriteNull(name);
-        }
-        else
-        {
-            json.WriteString(name, value);
-        }
     }
 }

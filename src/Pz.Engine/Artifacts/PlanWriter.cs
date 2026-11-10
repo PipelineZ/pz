@@ -51,7 +51,7 @@ public static class PlanWriter
             // independent of this object.
             writer.WriteStartObject("memoryBudget");
             WriteNullableNumber(writer, "duckdbBytes", plan.MemoryBudget.DuckDbBytes);
-            WriteNullableString(writer, "duckdbDisclaimer", plan.MemoryBudget.DuckDbDisclaimer);
+            writer.WriteString("duckdbDisclaimer", plan.MemoryBudget.DuckDbDisclaimer);
             writer.WriteNumber("channelBytes", plan.MemoryBudget.ChannelBytes);
             writer.WriteNumber("fixedOverheadBytes", plan.MemoryBudget.FixedOverheadBytes);
             writer.WriteNumber("totalBytes", plan.MemoryBudget.TotalBytes);
@@ -59,7 +59,7 @@ public static class PlanWriter
             // consumer. Written as an explicit null when
             // engine.duckdb.threads IS set, matching duckdbDisclaimer's shape in this same object
             // rather than introducing a second convention inside one block.
-            WriteNullableString(writer, "duckdbThreadsDisclaimer", plan.MemoryBudget.DuckDbThreadsDisclaimer);
+            writer.WriteString("duckdbThreadsDisclaimer", plan.MemoryBudget.DuckDbThreadsDisclaimer);
             writer.WriteEndObject();
 
             writer.WriteEndObject();
@@ -73,18 +73,6 @@ public static class PlanWriter
         if (value is { } number)
         {
             writer.WriteNumber(name, number);
-        }
-        else
-        {
-            writer.WriteNull(name);
-        }
-    }
-
-    private static void WriteNullableString(Utf8JsonWriter writer, string name, string? value)
-    {
-        if (value is not null)
-        {
-            writer.WriteString(name, value);
         }
         else
         {
