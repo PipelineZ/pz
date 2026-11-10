@@ -120,7 +120,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         }
 
         var boundaries = ComputeBoundaryLiterals(min, max, partitionCount);
-        var quotedColumn = Quote(partitionColumn);
+        var quotedColumn = PgDdl.Quote(partitionColumn);
         var partitions = new List<IDatasetPartition>(partitionCount);
         for (var i = 0; i < partitionCount; i++)
         {
@@ -190,7 +190,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
     private async Task<(object? Min, object? Max)> ProbeRangeAsync(
         DatasetSpec spec, string select, string column, CancellationToken ct)
     {
-        var quoted = Quote(column);
+        var quoted = PgDdl.Quote(column);
         await using var connection = new NpgsqlConnection(connectionString);
         try
         {
@@ -381,9 +381,9 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         // No `table:`/`schema:` option -- the dataset name is the object name, qualified by its own dot.
         var (schema, table) = PgDdl.SplitEntity(spec.Dataset);
         var columns = hints.Columns is { Count: > 0 }
-            ? string.Join(", ", hints.Columns.Select(Quote))
+            ? string.Join(", ", hints.Columns.Select(PgDdl.Quote))
             : "*";
-        var sql = $"select {columns} from {Quote(schema)}.{Quote(table)}";
+        var sql = $"select {columns} from {PgDdl.Quote(schema)}.{PgDdl.Quote(table)}";
         // Trust boundary (mirrors ReadHints' own doc comment): PredicateSql is engine-generated SQL, not
         // end-user/attacker input -- the planner builds it from the pipeline's own predicate pushdown
         // logic, so it is concatenated raw rather than parameterized. Identifiers (schema/table/columns)
@@ -409,7 +409,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         if (spec is { WatermarkCursor: not null, WatermarkValue: not null })
         {
             var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{Quote(spec.WatermarkCursor)} {op} '{spec.WatermarkValue!.Replace("'", "''")}'");
+            predicates.Add($"{PgDdl.Quote(spec.WatermarkCursor)} {op} '{spec.WatermarkValue!.Replace("'", "''")}'");
         }
 
         // The bounded-window upper bound joins the SAME AND-chain as
@@ -417,7 +417,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         // BoundedWindow-capable-connector contract (DatasetSpec.WatermarkUpperBound's doc comment).
         if (spec.WatermarkCursor is not null && spec.WatermarkUpperBound is not null)
         {
-            predicates.Add($"{Quote(spec.WatermarkCursor)} <= '{spec.WatermarkUpperBound.Replace("'", "''")}'");
+            predicates.Add($"{PgDdl.Quote(spec.WatermarkCursor)} <= '{spec.WatermarkUpperBound.Replace("'", "''")}'");
         }
 
         // Each term is individually parenthesized before the AND-join (SQL's AND binds tighter than OR):
@@ -430,8 +430,6 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
             ? $"{sql} where {string.Join(" and ", predicates.Select(p => $"({p})"))}"
             : sql;
     }
-
-    private static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"")}\"";
 }
 
 /// <summary>One independently readable slice of a postgres dataset (the whole dataset when
@@ -462,13 +460,27 @@ internal sealed class PostgresPartition(string connectionString, string selectSq
             throw new PzConnectorException($"postgres read failed: {ex.Message}", ex.IsTransient, innerException: ex);
         }
 
-        // Manual-enumerator pattern: CS1626 forbids a `yield return` *inside* a try/catch block, but does
-        // NOT forbid one in a separate statement that merely follows a try/catch -- so driving the inner
-        // enumerator by hand (try/catch around MoveNextAsync only, yield outside the catch) lets a fault
-        // raised by Npgsql mid-stream (after the reader opened successfully above) surface as a classified
-        // PzConnectorException, using the exact same IsTransient rule as the connection-open catch above,
-        // instead of escaping as a raw NpgsqlException.
-        var enumerator = DataReaderSource.ReadBatchesAsync(reader, options.TargetBatchBytes, ct).GetAsyncEnumerator();
+        await foreach (var batch in PgBatchStream.ReadAsync(
+            reader, options.TargetBatchBytes, "postgres read failed mid-stream", ct).ConfigureAwait(false))
+        {
+            yield return batch;
+        }
+    }
+}
+
+/// <summary>Drains an open <see cref="NpgsqlDataReader"/> into Arrow batches and owns the reader from
+/// here on (disposed on every exit path). CS1626 forbids a <c>yield return</c> inside a try/catch, but
+/// not one that merely follows it, so the inner enumerator is driven by hand: only
+/// <c>MoveNextAsync</c> sits inside the catch, which lets a fault Npgsql raises mid-stream surface as a
+/// classified <see cref="PzConnectorException"/> (same <c>IsTransient</c> rule as the connection-open
+/// catches) instead of escaping as a raw <see cref="NpgsqlException"/>.</summary>
+internal static class PgBatchStream
+{
+    public static async IAsyncEnumerable<RecordBatch> ReadAsync(
+        NpgsqlDataReader reader, int targetBatchBytes, string midStreamFailure,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var enumerator = DataReaderSource.ReadBatchesAsync(reader, targetBatchBytes, ct).GetAsyncEnumerator(ct);
         try
         {
             while (true)
@@ -480,8 +492,7 @@ internal sealed class PostgresPartition(string connectionString, string selectSq
                 }
                 catch (NpgsqlException ex)
                 {
-                    throw new PzConnectorException(
-                        $"postgres read failed mid-stream: {ex.Message}", ex.IsTransient, innerException: ex);
+                    throw new PzConnectorException($"{midStreamFailure}: {ex.Message}", ex.IsTransient, innerException: ex);
                 }
 
                 if (!moved)
