@@ -297,10 +297,10 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// field tuples can never collide onto the same joined string.</summary>
     private static string NodeFingerprint(NodeResult node)
     {
-        var provenance = node.Provenance is { } p ? ProvenanceName(p) : "";
+        var provenance = NodeResultJson.ProvenanceName(node.Provenance) ?? "";
         var payload = SerializePayload(node) ?? "";
         return string.Join('\u001f',
-            node.Name, node.Kind.ToString(), NodeStatusName(node.Status),
+            node.Name, node.Kind.ToString(), NodeResultJson.StatusName(node.Status),
             node.RowsMoved.ToString(CultureInfo.InvariantCulture),
             ((long)node.Duration.TotalMilliseconds).ToString(CultureInfo.InvariantCulture),
             node.Error?.Code ?? "", node.Error?.Message ?? "", provenance,
@@ -368,7 +368,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
 
     private void UpsertNode(SqlConnection sqlConnection, SqlTransaction transaction, string runId, NodeResult node)
     {
-        var provenance = node.Provenance is { } p ? ProvenanceName(p) : null;
+        var provenance = NodeResultJson.ProvenanceName(node.Provenance);
         var payload = SerializePayload(node);
 
         using var command = new SqlCommand(
@@ -402,7 +402,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         command.Parameters.AddWithValue("@node_id", node.Id.Value);
         command.Parameters.AddWithValue("@name", node.Name);
         command.Parameters.AddWithValue("@kind", node.Kind.ToString());
-        command.Parameters.AddWithValue("@status", NodeStatusName(node.Status));
+        command.Parameters.AddWithValue("@status", NodeResultJson.StatusName(node.Status));
         command.Parameters.AddWithValue("@rows_moved", node.RowsMoved);
         command.Parameters.AddWithValue("@duration_ms", (long)node.Duration.TotalMilliseconds);
         command.Parameters.AddWithValue("@error_code", (object?)node.Error?.Code ?? DBNull.Value);
@@ -573,8 +573,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     }
 
     /// <summary>The additive-optional ABI payloads, serialized together -- same
-    /// field shapes/names as <c>RunResultsWriter.WriteNode</c>'s JSON, so a future reader can share
-    /// parsing logic. Null when every one of them is null, so a node untouched by any of those
+    /// field shapes/names as <c>RunResultsWriter.WriteNode</c>'s JSON (<see cref="NodeResultJson"/>). Null when every one of them is null, so a node untouched by any of those
     /// features writes no payload at all. Internal for the same no-Docker test seam as
     /// <see cref="ParseObservedSchema"/>.</summary>
     internal static string? SerializePayload(NodeResult node)
@@ -590,77 +589,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         {
             writer.WriteStartObject();
 
-            if (node.Timings is { } timings)
-            {
-                writer.WriteStartObject("timings");
-                writer.WriteNumber("producerStallMs", (long)timings.ProducerStall.TotalMilliseconds);
-                writer.WriteNumber("consumerStallMs", (long)timings.ConsumerStall.TotalMilliseconds);
-                writer.WriteEndObject();
-            }
-
-            if (node.Ops is { } ops)
-            {
-                writer.WriteStartObject("ops");
-                writer.WriteNumber("executed", ops.Executed);
-                writer.WriteNumber("retried", ops.Retried);
-                writer.WriteNumber("throttle_wait_ms", ops.ThrottleWaitMs);
-                writer.WriteEndObject();
-            }
-
-            if (node.Partitions is { } partitions)
-            {
-                writer.WriteStartObject("partitions");
-                writer.WriteNumber("total", partitions.Total);
-                writer.WriteNumber("completed", partitions.Completed);
-                writer.WriteNumber("reused", partitions.Reused);
-                writer.WriteNumber("resumed", partitions.Resumed);
-                writer.WriteEndObject();
-            }
-
-            if (node.Delivery is { } delivery)
-            {
-                writer.WriteStartObject("delivery");
-                writer.WriteString("abort_semantics", delivery.AbortSemantics);
-                writer.WriteNumber("rows_visible", delivery.RowsVisible);
-                writer.WriteNumber("resumed_rows", delivery.ResumedRows);
-                writer.WriteEndObject();
-            }
-
-            if (node.Cdc is { } cdc)
-            {
-                writer.WriteStartObject("cdc");
-                writer.WriteNumber("inserts", cdc.Inserts);
-                writer.WriteNumber("updates", cdc.Updates);
-                writer.WriteNumber("deletes", cdc.Deletes);
-                if (node.SyncStateCandidate is { } position)
-                {
-                    writer.WriteString("position", position.Token);
-                }
-                else
-                {
-                    writer.WriteNull("position");
-                }
-
-                writer.WriteEndObject();
-            }
-
-            if (node.Observed is { } observed)
-            {
-                writer.WriteStartObject("observed_schema");
-                writer.WriteStartArray("columns");
-                foreach (var col in observed.Columns)
-                {
-                    writer.WriteStartObject();
-                    writer.WriteString("name", col.Name);
-                    writer.WriteString("type", col.Type);
-                    writer.WriteEndObject();
-                }
-
-                writer.WriteEndArray();
-                writer.WriteString("hintsHash", observed.HintsHash);
-                writer.WriteEndObject();
-            }
-
+            NodeResultJson.WriteStatsBlocks(writer, node);
             NodeFactsJson.Write(writer, node.Facts);
 
             writer.WriteEndObject();
@@ -705,19 +634,4 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// terminal (RunResultsReader.cs's <see cref="PriorRun"/> doc lists "running" as the one
     /// non-terminal value a crashed run's last snapshot can be left holding).</summary>
     private static bool IsTerminal(string status) => status != "running";
-
-    private static string NodeStatusName(NodeStatus status) => status switch
-    {
-        NodeStatus.Success => "success",
-        NodeStatus.Failed => "failed",
-        NodeStatus.Skipped => "skipped",
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "unknown node status"),
-    };
-
-    private static string ProvenanceName(NodeProvenance provenance) => provenance switch
-    {
-        NodeProvenance.Reused => "reused",
-        NodeProvenance.CarriedForward => "carried_forward",
-        _ => throw new ArgumentOutOfRangeException(nameof(provenance), provenance, "unknown provenance"),
-    };
 }

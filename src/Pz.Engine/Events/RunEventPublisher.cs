@@ -1,6 +1,7 @@
 using Pz.Core.Dag;
 using Pz.Diagnostics.Events;
 using Pz.Diagnostics.Otel;
+using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 using Pz.Engine.Dispatch;
 using Pz.Engine.State;
@@ -70,9 +71,9 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
 
     public void NodeCompleted(NodeResult result) =>
         bus.Publish(new NodeCompletedEvent(clock.GetUtcNow(), runId, result.Id.Value, result.Kind.ToString(),
-            result.Name, NodeStatusName(result.Status), result.RowsMoved,
+            result.Name, NodeResultJson.StatusName(result.Status), result.RowsMoved,
             (long)result.Duration.TotalMilliseconds, result.Error?.Code, result.Error?.Message,
-            ToPayload(result.Timings), ProvenanceName(result.Provenance), ToOpsPayload(result.Ops),
+            ToPayload(result.Timings), NodeResultJson.ProvenanceName(result.Provenance), ToOpsPayload(result.Ops),
             ToPartitionsPayload(result.Partitions), ToDeliveryPayload(result.Delivery),
             ToCdcPayload(result.Cdc, result.SyncStateCandidate), result.CaughtUp,
             Connector: result.Facts?.Connector, Connection: result.Facts?.Connection,
@@ -168,25 +169,6 @@ public sealed class RunEventPublisher(RunEventBus bus, string runId, TimeProvide
         NodeKind.Check => "check",
         NodeKind.SinkWrite => "sink_write",
         _ => kind.ToString(),
-    };
-
-    /// <summary>Maps <see cref="NodeResult.Provenance"/> onto the exact wire values
-    /// <c>RunResultsWriter</c> writes to <c>run_results.json</c>, so the NDJSON stream and the persisted
-    /// artifact agree.</summary>
-    private static string? ProvenanceName(NodeProvenance? provenance) => provenance switch
-    {
-        null => null,
-        NodeProvenance.Reused => "reused",
-        NodeProvenance.CarriedForward => "carried_forward",
-        _ => throw new ArgumentOutOfRangeException(nameof(provenance), provenance, "unknown provenance"),
-    };
-
-    private static string NodeStatusName(NodeStatus status) => status switch
-    {
-        NodeStatus.Success => "success",
-        NodeStatus.Failed => "failed",
-        NodeStatus.Skipped => "skipped",
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "unknown node status"),
     };
 
     private static string RunStatusName(RunStatus status) => status switch
