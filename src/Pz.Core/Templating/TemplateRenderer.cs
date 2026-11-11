@@ -107,7 +107,7 @@ public static class TemplateRenderer
         new("^environment variable '(?<name>[^']+)' is not set$", RegexOptions.Compiled);
 
     private const string SandboxHint =
-        "only source()/ref()/sink()/var()/env() and the this/run_id/run_started_at constants are " +
+        "only source()/ref()/sink()/watermark()/var()/env() and the this/run_id/run_started_at constants are " +
         "reachable inside {{ }} -- check this expression for a typo or an unsupported function/variable";
 
     /// <summary>A <c>source()</c>/<c>sink()</c> call is documented (<c>authoring-for-agents.md</c>) to
