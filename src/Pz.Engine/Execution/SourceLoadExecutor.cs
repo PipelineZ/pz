@@ -1500,12 +1500,6 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
     }
 
-    /// <summary>Mirrors <c>DagCompiler</c>'s compile-time contract check for a <c>columns:</c>-declared
-    /// cursor. That check only fires when a contract is declared; this runtime check is what catches an
-    /// unsupported type for a dataset with no declared contract, whose actual type is only known once
-    /// the staging table exists.</summary>
-    private static readonly string[] AllowedCursorTypes = ["int", "bigint", "decimal", "date", "timestamp"];
-
     /// <summary>After the staging table for an incremental dataset exists (either tier — native CTAS or
     /// universal Arrow ingest), probes the cursor column's actual DuckDB type and, unless the extract was
     /// empty (NULL max — no candidate, previous watermark stands), computes the new candidate watermark
@@ -1580,9 +1574,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 $"watermark cursor probe failed: {sanitized}", isTransient: false, innerException: ex);
         }
 
+        // DagCompiler checks a columns:-declared cursor at compile time; a dataset without a contract
+        // only reveals its cursor's type here, once the staging table exists.
         if (!TryMapDuckToCursorType(duckType, out var typeName))
         {
-            var allowed = string.Join(", ", AllowedCursorTypes);
+            var allowed = CursorContract.AllowedTypesText;
             var error = new PzError(PzErrorCode.UnsupportedCursorType,
                 $"source '{def.Source.Name}.{def.Dataset.Name}': incremental cursor column '{cursor}' landed " +
                 $"as DuckDB type '{duckType}', which is not a supported watermark cursor type -- allowed: {allowed}",
