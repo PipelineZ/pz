@@ -26,6 +26,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Shared with Pz.Connectors.Sdk, which may not reference this assembly. -->
+    <Compile Include="..\Shared\Otel\HeadersFileHandler.cs" Link="Shared\HeadersFileHandler.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Pz.Cli.Tests" />
     <!-- Pz.Mcp.Tests exercises the real Pz.Cli.ConnectorRegistryFactory (internal — same seam Pz.Cli's
          own McpCommand uses) end to end rather than a fake, so the verify tools are covered against

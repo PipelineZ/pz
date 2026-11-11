@@ -1,7 +1,3 @@
-using System.Globalization;
-using Pz.Connectors.Abstractions;
-using Pz.Connectors.Abstractions.Paths;
-using Pz.Core.Incremental;
 using Pz.Core.Model;
 using Pz.Core.Templating;
 using Pz.Core.Validation;
@@ -12,17 +8,8 @@ namespace Pz.Core.Dag;
 /// Turns a loaded+rendered <see cref="PzProject"/> into a <see cref="CompiledDag"/> of
 /// content-addressed nodes.
 /// </summary>
-public static class DagCompiler
+public static partial class DagCompiler
 {
-    /// <summary>Allowed <c>columns:</c> contract types for an <c>incremental: cursor</c>
-    /// -- a subset of the full v0 contract-type matrix (int, bigint, double,
-    /// decimal, varchar, boolean, date, timestamp; see Pz.Engine's <c>ContractTypes</c>, which
-    /// Pz.Core cannot reference: Pz.Engine depends on Pz.Core, not the reverse). double/varchar/boolean
-    /// have no well-defined "greater than" ordering a watermark cursor can rely on, so they're excluded.</summary>
-    private static readonly string[] AllowedCursorTypes = CursorContract.AllowedTypes;
-
-    private static readonly string AllowedCursorTypesText = string.Join(", ", AllowedCursorTypes);
-
     /// <summary>
     /// <paramref name="notices"/>, if provided, collects non-fatal informational messages produced
     /// while compiling -- currently only "cursor unverified" (see stage 0 below). Same channel as
@@ -93,64 +80,8 @@ public static class DagCompiler
                 "retry-matchable, or ignore this if always re-running it is intended"));
         }
 
-        // 1b. Extract the fixed `INSERT INTO {{ sink(...) }}` prefix from any pipeline carrying an
-        //     inline sink() binding. PZ0208 covers every way a sink() call can
-        //     be malformed: more than one call in a pipeline, a call on an ephemeral pipeline (which
-        //     produces no node for a sink to depend on), or a call that isn't the pipeline's mandatory
-        //     leading INSERT statement. On success `rendered[name]` is replaced by the extracted-SQL
-        //     RenderResult (InlineBindings carried over unchanged via `with`) so every later stage —
-        //     and the compiled pipeline node itself — sees only the SELECT that actually runs.
-        var sinkCallErrors = new List<PzError>();
-        foreach (var pipeline in project.Pipelines)
-        {
-            var result = rendered[pipeline.Name];
-            if (result.InlineBindings.Count == 0)
-            {
-                continue;
-            }
-
-            if (pipeline.Materialization == "ephemeral")
-            {
-                var b = result.InlineBindings[0];
-                sinkCallErrors.Add(new PzError(PzErrorCode.InvalidSinkCall,
-                    $"pipeline '{pipeline.Name}' is ephemeral but calls sink('{b.Sink}', '{b.Output}') " +
-                    "— ephemeral pipelines produce no node for a sink to depend on",
-                    pipeline.FilePath, null, InsertFormHint));
-                continue;
-            }
-
-            var duplicate = result.InlineBindings
-                .GroupBy(b => (b.Sink, b.Output))
-                .FirstOrDefault(g => g.Count() > 1);
-            if (duplicate is not null)
-            {
-                sinkCallErrors.Add(new PzError(PzErrorCode.InvalidSinkCall,
-                    $"pipeline '{pipeline.Name}' binds sink('{duplicate.Key.Sink}', '{duplicate.Key.Output}') " +
-                    "more than once — list each sink output at most once",
-                    pipeline.FilePath, null, InsertFormHint));
-                continue;
-            }
-
-            var markers = result.InlineBindings
-                .Select(b => $"__pz_sink__{b.Sink}__{b.Output}__").ToList();
-            var extracted = TryExtractInsertPrefix(result.Sql, markers);
-            if (extracted is null)
-            {
-                var first = result.InlineBindings[0];
-                sinkCallErrors.Add(new PzError(PzErrorCode.InvalidSinkCall,
-                    $"pipeline '{pipeline.Name}' calls sink('{first.Sink}', '{first.Output}') but not as the " +
-                    "pipeline's leading INSERT INTO {{ sink(...) }} statement",
-                    pipeline.FilePath, null, InsertFormHint));
-                continue;
-            }
-
-            rendered[pipeline.Name] = result with { Sql = extracted };
-        }
-
-        if (sinkCallErrors.Count > 0)
-        {
-            throw new PzValidationException(sinkCallErrors);
-        }
+        // 1b. Strip the leading `INSERT INTO {{ sink(...) }}` from every pipeline that binds a sink inline.
+        ExtractInlineSinkPrefixes(project, rendered);
 
         // 1c. A sink's Outputs list is synthesized here from the inline sink() bindings, not loaded from
         //     YAML -- write options live at the call site. Every later stage (the mode/keys checks below,
@@ -197,7 +128,7 @@ public static class DagCompiler
             }
         }
 
-        //     1d. The read side of the same rule. An entity exists
+        // 1d. The read side of the same rule. An entity exists
         //     because something reads or writes it, so a source() naming an entity the connection does
         //     not declare synthesizes one from the call's kwargs -- exactly as 1c synthesizes an
         //     OutputDef. Declaring BOTH is PZ0341, the same either/or the write side enforces: there is
@@ -293,385 +224,14 @@ public static class DagCompiler
         // 0. Incremental cursor + merge-keys validation. Runs after stage 1c because the write options
         //    it validates come from the sink() call site. All aggregate (report every violation, not
         //    just the first) before throwing, matching every other stage below.
-        //    There is no PZ0228 "unknown write mode" check here: SinkFunction refuses a strategy
-        //    outside replace/append/merge at the call site (PZ0334), so an OutputDef cannot reach here
-        //    carrying one.
-        var incrementalErrors = new List<PzError>();
-        foreach (var sink in project.Connections)
-        {
-            foreach (var output in sink.Outputs)
-            {
-                var isMerge = output.Mode == "merge";
-                if (isMerge && output.Keys.Count == 0)
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.MergeRequiresKeys,
-                        $"sink '{sink.Name}.{output.Name}' has strategy: 'merge' but declares no keys -- " +
-                        "merge needs at least one key column to match rows by",
-                        sink.FilePath, null,
-                        $"sink('{sink.Name}', '{output.Name}', strategy: 'merge', keys: ['<column>'])"));
-                }
-                else if (!isMerge && output.Keys.Count > 0)
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.KeysWithoutMerge,
-                        $"sink '{sink.Name}.{output.Name}' declares keys: [{string.Join(", ", output.Keys)}] " +
-                        $"but strategy is '{output.Mode}', not merge -- keys only applies to strategy: 'merge'",
-                        sink.FilePath, null,
-                        $"sink('{sink.Name}', '{output.Name}', strategy: 'merge', " +
-                        $"keys: ['{string.Join("', '", output.Keys)}']), or drop keys"));
-                }
-            }
-        }
-
-        // Bounded-window semantic rules ride along in the same pass, source
-        // by source, dataset by dataset -- they need the very same `declaredType` lookup PZ0212 already
-        // computes. Datasets whose Incremental gets a successful canonicalization are collected into
-        // `rewrittenConnections` and swapped into `project` below (only once the whole pass is error-free),
-        // so every later stage -- including the SourceLoad node builder in stage 7 -- sees canonical
-        // Initial/Until instead of raw user variants. NodeId hashing (stage 7) never reads Incremental,
-        // so this rewrite cannot change any NodeId.
-        var rewrittenConnections = new List<ConnectionDef>(project.Connections.Count);
-        foreach (var source in project.Connections)
-        {
-            List<DatasetDef>? rewrittenDatasets = null;
-            for (var di = 0; di < source.Datasets.Count; di++)
-            {
-                var dataset = source.Datasets[di];
-                // No PZ0315 "declares both incremental: and sync:" check here: SyncModeDef carries
-                // exactly one Mode, so declaring two read modes is not representable at the loader
-                // (see PzErrorCode.SyncStateConflict's doc comment).
-                if (dataset.SyncMode?.Incremental is not { } incremental)
-                {
-                    continue;
-                }
-
-                // A declared-descending feed with a page
-                // cap can truncate mid-slice, and MAX(cursor) advancement would skip the unfetched
-                // middle -- refuse at compile. Undeclared ordering + a cap only warns: the runtime
-                // guard (HttpPartition) decides by observation. Reads `cursor_order`/`max_pages`
-                // through the same option convention CursorContract documents for cursor/cursor_type.
-                var cursorOrder = dataset.Options.TryGetValue("cursor_order", out var cursorOrderObj)
-                    ? cursorOrderObj?.ToString()
-                    : null;
-                if (dataset.Options.ContainsKey("max_pages"))
-                {
-                    if (cursorOrder == "desc")
-                    {
-                        incrementalErrors.Add(new PzError(PzErrorCode.DescendingCursorTruncatable,
-                            $"source '{source.Name}.{dataset.Name}': 'max_pages' on a descending " +
-                            "incremental feed (cursor_order: desc) — a truncated crawl would advance " +
-                            "the watermark past unfetched rows", source.FilePath, null,
-                            "remove max_pages so slices run to completion, or point at an ascending endpoint"));
-                    }
-                    else if (cursorOrder is null)
-                    {
-                        notices?.Add($"source '{source.Name}.{dataset.Name}': 'max_pages' with " +
-                            "undeclared cursor ordering — a descending feed fails at run time if a " +
-                            "crawl truncates; declare cursor_order to check this at compile time");
-                    }
-                }
-
-                var cursor = incremental.Cursor;
-                string? declaredType = null;
-                if (dataset.Columns is not { Count: > 0 } columns)
-                {
-                    notices?.Add(
-                        $"source '{source.Name}.{dataset.Name}': cursor '{cursor}' unverified until --connect / first run");
-                    // Raw-envelope connectors (http) type the cursor via `cursor`/`cursor_type`
-                    // dataset options instead of a columns: contract — accept that route for the
-                    // window math below (CursorContract documents the convention).
-                    declaredType = CursorContract.ResolveDeclaredType(dataset);
-                }
-                else if (!columns.TryGetValue(cursor, out var cursorType))
-                {
-                    // A windowed dataset (max_window declared) hits the
-                    // very same `declaredType is null` condition in rule 3 below, which reports PZ0213
-                    // for this exact root cause -- PZ0213 subsumes PZ0212 here so the dataset gets ONE
-                    // error, not two codes naming the same misconfiguration.
-                    if (incremental.MaxWindow is null)
-                    {
-                        incrementalErrors.Add(new PzError(PzErrorCode.CursorInvalid,
-                            $"source '{source.Name}.{dataset.Name}' declares incremental cursor '{cursor}' but it is " +
-                            $"not in the dataset's columns: contract -- allowed cursor types: {AllowedCursorTypesText}",
-                            source.FilePath, null,
-                            $"add '{cursor}' to columns: with one of the allowed cursor types ({AllowedCursorTypesText})"));
-                    }
-                }
-                else if (Array.IndexOf(AllowedCursorTypes, cursorType) < 0)
-                {
-                    // Same subsumption rationale as above.
-                    if (incremental.MaxWindow is null)
-                    {
-                        incrementalErrors.Add(new PzError(PzErrorCode.CursorInvalid,
-                            $"source '{source.Name}.{dataset.Name}' declares incremental cursor '{cursor}' as " +
-                            $"'{cursorType}', which cannot be used as a cursor -- allowed cursor types: {AllowedCursorTypesText}",
-                            source.FilePath, null,
-                            $"declare '{cursor}' as one of the allowed cursor types ({AllowedCursorTypesText})"));
-                    }
-                }
-                else
-                {
-                    declaredType = cursorType;
-                }
-
-                // Only fires when the window trio is present; a plain `incremental: {cursor: ...}`
-                // dataset is untouched. All errors aggregate as PZ0213 naming
-                // the file + dataset. On success, Initial/Until are REWRITTEN into canonical form so
-                // the engine never re-parses user variants.
-                if (incremental.MaxWindow is null && incremental.Initial is null && incremental.Until is null)
-                {
-                    continue;
-                }
-
-                var windowErrors = new List<string>();
-
-                if (incremental.MaxWindow is null)
-                {
-                    windowErrors.Add("'initial'/'until' require 'max_window' — alone they configure nothing");
-                }
-
-                if (incremental.MaxWindow is not null && incremental.Initial is null)
-                {
-                    windowErrors.Add(
-                        "'max_window' requires 'initial' — a windowed dataset must declare where the backfill starts");
-                }
-
-                if (incremental.MaxWindow is not null && declaredType is null)
-                {
-                    windowErrors.Add($"'max_window' requires cursor '{cursor}' to be declared in columns: (or, for " +
-                        "a raw-envelope dataset, via the connector's cursor:/cursor_type: options) with an " +
-                        $"allowed cursor type ({AllowedCursorTypesText}) — bounds must be computable before the first extraction");
-                }
-
-                // Scalar `query` = SQL-text query mode (postgres/sqlserver). A MAP-valued `query` is
-                // the http connector's URL-parameter block — the very thing that pushes the window
-                // bounds ({{ watermark }}/{{ window_upper }}) — and is fine to window.
-                if (incremental.MaxWindow is not null
-                    && dataset.Options.TryGetValue("query", out var queryOption) && queryOption is string)
-                {
-                    windowErrors.Add(
-                        "'max_window' is not supported on a query-mode dataset — query mode ignores pushdown, " +
-                        "so a windowed query dataset would silently extract everything; use table: or drop max_window");
-                }
-
-                string? canonicalInitial = null;
-                string? canonicalUntil = null;
-                if (declaredType is not null)
-                {
-                    if (incremental.MaxWindow is not null &&
-                        !WindowMath.TryValidateWindow(declaredType, incremental.MaxWindow, out var windowError))
-                    {
-                        windowErrors.Add(windowError!);
-                    }
-
-                    if (incremental.Initial is not null &&
-                        !WindowMath.TryCanonicalize(declaredType, incremental.Initial, out canonicalInitial))
-                    {
-                        // TryCanonicalize's `out` still assigns "" (not null) on failure -- null it back
-                        // out so the Compare guard below correctly treats this as "no canonical value".
-                        canonicalInitial = null;
-                        windowErrors.Add($"'initial' value '{incremental.Initial}' is not a canonical {declaredType} value");
-                    }
-
-                    if (string.Equals(incremental.Until, WindowMath.UntilNow, StringComparison.Ordinal))
-                    {
-                        // Resolved per run to the time it started (SourceLoadExecutor), so nothing to canonicalize.
-                        if (!WindowMath.SupportsNow(declaredType))
-                        {
-                            windowErrors.Add($"'until: now' needs a date or timestamp cursor, not {declaredType}");
-                        }
-                    }
-                    else if (incremental.Until is not null &&
-                        !WindowMath.TryCanonicalize(declaredType, incremental.Until, out canonicalUntil))
-                    {
-                        canonicalUntil = null;
-                        windowErrors.Add($"'until' value '{incremental.Until}' is not a canonical {declaredType} value");
-                    }
-
-                    if (canonicalInitial is not null && canonicalUntil is not null &&
-                        WindowMath.Compare(declaredType, canonicalUntil, canonicalInitial) <= 0)
-                    {
-                        windowErrors.Add("'until' must be greater than 'initial'");
-                    }
-                }
-
-                foreach (var message in windowErrors)
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.WindowConfigInvalid,
-                        $"source '{source.Name}.{dataset.Name}': {message}", source.FilePath, null,
-                        "sync:\n  mode: incremental\n  cursor: <column>\n  max_window: 1d\n  initial: \"2020-01-01\"\n  until: \"<YYYY-MM-DD>\"  # optional"));
-                }
-
-                if (windowErrors.Count == 0 && (canonicalInitial is not null || canonicalUntil is not null))
-                {
-                    rewrittenDatasets ??= source.Datasets.ToList();
-                    rewrittenDatasets[di] = dataset with
-                    {
-                        SyncMode = dataset.SyncMode! with
-                        {
-                            Incremental = incremental with
-                            {
-                                Initial = canonicalInitial ?? incremental.Initial,
-                                Until = canonicalUntil ?? incremental.Until,
-                            },
-                        },
-                    };
-                }
-            }
-
-            rewrittenConnections.Add(rewrittenDatasets is null ? source : source with { Datasets = rewrittenDatasets });
-        }
-
-        // A dataset's `path` may embed calendar tokens
-        // ({yyyy}/{MM}/{dd}/{HH}/{mm}) substituted per-run from the incremental watermark. Runs
-        // alongside PZ0212/PZ0213 above, reading `dataset.Incremental` from `project.Connections` --
-        // the SAME pre-canonicalization view PZ0213's loop above just read it from (rewrittenConnections
-        // isn't swapped into `project` until after this whole pass is error-free, below) -- so this
-        // check's notion of "bounded window" cannot disagree with PZ0213's. All aggregated into the
-        // same incrementalErrors list and thrown together. Source datasets only -- write-side
-        // `partition_by` renders per-row and needs no window (PZ0219 below covers that config instead).
-        foreach (var source in project.Connections)
-        {
-            foreach (var dataset in source.Datasets)
-            {
-                if (!dataset.Options.TryGetValue("path", out var pathObj) || pathObj?.ToString() is not { } path
-                    || !PathTemplate.HasDateTokens(path))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    PathTemplate.Validate(path, $"dataset '{dataset.Name}' in {source.FilePath}");
-                }
-                catch (PzConnectorException ex)
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.TemplatedPathTokensInvalid, ex.Message,
-                        source.FilePath, null, PathTokenHint));
-                    // Fall through: still check the cursor/window below -- aggregate-all-errors rule.
-                }
-
-                var cursorType = ResolveCursorType(dataset);
-                if (cursorType is not ("date" or "timestamp"))
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.TemplatedPathCursorInvalid,
-                        $"dataset '{dataset.Name}' in {source.FilePath}: a date-templated path requires an " +
-                        "incremental date cursor (type date or timestamp); add `sync: {mode: incremental, cursor: <col>}` " +
-                        "naming a date/timestamp column",
-                        source.FilePath, null,
-                        "sync:\n  mode: incremental\n  cursor: <column>  # date or timestamp"));
-                }
-                else if (!HasBoundedWindow(dataset.SyncMode?.Incremental))
-                {
-                    // Only fires once the cursor is confirmed date/timestamp -- otherwise
-                    // TemplatedPathCursorInvalid above already names the one root cause (one error per
-                    // root cause).
-                    incrementalErrors.Add(new PzError(PzErrorCode.TemplatedPathWindowRequired,
-                        $"dataset '{dataset.Name}' in {source.FilePath}: a date-templated path requires a " +
-                        "bounded window so both watermark bounds are stamped on every run (including the " +
-                        "first); add `initial:` and `max_window:` under `sync:`",
-                        source.FilePath, null,
-                        "sync:\n  mode: incremental\n  cursor: <column>\n  max_window: 1d\n  initial: \"2020-01-01\""));
-                }
-            }
-        }
-
-        // An opt-in `files_per_partition` source dataset option
-        // (Azure connector coalesces that many consecutive matched blobs into one partition, amortizing
-        // per-file dispatch/stream-open overhead for many-tiny-files datasets) must be a positive
-        // integer when present. Aggregated into the same incrementalErrors list, never fail-fast --
-        // mirrors the source-side path-templating pass just above.
-        foreach (var source in project.Connections)
-        {
-            foreach (var dataset in source.Datasets)
-            {
-                if (!dataset.Options.TryGetValue("files_per_partition", out var fppObj) || fppObj is null)
-                {
-                    continue;
-                }
-
-                if (!TryParsePositiveInt(fppObj, out _))
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.FilesPerPartitionInvalid,
-                        $"source '{source.Name}.{dataset.Name}' in {source.FilePath}: files_per_partition " +
-                        $"'{fppObj}' must be a positive integer",
-                        source.FilePath, null,
-                        "set files_per_partition to a positive integer, or remove it"));
-                }
-            }
-        }
-
-        // The write-side counterpart of the source-side pass above.
-        // `partition_by:` names the columns an output is partitioned by. WHAT THAT PRODUCES is the
-        // destination's business, and only two things are checkable connector-agnostically here.
-        //
-        // (1) The declaration is well formed -- a column name, or a list of them. Reading it as
-        // `.ToString() is { Length: > 0 }` is the trap this parse closes: a deserialized YAML list
-        // stringifies to its CLR type name, which is non-empty, so the presence check passes and
-        // everything downstream reads a column named "System.Collections.Generic.List`1[System.Object]".
-        //
-        // (2) It agrees with `path:`. Calendar tokens in the path are pz's OWN layout rule -- one
-        // timestamp column rendered into a folder -- so tokens with no partition_by have no column to
-        // substitute from, and tokens with several columns have no way to choose. Both are PZ0219.
-        //
-        // partition_by WITHOUT tokens is deliberately NOT refused here: a format that records its own
-        // partitioning (Delta, Iceberg, Hive-layout parquet) has no templated path to route into and is
-        // correct as written. Whether the target connector can actually honour it is a capability
-        // question, and only the planner holds the connector instance -- so that refusal is PZ0314
-        // there, exactly as the source-side templating refusal already is.
-        //
-        // Whether a named column EXISTS is impossible to check here -- OutputDef carries no declared
-        // column set at compile time (its schema is the upstream pipeline's runtime result) -- so that
-        // check is deferred to runtime; PZ0220 is not claimed here. Malformed token sequences reuse
-        // PZ0218, same as the source side, aggregated into the same incrementalErrors list.
-        foreach (var sink in project.Connections)
-        {
-            foreach (var output in sink.Outputs)
-            {
-                var path = output.Options.TryGetValue("path", out var pathObj) ? pathObj?.ToString() : null;
-                var hasDateTokens = path is not null && PathTemplate.HasDateTokens(path);
-
-                if (!PartitionColumns.TryRead(output.Options, out var partitionColumns, out var problem))
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.PartitionedOutputConfigInvalid,
-                        $"sink '{sink.Name}.{output.Name}' in {sink.FilePath} declares partition_by: but " +
-                        problem,
-                        sink.FilePath, null,
-                        "set partition_by: to a column name, or to a list of column names"));
-                }
-                else if (partitionColumns.Count == 0 && hasDateTokens)
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.PartitionedOutputConfigInvalid,
-                        $"sink '{sink.Name}.{output.Name}' in {sink.FilePath} has a date-templated path but " +
-                        "declares no partition_by: -- there is no column to substitute the tokens from at write time",
-                        sink.FilePath, null,
-                        "add `partition_by: <column>` naming the column to partition by"));
-                }
-                else if (partitionColumns.Count > 1 && hasDateTokens)
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.PartitionedOutputConfigInvalid,
-                        $"sink '{sink.Name}.{output.Name}' in {sink.FilePath} declares partition_by: with " +
-                        $"{partitionColumns.Count} columns and a date-templated path -- calendar tokens render " +
-                        "from exactly one timestamp column, so there is no way to choose between them",
-                        sink.FilePath, null,
-                        "name a single timestamp column in partition_by:, or remove the calendar tokens from path:"));
-                }
-
-                if (!hasDateTokens)
-                {
-                    continue;
-                }
-
-                try
-                {
-                    PathTemplate.Validate(path!, $"output '{output.Name}' in {sink.FilePath}");
-                }
-                catch (PzConnectorException ex)
-                {
-                    incrementalErrors.Add(new PzError(PzErrorCode.TemplatedPathTokensInvalid, ex.Message,
-                        sink.FilePath, null, PathTokenHint));
-                }
-            }
-        }
+        //    No "unknown write mode" check is needed: SinkFunction refuses a strategy outside
+        //    replace/append/merge at the call site (PZ0334), so an OutputDef cannot reach here carrying one.
+        var configErrors = new List<PzError>();
+        CheckMergeKeys(project, configErrors);
+        var rewrittenConnections = CheckIncrementalSources(project, notices, configErrors);
+        CheckSourcePathTemplates(project, configErrors);
+        CheckFilesPerPartition(project, configErrors);
+        CheckPartitionedOutputs(project, configErrors);
 
         // 2. Validate every ref()/source() resolves -> PZ0201. Independent of stage 0 above: it reads
         //    only `rendered`, `pipelinesByName` (fixed at the top of Compile) and `connectionsByName`
@@ -739,7 +299,7 @@ public static class DagCompiler
         // Stages 0, 2, 3 and 4 above each stand alone -- none reads another's error list or a value
         // another one computes -- so they report together in ONE throw instead of stopping at whichever
         // happens to run first.
-        var independentStageErrors = incrementalErrors
+        var independentStageErrors = configErrors
             .Concat(refErrors).Concat(checksOnEphemeralErrors).Concat(chainErrors).ToList();
         if (independentStageErrors.Count > 0)
         {
@@ -749,12 +309,12 @@ public static class DagCompiler
         project = project with { Connections = rewrittenConnections };
 
         // 5. Resolve every sink output's binding (inline `INSERT INTO {{ sink(...) }}` is the SOLE load
-        //    path — there is no YAML `input:` binding). First collect every pipeline's
+        //    path). First collect every pipeline's
         //    inline claim(s), validating the SINK each names actually exists (PZ0201, same code as
         //    ref()/source() lookups) — a pipeline may claim N outputs via the array fan-out form (stage
         //    1b already guarantees no duplicate output within one pipeline). Then walk every output
         //    once: more than one inline claimant is PZ0206 (ERROR). Errors aggregate and throw.
-        //    There is no output-existence check and no orphan-output warning: stage 1c builds an output
+        //    No output-existence check or orphan-output warning is needed: stage 1c builds an output
         //    precisely because a call site named it, so an output cannot exist without a writer, nor be
         //    named without existing.
         var sinkErrors = new List<PzError>();
@@ -808,7 +368,7 @@ public static class DagCompiler
             }
         }
 
-        var sinkInputs = new Dictionary<(ConnectionDef Sink, OutputDef Output), SinkInputResolution>();
+        var claimantByOutput = new Dictionary<(ConnectionDef Sink, OutputDef Output), string>();
         foreach (var sink in project.Connections)
         {
             foreach (var output in sink.Outputs)
@@ -826,7 +386,7 @@ public static class DagCompiler
                     continue;
                 }
 
-                sinkInputs[(sink, output)] = new SinkInputResolution.PipelineInput(claimants[0]);
+                claimantByOutput[(sink, output)] = claimants[0];
             }
         }
 
@@ -836,7 +396,7 @@ public static class DagCompiler
         }
 
         // 6. Determine which source datasets are actually referenced (directly, or inherited
-        //    through an inlined ephemeral pipeline). Sinks no longer drain a source directly — a
+        //    through an inlined ephemeral pipeline). Sinks never drain a source directly — a
         //    pass-through pipeline (`INSERT INTO {{ sink(...) }} select * from {{ source(...) }}`) is
         //    the only way a source reaches a sink, so its source ref is already captured below.
         //    Readers are collected per dataset, not merely counted, so
@@ -1142,16 +702,16 @@ public static class DagCompiler
         }
 
         // 10. SinkWrite nodes, depending on their claimant pipeline's node. Every bound output is
-        //     inline-bound, declaring no YAML `input:`, so its Output.Input is synthesized here from the
-        //     resolution (the claimant pipeline's name) for every downstream consumer — the canonical
-        //     hash below and SinkWriteExecutor's staging-relation lookup — that expects it populated.
-        //     Only outputs with a claimant reach here, so isInlineBound is always true.
+        //     inline-bound, so its Output.Input is synthesized here from the claimant pipeline's name
+        //     for every downstream consumer — the canonical hash below and SinkWriteExecutor's
+        //     staging-relation lookup — that expects it populated. Only outputs with a claimant reach
+        //     here, so isInlineBound is always true.
         var sinkOptionErrors = new List<PzError>();
         foreach (var sink in project.Connections)
         {
             foreach (var output in sink.Outputs)
             {
-                if (!sinkInputs.TryGetValue((sink, output), out var resolution))
+                if (!claimantByOutput.TryGetValue((sink, output), out var pipelineName))
                 {
                     continue; // no resolved claimant — no SinkWrite node
                 }
@@ -1172,7 +732,6 @@ public static class DagCompiler
                 }
 
                 var isInlineBound = string.IsNullOrEmpty(output.Input);
-                var pipelineName = ((SinkInputResolution.PipelineInput)resolution).PipelineName;
                 var effectiveOutput = isInlineBound ? output with { Input = pipelineName } : output;
                 var inputNodeId = pipelineNodeIds[pipelineName];
                 // Keys/AcceptDuplicates/OnDelete all change what a commit under this Id MEANS -- e.g.
@@ -1197,157 +756,8 @@ public static class DagCompiler
             throw new PzValidationException(sinkOptionErrors);
         }
 
-        // 10b. Final stage: the (read x write) pairing matrix for an EXPLICITLY declared incremental
-        //      dataset -- append without consent (PZ0214) and replace (PzErrorCode.IncompatiblePair)
-        //      both discard/duplicate rows an incremental read relies on staying put across runs. Runs
-        //      on the REAL DAG (never the selected subset) because the risk is a property of the
-        //      project, not of one run -- so it must see every node/edge, not a --select-filtered slice.
-        //      Aggregate like every other stage above.
-        //      Deliberately `Incremental` only, not `Incremental or Auto` -- Pz.Core has no
-        //      connector-capability access, so an explicitly declared `sync: {mode: auto}` block might
-        //      resolve to a full read (needing no consent at all) as easily as a feed. That ambiguity is
-        //      ExecutionPlanner's job alone (its feed-side PZ0214 guard, which DOES hold the opened
-        //      connector and the ReadShapeResolver's actual resolved shape); Core only ever refuses the
-        //      unambiguous case, an explicit `sync: {mode: incremental}` block.
-        var deliveryErrors = new List<PzError>();
-        var deliveryById = nodes.ToDictionary(n => n.Id);
-        foreach (var sinkNode in nodes)
-        {
-            if (sinkNode.Definition is not SinkOutputDef sinkDef)
-            {
-                continue;
-            }
-
-            var checkAppendConsent = sinkDef.Output.Mode == "append" && !sinkDef.Output.AcceptDuplicates;
-            var checkReplace = sinkDef.Output.Mode == "replace";
-            if (!checkAppendConsent && !checkReplace)
-            {
-                continue;
-            }
-
-            var seen = new HashSet<NodeId>();
-            var queue = new Queue<NodeId>(sinkNode.DependsOn);
-            while (queue.Count > 0)
-            {
-                var id = queue.Dequeue();
-                if (!seen.Add(id) || !deliveryById.TryGetValue(id, out var ancestor))
-                {
-                    continue;
-                }
-
-                if (ancestor.Definition is SourceDatasetDef src &&
-                    src.Dataset.SyncMode is { Mode: SyncMode.Incremental })
-                {
-                    if (checkReplace)
-                    {
-                        deliveryErrors.Add(new PzError(PzErrorCode.IncompatiblePair,
-                            $"output '{sinkDef.Sink.Name}.{sinkDef.Output.Name}': write.strategy 'replace' fed by incremental dataset " +
-                            $"'{src.Source.Name}.{src.Dataset.Name}' would discard previously loaded rows each run.",
-                            sinkDef.Sink.FilePath, null,
-                            "use write.strategy: merge (effectively-once), or remove the dataset's sync block for a full re-read"));
-                    }
-                    else
-                    {
-                        deliveryErrors.Add(new PzError(PzErrorCode.IncrementalAppendUnacknowledged,
-                            $"sink '{sinkDef.Sink.Name}.{sinkDef.Output.Name}' has write.strategy: append and is fed by " +
-                            $"incremental dataset '{src.Source.Name}.{src.Dataset.Name}' -- delivery is " +
-                            "at-least-once, so a retried or replayed slice can duplicate rows",
-                            sinkDef.Sink.FilePath, null,
-                            "use write.strategy: merge (with keys:) or write.strategy: replace, or set\n" +
-                            "write:\n  strategy: append\n  duplicates: accept\n" +
-                            "on the output to accept at-least-once delivery"));
-                    }
-                }
-
-                foreach (var dep in ancestor.DependsOn)
-                {
-                    queue.Enqueue(dep);
-                }
-            }
-        }
-
-        // 10b2. CDC pairing matrix: the cdc column of the same published (read x write) matrix as
-        //       stage 10b above. cdc is always EXPLICITLY declared
-        //       (never auto-resolved), so -- unlike the feed column, which needs ExecutionPlanner's
-        //       held-open connector -- this validates entirely at compile time. An output is
-        //       "cdc-fed" iff its SinkWrite node's transitive DependsOn closure (UpstreamSourceLoads
-        //       below) contains >=1 SourceLoad whose dataset declares `sync: {mode: cdc}`; delete-key
-        //       routing is valid iff that closure contains EXACTLY one SourceLoad in total and it is
-        //       the cdc one -- a join/multi-source pipeline cannot map delete keys to a single
-        //       upstream row identity. `CdcDeleteOrigin` is stamped only in that valid case, via
-        //       `with` on the already NodeId-computed node (see DagNode.cs) so it never feeds a hash.
-        var cdcErrors = new List<PzError>();
-        for (var i = 0; i < nodes.Count; i++)
-        {
-            if (nodes[i].Definition is not SinkOutputDef sinkDef)
-            {
-                continue;
-            }
-
-            var upstream = UpstreamSourceLoads(nodes[i], deliveryById);
-            var cdcSources = upstream.Where(s => s.Dataset.SyncMode?.Mode == SyncMode.Cdc)
-                .OrderBy(s => s.Source.Name, StringComparer.Ordinal).ThenBy(s => s.Dataset.Name, StringComparer.Ordinal)
-                .ToList();
-            var outputRef = $"{sinkDef.Sink.Name}.{sinkDef.Output.Name}";
-
-            if (cdcSources.Count > 0 && sinkDef.Output.Mode is "replace" or "append")
-            {
-                var datasetNames = string.Join(", ", cdcSources.Select(s => $"{s.Source.Name}.{s.Dataset.Name}"));
-                var reason = sinkDef.Output.Mode == "replace"
-                    ? "would discard previously applied change events each run (cdc x replace)"
-                    : "cdc delivery is change events, not rows -- append would land raw events as duplicate " +
-                      "rows (cdc x append)";
-                cdcErrors.Add(new PzError(PzErrorCode.IncompatiblePair,
-                    $"output '{outputRef}': write.strategy '{sinkDef.Output.Mode}' fed by cdc dataset(s) " +
-                    $"'{datasetNames}' -- {reason}.",
-                    sinkDef.Sink.FilePath, null,
-                    "use write.strategy: merge with on_delete"));
-            }
-
-            if (cdcSources.Count > 0 && sinkDef.Output.Mode == "merge" && sinkDef.Output.OnDelete is null)
-            {
-                var datasetNames = string.Join(", ", cdcSources.Select(s => $"{s.Source.Name}.{s.Dataset.Name}"));
-                cdcErrors.Add(new PzError(PzErrorCode.CdcConsentMissing,
-                    $"output '{outputRef}': write.strategy merge fed by cdc dataset(s) '{datasetNames}' has not " +
-                    "declared write.on_delete -- deletes on the source table need an explicit routing choice.",
-                    sinkDef.Sink.FilePath, null,
-                    "declare write.on_delete: delete, soft, or ignore"));
-            }
-
-            if (sinkDef.Output.OnDelete is not null && cdcSources.Count == 0)
-            {
-                cdcErrors.Add(new PzError(PzErrorCode.CdcDeleteRouteInvalid,
-                    $"output '{outputRef}': write.on_delete '{sinkDef.Output.OnDelete}' is declared but no " +
-                    "upstream dataset declares sync: {mode: cdc} -- on_delete requires a cdc-fed input.",
-                    sinkDef.Sink.FilePath, null,
-                    "remove write.on_delete, or feed this output from a sync: {mode: cdc} dataset"));
-            }
-            else if (sinkDef.Output.OnDelete is "delete" or "soft" && cdcSources.Count > 0 && upstream.Count > 1)
-            {
-                var datasetNames = string.Join(", ", upstream.Select(s => $"{s.Source.Name}.{s.Dataset.Name}"));
-                cdcErrors.Add(new PzError(PzErrorCode.CdcDeleteRouteInvalid,
-                    $"output '{outputRef}': write.on_delete '{sinkDef.Output.OnDelete}' fed by a multi-source " +
-                    $"pipeline ('{datasetNames}') -- delete keys cannot be routed through a multi-source pipeline.",
-                    sinkDef.Sink.FilePath, null,
-                    "route on_delete: delete/soft through a single-source pipeline reading only the cdc " +
-                    "dataset, or use on_delete: ignore"));
-            }
-            else if (sinkDef.Output.OnDelete is "delete" or "soft" && cdcSources.Count == 1 && upstream.Count == 1)
-            {
-                var origin = cdcSources[0];
-                nodes[i] = nodes[i] with
-                {
-                    Definition = sinkDef with { CdcDeleteOrigin = new CdcOrigin(origin.Source.Name, origin.Dataset.Name) },
-                };
-            }
-        }
-
-        // Both pairing matrices read the finished node list and nothing of each other's, so an
-        // incremental violation on one output must not hide a cdc violation on another.
-        if (deliveryErrors.Count > 0 || cdcErrors.Count > 0)
-        {
-            throw new PzValidationException(OrderErrors(deliveryErrors.Concat(cdcErrors)));
-        }
+        // 10b. The (read x write) pairing matrices over the finished node list; see CheckDeliveryMatrices.
+        CheckDeliveryMatrices(nodes);
 
         // 10c. Dead-leaf detection: a non-ephemeral pipeline consumed by no ref()
         //      and loaded to no sink — its Pipeline node's Id appears in no other node's DependsOn set.
@@ -1376,129 +786,11 @@ public static class DagCompiler
             Connections = project.Connections,
         };
 
-        // 12. Effectively-once advisory NOTICE -- non-fatal, same `notices`
-        //     mechanism as the "cursor unverified" notice above. The effectively-once guarantee an
-        //     `incremental:` dataset relies on holds only if every sink its lineage reaches is
-        //     idempotent (mode: merge): a crash/retry, or a no-pushdown source re-running the same
-        //     extract, must not duplicate rows downstream. Trace each incremental SourceLoad's
-        //     structural descendants (the real project DAG, via the just-built CompiledDag) to every
-        //     SinkWrite it reaches and warn on each non-merge one. Deliberately NOT a hard error --
-        //     append-only sources with pushdown support can legitimately use mode: append, and a hard
-        //     error would over-block those legitimate cases.
-        foreach (var node in ordered.Where(n => n.Kind == NodeKind.SourceLoad))
-        {
-            // Same explicit-only scope as stage 10b above -- an implicit `mode: auto` dataset (SyncMode
-            // null) that a connector resolves to Feed is a planner-only concern (no connector access
-            // here); this advisory notice never fires for it, mirroring PZ0214's split. Only
-            // `SyncMode.Auto` can reach this: an Incremental dataset cannot land on a non-merge sink --
-            // PZ0335 refuses replace and PZ0214 refuses append-without-consent, while
-            // append-with-consent is filtered by the AcceptDuplicates check below.
-            if (node.Definition is not SourceDatasetDef sourceDef ||
-                sourceDef.Dataset.SyncMode is not { Mode: SyncMode.Auto })
-            {
-                continue;
-            }
-
-            foreach (var sinkNode in compiled.Descendants(node.Id).Where(d => d.Kind == NodeKind.SinkWrite))
-            {
-                var sinkDef = (SinkOutputDef)sinkNode.Definition;
-                // Consent recorded via accept_duplicates: true (PZ0214's own offered escape hatch,
-                // stage 10b above) must silence this recurring nag -- PZ0214 already surfaced merge
-                // as the alternative at decision time, so repeating that hint here would contradict
-                // the consent the operator just gave.
-                if (sinkDef.Output.Mode == "merge" || sinkDef.Output.AcceptDuplicates)
-                {
-                    continue;
-                }
-
-                notices?.Add(
-                    $"incremental/sync dataset '{sourceDef.Source.Name}.{sourceDef.Dataset.Name}' feeds non-merge sink " +
-                    $"'{sinkDef.Sink.Name}.{sinkDef.Output.Name}' (mode: {sinkDef.Output.Mode}); effectively-once " +
-                    "is not guaranteed -- a crash or retry may duplicate rows. Use write.strategy: merge for idempotency.");
-            }
-        }
+        // 12. Advisory notices and warnings derived from the finished DAG.
+        AddEffectivelyOnceNotices(compiled, notices);
 
         var coarse = CoarseWatermarkFormatWarnings(compiled, ordered);
         return coarse.Count == 0 ? compiled : compiled with { Warnings = [.. compiled.Warnings, .. coarse] };
-    }
-
-    /// <summary>A `watermark_format` whose finest unit is a day or coarser (`date`, `yyyy-MM`, `yyyy`,
-    /// `yyyyMMdd`, ...) floors the lower bound and rounds the upper bound by that whole unit, so every run or
-    /// window re-reads up to a day, month or year. Into an append sink each re-read lands again. Never
-    /// refused (an API may take only dates); said once per (dataset, sink) as PZ0364, only for an incremental
-    /// http dataset whose cursor is not a date. The option is the http connector's; core reads its text.</summary>
-    private static List<PzWarning> CoarseWatermarkFormatWarnings(CompiledDag compiled, IReadOnlyList<DagNode> ordered)
-    {
-        var warnings = new List<PzWarning>();
-        foreach (var node in ordered.Where(n => n.Kind == NodeKind.SourceLoad))
-        {
-            if (node.Definition is not SourceDatasetDef sourceDef
-                || sourceDef.Source.Connector != "http"
-                || sourceDef.Dataset.SyncMode?.Incremental is not { } incremental
-                || sourceDef.Dataset.Options.GetValueOrDefault("watermark_format") is not string format
-                || !IsCoarseWatermarkFormat(format)
-                || CursorType(sourceDef.Dataset, incremental.Cursor) == "date")
-            {
-                continue;
-            }
-
-            foreach (var sinkNode in compiled.Descendants(node.Id).Where(d => d.Kind == NodeKind.SinkWrite))
-            {
-                var sinkDef = (SinkOutputDef)sinkNode.Definition;
-                if (sinkDef.Output.Mode != "append")
-                {
-                    continue;
-                }
-
-                warnings.Add(new PzWarning(PzErrorCode.ConnectorConfigWarning,
-                    $"dataset '{sourceDef.Source.Name}.{sourceDef.Dataset.Name}' renders its watermark with " +
-                    $"'watermark_format: {format}', whose unit is a day or longer: every run or window re-reads " +
-                    $"up to a whole unit, and append sink '{sinkDef.Sink.Name}.{sinkDef.Output.Name}' lands those " +
-                    "rows again", sourceDef.Source.FilePath, null,
-                    "use a finer format (one with hours, minutes or seconds) if the API accepts one, or write with " +
-                    "strategy: merge so re-read rows replace themselves"));
-            }
-        }
-
-        return warnings;
-    }
-
-    /// <summary>The cursor's type as the http connector reads it: the contract column's, or the raw
-    /// `cursor_type`. A date cursor already renders as a date, so a date format re-reads nothing extra.</summary>
-    private static string? CursorType(DatasetDef dataset, string cursor) =>
-        dataset.Columns is { Count: > 0 } columns
-            ? columns.GetValueOrDefault(cursor)
-            : dataset.Options.GetValueOrDefault("cursor_type") as string;
-
-    /// <summary>True for `date`, and for a custom format with no hour, minute, second or fraction letter
-    /// outside quoted text. Presets other than `date` are second-level or finer. Mirrors the letter rules of
-    /// the http connector's <c>WatermarkFormat.ParseCustom</c>; keep the two in step.</summary>
-    private static bool IsCoarseWatermarkFormat(string format)
-    {
-        if (format == "date")
-        {
-            return true;
-        }
-
-        if (format is "iso8601" or "epoch_s" or "epoch_ms")
-        {
-            return false;
-        }
-
-        var quoted = false;
-        foreach (var c in format)
-        {
-            if (c == '\'')
-            {
-                quoted = !quoted;
-            }
-            else if (!quoted && c is 'H' or 'm' or 's' or 'f')
-            {
-                return false;
-            }
-        }
-
-        return format.Contains('y');
     }
 
     /// <summary>Which top-level key in an options bag CanonicalJson.Serialize could not hash -- walked
@@ -1533,7 +825,7 @@ public static class DagCompiler
     /// one) when nothing is close enough to guess.</summary>
     private static string NearMissHint(IEnumerable<string> known, string requested, string fallback)
     {
-        var nearMiss = ScriptKwargs.NearMiss(known, requested);
+        var nearMiss = NearMiss.Find(known, requested);
         return nearMiss is null ? fallback : $"did you mean '{nearMiss}'?";
     }
 
@@ -1599,476 +891,5 @@ public static class DagCompiler
         }
 
         return plan is { Columns: null, PredicateSql: null } ? null : plan;
-    }
-
-    /// <summary>The cdc pairing-matrix pass's closure walk -- every
-    /// <see cref="SourceDatasetDef"/> reachable from a SinkWrite node's transitive DependsOn ancestry.
-    /// Mirrors stage 10b's (and ExecutionPlanner's feed pass) HashSet-seen + Queue-over-DependsOn
-    /// shape; a dataset reachable via two paths in a diamond DAG is collected once because `seen`
-    /// gates on NodeId (one SourceLoad node per (source, dataset) pair), not on dataset identity.</summary>
-    private static List<SourceDatasetDef> UpstreamSourceLoads(
-        DagNode sinkNode, IReadOnlyDictionary<NodeId, DagNode> byId)
-    {
-        var result = new List<SourceDatasetDef>();
-        var seen = new HashSet<NodeId>();
-        var queue = new Queue<NodeId>(sinkNode.DependsOn);
-        while (queue.Count > 0)
-        {
-            var id = queue.Dequeue();
-            if (!seen.Add(id) || !byId.TryGetValue(id, out var ancestor))
-            {
-                continue;
-            }
-
-            if (ancestor.Definition is SourceDatasetDef src)
-            {
-                result.Add(src);
-            }
-
-            foreach (var dep in ancestor.DependsOn)
-            {
-                queue.Enqueue(dep);
-            }
-        }
-
-        return result;
-    }
-
-    /// <summary>The declared <c>columns:</c> contract type of a dataset's <c>incremental.cursor</c>,
-    /// or null if there is no incremental block, no columns contract, the cursor isn't in it, or its
-    /// declared type isn't one of <see cref="AllowedCursorTypes"/> -- the same resolution PZ0212 above
-    /// performs inline (it additionally emits PZ0212 for some of these null cases; this helper is
-    /// read-only and used only by the path-templating checks below, which raise their own codes).</summary>
-    private static string? ResolveCursorType(DatasetDef dataset) =>
-        CursorContract.ResolveDeclaredType(dataset);
-
-    /// <summary>The exact "bounded window" PZ0213 above recognizes as valid: <c>max_window</c> and
-    /// <c>initial</c> both set (<c>until</c> is an optional additional upper bound -- PZ0213's rules 1/2
-    /// require max_window+initial together for ANY window config to be error-free, so this must mirror
-    /// that pairing exactly rather than treat until as a max_window substitute).</summary>
-    private static bool HasBoundedWindow(IncrementalDef? incremental) =>
-        incremental is { MaxWindow: not null, Initial: not null };
-
-    /// <summary>Parses a `files_per_partition` option value (int, long, or string form) to a positive
-    /// <c>int</c>, per PZ0222's rule -- rejects anything that doesn't parse to an integer AND anything
-    /// that parses to zero or negative. Deliberately narrow: this is a compile-time gate only, mirroring
-    /// no existing numeric-option parser elsewhere in DagCompiler (there is none to reuse).</summary>
-    private static bool TryParsePositiveInt(object? value, out int result)
-    {
-        switch (value)
-        {
-            case int i:
-                result = i;
-                return i > 0;
-            case long l when l is > 0 and <= int.MaxValue:
-                result = (int)l;
-                return true;
-            case long:
-                result = 0;
-                return false;
-            case string s when int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed):
-                result = parsed;
-                return parsed > 0;
-            default:
-                result = 0;
-                return false;
-        }
-    }
-
-    private const string InsertFormHint =
-        "bind the sink inline as the pipeline's leading statement: INSERT INTO {{ sink('<sink>', '<output>') }} <query>";
-
-    private const string PathTokenHint =
-        "use a coarse→fine, contiguous run of {yyyy} {MM} {dd} {HH} {mm} (e.g. {yyyy}/{MM}/{dd})";
-
-    /// <summary>
-    /// Recognizes the INSERT-form prefix at the very start of <paramref name="sql"/>: any run
-    /// of whitespace and/or full-line `--` SQL comments, then (case-insensitive) `insert`, whitespace,
-    /// `into`, whitespace, then either the scalar form (a single sink() marker) or the array fan-out
-    /// form `[ m1, m2, ... ]` (markers in the pipeline's recorded <see cref="InlineSinkBinding"/> render
-    /// order), then whitespace separating it from the query. Names are matched by exact ordinal
-    /// comparison against markers built from the bindings — deliberately not a regex with named capture
-    /// groups, since sink/output names may contain underscores that would make such a regex ambiguous
-    /// Returns the query verbatim — CTEs and all, the fixed prefix ends right after the
-    /// closing marker/bracket — or null if the shape doesn't match, including any marker
-    /// recurring anywhere in what would be the extracted query (a malformed/duplicated call the
-    /// duplicate-output check above can't catch alone).
-    /// </summary>
-    private static string? TryExtractInsertPrefix(string sql, IReadOnlyList<string> markers)
-    {
-        var i = 0;
-        while (true) // leading whitespace and/or full-line `--` comments
-        {
-            var start = i;
-            while (i < sql.Length && char.IsWhiteSpace(sql[i])) { i++; }
-            if (i + 1 < sql.Length && sql[i] == '-' && sql[i + 1] == '-')
-            {
-                var newline = sql.IndexOf('\n', i);
-                i = newline < 0 ? sql.Length : newline + 1;
-            }
-            if (i == start) { break; }
-        }
-
-        if (!TryMatchKeyword(sql, ref i, "insert") || !SkipRequiredWhitespace(sql, ref i) ||
-            !TryMatchKeyword(sql, ref i, "into") || !SkipRequiredWhitespace(sql, ref i))
-        {
-            return null;
-        }
-
-        if (i < sql.Length && sql[i] == '[') // array form: [ m1, m2, ... ]
-        {
-            i++;
-            for (var idx = 0; idx < markers.Count; idx++)
-            {
-                SkipInlineWhitespace(sql, ref i);
-                if (!TryMatchMarker(sql, ref i, markers[idx])) { return null; }
-                SkipInlineWhitespace(sql, ref i);
-                if (idx < markers.Count - 1)
-                {
-                    if (i >= sql.Length || sql[i] != ',') { return null; }
-                    i++;
-                }
-            }
-            SkipInlineWhitespace(sql, ref i);
-            if (i >= sql.Length || sql[i] != ']') { return null; }
-            i++;
-        }
-        else // scalar form: exactly one marker, no brackets
-        {
-            if (markers.Count != 1 || !TryMatchMarker(sql, ref i, markers[0])) { return null; }
-        }
-
-        if (!SkipRequiredWhitespace(sql, ref i)) { return null; }
-
-        var extracted = sql[i..];
-        foreach (var marker in markers)
-        {
-            if (extracted.Contains(marker, StringComparison.Ordinal)) { return null; }
-        }
-        return extracted;
-    }
-
-    private static bool TryMatchMarker(string sql, ref int i, string marker)
-    {
-        if (i + marker.Length > sql.Length || string.CompareOrdinal(sql, i, marker, 0, marker.Length) != 0)
-        {
-            return false;
-        }
-        i += marker.Length;
-        return true;
-    }
-
-    private static void SkipInlineWhitespace(string sql, ref int i)
-    {
-        while (i < sql.Length && char.IsWhiteSpace(sql[i])) { i++; }
-    }
-
-    private static bool TryMatchKeyword(string sql, ref int i, string keyword)
-    {
-        if (i + keyword.Length > sql.Length ||
-            string.Compare(sql, i, keyword, 0, keyword.Length, StringComparison.OrdinalIgnoreCase) != 0)
-        {
-            return false;
-        }
-
-        i += keyword.Length;
-        return true;
-    }
-
-    private static bool SkipRequiredWhitespace(string sql, ref int i)
-    {
-        var start = i;
-        while (i < sql.Length && char.IsWhiteSpace(sql[i]))
-        {
-            i++;
-        }
-
-        return i > start;
-    }
-
-    /// <summary>
-    /// <c>RenderResult.Dependencies</c> is a <see cref="HashSet{T}"/>, whose enumeration order
-    /// .NET does not contractually guarantee stable across processes (randomized string
-    /// hashing). Sorting by a canonical string key before deriving PZ0201/PZ0204 errors from it
-    /// keeps the resulting error lists' ordering deterministic across runs.
-    /// </summary>
-    private static IEnumerable<DepRef> OrderDeterministically(IEnumerable<DepRef> deps) =>
-        deps.OrderBy(DepKey, StringComparer.Ordinal);
-
-    private static string DepKey(DepRef dep) => dep switch
-    {
-        DepRef.Pipeline p => $"pipeline:{p.Name}",
-        DepRef.Source s => $"source:{s.SourceName}.{s.Dataset}",
-        _ => throw new InvalidOperationException("unreachable"),
-    };
-
-    /// <summary>
-    /// A pipeline's own rendered Dependencies, with any direct reference to an ephemeral
-    /// pipeline replaced by that ephemeral's own Dependencies ("consumer inherits the
-    /// ephemeral's dependencies"). Ephemeral chains are rejected earlier, so this is at
-    /// most one level of substitution.
-    /// </summary>
-    private static IEnumerable<DepRef> EffectiveDependencies(
-        PipelineDef pipeline, IReadOnlyDictionary<string, RenderResult> rendered,
-        IReadOnlyDictionary<string, PipelineDef> pipelinesByName)
-    {
-        foreach (var dep in rendered[pipeline.Name].Dependencies)
-        {
-            if (dep is DepRef.Pipeline pipelineRef && pipelinesByName[pipelineRef.Name].Materialization == "ephemeral")
-            {
-                foreach (var inherited in rendered[pipelineRef.Name].Dependencies)
-                {
-                    yield return inherited;
-                }
-            }
-            else
-            {
-                yield return dep;
-            }
-        }
-    }
-
-    /// <summary>
-    /// A pipeline's own rendered <see cref="RenderResult.WatermarkRefs"/>, unioned with the
-    /// WatermarkRefs of every ephemeral it directly consumes — the watermark analogue of
-    /// <see cref="EffectiveDependencies"/>. A <c>watermark()</c> inside an ephemeral is CTE-inlined
-    /// into this consumer's assembled SQL, so it must be attributed here. Determinism:
-    /// the consumer's own refs first, then inherited refs in ephemeral-name order (Dependencies is a
-    /// set, so its enumeration order is not stable). Ephemeral chains are rejected earlier, so this is
-    /// at most one level of inheritance.
-    /// </summary>
-    private static IReadOnlyList<WatermarkRef> EffectiveWatermarkRefs(
-        PipelineDef pipeline, IReadOnlyDictionary<string, RenderResult> rendered,
-        IReadOnlyDictionary<string, PipelineDef> pipelinesByName)
-    {
-        var refs = new List<WatermarkRef>(rendered[pipeline.Name].WatermarkRefs);
-        var ephemeralDeps = rendered[pipeline.Name].Dependencies
-            .OfType<DepRef.Pipeline>()
-            .Where(p => pipelinesByName[p.Name].Materialization == "ephemeral")
-            .OrderBy(p => p.Name, StringComparer.Ordinal);
-        foreach (var dep in ephemeralDeps)
-        {
-            refs.AddRange(rendered[dep.Name].WatermarkRefs);
-        }
-
-        return refs;
-    }
-
-    private static IReadOnlyList<NodeId> ResolveDependsOn(
-        IEnumerable<DepRef> deps,
-        IReadOnlyDictionary<string, NodeId> pipelineNodeIds,
-        IReadOnlyDictionary<(string Source, string Dataset), NodeId> sourceNodeIds)
-    {
-        var ids = new HashSet<NodeId>();
-        foreach (var dep in deps)
-        {
-            var id = dep switch
-            {
-                DepRef.Pipeline p => pipelineNodeIds[p.Name],
-                DepRef.Source s => sourceNodeIds[(s.SourceName, s.Dataset)],
-                _ => throw new InvalidOperationException("unreachable"),
-            };
-            ids.Add(id);
-        }
-
-        return ids.OrderBy(id => id.Value, StringComparer.Ordinal).ToList();
-    }
-
-    /// <summary>
-    /// "Consumer SQL becomes `with __pz_cte__&lt;name&gt; as (&lt;ephemeral sql&gt;)` + consumer
-    /// body; multiple ephemeral deps join their CTEs with `, ` sorted by name; if the consumer's
-    /// own SQL already carries a WITH clause, the ephemeral CTEs become its leading entries." The
-    /// CTE alias is prefixed with <c>__pz_cte__</c> so it matches what <see cref="TemplateRenderer"/>
-    /// renders for <c>ref()</c> calls to ephemeral pipelines (which render <c>__pz_cte__&lt;name&gt;</c>,
-    /// not <c>staging.&lt;name&gt;</c>) — otherwise the inlined CTE and the consumer body's reference to
-    /// it would not match.
-    /// <para>Assembly prefers <see cref="ISqlAstReader.PrependCtes"/>: reading the consumer's own
-    /// <c>cte_map</c> off DuckDB's own parser is what gets a consumer that opens with a comment before
-    /// WITH, or is itself WITH RECURSIVE, right without this stage sniffing consumer text for a "with"
-    /// keyword. <paramref name="sqlAst"/> is null in tests that construct a project with no incremental
-    /// SQL at all (every production caller supplies <c>DuckDbSqlAstReader</c>) — and
-    /// <see cref="ISqlAstReader.PrependCtes"/> itself returns null if either side fails to parse — so a
-    /// textual splice (the ORIGINAL, simpler shape) is still the fallback: it handles the common case
-    /// exactly as before, and downstream tier-4 EXPLAIN/PREPARE reports a genuinely malformed pipeline
-    /// with full context regardless of which route assembled it.</para>
-    /// </summary>
-    private static string BuildInlinedSql(
-        PipelineDef pipeline, IReadOnlyDictionary<string, RenderResult> rendered,
-        IReadOnlyDictionary<string, PipelineDef> pipelinesByName, ISqlAstReader? sqlAst)
-    {
-        var sql = rendered[pipeline.Name].Sql;
-        var ephemeralNames = rendered[pipeline.Name].Dependencies
-            .OfType<DepRef.Pipeline>()
-            .Where(d => pipelinesByName[d.Name].Materialization == "ephemeral")
-            .Select(d => d.Name)
-            .Distinct()
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToList();
-
-        if (ephemeralNames.Count == 0)
-        {
-            return sql;
-        }
-
-        // NormalizeSql here as well as at the assembled-SQL call site: an ephemeral body ending in its
-        // own trailing `;` must not land inside `( ... ; )`, which DuckDB refuses as a second (empty)
-        // statement nested in a parenthesized expression.
-        var ctes = ephemeralNames
-            .Select(name => (Alias: $"__pz_cte__{name}", Sql: NormalizeSql(rendered[name].Sql)))
-            .ToList();
-
-        if (sqlAst?.PrependCtes(sql, ctes) is { } merged)
-        {
-            return merged;
-        }
-
-        var cteList = string.Join(", ", ctes.Select(c => $"{c.Alias} as ({c.Sql})"));
-        var trimmed = sql.TrimStart();
-
-        if (trimmed.StartsWith("with", StringComparison.OrdinalIgnoreCase))
-        {
-            var rest = trimmed[4..].TrimStart();
-            return $"with {cteList}, {rest}";
-        }
-
-        return $"with {cteList} {sql}";
-    }
-
-    /// <summary>LF-normalizes and trims trailing whitespace, then strips exactly one trailing
-    /// semicolon (plus any whitespace before it) -- mirroring CheckExecutor's custom_sql handling, so a
-    /// pipeline written the way most SQL tools format it (trailing `;`) is not a hard DuckDB parse
-    /// error. A `;` anywhere else in the text is left alone: a second statement stays a second
-    /// statement, and fails loudly rather than being silently truncated.</summary>
-    private static string NormalizeSql(string sql)
-    {
-        var normalized = sql.Replace("\r\n", "\n").Replace('\r', '\n').TrimEnd();
-        return normalized.EndsWith(';') ? normalized[..^1].TrimEnd() : normalized;
-    }
-
-    /// <summary>How a sink output is fed. There is exactly one kind — an inline
-    /// `sink()` claim by a pipeline — but the wrapper is retained so stage 5's resolution map and stage
-    /// 10's node-building stay explicit about what a bound output carries.</summary>
-    private abstract record SinkInputResolution
-    {
-        private SinkInputResolution() { }
-        public sealed record PipelineInput(string PipelineName) : SinkInputResolution;
-    }
-
-    private static int KindRank(NodeKind kind) => kind switch
-    {
-        NodeKind.SourceLoad => 0,
-        NodeKind.Pipeline => 1,
-        NodeKind.Check => 2,
-        NodeKind.SinkWrite => 3,
-        _ => throw new ArgumentOutOfRangeException(nameof(kind)),
-    };
-
-    /// <summary>
-    /// Kahn's algorithm; among ready nodes at each step, pick the lowest
-    /// (kindRank, Name ordinal). If nodes remain once no more are ready, they form at least
-    /// one cycle — walk their dependency edges (restricted to the remainder) to name one.
-    /// </summary>
-    private static List<DagNode> TopologicalSortOrThrow(List<DagNode> nodes)
-    {
-        var byId = nodes.ToDictionary(n => n.Id);
-        var inDegree = nodes.ToDictionary(n => n.Id, n => n.DependsOn.Count);
-        var children = new Dictionary<NodeId, List<NodeId>>();
-        foreach (var node in nodes)
-        {
-            foreach (var dep in node.DependsOn)
-            {
-                if (!children.TryGetValue(dep, out var list))
-                {
-                    list = [];
-                    children[dep] = list;
-                }
-
-                list.Add(node.Id);
-            }
-        }
-
-        var comparer = Comparer<NodeId>.Create((a, b) =>
-        {
-            var na = byId[a];
-            var nb = byId[b];
-            var cmp = KindRank(na.Kind).CompareTo(KindRank(nb.Kind));
-            if (cmp != 0)
-            {
-                return cmp;
-            }
-
-            cmp = string.CompareOrdinal(na.Name, nb.Name);
-            return cmp != 0 ? cmp : string.CompareOrdinal(a.Value, b.Value);
-        });
-
-        var ready = new SortedSet<NodeId>(comparer);
-        foreach (var node in nodes)
-        {
-            if (inDegree[node.Id] == 0)
-            {
-                ready.Add(node.Id);
-            }
-        }
-
-        var result = new List<DagNode>(nodes.Count);
-        while (ready.Count > 0)
-        {
-            var id = ready.Min;
-            ready.Remove(id);
-            result.Add(byId[id]);
-
-            if (!children.TryGetValue(id, out var kids))
-            {
-                continue;
-            }
-
-            foreach (var kid in kids)
-            {
-                if (--inDegree[kid] == 0)
-                {
-                    ready.Add(kid);
-                }
-            }
-        }
-
-        if (result.Count == nodes.Count)
-        {
-            return result;
-        }
-
-        var remainder = nodes.Where(n => inDegree[n.Id] > 0).ToList();
-        throw new PzValidationException([BuildCycleError(remainder, byId)]);
-    }
-
-    private static PzError BuildCycleError(List<DagNode> remainder, Dictionary<NodeId, DagNode> byId)
-    {
-        var remainderIds = remainder.Select(n => n.Id).ToHashSet();
-        var start = remainder
-            .OrderBy(n => KindRank(n.Kind))
-            .ThenBy(n => n.Name, StringComparer.Ordinal)
-            .First();
-
-        var path = new List<NodeId>();
-        var seen = new HashSet<NodeId>();
-        var current = start.Id;
-        while (seen.Add(current))
-        {
-            path.Add(current);
-            var next = byId[current].DependsOn
-                .Where(remainderIds.Contains)
-                .OrderBy(id => byId[id].Name, StringComparer.Ordinal)
-                .First();
-            current = next;
-        }
-
-        var cycleStart = path.IndexOf(current);
-        var cycleNames = path.Skip(cycleStart).Select(id => byId[id].Name).Append(byId[current].Name);
-        var message = $"dependency cycle: {string.Join(" -> ", cycleNames)}";
-        // `start` is always a Pipeline node: SourceLoad nodes depend on nothing (never stuck in
-        // `remainder`), and a Check/SinkWrite's single dependency is a pipeline, so a genuine
-        // cycle -- the loop `next` walks above -- can only run through ref() edges between pipelines.
-        var file = start.Definition is PipelineDef pipeline ? pipeline.FilePath : null;
-        return new PzError(PzErrorCode.Cycle, message, file, null,
-            "remove or redirect one ref() in the chain above so the dependency graph has no cycle");
     }
 }

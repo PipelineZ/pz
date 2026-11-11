@@ -38,8 +38,8 @@ public sealed class ConnectorRegistry
     /// the trusted builtin). Sources and sinks are tracked in separate dictionaries, so registering the
     /// same name as both a source and a sink (as builtins do for "localfiles") is unaffected. Callers
     /// must catch this exception (see <c>Pz.Cli.ConnectorRegistryFactory</c>, which translates it into a
-    /// user-facing <c>PzValidationException</c>) — kept as a plain BCL exception rather than
-    /// <c>PzValidationException</c> so the Engine stays Core-free.
+    /// user-facing <c>PzValidationException</c>) — a plain BCL exception, since the registry holds
+    /// no project context to attach to an error.
     ///
     /// <para><paramref name="hosted"/> marks a connector served by an out-of-process host, which is what
     /// makes <see cref="ConfigFor"/> thread the connection name in under <see cref="InstanceIdKey"/>.</para></summary>

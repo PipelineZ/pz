@@ -26,12 +26,14 @@ public sealed record PzProject(string Name, string Version, EngineConfig Engine,
     /// session running or dry-compiling this project's SQL installs and loads. Empty when absent.</summary>
     public IReadOnlyList<string> Extensions { get; init; } = [];
 }
-/// <summary><see cref="CheckSamples"/> is the project-wide default for whether a failing check's error
+/// <summary>project.yml's <c>engine:</c> block.
+///
+/// <see cref="CheckSamples"/> is the project-wide default for whether a failing check's error
 /// message includes sample violating rows; defaults <c>true</c>. A per-check
-/// <c>CheckDef.SampleValues</c>
-/// override, when present, wins over this default in both directions -- resolved once at compile into
-/// <c>CheckNodeDef.SampleValues</c>.</summary>
-/// <summary><see cref="NodeTimeout"/> is <c>engine.node_timeout</c>: the longest one attempt of one node
+/// <c>CheckDef.SampleValues</c> override, when present, wins over this default in both directions --
+/// resolved once at compile into <c>CheckNodeDef.SampleValues</c>.
+///
+/// <see cref="NodeTimeout"/> is <c>engine.node_timeout</c>: the longest one attempt of one node
 /// may run before the engine cancels it. Null — the default — is unbounded, so a long backfill never
 /// starts failing because of a limit nobody set.</summary>
 public sealed record EngineConfig(int Threads = 4, DuckOptionsConfig? DuckDb = null, bool ForceUniversal = false,
@@ -49,7 +51,7 @@ public sealed record ConnectorRequirement(string Package, string Version);
 /// <see cref="PzProject.Retention"/> means retention is OFF -- the <c>keep_last: 10</c> default is
 /// materialized by <see cref="Pz.Core.Loading.ProjectLoader"/> alone, never by this record's defaults, so
 /// a hand-constructed <see cref="PzProject"/> (every test that builds one) never sweeps anything.
-/// <see cref="KeepLast"/> is always >= 1 by construction: the loader rejects 0 (PZ0123).</summary>
+/// <see cref="KeepLast"/> is always &gt;= 1 by construction: the loader rejects 0 (PZ0123).</summary>
 public sealed record RetentionConfig(int KeepLast);
 
 /// <summary>project.yml's top-level <c>on_source_drift:</c> -- what a run does when a SourceLoad's

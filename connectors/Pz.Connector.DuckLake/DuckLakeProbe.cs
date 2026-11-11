@@ -9,8 +9,6 @@ namespace Pz.Connector.DuckLake;
 /// redacted PZ0311.</summary>
 internal static class DuckLakeProbe
 {
-    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
-
     internal static async ValueTask<ConnectionCheck> CheckFileAsync(
         string path, ReadOnlyMemory<byte> magic, int magicOffset, string kind, bool acceptsEmptyFile,
         CancellationToken ct)
@@ -50,26 +48,5 @@ internal static class DuckLakeProbe
         }
 
         return new ConnectionCheck(true, $"{kind} catalog file verified (header magic)");
-    }
-
-    internal static async ValueTask<ConnectionCheck> TcpAsync(string host, int port, string what, CancellationToken ct)
-    {
-        try
-        {
-            using var client = new TcpClient();
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(ConnectTimeout);
-            // A bracketed IPv6 literal keeps its brackets in the canonical uri; the socket wants the bare address.
-            await client.ConnectAsync(host.Trim('[', ']'), port, timeout.Token).ConfigureAwait(false);
-            return new ConnectionCheck(true, $"{what} reachable at {host}:{port} (tcp); credentials are verified at run time");
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return new ConnectionCheck(false, $"transient: {what} at {host}:{port} did not accept a connection within {ConnectTimeout.TotalSeconds:0}s");
-        }
-        catch (SocketException ex)
-        {
-            return new ConnectionCheck(false, $"transient: {what} at {host}:{port} is unreachable ({ex.SocketErrorCode})");
-        }
     }
 }

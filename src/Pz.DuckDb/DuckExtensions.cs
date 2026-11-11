@@ -20,7 +20,7 @@ public static class DuckExtensions
         var errors = new List<PzError>();
         foreach (var name in names)
         {
-            var ident = QuoteIdent(name);
+            var ident = ArrowInterop.QuoteIdentifier(name);
             try
             {
                 // An extension already loaded (one statically linked into DuckDB.NET, say) needs nothing:
@@ -65,7 +65,7 @@ public static class DuckExtensions
         var platform = await session.ScalarAsync<string>("select platform from pragma_platform()", ct)
             .ConfigureAwait(false);
         var file = await session.ScalarAsync<string>(
-            $"select coalesce(max(extension_name), {QuoteLiteral(name)}) from duckdb_extensions() where {Matches(name)}",
+            $"select coalesce(max(extension_name), {ArrowInterop.QuoteLiteral(name)}) from duckdb_extensions() where {Matches(name)}",
             ct).ConfigureAwait(false);
         var firstLine = ex.Message.Split('\n', 2)[0].Trim();
         return new PzError(PzErrorCode.ExtensionLoadFailed,
@@ -76,11 +76,7 @@ public static class DuckExtensions
 
     private static string Matches(string name)
     {
-        var literal = QuoteLiteral(name);
+        var literal = ArrowInterop.QuoteLiteral(name);
         return $"extension_name = {literal} or list_contains(aliases, {literal})";
     }
-
-    private static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
-
-    private static string QuoteLiteral(string value) => $"'{value.Replace("'", "''")}'";
 }

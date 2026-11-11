@@ -32,19 +32,9 @@ public static class ToolEnvelope
             if (applied is { } a) { json.WriteBoolean("applied", a); }
             if (errors is { Count: > 0 })
             {
-                json.WriteStartArray("errors");
-                foreach (var e in errors)
-                {
-                    json.WriteStartObject();
-                    json.WriteString("code", e.Code);
-                    json.WriteString("message", e.Message);
-                    if (e.File is { } file) { json.WriteString("file", file); }
-                    if (e.Line is { } line) { json.WriteNumber("line", line); }
-                    json.WriteString("next_step", e.Hint);
-                    json.WriteEndObject();
-                }
-                json.WriteEndArray();
+                EnvelopeJson.WriteErrors(json, errors);
             }
+
             writeResult?.Invoke(json);
             json.WriteEndObject();
         }

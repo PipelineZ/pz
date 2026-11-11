@@ -1,4 +1,5 @@
 using Pz.Core.Dag;
+using Pz.DuckDb;
 
 namespace Pz.Engine.Execution;
 
@@ -10,12 +11,10 @@ internal static class NativeScanSql
     internal static string Staging(string fragment, ReadHintPlan? hints, long? limit = null)
     {
         var projection = hints?.Columns is { Count: > 0 } columns
-            ? string.Join(", ", columns.Select(Quote))
+            ? string.Join(", ", columns.Select(ArrowInterop.QuoteIdentifier))
             : "*";
         var sql = $"select {projection} from {fragment}";
         sql = string.IsNullOrWhiteSpace(hints?.PredicateSql) ? sql : $"{sql} where ({hints.PredicateSql})";
         return limit is { } rows ? $"{sql} limit {rows.ToString(System.Globalization.CultureInfo.InvariantCulture)}" : sql;
     }
-
-    private static string Quote(string name) => "\"" + name.Replace("\"", "\"\"") + "\"";
 }

@@ -3,6 +3,7 @@ using Apache.Arrow.Types;
 using Parquet;
 using Pz.Connector.AzureBlob;
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Sinks;
 
 namespace Pz.Connector.AzureBlob.Tests;
 
@@ -295,7 +296,7 @@ public sealed class AzureUniversalWriterTests
             return ValueTask.FromResult<ISinkWriteSession>(session);
         }
 
-        var session = new AzurePartitionedWriteSession(Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema);
+        var session = new PartitionedWriteSession(Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema, maxConcurrentWrites: Environment.ProcessorCount);
 
         var day12 = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.Zero);
         var day13 = new DateTimeOffset(2026, 7, 13, 23, 30, 0, TimeSpan.Zero);
@@ -331,7 +332,7 @@ public sealed class AzureUniversalWriterTests
             return ValueTask.FromResult<ISinkWriteSession>(session);
         }
 
-        var session = new AzurePartitionedWriteSession(Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema);
+        var session = new PartitionedWriteSession(Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema, maxConcurrentWrites: Environment.ProcessorCount);
 
         var day12 = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.Zero);
         var day13 = new DateTimeOffset(2026, 7, 13, 1, 0, 0, TimeSpan.Zero);
@@ -383,7 +384,7 @@ public sealed class AzureUniversalWriterTests
         ValueTask<ISinkWriteSession> Open(string folder) =>
             ValueTask.FromResult<ISinkWriteSession>(new BlockingInnerSession(OnArrived, release.Task));
 
-        var session = new AzurePartitionedWriteSession(Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema);
+        var session = new PartitionedWriteSession(Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema, maxConcurrentWrites: Environment.ProcessorCount);
 
         var day12 = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.Zero);
         var day13 = new DateTimeOffset(2026, 7, 13, 1, 0, 0, TimeSpan.Zero);

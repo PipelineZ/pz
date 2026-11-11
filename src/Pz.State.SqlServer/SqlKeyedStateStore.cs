@@ -33,7 +33,6 @@ public sealed class SqlKeyedStateStore<T>(
     /// below -- see <see cref="CheckKeyLength"/>.</summary>
     private const int MaxKeyLength = 512;
 
-
     /// <summary>The version each key was last read at, by THIS instance. Populated by <see cref="Get"/>
     /// (even when the payload turns out to be corrupt -- see below) and by a successful <see cref="Set"/>
     /// (which bumps it by one, or seeds it at 1 for a fresh insert), so a later <see cref="Set"/> on the

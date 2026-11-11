@@ -60,30 +60,24 @@ public sealed class CliServices
 public sealed record McpRunRequest(string ProjectDir, string[] FlowNames, bool All, bool FullRefresh);
 
 /// <summary>The outcome <see cref="CliServices.RunAsync"/>/<see cref="CliServices.RetryAsync"/> hand back
-/// to <see cref="ExecutionTools"/>. <see cref="Note"/> is additive -- <c>pz_retry</c>'s "nothing to
-/// retry" outcome is genuinely successful (ExitCode Ok, no errors) but is not a fresh run either, and
-/// the MCP result
-/// envelope needs to say so explicitly rather than silently re-describing whatever run
-/// <see cref="McpStateStores.Artifacts"/>'s <c>ReadLatest()</c> happens to still be holding. Defaults to
-/// null so every other construction site (a real run/retry) is unaffected.
+/// to <see cref="ExecutionTools"/>.
 ///
-/// <see cref="Notices"/>/<see cref="Warnings"/> are a second additive pair: the DagCompiler-produced
-/// compile notices and <see cref="Pz.Core.Dag.CompiledDag.Warnings"/> that
-/// <c>RunCommand.Execute</c>/<c>VerifyTools.CompileAsync</c> both surface (console lines / the
-/// pz_compile result respectively) must ride the envelope rather than being dropped by the Pz.Cli
-/// adapters. Null on every
-/// construction site that never reaches a successful compile (a lock/selection/dry-compile/config
-/// refusal); <see cref="ExecutionTools"/> treats null as empty when rendering.
+/// <see cref="Note"/> carries a successful outcome that is not a fresh run: <c>pz_retry</c>'s "nothing
+/// to retry" has ExitCode Ok and no errors, and the result envelope must say so explicitly rather than
+/// silently re-describing whatever run <see cref="McpStateStores.Artifacts"/>'s <c>ReadLatest()</c>
+/// happens to hold. Null for a real run/retry.
 ///
-/// <see cref="RunId"/> is a third additive field: the id of the run the Pz.Cli adapter actually just
-/// performed, captured off its <c>onRunId</c> callback the instant the run begins -- before this field
-/// existed, <see cref="ExecutionTools"/> re-read whatever
-/// <see cref="McpStateStores.Artifacts"/>'s <c>ReadLatest()</c> happened to return afterward, which is
-/// only ever the SAME run in the common single-caller case but silently reports a DIFFERENT one
-/// whenever another run's artifacts sort newer by the time the envelope is built. Null on every
-/// construction site that never actually executed a run (lock/selection/dry-compile/config refusal, or
-/// `pz_retry`'s "nothing to retry" outcome) -- <see cref="ExecutionTools"/> falls back to
-/// <c>ReadLatest()</c> in exactly those cases, matching the pre-existing behavior they still need.</summary>
+/// <see cref="Notices"/>/<see cref="Warnings"/> carry the DagCompiler-produced compile notices and
+/// <see cref="Pz.Core.Dag.CompiledDag.Warnings"/> that <c>RunCommand.Execute</c> and
+/// <c>VerifyTools.CompileAsync</c> surface, so the adapters do not drop them. Null wherever no compile
+/// succeeded (a lock/selection/dry-compile/config refusal); <see cref="ExecutionTools"/> treats null as
+/// empty when rendering.
+///
+/// <see cref="RunId"/> is the id of the run the adapter actually performed, captured off its
+/// <c>onRunId</c> callback the instant the run begins. Re-reading <c>ReadLatest()</c> afterwards would
+/// report a DIFFERENT run whenever another run's artifacts sort newer by the time the envelope is
+/// built. Null where no run executed (a refusal, or <c>pz_retry</c>'s "nothing to retry"), in which
+/// case <see cref="ExecutionTools"/> falls back to <c>ReadLatest()</c>.</summary>
 public sealed record McpRunOutcome(
     int ExitCode,
     IReadOnlyList<PzError> Errors,

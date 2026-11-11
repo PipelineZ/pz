@@ -56,36 +56,17 @@ internal sealed class PostgresCdcPartition(string connectionString, DatasetSpec 
     {
         var (connection, reader) = await PrepareSnapshotAsync(ct).ConfigureAwait(false);
 
-        // Manual-enumerator pattern (CS1626: no yield inside try/catch) -- mirrors PostgresPartition:
-        // classify a mid-stream Npgsql fault as a PzConnectorException, dispose everything in finally.
-        var enumerator = DataReaderSource.ReadBatchesAsync(reader, options.TargetBatchBytes, ct).GetAsyncEnumerator(ct);
         try
         {
-            while (true)
+            await foreach (var batch in PgBatchStream.ReadAsync(
+                reader, options.TargetBatchBytes, "postgres cdc snapshot read failed mid-stream", ct)
+                .ConfigureAwait(false))
             {
-                bool moved;
-                try
-                {
-                    moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
-                }
-                catch (NpgsqlException ex)
-                {
-                    throw new PzConnectorException(
-                        $"postgres cdc snapshot read failed mid-stream: {ex.Message}", ex.IsTransient, innerException: ex);
-                }
-
-                if (!moved)
-                {
-                    yield break;
-                }
-
-                yield return enumerator.Current;
+                yield return batch;
             }
         }
         finally
         {
-            await enumerator.DisposeAsync().ConfigureAwait(false);
-            await reader.DisposeAsync().ConfigureAwait(false);
             await connection.DisposeAsync().ConfigureAwait(false);
         }
     }
@@ -469,14 +450,14 @@ internal sealed class PostgresCdcPartition(string connectionString, DatasetSpec 
     private static void AppendRow(string op, object?[] row, ArrowBatchBuilder builder, PollState state)
     {
         row[0] = op;
-        row[1] = $"{(ulong)state.CurrentTxnLsn:X16}-{state.Seq:D9}";
+        row[1] = $"{PostgresCdc.FormatLsn(state.CurrentTxnLsn)}-{state.Seq:D9}";
         state.Seq++;
         row[2] = state.CurrentTimestamp;
         builder.AppendRow(row);
     }
 
     // Decodes one replication value against the probed Arrow column type, using the CLR type the
-    // DataReaderSource v0 matrix maps that Arrow type from -- so a poll row is byte-identical to the same
+    // DataReaderSource matrix maps that Arrow type from -- so a poll row is byte-identical to the same
     // row read through the snapshot path.
     private static async Task<object?> DecodeAsync(ReplicationValue value, ArrowTypeId typeId, CancellationToken ct) =>
         typeId switch

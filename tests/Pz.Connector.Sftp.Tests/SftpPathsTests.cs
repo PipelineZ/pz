@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Paths;
 using Xunit;
 
 namespace Pz.Connector.Sftp.Tests;
@@ -53,12 +54,12 @@ public class SftpPathsTests
         Assert.Equal("/data/orders", dir);
     }
 
-    // ---- GlobToRegexPattern ---------------------------------------------------------------------
+    // ---- PathGlob.ToRegexPattern ---------------------------------------------------------------------
 
     [Fact]
     public void GlobToRegexPattern_star_does_not_cross_a_slash()
     {
-        var regex = new System.Text.RegularExpressions.Regex(SftpPaths.GlobToRegexPattern("in/*.csv"));
+        var regex = new System.Text.RegularExpressions.Regex(PathGlob.ToRegexPattern("in/*.csv"));
 
         Assert.Matches(regex, "in/a.csv");
         Assert.DoesNotMatch(regex, "in/sub/c.csv");
@@ -67,7 +68,7 @@ public class SftpPathsTests
     [Fact]
     public void GlobToRegexPattern_double_star_crosses_a_slash()
     {
-        var regex = new System.Text.RegularExpressions.Regex(SftpPaths.GlobToRegexPattern("in/**/*.csv"));
+        var regex = new System.Text.RegularExpressions.Regex(PathGlob.ToRegexPattern("in/**/*.csv"));
 
         Assert.Matches(regex, "in/sub/c.csv");
     }
@@ -75,7 +76,7 @@ public class SftpPathsTests
     [Fact]
     public void GlobToRegexPattern_question_mark_matches_exactly_one_char()
     {
-        var regex = new System.Text.RegularExpressions.Regex(SftpPaths.GlobToRegexPattern("in/?.csv"));
+        var regex = new System.Text.RegularExpressions.Regex(PathGlob.ToRegexPattern("in/?.csv"));
 
         Assert.Matches(regex, "in/a.csv");
         Assert.DoesNotMatch(regex, "in/ab.csv");
@@ -84,7 +85,7 @@ public class SftpPathsTests
     [Fact]
     public void GlobToRegexPattern_escapes_regex_metacharacters_in_literal_names()
     {
-        var regex = new System.Text.RegularExpressions.Regex(SftpPaths.GlobToRegexPattern("in/x+y.csv"));
+        var regex = new System.Text.RegularExpressions.Regex(PathGlob.ToRegexPattern("in/x+y.csv"));
 
         Assert.Matches(regex, "in/x+y.csv");
         Assert.DoesNotMatch(regex, "in/xxy.csv");   // '+' must be literal, not "one-or-more of the preceding"

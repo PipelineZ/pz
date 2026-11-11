@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using Pz.Connectors.Abstractions;
+using Pz.Core.Dag;
 using Pz.Core.Model;
 using Pz.DuckDb;
 using Pz.Engine.Planning;
@@ -52,7 +54,7 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     RateLimiterRegistry? RateLimiters = null, SchemaBaselineStore? SchemaBaselines = null,
     DriftPolicy OnSourceDrift = DriftPolicy.Ignore)
 {
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _connectorNotices =
+    private readonly ConcurrentDictionary<string, byte> _connectorNotices =
         new(StringComparer.Ordinal);
 
     /// <summary>What a notice-aware source or sink is handed. Each distinct text is delivered once per
@@ -79,7 +81,7 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// (TryRemove) when materializing the terminal Failed NodeResult. Observability side-band
     /// only, never control flow. A get-only property with an initializer: `with`-clones share
     /// the same dictionary instance, which is exactly right — the slot is per-run state.</summary>
-    public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, DeliveryStats> DeliveryFailures { get; } = new();
+    public ConcurrentDictionary<NodeId, DeliveryStats> DeliveryFailures { get; } = new();
 
     /// <summary>Which attempt at each node is currently executing, from 1.
     /// <see cref="KindDispatchingExecutor"/> owns the retry loop and stamps this before every call into
@@ -89,22 +91,22 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
     /// <see cref="DeliveryFailures"/>: per-run state that `with`-clones share, and an absent entry means
     /// attempt 1 (a directly-built RunContext in a test, or an executor invoked without the retry
     /// loop).</summary>
-    public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, int> Attempts { get; } = new();
+    public ConcurrentDictionary<NodeId, int> Attempts { get; } = new();
 
     /// <summary>Per-node <see cref="NodeFactsRecorder"/>s, shared by `with`-clones like <see cref="Attempts"/>.
     /// Executors record the tier and stage times here; <see cref="KindDispatchingExecutor"/> attaches them.</summary>
-    public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, NodeFactsRecorder> Facts { get; } = new();
+    public ConcurrentDictionary<NodeId, NodeFactsRecorder> Facts { get; } = new();
 
-    public NodeFactsRecorder FactsFor(Pz.Core.Dag.NodeId id) => Facts.GetOrAdd(id, static _ => new NodeFactsRecorder());
+    public NodeFactsRecorder FactsFor(NodeId id) => Facts.GetOrAdd(id, static _ => new NodeFactsRecorder());
 
     /// <summary>Per-node connector-reported stats, shared by `with`-clones like <see cref="Facts"/>. One
     /// accumulator spans every attempt at a node, so retries sum rather than overwrite.</summary>
-    public System.Collections.Concurrent.ConcurrentDictionary<Pz.Core.Dag.NodeId, ConnectorStatsAccumulator> Remote { get; } = new();
+    public ConcurrentDictionary<NodeId, ConnectorStatsAccumulator> Remote { get; } = new();
 
-    public ConnectorStatsAccumulator RemoteFor(Pz.Core.Dag.NodeId id) =>
+    public ConnectorStatsAccumulator RemoteFor(NodeId id) =>
         Remote.GetOrAdd(id, static _ => new ConnectorStatsAccumulator());
 
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _statsNotices =
+    private readonly ConcurrentDictionary<string, byte> _statsNotices =
         new(StringComparer.Ordinal);
 
     /// <summary>Tells the user, once per run and per (connector, rule), that a connector reported a stat the
@@ -155,7 +157,7 @@ public sealed record RunContext(IDuckSession Duck, ConnectorRegistry Connectors,
 
     /// <summary>Publishes <paramref name="sql"/> for <paramref name="node"/>'s current attempt when
     /// <see cref="LogSql"/> is set; never throws.</summary>
-    public void PublishNodeSql(Pz.Core.Dag.DagNode node, string sql)
+    public void PublishNodeSql(DagNode node, string sql)
     {
         if (!LogSql)
         {

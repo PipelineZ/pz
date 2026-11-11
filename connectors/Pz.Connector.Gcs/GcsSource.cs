@@ -4,6 +4,7 @@ using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.Gcs;
 
@@ -13,7 +14,7 @@ namespace Pz.Connector.Gcs;
 /// any other auth method), the azure/s3 two-state contract model (declared `columns:` prunes via the
 /// strict <c>columns = {…}</c> map; contract-less auto-detects with
 /// <see cref="NativeScan.SchemaInferred"/>/<see cref="NativeScan.SniffFragment"/>),
-/// <see cref="GcsWindowSql.Wrap"/> for windowed datasets, and the date-template watermark-window
+/// <see cref="NativeScanWindow.Wrap"/> for windowed datasets, and the date-template watermark-window
 /// cover (<see cref="PathTemplate.WindowCover"/>) emitting a DuckDB list literal so a query never
 /// re-reads out-of-window partitions.
 ///
@@ -26,7 +27,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
 {
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var columns = ExtractColumns(spec) ?? throw new PzConnectorException(
+        var columns = ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': gcs is native-only with no offline schema probe -- " +
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
             isTransient: false, code: PzConnectorErrorCodes.Config);
@@ -41,15 +42,15 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "gcs", context);
         var (bucket, key) = ResolveLocation(spec);
         var keyPatterns = CoverKeys(key, spec);
-        var urlList = string.Join(", ", keyPatterns.Select(k => $"'gs://{GcsSql.Esc(bucket)}/{GcsSql.Esc(k)}'"));
+        var urlList = string.Join(", ", keyPatterns.Select(k => $"'gs://{DuckDbSqlText.EscapeLiteral(bucket)}/{DuckDbSqlText.EscapeLiteral(k)}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
-        var declared = ExtractColumns(spec);
+        var declared = ColumnTypeCatalog.ContractColumns(spec);
         var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 
         scan = new NativeScan(
-            GcsWindowSql.Wrap(fragment, spec),
+            NativeScanWindow.Wrap(fragment, spec),
             [.. GcsSql.SetupStatements(config, GcsSql.SourceSecretName(spec.Source)), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
@@ -68,7 +69,7 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
 
     public ValueTask DisposeAsync() => default;
 
-    /// <summary>The dataset's (bucket, key) under the ratified `root:` composition (the same one the
+    /// <summary>The dataset's (bucket, key) under the `root:` composition rules (the same one the
     /// sink uses): bucket = the dataset's own `bucket:` else the root's; the key = root prefix +
     /// `path:` — and a read with no
     /// `path:` is <c>&lt;prefix&gt;/&lt;entity&gt;.&lt;format&gt;</c>. A dataset naming its OWN bucket
@@ -118,9 +119,4 @@ internal sealed class GcsSource(ConnectorConfig config) : ISource
     private static string GetFormat(DatasetSpec spec) =>
         FileFormatCatalog.Resolve(spec.Options, "parquet", "gcs", $"dataset '{spec.Dataset}'").Extension;
 
-    private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 }

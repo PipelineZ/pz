@@ -22,8 +22,8 @@ public static class PreviewSampler
             .ToList();
 
         var select = string.Join(", ", columns.Select(c => c.Redacted
-            ? $"'{Redacted}' as {Quote(c.Name)}"
-            : $"cast({Quote(c.Name)} as varchar) as {Quote(c.Name)}"));
+            ? $"'{Redacted}' as {ArrowInterop.QuoteIdentifier(c.Name)}"
+            : $"cast({ArrowInterop.QuoteIdentifier(c.Name)} as varchar) as {ArrowInterop.QuoteIdentifier(c.Name)}"));
         var raw = await QueryStringsAsync(duck, $"select {select} from {relation} limit {limit}", ct)
             .ConfigureAwait(false);
 
@@ -75,8 +75,6 @@ public static class PreviewSampler
     private static bool IsFinite(string number) =>
         !number.Contains("nan", StringComparison.OrdinalIgnoreCase)
         && !number.Contains("inf", StringComparison.OrdinalIgnoreCase);
-
-    private static string Quote(string identifier) => "\"" + identifier.Replace("\"", "\"\"") + "\"";
 
     /// <summary>Runs a query whose every column is VARCHAR and returns its rows as strings (null for
     /// SQL NULL).</summary>

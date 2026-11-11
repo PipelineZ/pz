@@ -28,8 +28,6 @@ internal static class PartitionLedger
     public static string SegTable(string nodeKey, string partitionId) =>
         $"staging.__pz_seg__{nodeKey}__{PartitionHash(partitionId)}";
 
-    public static string Escape(string s) => PzMeta.Escape(s);
-
     private static string PartitionHash(string partitionId) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(partitionId)))[..16].ToLowerInvariant();
 
@@ -53,8 +51,8 @@ internal static class PartitionLedger
     public static Task UpsertWindowAsync(IDuckSession duck, string nodeId, string lower, string upper, CancellationToken ct) =>
         duck.ExecuteTransactionAsync(
         [
-            $"delete from {WindowTable} where node_id = '{Escape(nodeId)}'",
-            $"insert into {WindowTable} values ('{Escape(nodeId)}', '{Escape(lower)}', '{Escape(upper)}')",
+            $"delete from {WindowTable} where node_id = '{PzMeta.Escape(nodeId)}'",
+            $"insert into {WindowTable} values ('{PzMeta.Escape(nodeId)}', '{PzMeta.Escape(lower)}', '{PzMeta.Escape(upper)}')",
         ], ct);
 
     /// <summary><paramref name="catalog"/> non-null (a quoted ATTACH alias) targets
@@ -66,7 +64,7 @@ internal static class PartitionLedger
         var table = PzMeta.Qualify(DoneTable, catalog);
         var result = new Dictionary<string, long>(StringComparer.Ordinal);
         await foreach (var batch in duck.QueryArrowAsync(
-            $"select partition_id, rows from {table} where node_id = '{Escape(nodeId)}'", ct: ct).ConfigureAwait(false))
+            $"select partition_id, rows from {table} where node_id = '{PzMeta.Escape(nodeId)}'", ct: ct).ConfigureAwait(false))
         {
             using (batch)
             {
@@ -90,7 +88,7 @@ internal static class PartitionLedger
         var table = PzMeta.Qualify(CheckpointTable, catalog);
         var result = new Dictionary<string, (string, long)>(StringComparer.Ordinal);
         await foreach (var batch in duck.QueryArrowAsync(
-            $"select partition_id, checkpoint, rows from {table} where node_id = '{Escape(nodeId)}'", ct: ct)
+            $"select partition_id, checkpoint, rows from {table} where node_id = '{PzMeta.Escape(nodeId)}'", ct: ct)
             .ConfigureAwait(false))
         {
             using (batch)
@@ -116,9 +114,9 @@ internal static class PartitionLedger
     [
         $"insert into {mainTable} select * from {partTable}",
         $"drop table {partTable}",
-        $"delete from {DoneTable} where node_id = '{Escape(nodeId)}' and partition_id = '{Escape(partitionId)}'",
-        $"insert into {DoneTable} values ('{Escape(nodeId)}', '{Escape(partitionId)}', {rows})",
-        $"delete from {CheckpointTable} where node_id = '{Escape(nodeId)}' and partition_id = '{Escape(partitionId)}'",
+        $"delete from {DoneTable} where node_id = '{PzMeta.Escape(nodeId)}' and partition_id = '{PzMeta.Escape(partitionId)}'",
+        $"insert into {DoneTable} values ('{PzMeta.Escape(nodeId)}', '{PzMeta.Escape(partitionId)}', {rows})",
+        $"delete from {CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' and partition_id = '{PzMeta.Escape(partitionId)}'",
     ];
 
     /// <summary>One transaction: a checkpoint interval's rows move segment → part and the token is
@@ -129,8 +127,8 @@ internal static class PartitionLedger
     [
         $"insert into {partTable} select * from {segTable}",
         $"drop table {segTable}",
-        $"delete from {CheckpointTable} where node_id = '{Escape(nodeId)}' and partition_id = '{Escape(partitionId)}'",
-        $"insert into {CheckpointTable} values ('{Escape(nodeId)}', '{Escape(partitionId)}', '{Escape(checkpoint)}', {cumulativeRows})",
+        $"delete from {CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' and partition_id = '{PzMeta.Escape(partitionId)}'",
+        $"insert into {CheckpointTable} values ('{PzMeta.Escape(nodeId)}', '{PzMeta.Escape(partitionId)}', '{PzMeta.Escape(checkpoint)}', {cumulativeRows})",
     ];
 
     /// <summary>Crash hygiene at node start: every segment table of this node is
@@ -145,7 +143,7 @@ internal static class PartitionLedger
 
         foreach (var prefix in new[] { "__pz_seg__", "__pz_part__" })
         {
-            var pattern = prefix.Replace("_", "\\_") + Escape(nodeKey) + "\\_\\_%";
+            var pattern = prefix.Replace("_", "\\_") + PzMeta.Escape(nodeKey) + "\\_\\_%";
             var names = new List<string>();
             await foreach (var batch in duck.QueryArrowAsync(
                 "select table_name from information_schema.tables where table_schema = 'staging' " +

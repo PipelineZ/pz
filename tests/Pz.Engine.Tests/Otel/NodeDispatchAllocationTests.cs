@@ -1,11 +1,12 @@
 using Pz.Core.Dag;
 using Pz.Engine.Dispatch;
+using Pz.Engine.Execution;
 
 namespace Pz.Engine.Tests.Otel;
 
 /// <summary><c>RunOrchestrator</c>'s two per-dispatch OTel call sites — the "node.&lt;kind&gt;" span name
 /// (<c>RunOrchestrator.SpanNames</c>) and the <c>pz.node.kind</c> metric tag
-/// (<c>RunOrchestrator.NodeKindTags</c>) — must allocate nothing per lookup, for every
+/// (<c>NodeMetricTags.Kind</c>) — must allocate nothing per lookup, for every
 /// <see cref="NodeKind"/>. Both are <c>static readonly FrozenDictionary</c> lookups rather than a
 /// <c>$"node.{node.Kind}"</c> interpolation and a freshly built <c>KeyValuePair&lt;string, object?&gt;</c>,
 /// so the delta must be zero-ish (well under 1KB across a thousand iterations) with or without a
@@ -29,7 +30,7 @@ public sealed class NodeDispatchAllocationTests
         foreach (var kind in Kinds)
         {
             _ = RunOrchestrator.SpanNames[kind];
-            _ = RunOrchestrator.NodeKindTags[kind];
+            _ = NodeMetricTags.Kind[kind];
         }
 
         var before = GC.GetAllocatedBytesForCurrentThread();
@@ -38,7 +39,7 @@ public sealed class NodeDispatchAllocationTests
             foreach (var kind in Kinds)
             {
                 _ = RunOrchestrator.SpanNames[kind];
-                _ = RunOrchestrator.NodeKindTags[kind];
+                _ = NodeMetricTags.Kind[kind];
             }
         }
 
@@ -57,7 +58,7 @@ public sealed class NodeDispatchAllocationTests
         foreach (var kind in Enum.GetValues<NodeKind>())
         {
             Assert.Equal($"node.{kind}", RunOrchestrator.SpanNames[kind]);
-            var tag = RunOrchestrator.NodeKindTags[kind];
+            var tag = NodeMetricTags.Kind[kind];
             Assert.Equal("pz.node.kind", tag.Key);
             Assert.Equal(kind.ToString(), tag.Value);
         }

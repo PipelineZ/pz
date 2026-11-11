@@ -5,6 +5,7 @@ using Apache.Arrow;
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
 using Pz.Shared;
+using Pz.Shared.Partitioning;
 
 namespace Pz.Connector.SqlServer;
 
@@ -76,7 +77,6 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
             : sql;
     }
 
-    private const int MinPartitions = 1;
     private const int MaxPartitions = 16;
 
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
@@ -170,12 +170,12 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
                 {
                     throw new PzConnectorException(
                         $"dataset '{spec.Dataset}': option '{forbidden}' is not allowed with change capture " +
-                        "-- a cdc dataset reads its 'table' directly; remove it",
+                        "-- a cdc dataset reads its entity's table directly; remove it",
                         isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
             }
 
-            // Validates 'table' presence (throws non-transient otherwise). One partition: cdc is
+            // Rejects a malformed entity name up front (SplitEntity throws). One partition: cdc is
             // inherently sequential (a single bounded LSN window per run).
             _ = SqlServerCdc.SchemaAndTable(spec);
             return [new SqlServerCdcPartition(connectionString, spec)];
@@ -203,8 +203,8 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
             return [new SqlServerPartition(connectionString, select)];
         }
 
-        var partitionCount = ParsePartitionCount(spec);
-        if (partitionCount == MinPartitions)
+        var partitionCount = PartitionCount.Parse(spec, MaxPartitions);
+        if (partitionCount == PartitionCount.Min)
         {
             return [new SqlServerPartition(connectionString, select)];
         }
@@ -238,34 +238,6 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
         }
 
         return selects;
-    }
-
-    private static int ParsePartitionCount(DatasetSpec spec)
-    {
-        if (!spec.Options.TryGetValue("partitions", out var raw) || raw is null)
-        {
-            return MinPartitions;
-        }
-
-        int n;
-        try
-        {
-            n = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
-        }
-        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        if (n < MinPartitions || n > MaxPartitions)
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be between {MinPartitions} and {MaxPartitions}, got {n}",
-                isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        return n;
     }
 
     private async Task<(object? Min, object? Max)> ProbeRangeAsync(
@@ -359,10 +331,8 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
 
 /// <summary>One independently readable slice: opens its own connection (sibling partitions drain
 /// concurrently). SequentialAccess + SingleResult: the typed column plans read ordinals strictly in
-/// order, letting SqlClient stream wide nvarchar values without whole-row buffering.
-/// Manual enumerator: yield cannot live inside try/catch, so MoveNextAsync is wrapped alone —
-/// mid-stream SqlExceptions surface classified, and `await using` disposes the connection on every
-/// exit path including abandoned enumeration.</summary>
+/// order, letting SqlClient stream wide nvarchar values without whole-row buffering. `await using`
+/// disposes the connection on every exit path including abandoned enumeration.</summary>
 internal sealed class SqlServerPartition(string connectionString, string selectSql) : IDatasetPartition
 {
     public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
@@ -382,34 +352,10 @@ internal sealed class SqlServerPartition(string connectionString, string selectS
             throw new PzConnectorException($"sqlserver read failed: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
         }
 
-        var enumerator = SqlServerArrowReader.ReadBatchesAsync(reader, options, ct).GetAsyncEnumerator(ct);
-        try
+        await foreach (var batch in SqlServerBatchStream.ReadAsync(
+            reader, options, SqlServerBatchStream.MidStreamFailure, ct).ConfigureAwait(false))
         {
-            while (true)
-            {
-                bool moved;
-                try
-                {
-                    moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
-                }
-                catch (SqlException ex)
-                {
-                    throw new PzConnectorException(
-                        $"sqlserver read failed mid-stream: {ex.Message}", MsTransient.IsTransient(ex), innerException: ex);
-                }
-
-                if (!moved)
-                {
-                    yield break;
-                }
-
-                yield return enumerator.Current;
-            }
-        }
-        finally
-        {
-            await enumerator.DisposeAsync().ConfigureAwait(false);
-            await reader.DisposeAsync().ConfigureAwait(false);
+            yield return batch;
         }
     }
 }

@@ -6,6 +6,8 @@ using Google.Cloud.Storage.V1;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Sinks;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.Gcs;
 
@@ -56,7 +58,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         var context = $"output '{spec.Output}'";
         FileFormatCatalog.EnsureRemoteWritable(format, "gcs", context);
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to 'gs://{GcsSql.Esc(bucket)}/{GcsSql.Esc(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            $"copy (select * from {{{{source}}}}) to 'gs://{DuckDbSqlText.EscapeLiteral(bucket)}/{DuckDbSqlText.EscapeLiteral(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             [.. GcsSql.SetupStatements(config, GcsSql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO gcs {format.Name}",
@@ -90,7 +92,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         // replace/append naming is identical per folder.
         if (PartitionColumns.Read(spec.Options) is [var partitionBy])
         {
-            var partitionColIndex = ResolvePartitionColumn(spec.Output, schema, partitionBy);
+            var partitionColIndex = PartitionedWriteSession.ResolvePartitionColumn(spec.Output, schema, partitionBy);
 
             ValueTask<ISinkWriteSession> Open(string folder)
             {
@@ -99,7 +101,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
                 return OpenSessionAsync(client, format, delimiter, bucket, key, schema, ct);
             }
 
-            return new GcsPartitionedWriteSession(Open, prefix, partitionColIndex, schema);
+            return new PartitionedWriteSession(Open, prefix, partitionColIndex, schema, maxConcurrentWrites: Environment.ProcessorCount);
         }
 
         var singleKey = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
@@ -117,34 +119,6 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
             "json" => GcsJsonWriteSession.Create(client, bucket, key, _gate),
             _ => throw new UnreachableException("unreachable: format already validated by EnsureUniversalTierSupported"),
         };
-
-    /// <summary>Runtime fail-fast for the partition column: it must exist in the write schema AND be a
-    /// timestamp/date Arrow type. Same shape as the azure/postgres pre-checks -- permanent, names the
-    /// output and column, thrown before any resource is opened.</summary>
-    private static int ResolvePartitionColumn(string output, Schema schema, string partitionBy)
-    {
-        var fields = schema.FieldsList;
-        for (var i = 0; i < fields.Count; i++)
-        {
-            if (!string.Equals(fields[i].Name, partitionBy, StringComparison.Ordinal))
-            {
-                continue;
-            }
-
-            if (fields[i].DataType.TypeId is not (ArrowTypeId.Timestamp or ArrowTypeId.Date32))
-            {
-                throw new PzConnectorException(
-                    $"output '{output}': partition_by column '{partitionBy}' is not a timestamp/date column " +
-                    $"(got '{fields[i].DataType}')", isTransient: false);
-            }
-
-            return i;
-        }
-
-        throw new PzConnectorException(
-            $"output '{output}': partition_by column '{partitionBy}' is not present in the write schema",
-            isTransient: false);
-    }
 
     public ValueTask DisposeAsync()
     {
@@ -169,8 +143,8 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
         return (format, objectName);
     }
 
-    /// <summary>(bucket, key prefix) under the ratified `root:` composition — the source's rule,
-    /// reused: an output naming its OWN bucket does not inherit the root's prefix.</summary>
+    /// <summary>(bucket, key prefix) under the `root:` composition rules, the same as the source's:
+    /// an output naming its OWN bucket does not inherit the root's prefix.</summary>
     private (string Bucket, string Prefix) ResolvePrefix(OutputSpec spec)
     {
         var (rootBucket, rootPrefix) = GcsSql.SplitRoot(config.GetString("root"));

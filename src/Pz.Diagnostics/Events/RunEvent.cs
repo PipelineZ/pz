@@ -24,8 +24,8 @@ public sealed record RetryScheduledEvent(DateTimeOffset At, string RunId, string
 
 /// <summary>Fired whenever a source/sink instance's circuit breaker
 /// transitions state. Unlike every other event in this stream, it is not part of any single node's
-/// lifecycle — <see cref="Instance"/> is the shared instance key (<c>"source:&lt;name&gt;"</c> /
-/// <c>"sink:&lt;name&gt;"</c>, same granularity as <c>max_concurrency</c>) a breaker gates every node of,
+/// lifecycle — <see cref="Instance"/> is the shared instance key (<c>"conn:&lt;name&gt;"</c>, the connection
+/// whether it is read or written, same granularity as <c>max_concurrency</c>) a breaker gates every node of,
 /// so this can fire before, between, or independent of any one node's own start/completion. A project
 /// with no <c>engine.breaker:</c> configured never publishes it at all. <see cref="CoolDownMs"/> is only
 /// meaningful for a transition INTO <c>open</c> (the wait the executor gate will honor next); every other

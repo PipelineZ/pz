@@ -1,7 +1,9 @@
 using System.Globalization;
-using System.Security.Cryptography;
 using System.Text;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Quack;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.DuckLake;
 
@@ -13,15 +15,14 @@ namespace Pz.Connector.DuckLake;
 /// DuckDB file cannot be attached twice in one session (unique-file-handle conflict on the metadata
 /// database), so there is no read-only/read-write alias split. Credentials NEVER ride the attach
 /// string — a failed ATTACH echoes its path verbatim into the engine error — they ride secrets or a
-/// SET statement, which the engine describes without echoing. Kept in lockstep with the
-/// duckdb/quack/motherduck connectors' Sql classes (replicated, never referenced).</summary>
+/// SET statement, which the engine describes without echoing.</summary>
 internal static class DuckLakeSql
 {
     /// <summary>Sanitized connection name plus the first 8 lowercase hex chars of SHA-256 of the RAW
     /// name, so "prod-db" and "prod_db" (both sanitize to "prod_db") never share an alias —
     /// <c>attach if not exists</c> is first-wins.</summary>
     internal static string Alias(string connectionName) =>
-        $"pz_ducklake_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_ducklake", connectionName);
 
     internal static string SecretName(string alias) => alias + "_secret";
 
@@ -90,69 +91,9 @@ internal static class DuckLakeSql
     {
         var (schema, table) = SplitEntity(entity);
         return schema is null
-            ? $"{alias}.{QuoteIdent(table)}"
-            : $"{alias}.{QuoteIdent(schema)}.{QuoteIdent(table)}";
+            ? $"{alias}.{DuckDbSqlText.QuoteIdentifier(table)}"
+            : $"{alias}.{DuckDbSqlText.QuoteIdentifier(schema)}.{DuckDbSqlText.QuoteIdentifier(table)}";
     }
-
-    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
-    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal:
-    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
-    /// becoming a space so it coerces against DATE/TIMESTAMP columns.</summary>
-    internal static string RenderWatermarkLiteral(string canonical)
-    {
-        if (IsCanonicalNumeric(canonical))
-        {
-            return canonical;
-        }
-
-        var value = IsCanonicalTimestamp(canonical)
-            ? canonical[..10] + ' ' + canonical[11..]
-            : canonical;
-        return $"'{EscapeLiteral(value)}'";
-    }
-
-    private static bool IsCanonicalNumeric(string value)
-    {
-        var i = value.StartsWith('-') ? 1 : 0;
-        var sawDigit = false;
-        var sawDot = false;
-        for (; i < value.Length; i++)
-        {
-            if (value[i] == '.')
-            {
-                if (sawDot)
-                {
-                    return false;
-                }
-
-                sawDot = true;
-            }
-            else if (char.IsAsciiDigit(value[i]))
-            {
-                sawDigit = true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return sawDigit;
-    }
-
-    private static bool IsCanonicalTimestamp(string value) =>
-        value.Length >= 19 && value[10] == 'T' &&
-        value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
-
-    internal static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
-
-    internal static string EscapeLiteral(string value) => value.Replace("'", "''");
-
-    internal static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 
     /// <summary>Setup for either direction, in order: extension installs/loads (ducklake, the
     /// catalog's own, httpfs when the data path is object storage), the storage secret (only when
@@ -204,14 +145,14 @@ internal static class DuckLakeSql
             statements.Add(StorageSecretSql(config, alias, dataPath));
         }
 
-        var dataClause = dataPath is null ? "" : $" (data_path '{EscapeLiteral(dataPath)}')";
+        var dataClause = dataPath is null ? "" : $" (data_path '{DuckDbSqlText.EscapeLiteral(dataPath)}')";
         switch (catalog)
         {
             case DuckLakeCatalog.DuckDb:
-                statements.Add($"attach if not exists 'ducklake:{EscapeLiteral(ResolveLocal(config, "path"))}' as {alias}{dataClause}");
+                statements.Add($"attach if not exists 'ducklake:{DuckDbSqlText.EscapeLiteral(ResolveLocal(config, "path"))}' as {alias}{dataClause}");
                 break;
             case DuckLakeCatalog.Sqlite:
-                statements.Add($"attach if not exists 'ducklake:sqlite:{EscapeLiteral(ResolveLocal(config, "path"))}' as {alias}{dataClause}");
+                statements.Add($"attach if not exists 'ducklake:sqlite:{DuckDbSqlText.EscapeLiteral(ResolveLocal(config, "path"))}' as {alias}{dataClause}");
                 break;
             case DuckLakeCatalog.Postgres:
                 var pgDataPath = dataPath ??
@@ -220,13 +161,13 @@ internal static class DuckLakeSql
                 var secret = SecretName(alias);
                 statements.Add(PostgresSecretSql(config, pgSecret));
                 statements.Add(
-                    $"create or replace secret {secret} (type ducklake, metadata_path '', data_path '{EscapeLiteral(pgDataPath)}', " +
+                    $"create or replace secret {secret} (type ducklake, metadata_path '', data_path '{DuckDbSqlText.EscapeLiteral(pgDataPath)}', " +
                     $"metadata_parameters map {{'TYPE': 'postgres', 'SECRET': '{pgSecret}'}})");
                 statements.Add($"attach if not exists 'ducklake:{secret}' as {alias}");
                 break;
             case DuckLakeCatalog.Quack:
                 var uri = Require(config, "uri");
-                if (!DuckLakeCatalog.TryParseQuackUri(uri, out var host, out var port))
+                if (!QuackUri.TryParse(uri, out var host, out var port))
                 {
                     throw new PzConnectorException(
                         "ducklake connection 'uri' must be of the form quack:host[:port]", isTransient: false, code: PzConnectorErrorCodes.Config);
@@ -234,14 +175,14 @@ internal static class DuckLakeSql
 
                 var canonical = $"quack:{host}:{port}";
                 statements.Add(
-                    $"create or replace secret {SecretName(alias)} (type quack, token '{EscapeLiteral(Require(config, "token"))}', " +
-                    $"scope '{EscapeLiteral(canonical)}')");
-                statements.Add($"attach if not exists 'ducklake:{EscapeLiteral(canonical)}' as {alias}{dataClause}");
+                    $"create or replace secret {SecretName(alias)} (type quack, token '{DuckDbSqlText.EscapeLiteral(Require(config, "token"))}', " +
+                    $"scope '{DuckDbSqlText.EscapeLiteral(canonical)}')");
+                statements.Add($"attach if not exists 'ducklake:{DuckDbSqlText.EscapeLiteral(canonical)}' as {alias}{dataClause}");
                 break;
             case DuckLakeCatalog.MotherDuck:
-                statements.Add($"set motherduck_token = '{EscapeLiteral(Require(config, "token"))}'");
+                statements.Add($"set motherduck_token = '{DuckDbSqlText.EscapeLiteral(Require(config, "token"))}'");
                 statements.Add(
-                    $"attach if not exists 'ducklake:md:__ducklake_metadata_{EscapeLiteral(Require(config, "database"))}' as {alias}{dataClause}");
+                    $"attach if not exists 'ducklake:md:__ducklake_metadata_{DuckDbSqlText.EscapeLiteral(Require(config, "database"))}' as {alias}{dataClause}");
                 break;
             default:
                 throw new PzConnectorException($"ducklake connection: unknown catalog '{catalog}'", isTransient: false, code: PzConnectorErrorCodes.Config);
@@ -255,16 +196,16 @@ internal static class DuckLakeSql
     private static string PostgresSecretSql(ConnectorConfig config, string secretName)
     {
         var body = new StringBuilder(
-            $"host '{EscapeLiteral(Require(config, "host"))}', port {config.GetInt("port") ?? 5432}, " +
-            $"database '{EscapeLiteral(Require(config, "database"))}'");
+            $"host '{DuckDbSqlText.EscapeLiteral(Require(config, "host"))}', port {config.GetInt("port") ?? 5432}, " +
+            $"database '{DuckDbSqlText.EscapeLiteral(Require(config, "database"))}'");
         if (config.GetString("user") is { Length: > 0 } user)
         {
-            body.Append(", user '").Append(EscapeLiteral(user)).Append('\'');
+            body.Append(", user '").Append(DuckDbSqlText.EscapeLiteral(user)).Append('\'');
         }
 
         if (config.GetString("password") is { Length: > 0 } password)
         {
-            body.Append(", password '").Append(EscapeLiteral(password)).Append('\'');
+            body.Append(", password '").Append(DuckDbSqlText.EscapeLiteral(password)).Append('\'');
         }
 
         return $"create or replace secret {secretName} (type postgres, {body})";
@@ -280,10 +221,10 @@ internal static class DuckLakeSql
         var useSsl = config.GetBool("storage_use_ssl", defaultValue: true);
 
         return $"create or replace secret {StorageSecretName(alias)} (type s3, " +
-            $"key_id '{EscapeLiteral(Require(config, "storage_key_id"))}', " +
-            $"secret '{EscapeLiteral(Require(config, "storage_secret_key"))}', region '{EscapeLiteral(region)}'" +
-            (endpoint is null ? "" : $", endpoint '{EscapeLiteral(endpoint)}'") +
-            $", url_style '{EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}, scope '{EscapeLiteral(dataPath)}')";
+            $"key_id '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_key_id"))}', " +
+            $"secret '{DuckDbSqlText.EscapeLiteral(Require(config, "storage_secret_key"))}', region '{DuckDbSqlText.EscapeLiteral(region)}'" +
+            (endpoint is null ? "" : $", endpoint '{DuckDbSqlText.EscapeLiteral(endpoint)}'") +
+            $", url_style '{DuckDbSqlText.EscapeLiteral(urlStyle)}', use_ssl {(useSsl ? "true" : "false")}, scope '{DuckDbSqlText.EscapeLiteral(dataPath)}')";
     }
 
     /// <summary>The scan fragment: a declared <c>columns:</c> contract prunes the read; the optional
@@ -291,35 +232,8 @@ internal static class DuckLakeSql
     /// down (DuckDB pushes the filter into the DuckLake scan); the window ceiling is MUST-apply. A
     /// plain scan stays the bare (optionally time-travelled) table reference; anything with a
     /// projection or predicate becomes a parenthesized subquery.</summary>
-    internal static string ScanFragment(string alias, DatasetSpec spec)
-    {
-        var table = QualifiedTable(alias, spec.Dataset) + TimeTravelClause(spec);
-
-        var columns = ExtractColumns(spec);
-        var projection = columns is { Count: > 0 }
-            ? string.Join(", ", columns.Keys.Select(QuoteIdent))
-            : "*";
-
-        var predicates = new List<string>();
-        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
-        {
-            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{QuoteIdent(cursor)} {op} {RenderWatermarkLiteral(low)}");
-        }
-
-        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
-        {
-            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
-        }
-
-        if (projection == "*" && predicates.Count == 0)
-        {
-            return table;
-        }
-
-        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
-        return $"(select {projection} from {table}{where})";
-    }
+    internal static string ScanFragment(string alias, DatasetSpec spec) =>
+        DuckDbSqlText.ScanFragment(QualifiedTable(alias, spec.Dataset) + TimeTravelClause(spec), spec);
 
     /// <summary><c>version:</c> pins a snapshot id, <c>timestamp:</c> the latest snapshot at or before
     /// an instant; declaring both is contradictory and refused. Thrown from TryGetNativeScan, which
@@ -349,7 +263,7 @@ internal static class DuckLakeSql
         }
 
         return hasTimestamp
-            ? $" at (timestamp => timestamp '{EscapeLiteral(RenderTimestampOption(timestampValue!))}')"
+            ? $" at (timestamp => timestamp '{DuckDbSqlText.EscapeLiteral(RenderTimestampOption(timestampValue!))}')"
             : "";
     }
 
@@ -388,7 +302,7 @@ internal static class DuckLakeSql
                         $"output '{table}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
-                var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
+                var on = string.Join(" and ", keys.Select(k => $"t.{DuckDbSqlText.QuoteIdentifier(k)} = s.{DuckDbSqlText.QuoteIdentifier(k)}"));
 
                 // DuckDB's MERGE matches every source row independently against the target as it stood
                 // before the statement ran: two staged rows sharing a key the target lacks would BOTH take
@@ -396,7 +310,7 @@ internal static class DuckLakeSql
                 // in an undefined order. The sink contract says duplicate keys within one batch collapse
                 // to a single connector-determined survivor, so the staged side is made key-unique
                 // (qualify row_number() per key group) before MERGE ever sees it.
-                var partitionBy = string.Join(", ", keys.Select(k => $"s.{QuoteIdent(k)}"));
+                var partitionBy = string.Join(", ", keys.Select(k => $"s.{DuckDbSqlText.QuoteIdentifier(k)}"));
                 var dedupedSource = $"(select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1)";
                 sql = create + $"merge into {table} as t using {dedupedSource} as s on {on} " +
                     "when matched then update when not matched then insert;";
@@ -414,8 +328,4 @@ internal static class DuckLakeSql
             ? s
             : throw new PzConnectorException($"ducklake connection requires '{key}'", isTransient: false, code: PzConnectorErrorCodes.Config);
 
-    private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
-
-    private static string HashSuffix(string name) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 }

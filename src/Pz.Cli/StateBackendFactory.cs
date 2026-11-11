@@ -10,9 +10,9 @@ using Pz.State.SqlServer;
 
 namespace Pz.Cli;
 
-/// <summary>The three state seams, composed against whichever backend <c>project.State</c> resolved to.
-/// The one place a real `pz run` picks local files vs. a SQL Server store.</summary>
-/// <summary><see cref="EnsureSchema"/> is a no-op for the local backend and
+/// <summary>The state seams (watermarks, schema baselines, sync-state, run artifacts), composed against
+/// whichever backend <c>project.State</c> resolved to. The one place a real `pz run` picks local files vs.
+/// a remote store. <see cref="EnsureSchema"/> is a no-op for the local and http backends and
 /// <c>SqlStateSchema.EnsureCurrent</c> (a real network call) for SQL Server -- kept as a delegate rather
 /// than exposing the underlying <see cref="Pz.State.SqlServer.SqlStateConnection"/> so
 /// <see cref="StateBackendFactory.Create"/> can stay connection-free while still letting
@@ -45,7 +45,7 @@ internal static class StateBackendFactory
         Create(project.State, project.Name, project.Connections, projectDir, time, runId, ct);
 
     /// <summary>The same composition from just the three things it actually needs, for callers that must
-    /// NOT load a whole project to reach the state store -- `pz state` and `pz clean`, via
+    /// NOT load a whole project to reach the state store -- `pz state`, `pz runs` and `pz clean`, via
     /// <c>ProjectLoader.LoadStateOnly</c>. Routing those two through the full loader would cost them
     /// their documented no-project-load property, and would let a broken connections.yml block the very
     /// verbs you reach for when config is broken.</summary>

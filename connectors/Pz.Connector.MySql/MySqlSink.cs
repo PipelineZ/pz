@@ -1,12 +1,13 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.MySql;
 
 /// <summary>Native-only MySQL sink: every output is DuckDB SQL against the rw attach —
 /// append is a CREATE-IF-NOT-EXISTS + INSERT batch (first run needs no pre-created table), replace is
 /// a single CREATE OR REPLACE TABLE … AS. <see cref="BeginWriteAsync"/> always throws (the
-/// <see cref="INativeOnlySink"/> contract, S3Sink precedent). The MySQL-side replace swap is NOT
+/// <see cref="INativeOnlySink"/> contract). The MySQL-side replace swap is NOT
 /// atomic (the extension's OR REPLACE is drop+create and MySQL DDL commits implicitly) — documented
 /// in the connector README; the Transactional capability is deliberately not declared.</summary>
 internal sealed class MySqlSink(ConnectorConfig config) : ISink
@@ -14,7 +15,10 @@ internal sealed class MySqlSink(ConnectorConfig config) : ISink
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
     {
         var alias = MySqlSql.SinkAlias(spec.Sink);
-        var table = $"{alias}.{MySqlSql.QuoteDuckIdent(spec.Output)}";
+        // DuckDB parses this statement, not MySQL, and DuckDB has no backtick-quoted identifiers: the
+        // table reference takes DuckDB's double quotes, unlike MySqlSql.QuoteIdent's backticks for SQL
+        // that rides inside mysql_query('alias', '…') and reaches MySQL itself.
+        var table = $"{alias}.{DuckDbSqlText.QuoteIdentifier(spec.Output)}";
         (string Sql, string Mechanism)? statement = spec.Mode switch
         {
             "append" =>

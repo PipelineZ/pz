@@ -32,10 +32,9 @@ namespace Pz.Engine.Execution;
 /// signal, fired once per scheduled retry, before its delay. The final <see cref="NodeResult.Duration"/>
 /// covers every attempt (the stopwatch starts once, before the first try).
 ///
-/// Retry safety (full narrative in https://pipelinez.dev/events/'s "Retry safety" section, next to
-/// `retry_scheduled`): only <see cref="NodeKind.SourceLoad"/> and <see cref="NodeKind.SinkWrite"/> nodes
+/// Retry safety: only <see cref="NodeKind.SourceLoad"/> and <see cref="NodeKind.SinkWrite"/> nodes
 /// are ever retried in practice, and both are safe to retry. SourceLoad retry safety has two regimes.
-/// Legacy (no StablePartitionIds): ingest is all-or-nothing — IngestArrowAsync drops the target staging
+/// Without StablePartitionIds: ingest is all-or-nothing — IngestArrowAsync drops the target staging
 /// table on any failure, so a retried attempt always starts from a clean table. Partition mode:
 /// completed partitions' rows persist in the main staging table across attempts BY DESIGN, with the
 /// pz_meta ledger recording exactly which partitions they came from (updated atomically with the data);
@@ -178,14 +177,12 @@ public sealed class KindDispatchingExecutor(
                 // staging database.
                 breaker?.RecordTransientFailure(ticket, null);
                 ctx.DeliveryFailures.TryRemove(node.Id, out var delivery);
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed,
-                    ex.Error, Delivery: delivery);
+                return NodeResult.Failed(node, ex.Error, stopwatch.Elapsed, delivery);
             }
             catch (CodedNodeFailureException ex)
             {
                 ctx.DeliveryFailures.TryRemove(node.Id, out var delivery);
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed,
-                    ex.Error, Delivery: delivery);
+                return NodeResult.Failed(node, ex.Error, stopwatch.Elapsed, delivery);
             }
             catch (PzConnectorException ex) when (ex.IsTransient && attempt < policy.MaxAttempts)
             {
@@ -320,8 +317,7 @@ public sealed class KindDispatchingExecutor(
         ctx.DeliveryFailures.TryRemove(node.Id, out var delivery);
         if (ex is CursorTypeMismatchException mismatch)
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed, mismatch.Error,
-                Delivery: delivery);
+            return NodeResult.Failed(node, mismatch.Error, stopwatch.Elapsed, delivery);
         }
 
         // Guidance is derived from the REDACTED message, never the raw
@@ -334,8 +330,7 @@ public sealed class KindDispatchingExecutor(
         }
 
         var error = new PzError(PzErrorCode.NodeFailed, message, null, null, null);
-        return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed, error,
-            Delivery: delivery);
+        return NodeResult.Failed(node, error, stopwatch.Elapsed, delivery);
     }
 
     /// <summary>The bounded give-up path (PZ0506): the breaker for <paramref name="node"/>'s owning
@@ -348,7 +343,7 @@ public sealed class KindDispatchingExecutor(
             $"circuit breaker for instance '{instanceKey}' is open (cool-down {FormatRetryIn(retryIn)}); the connector was not invoked.",
             null, null,
             "the connector's circuit breaker is open; retry with 'pz retry' after the cool-down, or raise engine.breaker thresholds");
-        return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, stopwatch.Elapsed, error);
+        return NodeResult.Failed(node, error, stopwatch.Elapsed);
     }
 
     /// <summary>Renders config-style seconds (`120s`), not <see cref="TimeSpan"/>'s

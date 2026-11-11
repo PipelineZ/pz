@@ -1,6 +1,7 @@
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Csv;
 using Sylvan.Data.Csv;
 using Xunit;
 

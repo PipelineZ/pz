@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Pz.Connectors.Abstractions;
 
 namespace Pz.Engine.State;
@@ -43,7 +45,7 @@ public static class SchemaDriftDiffer
     /// <summary>Stable digest of the effective read shape; U+001F/U+001E separators cannot occur
     /// in column names DuckDB reports or in rendered predicate SQL's semantics-relevant bytes.</summary>
     public static string HashHints(ReadHints hints) =>
-        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.UTF8.GetBytes(
-                string.Join('', hints.Columns ?? []) + '' + (hints.PredicateSql ?? ""))));
+        Convert.ToHexString(SHA256.HashData(
+            Encoding.UTF8.GetBytes(
+                string.Join('\u001f', hints.Columns ?? []) + '\u001e' + (hints.PredicateSql ?? ""))));
 }

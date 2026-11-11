@@ -5,6 +5,7 @@ using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Csv;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.Http;

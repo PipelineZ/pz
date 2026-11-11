@@ -30,6 +30,7 @@ public static class ManifestWriter
     public static void Write(CompiledDag fullDag, IReadOnlyList<DagNode> nodesToWrite, PzProject project, string targetDir)
     {
         Directory.CreateDirectory(targetDir);
+        var byId = fullDag.Nodes.ToDictionary(n => n.Id);
         var compiledDir = Path.Combine(targetDir, "compiled");
         Directory.CreateDirectory(compiledDir);
 
@@ -38,19 +39,19 @@ public static class ManifestWriter
             var sql = (node.RenderedSql ?? string.Empty).TrimEnd('\n') + "\n";
             // Header lines are prepended input-note-first then output-binding: `-- incremental:` lines for
             // every SQL-declared incremental dataset this pipeline reads, then `-- output:` binding lines.
-            var incrementalHeader = ResolveIncrementalHeader(node, fullDag);
+            var incrementalHeader = ResolveIncrementalHeader(node, byId);
             var bindingHeader = ResolveInlineBindingHeader(node, fullDag);
             sql = string.Concat(incrementalHeader ?? string.Empty, bindingHeader ?? string.Empty, sql);
 
             AtomicFile.WriteAllText(Path.Combine(compiledDir, $"{node.Name}.sql"), sql);
         }
 
-        WriteManifest(fullDag, nodesToWrite, project, Path.Combine(targetDir, "manifest.json"));
+        WriteManifest(byId, nodesToWrite, project, Path.Combine(targetDir, "manifest.json"));
     }
 
-    private static void WriteManifest(CompiledDag fullDag, IReadOnlyList<DagNode> nodesToWrite, PzProject project, string path)
+    private static void WriteManifest(IReadOnlyDictionary<NodeId, DagNode> byId, IReadOnlyList<DagNode> nodesToWrite,
+        PzProject project, string path)
     {
-        var byId = fullDag.Nodes.ToDictionary(n => n.Id);
         var buffer = new ArrayBufferWriter<byte>();
         var options = new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" };
         using (var writer = new Utf8JsonWriter(buffer, options))
@@ -142,9 +143,8 @@ public static class ManifestWriter
     /// and sorts by `&lt;source&gt;.&lt;dataset&gt;` ordinal for byte-stable output. Neither this line nor the
     /// synthesized IncrementalDef ever feeds a NodeId hash.
     /// </summary>
-    private static string? ResolveIncrementalHeader(DagNode pipelineNode, CompiledDag fullDag)
+    private static string? ResolveIncrementalHeader(DagNode pipelineNode, IReadOnlyDictionary<NodeId, DagNode> byId)
     {
-        var byId = fullDag.Nodes.ToDictionary(n => n.Id);
         var headers = pipelineNode.DependsOn
             .Where(byId.ContainsKey)
             .Select(id => byId[id].Definition)
@@ -178,7 +178,7 @@ public static class ManifestWriter
 
     /// <summary>
     /// Every node's "owning file" comes from its <see cref="DagNode.Definition"/> — except
-    /// <see cref="Check"/> nodes, whose <c>Definition</c> (<see cref="CheckNodeDef"/>) has no file
+    /// <see cref="NodeKind.Check"/> nodes, whose <c>Definition</c> (<see cref="CheckNodeDef"/>) has no file
     /// of its own (checks are declared inline in a pipeline's sidecar, but the model only tracks
     /// one <c>FilePath</c> per pipeline). A check node always depends on exactly the pipeline
     /// node it was declared on, so its file is that pipeline's <c>FilePath</c>.

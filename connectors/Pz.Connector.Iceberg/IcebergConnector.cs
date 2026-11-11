@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Probes;
 
 [assembly: PzConnector("iceberg", typeof(Pz.Connector.Iceberg.IcebergConnector))]
 
@@ -123,7 +124,7 @@ public sealed class IcebergConnector : ISourceConnector, ISinkConnector, INative
         {
             case IcebergCatalog.Rest:
                 var endpoint = new Uri(config.GetString("endpoint")!, UriKind.Absolute);
-                return IcebergProbe.TcpAsync(endpoint.Host, endpoint.Port, "iceberg rest catalog", ct);
+                return TcpProbe.CheckAsync(endpoint.Host, endpoint.Port, "iceberg rest catalog", ct);
             case IcebergCatalog.Files:
                 var root = config.GetString("root")!;
                 return IcebergSql.IsUrl(root)

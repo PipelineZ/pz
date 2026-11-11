@@ -5,22 +5,20 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.Postgres;
 
-/// <summary>Postgres source + sink connector, Npgsql-backed. Universal path only in v0 -- capabilities
-/// declare <see cref="ConnectorCapabilities.ColumnPruning"/>, <see
-/// cref="ConnectorCapabilities.PredicatePushdown"/>, <see cref="ConnectorCapabilities.PartitionedRead"/>
+/// <summary>Postgres source + sink connector, Npgsql-backed, universal path only: no
+/// <see cref="ConnectorCapabilities.NativeScan"/> (no postgres_scanner scan is wired up) and no
+/// <see cref="ConnectorCapabilities.NativeCopy"/> (the sink COPYs through Npgsql). Capabilities:
+/// <see cref="ConnectorCapabilities.ColumnPruning"/> and <see cref="ConnectorCapabilities.PredicatePushdown"/>
+/// (see <see cref="PostgresSource.BuildSelect"/>), <see cref="ConnectorCapabilities.PartitionedRead"/>
 /// (equal-width range partitioning over a declared <c>partition_column</c>, see <see
-/// cref="PostgresSource.PlanReadAsync"/>), <see cref="ConnectorCapabilities.Merge"/> (<c>ON
-/// CONFLICT</c>-based upsert, see <see cref="PostgresSink"/>), and <see
-/// cref="ConnectorCapabilities.BoundedWindow"/> (<c>cursor &lt;= upper_bound</c> pushdown, see <see
-/// cref="PostgresSource.BuildSelect"/>); no <see cref="ConnectorCapabilities.NativeScan"/>
-/// (no postgres_scanner native scan is wired up yet) and no <see cref="ConnectorCapabilities.NativeCopy"/>
-/// (the sink is universal-path only -- see <see cref="PostgresSink"/>). <see
-/// cref="ConnectorCapabilities.ApplyDeletes"/>: merge write sessions apply cdc
-/// delete-key batches, hard or soft, in the same transaction as the upsert. Registered under the
-/// logical name "postgres".
+/// cref="PostgresSource.PlanReadAsync"/>), <see cref="ConnectorCapabilities.Merge"/> (<c>ON CONFLICT</c>
+/// upsert, see <see cref="PostgresSink"/>), <see cref="ConnectorCapabilities.BoundedWindow"/> (<c>cursor
+/// &lt;= upper_bound</c> pushdown), <see cref="ConnectorCapabilities.ApplyDeletes"/> (merge sessions apply
+/// cdc delete-key batches, hard or soft, in the same transaction as the upsert) and
+/// <see cref="ConnectorCapabilities.ChangeCapture"/>. Registered under the logical name "postgres".
 /// Connection options: <c>host</c> and <c>database</c> are required; <c>port</c> defaults to 5432;
 /// <c>user</c>, <c>password</c>, <c>ssl_mode</c>, <c>connect_timeout_seconds</c>,
-/// <c>command_timeout_seconds</c> are optional. Sink output options: none -- schema and table come
+/// <c>command_timeout_seconds</c> are optional. The sink takes no output options -- schema and table come
 /// from the entity name itself (<c>sink('pg', 'schema.table')</c>; a bare name defaults to
 /// <c>public</c>), never from a <c>schema</c>/<c>table</c> option (PZ0348 retires both as kwargs).</summary>
 public sealed class PostgresConnector : ISourceConnector, ISinkConnector, IOutputConfigSchema

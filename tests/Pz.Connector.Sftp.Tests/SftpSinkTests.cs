@@ -2,11 +2,12 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit;
+using Pz.Shared.Sinks;
 
 namespace Pz.Connector.Sftp.Tests;
 
 /// <summary>Protocol tests for <see cref="SftpSink"/> (session dispatch, replace/append naming,
-/// gate wiring) and <see cref="SftpPartitionedWriteSession"/> (grouping/slicing, commit-xor-abort,
+/// gate wiring) and <see cref="PartitionedWriteSession"/> (grouping/slicing, commit-xor-abort,
 /// sequential-not-concurrent dispatch, shared-fs disposal) -- all against
 /// <see cref="FakeSftpFileSystem"/>, no live server.</summary>
 public class SftpSinkTests
@@ -316,7 +317,7 @@ public class SftpSinkTests
         Assert.Equal(["sftp.open_write", "sftp.commit_rename"], gate.Labels);
     }
 
-    // ---------- SftpPartitionedWriteSession: grouping/slicing/commit-abort/dispose, exercised directly ----------
+    // ---------- PartitionedWriteSession: grouping/slicing/commit-abort/dispose, exercised directly ----------
 
     /// <summary>In-memory inner session: captures which id values land in it and how it was closed,
     /// so grouping/slicing can be exercised with no real write session underneath. Lockstep copy of
@@ -385,8 +386,8 @@ public class SftpSinkTests
             return ValueTask.FromResult<ISinkWriteSession>(session);
         }
 
-        var session = new SftpPartitionedWriteSession(
-            Open, new FakeSftpFileSystem(), "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema);
+        var session = new PartitionedWriteSession(
+            Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema, maxConcurrentWrites: 1, sharedResource: new FakeSftpFileSystem());
 
         var day12 = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.Zero);
         var day13 = new DateTimeOffset(2026, 7, 13, 23, 30, 0, TimeSpan.Zero);
@@ -420,8 +421,8 @@ public class SftpSinkTests
             return ValueTask.FromResult<ISinkWriteSession>(session);
         }
 
-        var session = new SftpPartitionedWriteSession(
-            Open, new FakeSftpFileSystem(), "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema);
+        var session = new PartitionedWriteSession(
+            Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema, maxConcurrentWrites: 1, sharedResource: new FakeSftpFileSystem());
 
         var day12 = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.Zero);
         var day13 = new DateTimeOffset(2026, 7, 13, 1, 0, 0, TimeSpan.Zero);
@@ -447,8 +448,8 @@ public class SftpSinkTests
             return ValueTask.FromResult<ISinkWriteSession>(session);
         }
 
-        var session = new SftpPartitionedWriteSession(
-            Open, tracker, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema);
+        var session = new PartitionedWriteSession(
+            Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema, maxConcurrentWrites: 1, sharedResource: tracker);
 
         var day12 = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.Zero);
         using var batch = BuildPartitionBatch([(1, day12)]);
@@ -486,8 +487,8 @@ public class SftpSinkTests
             return ValueTask.FromResult<ISinkWriteSession>(new BlockingInnerSession(release.Task));
         }
 
-        var session = new SftpPartitionedWriteSession(
-            Open, new FakeSftpFileSystem(), "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema);
+        var session = new PartitionedWriteSession(
+            Open, "out/{yyyy}/{MM}/{dd}/", partitionColIndex: 1, PartitionSchema, maxConcurrentWrites: 1, sharedResource: new FakeSftpFileSystem());
 
         var day12 = new DateTimeOffset(2026, 7, 12, 8, 0, 0, TimeSpan.Zero);
         var day13 = new DateTimeOffset(2026, 7, 13, 1, 0, 0, TimeSpan.Zero);

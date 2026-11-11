@@ -1,6 +1,6 @@
-using System.Security.Cryptography;
-using System.Text;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.Sqlite;
 
@@ -14,10 +14,10 @@ namespace Pz.Connector.Sqlite;
 internal static class SqliteSql
 {
     internal static string SinkAlias(string connectionName) =>
-        $"pz_sqlite_snk_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_sqlite_snk", connectionName);
 
     /// <summary>Resolves the connection's <c>path:</c> to an absolute path: relative paths join the
-    /// CLI-injected <c>base_dir</c> (the localfiles precedent — never user-written), falling back to
+    /// CLI-injected <c>base_dir</c> (never user-written), falling back to
     /// the process working directory for hosts that don't inject it. Fragments always embed the
     /// absolute form — the engine's DuckDB session must not depend on process cwd.</summary>
     internal static string ResolvePath(ConnectorConfig config)
@@ -46,7 +46,7 @@ internal static class SqliteSql
     [
         "install sqlite",
         "load sqlite",
-        $"attach if not exists '{EscapeLiteral(resolvedPath)}' as {alias} (type sqlite)",
+        $"attach if not exists '{DuckDbSqlText.EscapeLiteral(resolvedPath)}' as {alias} (type sqlite)",
     ];
 
     /// <summary>The scan fragment: a declared <c>columns:</c> contract prunes the read (only
@@ -58,105 +58,8 @@ internal static class SqliteSql
     /// The engine embeds the fragment after FROM (<c>create … as select * from &lt;fragment&gt;</c>),
     /// so a plain scan stays the bare table-function call (the read_csv/read_parquet shape) and
     /// anything with a projection or predicate becomes a parenthesized subquery.</summary>
-    internal static string ScanFragment(string resolvedPath, DatasetSpec spec)
-    {
-        var scan = $"sqlite_scan('{EscapeLiteral(resolvedPath)}', '{EscapeLiteral(spec.Dataset)}')";
+    internal static string ScanFragment(string resolvedPath, DatasetSpec spec) =>
+        DuckDbSqlText.ScanFragment(
+            $"sqlite_scan('{DuckDbSqlText.EscapeLiteral(resolvedPath)}', '{DuckDbSqlText.EscapeLiteral(spec.Dataset)}')", spec);
 
-        var columns = ExtractColumns(spec);
-        var projection = columns is { Count: > 0 }
-            ? string.Join(", ", columns.Keys.Select(QuoteIdent))
-            : "*";
-
-        var predicates = new List<string>();
-        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
-        {
-            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{QuoteIdent(cursor)} {op} {RenderWatermarkLiteral(low)}");
-        }
-
-        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
-        {
-            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
-        }
-
-        if (projection == "*" && predicates.Count == 0)
-        {
-            return scan;
-        }
-
-        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
-        return $"(select {projection} from {scan}{where})";
-    }
-
-    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
-    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal:
-    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
-    /// becoming a space. The space form matters more here than for MySQL: a text-stored
-    /// sqlite cursor column surfaces as VARCHAR and compares LEXICALLY, and sqlite's own timestamp
-    /// convention (<c>CURRENT_TIMESTAMP</c>) is the space-separated ISO form — which also still
-    /// coerces correctly against a real DATE/TIMESTAMP column.</summary>
-    internal static string RenderWatermarkLiteral(string canonical)
-    {
-        if (IsCanonicalNumeric(canonical))
-        {
-            return canonical;
-        }
-
-        var value = IsCanonicalTimestamp(canonical)
-            ? canonical[..10] + ' ' + canonical[11..]
-            : canonical;
-        return $"'{EscapeLiteral(value)}'";
-    }
-
-    /// <summary>Optional leading '-', digits, at most one '.'. A canonical date ("2020-01-01") has an
-    /// interior '-', so it never matches and falls through to the quoted form.</summary>
-    private static bool IsCanonicalNumeric(string value)
-    {
-        var i = value.StartsWith('-') ? 1 : 0;
-        var sawDigit = false;
-        var sawDot = false;
-        for (; i < value.Length; i++)
-        {
-            if (value[i] == '.')
-            {
-                if (sawDot)
-                {
-                    return false;
-                }
-
-                sawDot = true;
-            }
-            else if (char.IsAsciiDigit(value[i]))
-            {
-                sawDigit = true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return sawDigit;
-    }
-
-    private static bool IsCanonicalTimestamp(string value) =>
-        value.Length >= 19 && value[10] == 'T' &&
-        value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
-
-    internal static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
-
-    internal static string EscapeLiteral(string value) => value.Replace("'", "''");
-
-    internal static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
-
-    private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
-
-    /// <summary>First 8 lowercase hex chars of SHA-256(name) — deterministic, no randomness, so an
-    /// alias is stable across runs and processes.</summary>
-    private static string HashSuffix(string name) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 }

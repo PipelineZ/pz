@@ -112,7 +112,7 @@ public sealed class AzureParquetReaderTests
     }
 
     // Writes a single-column parquet file whose type has no v0 mapping (float32 / Arrow FloatType), so
-    // AzureParquetTypeMap.MapClrType's fallback throws. A real unsupported-typed fixture (rather than a
+    // ParquetTypeMap's CLR-type fallback throws. A real unsupported-typed fixture (rather than a
     // hand-built Arrow schema) so the test exercises the actual parquet-footer-driven rejection path.
     private static MemoryStream WriteUnsupportedTypeParquet()
     {

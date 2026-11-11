@@ -66,9 +66,8 @@ public sealed class HttpStateEndpoint : IDisposable
     private readonly CancellationToken _ct;
 
     /// <summary><paramref name="timeout"/> null keeps <see cref="HttpClient"/>'s own 100s default
-    /// (<c>state.timeout_seconds</c> absent -- unchanged behaviour). <paramref name="ct"/> is this
-    /// endpoint's run's cancellation token, captured once: one instance serves one run (the class doc's
-    /// "lives exactly as long as the process that built it"), so there is no per-call token to thread
+    /// (<c>state.timeout_seconds</c> absent). <paramref name="ct"/> is this endpoint's run's
+    /// cancellation token, captured once: one instance serves one run, so there is no per-call token to thread
     /// through <see cref="Pz.Engine.State.IKeyedStateStore{T}"/>'s synchronous, cancellation-unaware
     /// surface -- this is what lets Ctrl-C actually abort a state request instead of the fixed 100s
     /// timeout being the only way out.</summary>
@@ -215,9 +214,9 @@ public sealed class HttpStateEndpoint : IDisposable
     /// a fabricated expected version. A weak tag (<c>W/"3"</c> -- common once a reverse proxy's gzip
     /// layer sits in front of the state server) carries the same version as the strong form; the
     /// weakness marker means only "byte-for-byte identity is not guaranteed", irrelevant to a version
-    /// counter pz never compares byte-for-byte. Stripped before parsing rather than rejected, which used
-    /// to read as null and spuriously downgrade every write behind such a proxy to insert-if-absent --
-    /// PZ0520 on every run.</summary>
+    /// counter pz never compares byte-for-byte. It is stripped before parsing rather than rejected:
+    /// reading it as null would downgrade every write behind such a proxy to insert-if-absent, which
+    /// raises PZ0520 on every run.</summary>
     private static int? ReadVersion(HttpResponseMessage response)
     {
         if (!response.Headers.TryGetValues("ETag", out var values))

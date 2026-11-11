@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Pz.Connectors.Toolkit\Pz.Connectors.Toolkit.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -19,6 +20,11 @@
     <!-- Same nupkg-root manifest embedding as the other builtin connectors (see the note in
          Pz.Connector.Postgres.csproj for why Pack+PackagePath instead of CopyToOutputDirectory). -->
     <None Include="pz.connector.json" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shared connector mechanics compiled from one source file; connectors never reference each other. -->
+    <Compile Include="..\..\src\Shared\Sql\DuckDbSqlText.cs" Link="Shared\Sql\DuckDbSqlText.cs" />
   </ItemGroup>
 
 </Project>

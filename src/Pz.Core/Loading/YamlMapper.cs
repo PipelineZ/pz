@@ -165,7 +165,7 @@ public static class YamlMapper
         }
         catch (YamlException ex)
         {
-            var line = ex.Start.Line > 0 ? (int?)ex.Start.Line : null;
+            var line = LineOrNull(ex.Start.Line);
             throw new PzConfigException(new PzError(
                 PzErrorCode.YamlShape,
                 $"Malformed YAML: {ex.Message}",
@@ -214,8 +214,7 @@ public static class YamlMapper
         var converted = Convert(yamlStream.Documents[0].RootNode, state);
         if (converted is not Dictionary<string, object?> dict)
         {
-            var rootLine = yamlStream.Documents[0].RootNode.Start.Line;
-            var line = rootLine > 0 ? (int?)rootLine : null;
+            var line = LineOrNull(yamlStream.Documents[0].RootNode.Start.Line);
             throw new PzConfigException(new PzError(
                 PzErrorCode.YamlShape,
                 $"Malformed YAML: the document's root must be a mapping of keys to values " +
@@ -227,6 +226,9 @@ public static class YamlMapper
 
         return dict;
     }
+
+    /// <summary>YamlDotNet reports line 0 for "no position"; an error carries null instead.</summary>
+    private static int? LineOrNull(long line) => line > 0 ? (int)line : null;
 
     private static string DescribeRootShape(object? converted) => converted switch
     {
@@ -291,7 +293,7 @@ public static class YamlMapper
             case YamlMappingNode or YamlSequenceNode:
                 if (!state.Path.Add(node))
                 {
-                    var line = node.Start.Line > 0 ? (int?)node.Start.Line : null;
+                    var line = LineOrNull(node.Start.Line);
                     throw new PzConfigException(new PzError(
                         PzErrorCode.YamlShape,
                         "Malformed YAML: an alias refers to a node inside its own anchor, forming a cycle",

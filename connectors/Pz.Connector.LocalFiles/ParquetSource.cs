@@ -3,6 +3,8 @@ using Parquet;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Parquet;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.LocalFiles;
 
@@ -36,7 +38,7 @@ internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
 
         var footer = await ParquetReader.ReadSchemaAsync(path).ConfigureAwait(false);
         var fields = footer.GetDataFields()
-            .Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f)))
+            .Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ParquetTypeMap.ToV0TypeName(f, "localfiles parquet source")))
             .ToArray();
         return new DatasetSchema(new Schema(fields, null));
     }
@@ -44,7 +46,7 @@ internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
     /// <summary>Always succeeds: parquet is self-typing, so there is no contract to require and no
     /// reason to ever decline. A windowed dataset's <see cref="DatasetSpec.WatermarkCursor"/> +
     /// <see cref="DatasetSpec.WatermarkUpperBound"/> pair is pushed into the fragment via
-    /// <see cref="LocalFilesWindowSql.Wrap"/> (the same seam <see cref="CsvSource.TryGetNativeScan"/>
+    /// <see cref="NativeScanWindow.Wrap"/> (the same seam <see cref="CsvSource.TryGetNativeScan"/>
     /// extends) -- but plain (unwindowed) incremental --
     /// <see cref="DatasetSpec.WatermarkCursor"/>/<see cref="DatasetSpec.WatermarkValue"/> set alone, no
     /// upper bound -- is deliberately never consulted: ignoring it is always correct (merge dedups), so
@@ -55,10 +57,10 @@ internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
         var context = $"dataset '{spec.Dataset}'";
         var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "localfiles", context);
         var absPath = ResolvePath(spec);
-        var urlArg = $"'{EscapeSqlLiteral(absPath)}'";
+        var urlArg = $"'{DuckDbSqlText.EscapeLiteral(absPath)}'";
         var request = new FormatReadRequest(urlArg, 1, null);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
-        scan = new NativeScan(LocalFilesWindowSql.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
+        scan = new NativeScan(NativeScanWindow.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
         };
@@ -99,5 +101,4 @@ internal sealed class ParquetSource(string baseDir, bool rootDeclared) : ISource
                 : Path.Combine(baseDir, relative);
     }
 
-    private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");
 }

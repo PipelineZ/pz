@@ -195,6 +195,10 @@ public class TemplateRendererTests
         var ex = Assert.Throws<PzValidationException>(() => TemplateRenderer.Render(p, Ctx(p)));
         var error = Assert.Single(ex.Errors);
         Assert.NotNull(error.Hint);
+        foreach (var function in new[] { "source()", "ref()", "sink()", "watermark()", "var()", "env()" })
+        {
+            Assert.Contains(function, error.Hint, StringComparison.Ordinal);
+        }
     }
 
     [Fact]

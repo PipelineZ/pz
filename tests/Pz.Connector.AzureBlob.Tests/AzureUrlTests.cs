@@ -46,12 +46,6 @@ public sealed class AzureUrlTests
     }
 
     [Fact]
-    public void Escape_doubles_single_quotes()
-    {
-        Assert.Equal("a''b", AzureUrl.Escape("a'b"));
-    }
-
-    [Fact]
     public void Render_sink_prefix_joins_key()
     {
         var loc = AzureUrl.ParseSink(Opts(path: "raw/orders"), "output 'out'", objectName: "out.parquet");

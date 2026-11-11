@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Parquet;
@@ -8,6 +7,8 @@ using Parquet.Schema;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Parquet;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.LocalFiles;
 
@@ -26,7 +27,7 @@ internal sealed class LocalFilesSink(string baseDir, bool rootDeclared) : ISink
         var finalPath = ResolveFinalPath(spec);
         var tempPath = Path.Combine(Path.GetDirectoryName(finalPath)!, $".pz-native-{Guid.NewGuid():N}{Path.GetExtension(finalPath)}");
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to '{EscapeSqlLiteral(tempPath)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            $"copy (select * from {{{{source}}}}) to '{DuckDbSqlText.EscapeLiteral(tempPath)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             FileFormatCatalog.SetupStatements(format))
         {
             Mechanism = $"COPY TO {format.Name}",
@@ -50,8 +51,6 @@ internal sealed class LocalFilesSink(string baseDir, bool rootDeclared) : ISink
             ? Path.Combine(outputDir, $"{spec.Output}-{Guid.NewGuid():N}.{ext}")
             : Path.Combine(outputDir, fileName);
     }
-
-    private static string EscapeSqlLiteral(string value) => value.Replace("'", "''");
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
     {
@@ -221,6 +220,8 @@ internal abstract class LocalFileWriteSessionBase(string tempDir, string tempFil
 /// naming the column — the native COPY path is the decimal-capable route.</summary>
 internal sealed class ParquetSinkWriteSession : LocalFileWriteSessionBase
 {
+    private const string SinkName = "LocalFiles parquet sink v0";
+
     private readonly DataField[] _fields;
     private FileStream? _stream;
     private ParquetWriter? _writer;
@@ -238,7 +239,8 @@ internal sealed class ParquetSinkWriteSession : LocalFileWriteSessionBase
     internal static async Task<ParquetSinkWriteSession> CreateAsync(
         string tempDir, string tempFilePath, string finalFilePath, Schema arrowSchema, CancellationToken ct)
     {
-        var fields = arrowSchema.FieldsList.Select(BuildDataField).ToArray();
+        var fields = ParquetBatchWriter.BuildDataFields(arrowSchema, SinkName,
+            "the universal parquet write path does not support decimal columns; the native COPY path writes them");
         var parquetSchema = new ParquetSchema(fields);
 
         var stream = new FileStream(tempFilePath, FileMode.Create, FileAccess.Write);
@@ -254,71 +256,8 @@ internal sealed class ParquetSinkWriteSession : LocalFileWriteSessionBase
         }
     }
 
-    private static DataField BuildDataField(Apache.Arrow.Field field) => field.DataType switch
-    {
-        Int32Type => new DataField(field.Name, typeof(int), isNullable: true),
-        Int64Type => new DataField(field.Name, typeof(long), isNullable: true),
-        DoubleType => new DataField(field.Name, typeof(double), isNullable: true),
-        BooleanType => new DataField(field.Name, typeof(bool), isNullable: true),
-        StringType => new DataField(field.Name, typeof(string), isNullable: true),
-        Date32Type => new DateTimeDataField(field.Name, DateTimeFormat.Date, isNullable: true),
-        // DateAndTimeMicros, not DateAndTime -- Parquet.Net's DateTimeDataField constructor
-        // hardcodes Unit=Millis for DateAndTime regardless of the `unit:` argument (it only
-        // honors a requested unit for the *Micros/*Nanos format constants), so passing
-        // DateAndTime here would silently truncate every timestamp to millisecond precision.
-        TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTimeMicros,
-            isAdjustedToUTC: true, isNullable: true),
-        Decimal128Type => throw new PzConnectorException(
-            $"column '{field.Name}': the universal parquet write path does not support decimal columns; " +
-            "the native COPY path writes them", isTransient: false),
-        _ => throw new NotSupportedException(
-            $"LocalFiles parquet sink v0 does not support Arrow type '{field.DataType}' for column '{field.Name}'"),
-    };
-
-    protected override async ValueTask WriteBatchCoreAsync(RecordBatch batch, CancellationToken ct)
-    {
-        using var rowGroup = _writer!.CreateRowGroup();
-        for (var i = 0; i < _fields.Length; i++)
-        {
-            await WriteColumnAsync(rowGroup, _fields[i], batch.Column(i), ct).ConfigureAwait(false);
-        }
-    }
-
-    private static Task WriteColumnAsync(ParquetRowGroupWriter rowGroup, DataField field, IArrowArray array, CancellationToken ct) =>
-        array switch
-        {
-            Int32Array a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (int?)null : a.GetValue(i)), cancellationToken: ct),
-            Int64Array a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (long?)null : a.GetValue(i)), cancellationToken: ct),
-            DoubleArray a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (double?)null : a.GetValue(i)), cancellationToken: ct),
-            BooleanArray a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (bool?)null : a.GetValue(i)), cancellationToken: ct),
-            Date32Array a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (DateTime?)null : a.GetDateTime(i)!.Value.Date), cancellationToken: ct),
-            TimestampArray a => rowGroup.WriteAsync(field, BuildNullable(a.Length, i => a.IsNull(i) ? (DateTime?)null : a.GetTimestamp(i)!.Value.UtcDateTime), cancellationToken: ct),
-            StringArray a => rowGroup.WriteAsync(field, BuildStrings(a)),
-            _ => throw new NotSupportedException(
-                $"LocalFiles parquet sink v0 does not support array type '{array.GetType()}' for column '{field.Name}'"),
-        };
-
-    private static ReadOnlyMemory<T?> BuildNullable<T>(int length, Func<int, T?> selector) where T : struct
-    {
-        var values = new T?[length];
-        for (var i = 0; i < length; i++)
-        {
-            values[i] = selector(i);
-        }
-
-        return values;
-    }
-
-    private static List<string?> BuildStrings(StringArray array)
-    {
-        var values = new List<string?>(array.Length);
-        for (var i = 0; i < array.Length; i++)
-        {
-            values.Add(array.IsNull(i) ? null : array.GetString(i));
-        }
-
-        return values;
-    }
+    protected override ValueTask WriteBatchCoreAsync(RecordBatch batch, CancellationToken ct) =>
+        new(ParquetBatchWriter.WriteRowGroupAsync(_writer!, _fields, batch, SinkName, ct));
 
     protected override async ValueTask CloseWriterAsync()
     {

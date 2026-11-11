@@ -1,12 +1,12 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Sqlite;
 
 /// <summary>Native-only SQLite source: <see cref="TryGetNativeScan"/> always succeeds with a
 /// self-contained <c>sqlite_scan('&lt;path&gt;', '&lt;table&gt;')</c> fragment — no attach, no alias,
-/// no setup beyond the extension itself; <see cref="PlanReadAsync"/> is the PZ0312 refusal stub
-/// (ParquetSource/MySqlSource precedent).
+/// no setup beyond the extension itself; <see cref="PlanReadAsync"/> is the PZ0312 refusal stub.
 ///
 /// The PLAIN (unwindowed) incremental watermark IS pushed down (the database-source rule the MySQL
 /// connector established): DatasetSpec's contract explicitly permits it, and DuckDB's sqlite scanner
@@ -20,12 +20,12 @@ internal sealed class SqliteSource(ConnectorConfig config) : ISource
     /// (plain validate, run, the on_source_drift gate) never calls this.</summary>
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var columns = SqliteSql.ExtractColumns(spec) ?? throw new PzConnectorException(
+        var columns = ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': sqlite is native-only and has no offline schema probe -- " +
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
             isTransient: false, code: PzConnectorErrorCodes.Config);
 
-        var fields = columns.Select(kv => SqliteTypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+        var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new ValueTask<DatasetSchema>(new DatasetSchema(new Schema(fields, null)));
     }
 

@@ -1,5 +1,6 @@
-using System.Net.Sockets;
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Probes;
+using Pz.Shared.Quack;
 
 [assembly: PzConnector("quack", typeof(Pz.Connector.Quack.QuackConnector))]
 
@@ -14,8 +15,6 @@ namespace Pz.Connector.Quack;
 /// of the server; the client assumes HTTPS for non-loopback hosts. Registered as "quack".</summary>
 public sealed class QuackConnector : ISourceConnector, ISinkConnector, INativeOnlySource, INativeOnlySink, IOutputConfigSchema
 {
-    private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(5);
-
     public ConnectorInfo Info => new("quack", "0.1.0", ProtocolVersion.Major);
 
     public ConnectorCapabilities Capabilities =>
@@ -52,33 +51,10 @@ public sealed class QuackConnector : ISourceConnector, ISinkConnector, INativeOn
         return new(errors.Count == 0 ? ValidationResult.Success : ValidationResult.Failed([.. errors]));
     }
 
-    /// <summary>Kept in lockstep with <c>DuckLakeProbe.TcpAsync</c> (replicated, never
-    /// referenced).</summary>
-    public async ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct)
-    {
-        if (config.GetString("uri") is not { } uri || !QuackUri.TryParse(uri, out var host, out var port))
-        {
-            return new ConnectionCheck(false, "permanent: quack connection 'uri' must be of the form quack:host[:port]");
-        }
-
-        try
-        {
-            using var client = new TcpClient();
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(ConnectTimeout);
-            // A bracketed IPv6 literal keeps its brackets in the canonical uri; the socket wants the bare address.
-            await client.ConnectAsync(host.Trim('[', ']'), port, timeout.Token).ConfigureAwait(false);
-            return new ConnectionCheck(true, $"quack server reachable at {host}:{port} (tcp); credentials are verified at run time");
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            return new ConnectionCheck(false, $"transient: quack server at {host}:{port} did not accept a connection within {ConnectTimeout.TotalSeconds:0}s");
-        }
-        catch (SocketException ex)
-        {
-            return new ConnectionCheck(false, $"transient: quack server at {host}:{port} is unreachable ({ex.SocketErrorCode})");
-        }
-    }
+    public ValueTask<ConnectionCheck> CheckConnectionAsync(ConnectorConfig config, CancellationToken ct) =>
+        config.GetString("uri") is { } uri && QuackUri.TryParse(uri, out var host, out var port)
+            ? TcpProbe.CheckAsync(host, port, "quack server", ct)
+            : new(new ConnectionCheck(false, "permanent: quack connection 'uri' must be of the form quack:host[:port]"));
 
     ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) => new(new QuackSource(config));
 

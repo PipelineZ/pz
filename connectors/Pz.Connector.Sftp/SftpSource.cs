@@ -6,6 +6,7 @@ using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Csv;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.Sftp;
@@ -45,7 +46,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
         var format = ResolveFormat(spec);
-        var declared = ExtractColumns(spec);
+        var declared = ColumnTypeCatalog.ContractColumns(spec);
 
         if (format.Name == "json")
         {
@@ -98,7 +99,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
     public async ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct)
     {
         var format = ResolveFormat(spec);
-        var declared = ExtractColumns(spec);
+        var declared = ColumnTypeCatalog.ContractColumns(spec);
         if (format.Name == "json" && declared is not { Count: > 0 })
         {
             throw JsonContractRequiredError(spec);
@@ -151,7 +152,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         {
             var fields = declared
                 .Where(kv => header.Contains(kv.Key))
-                .Select(kv => SftpTypeNameMap.ToArrowField(kv.Key, kv.Value))
+                .Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value))
                 .ToArray();
             return new DatasetSchema(new Schema(fields, null));
         }
@@ -159,7 +160,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         var allFields = new Field[csv.FieldCount];
         for (var i = 0; i < csv.FieldCount; i++)
         {
-            allFields[i] = SftpTypeNameMap.ToArrowField(csv.GetName(i), "varchar");
+            allFields[i] = ColumnTypeCatalog.ToArrowField(csv.GetName(i), "varchar");
         }
 
         return new DatasetSchema(new Schema(allFields, null));
@@ -183,7 +184,7 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
                 $"dataset '{spec.Dataset}': columns: contract declares '{name}', but the parquet footer " +
                 $"'{path}' has no such column", isTransient: false);
 
-            var expected = SftpTypeNameMap.ToArrowField(name, typeName);
+            var expected = ColumnTypeCatalog.ToArrowField(name, typeName);
             if (expected.DataType.TypeId != footerField.DataType.TypeId)
             {
                 throw new PzConnectorException(
@@ -276,11 +277,6 @@ internal sealed class SftpSource(SftpConnectionSettings settings, Func<SftpConne
         return format;
     }
 
-    private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 }
 
 /// <summary>One group of remote files (<c>files_per_partition</c>-sized), read in order by opening a
@@ -524,7 +520,7 @@ internal sealed class SftpFilePartition(
         var fields = new Field[names.Length];
         for (var i = 0; i < names.Length; i++)
         {
-            fields[i] = SftpTypeNameMap.ToArrowField(names[i], typeNames[i]);
+            fields[i] = ColumnTypeCatalog.ToArrowField(names[i], typeNames[i]);
         }
 
         var schema = new Schema(fields, null);

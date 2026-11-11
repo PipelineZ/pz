@@ -39,13 +39,17 @@ public sealed record RenderResult(string Sql, IReadOnlySet<DepRef> Dependencies)
 public sealed record InlineSinkBinding(string Sink, string Output, SinkWriteOptions Write,
     bool DeclaredAtCallSite = false)
 {
+    /// <summary>The text <c>sink()</c> renders in place of the call; DagCompiler recognizes it verbatim
+    /// when it strips the leading INSERT statement.</summary>
+    public string Marker => $"__pz_sink__{Sink}__{Output}__";
+
     public InlineSinkBinding(string Sink, string Output)
         : this(Sink, Output, SinkWriteOptions.Default)
     {
     }
 }
 
-/// <summary>One watermark(<source>, <dataset>) call recorded by TemplateRenderer. The
+/// <summary>One <c>watermark(&lt;source&gt;, &lt;dataset&gt;)</c> call recorded by TemplateRenderer. The
 /// sentinel is the deterministic string literal the call renders to — DagCompiler's inference and
 /// the executors' substitution both key on it verbatim.</summary>
 public sealed record WatermarkRef(string SourceName, string Dataset)

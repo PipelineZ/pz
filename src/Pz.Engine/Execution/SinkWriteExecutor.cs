@@ -24,7 +24,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
             var error = new PzError(PzErrorCode.ConnectorNotInstalled,
                 $"connector '{def.Sink.Connector}' is not installed", def.Sink.FilePath, null,
                 "run 'pz restore'");
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, error);
+            return NodeResult.Failed(node, error);
         }
 
         var relation = StagingNames.ForSinkInput(def.Output.Input);
@@ -94,7 +94,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     def.Sink.FilePath, null,
                     "coalesce or filter out the null merge keys in the pipeline (a null key can't identify a " +
                     "target row), or use write.strategy: append with duplicates: accept if duplicates are acceptable");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nullMergeKeyError);
+                return NodeResult.Failed(node, nullMergeKeyError);
             }
 
             // Duplicate merge keys within one staged batch collapse to a
@@ -182,7 +182,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                 File.Move(move.TempPath, move.FinalPath, overwrite: true);
             }
 
-            PzMeters.RowsMoved.Add(nativeRows, new KeyValuePair<string, object?>("pz.node.kind", "SinkWrite"));
+            PzMeters.RowsMoved.Add(nativeRows, NodeMetricTags.Kind[NodeKind.SinkWrite]);
             // Ops: universal tier only -- the native tier never routes through a .NET gate.
             return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null);
         }
@@ -218,7 +218,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
         // column exists in the deletes relation, and none of them is null in any row there.
         if (def.Output.OnDelete is "delete" or "soft" && def.CdcDeleteOrigin is { } cdcOrigin)
         {
-            var deletesRelation = StagingNames.ForSourceLoad(cdcOrigin.Source, cdcOrigin.Dataset) + "__deletes";
+            var deletesRelation = StagingNames.DeletesOf(StagingNames.ForSourceLoad(cdcOrigin.Source, cdcOrigin.Dataset));
             var deletesSchema = await ctx.Duck.GetResultSchemaAsync($"select * from {deletesRelation}", ct).ConfigureAwait(false);
             var deletesColumns = deletesSchema.FieldsList.Select(f => f.Name).ToHashSet();
             var missingKey = def.Output.Keys.FirstOrDefault(k => !deletesColumns.Contains(k));
@@ -230,7 +230,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     def.Sink.FilePath, null,
                     "on_delete: delete|soft requires the merge keys to flow unchanged from the cdc dataset " +
                     "(rename them in the pipeline's upsert view only)");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, missingKeyError);
+                return NodeResult.Failed(node, missingKeyError);
             }
 
             var nullPredicate = string.Join(" or ", def.Output.Keys.Select(k => ArrowInterop.QuoteQualified(k) + " is null"));
@@ -244,7 +244,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                     def.Sink.FilePath, null,
                     "on_delete: delete|soft requires the merge keys to flow unchanged from the cdc dataset " +
                     "(rename them in the pipeline's upsert view only)");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nullKeyError);
+                return NodeResult.Failed(node, nullKeyError);
             }
         }
 
@@ -445,7 +445,7 @@ public sealed class SinkWriteExecutor : INodeExecutor
                                 isTransient: false);
                         }
 
-                        var deletesRelation = StagingNames.ForSourceLoad(deleteOrigin.Source, deleteOrigin.Dataset) + "__deletes";
+                        var deletesRelation = StagingNames.DeletesOf(StagingNames.ForSourceLoad(deleteOrigin.Source, deleteOrigin.Dataset));
                         var keyList = string.Join(", ", def.Output.Keys.Select(ArrowInterop.QuoteQualified));
                         await foreach (var keyBatch in ctx.Duck.QueryArrowAsync(
                             $"select {keyList} from {deletesRelation}", ctx.EffectiveBatch.TargetBatchBytes, ct).ConfigureAwait(false))
@@ -535,18 +535,9 @@ public sealed class SinkWriteExecutor : INodeExecutor
             // failure surfaces directly as a Failed NodeResult (KindDispatchingExecutor wraps it as
             // PZ0501) with no Abort call — see the comment above for why.
             var result = await session.CommitAsync(ct).ConfigureAwait(false);
-            PzMeters.RowsMoved.Add(result.RowsWritten, new KeyValuePair<string, object?>("pz.node.kind", "SinkWrite"));
+            PzMeters.RowsMoved.Add(result.RowsWritten, NodeMetricTags.Kind[NodeKind.SinkWrite]);
 
-            // One Snapshot() call feeds both the pz.ops.* meters and NodeResult.Ops —
-            // never snapshot twice, since OpStats is a point-in-time read of mutable Interlocked counters.
-            var opStats = gate?.Snapshot();
-            if (opStats is { } stats)
-            {
-                var instanceTag = new KeyValuePair<string, object?>("pz.instance", InstanceKey.For(node));
-                PzMeters.OpsExecuted.Add(stats.Executed, instanceTag);
-                PzMeters.OpsRetried.Add(stats.Retried, instanceTag);
-                PzMeters.OpsThrottleWait.Add(stats.ThrottleWaitMs, instanceTag);
-            }
+            var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
             // A committed sink needs no resume state, and a stale row must
             // never survive into a later pz retry. CancellationToken.None + suppress, mirroring
@@ -652,4 +643,10 @@ public static class StagingNames
     /// universal (Arrow ingest) branches so the table name is computed exactly once.</summary>
     public static string ForSourceLoad(string sourceName, string datasetName) =>
         $"staging.{StagingName.ForSourceLoad(sourceName, datasetName)}";
+
+    /// <summary>Suffix of the side table a cdc SourceLoad lands its net-delete keys into, next to the
+    /// canonical upserts table.</summary>
+    public const string DeletesSuffix = "__deletes";
+
+    public static string DeletesOf(string stagingTable) => stagingTable + DeletesSuffix;
 }

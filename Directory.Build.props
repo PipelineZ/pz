@@ -26,7 +26,7 @@
        Pz.Connectors.TestKit (the acceptance suite a connector runs against), and
        Pz.Connectors.Sdk (the out-of-process connector SDK).
        Packability is opt-OUT: every other project sets <IsPackable>false</IsPackable> explicitly in
-       its own .csproj, which flips this Condition off for them. That includes all eight builtin
+       its own .csproj, which flips this Condition off for them. That includes all the builtin
        connectors, which ship inside the `pz` tool package; publishing them separately produced
        packages nobody could install and use, because the host that drives a connector
        (Pz.PackageManagement) is itself unpublished. A NEW project is therefore packable the moment it

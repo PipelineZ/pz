@@ -152,8 +152,8 @@ public class ConnectionsLoaderTests
     [Fact]
     public void An_unknown_instance_retry_key_is_refused_the_same_code_as_the_kwarg_surface()
     {
-        // SinkFunction.ParseRetry already refuses an unknown sink('...', retry: {...}) key under
-        // PzErrorCode.RetryConfigInvalid; the YAML retry: surface must agree.
+        // A retry: block is cut-and-paste between YAML and the source()/sink() kwargs, so an unknown key
+        // must be refused under the same code everywhere.
         var error = Assert.Single(Errors("""
             warehouse:
               connector: postgres

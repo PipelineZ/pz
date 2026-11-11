@@ -109,8 +109,7 @@ internal static class GcsAuth
 
     private static GoogleCredential ServiceAccountCredential(ConnectorConfig config)
     {
-        // A relative key_file resolves against the CLI-injected base_dir (the localfiles/sqlite
-        // precedent) rather than the process working directory; absolute/~ values pass through.
+        // A relative key_file resolves against the CLI-injected base_dir rather than the process working directory; absolute/~ values pass through.
         if (ProjectRelativePath.Resolve(config.GetString("key_file"), config.GetString("base_dir"))
             is { Length: > 0 } keyFile)
         {

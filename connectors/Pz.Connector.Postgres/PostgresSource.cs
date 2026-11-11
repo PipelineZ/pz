@@ -1,10 +1,10 @@
 using System.Globalization;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Npgsql;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Shared.Partitioning;
 
 namespace Pz.Connector.Postgres;
 
@@ -21,10 +21,9 @@ namespace Pz.Connector.Postgres;
 /// max, or an empty/all-NULL column) collapsing to 1 partition.</summary>
 internal sealed class PostgresSource(string connectionString) : ISource, IChangeCaptureAdmin
 {
-    private const int MinPartitions = 1;
     private const int MaxPartitions = 16;
 
-    // The v0 DataReaderSource type matrix's orderable CLR shapes (see PgTypeMap): every numeric and
+    // The DataReaderSource type matrix's orderable CLR shapes (see PgTypeMap): every numeric and
     // temporal type postgres can surface via Npgsql. string/bool (text/boolean) are deliberately
     // excluded -- there is no meaningful equal-width range over them.
     private static readonly HashSet<Type> OrderablePartitionColumnTypes =
@@ -86,13 +85,13 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
                 {
                     throw new PzConnectorException(
                         $"dataset '{spec.Dataset}': option '{forbidden}' is not allowed with change capture " +
-                        "-- a cdc dataset reads its 'table' directly; remove it",
+                        "-- a cdc dataset reads its entity's table directly; remove it",
                         isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
             }
 
-            // Validates 'table' presence (throws PZ-style non-transient otherwise). One partition: cdc
-            // is inherently sequential (a single slot / snapshot cut).
+            // Rejects a malformed entity name up front (SplitEntity throws). One partition: cdc is
+            // inherently sequential (a single slot / snapshot cut).
             _ = PostgresCdc.SchemaAndTable(spec);
             return [new PostgresCdcPartition(connectionString, spec)];
         }
@@ -105,8 +104,8 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
             return [new PostgresPartition(connectionString, select)];
         }
 
-        var partitionCount = ParsePartitionCount(spec);
-        if (partitionCount == MinPartitions)
+        var partitionCount = PartitionCount.Parse(spec, MaxPartitions);
+        if (partitionCount == PartitionCount.Min)
         {
             return [new PostgresPartition(connectionString, select)];
         }
@@ -120,7 +119,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         }
 
         var boundaries = ComputeBoundaryLiterals(min, max, partitionCount);
-        var quotedColumn = Quote(partitionColumn);
+        var quotedColumn = PgDdl.Quote(partitionColumn);
         var partitions = new List<IDatasetPartition>(partitionCount);
         for (var i = 0; i < partitionCount; i++)
         {
@@ -141,56 +140,10 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         return partitions;
     }
 
-    private static int ParsePartitionCount(DatasetSpec spec)
-    {
-        if (!spec.Options.TryGetValue("partitions", out var raw) || raw is null)
-        {
-            return MinPartitions;
-        }
-
-        if (!TryParseInt32(raw, out var n))
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        if (n < MinPartitions || n > MaxPartitions)
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be between {MinPartitions} and {MaxPartitions}, got {n}",
-                isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        return n;
-    }
-
-    // TryParse pattern (not Convert.ToInt32, which throws a raw, unnamed FormatException for a
-    // non-integer-shaped string like "four") -- every failure mode below is folded into a single `false`
-    // so the caller can surface one named PzConnectorException instead.
-    private static bool TryParseInt32(object raw, out int value)
-    {
-        switch (raw)
-        {
-            case int i:
-                value = i;
-                return true;
-            case long l when l is >= int.MinValue and <= int.MaxValue:
-                value = (int)l;
-                return true;
-            case long or double or decimal:
-                value = 0;
-                return false;
-            default:
-                return int.TryParse(
-                    Convert.ToString(raw, CultureInfo.InvariantCulture), NumberStyles.Integer,
-                    CultureInfo.InvariantCulture, out value);
-        }
-    }
-
     private async Task<(object? Min, object? Max)> ProbeRangeAsync(
         DatasetSpec spec, string select, string column, CancellationToken ct)
     {
-        var quoted = Quote(column);
+        var quoted = PgDdl.Quote(column);
         await using var connection = new NpgsqlConnection(connectionString);
         try
         {
@@ -225,7 +178,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
     /// <c>boundaries[0]</c> is the exact min, <c>boundaries[n]</c> is the exact max, interior values are
     /// equal-width interpolations. Dispatches on the min/max value's runtime CLR type (already validated
     /// orderable by <see cref="ProbeRangeAsync"/>).</summary>
-    private static string[] ComputeBoundaryLiterals(object min, object max, int n) => min switch
+    internal static string[] ComputeBoundaryLiterals(object min, object max, int n) => min switch
     {
         int or long => BuildIntegerBoundaries(
             Convert.ToInt64(min, CultureInfo.InvariantCulture), Convert.ToInt64(max, CultureInfo.InvariantCulture), n),
@@ -238,57 +191,24 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
             $"unreachable: {min.GetType()} should already have been rejected as non-orderable"),
     };
 
-    // Exact integer-domain interpolation via BigInteger (avoids overflow for a huge bigint range times a
-    // small partition count) -- boundary(i) = min + floor(width * i / n), a pure function of i, so calling
-    // it for partition k's hi and partition k+1's lo (same i, same formula) yields identical values.
-    private static long[] BuildLongBoundaries(long min, long max, int n)
-    {
-        var result = new long[n + 1];
-        var width = (BigInteger)max - min;
-        for (var i = 0; i <= n; i++)
-        {
-            result[i] = i == n ? max : (long)(min + (width * i / n));
-        }
-
-        return result;
-    }
-
     private static string[] BuildIntegerBoundaries(long min, long max, int n) =>
-        BuildLongBoundaries(min, max, n).Select(b => b.ToString(CultureInfo.InvariantCulture)).ToArray();
+        EqualWidth.Longs(min, max, n).Select(b => b.ToString(CultureInfo.InvariantCulture)).ToArray();
 
-    private static string[] BuildDoubleBoundaries(double min, double max, int n)
-    {
-        var result = new string[n + 1];
-        for (var i = 0; i <= n; i++)
-        {
-            var boundary = i == n ? max : min + ((max - min) * i / n);
-            result[i] = boundary.ToString("G17", CultureInfo.InvariantCulture);
-        }
+    private static string[] BuildDoubleBoundaries(double min, double max, int n) =>
+        EqualWidth.Doubles(min, max, n).Select(b => b.ToString("G17", CultureInfo.InvariantCulture)).ToArray();
 
-        return result;
-    }
-
-    private static string[] BuildDecimalBoundaries(decimal min, decimal max, int n)
-    {
-        var result = new string[n + 1];
-        for (var i = 0; i <= n; i++)
-        {
-            var boundary = i == n ? max : min + ((max - min) * i / n);
-            result[i] = boundary.ToString(CultureInfo.InvariantCulture);
-        }
-
-        return result;
-    }
+    private static string[] BuildDecimalBoundaries(decimal min, decimal max, int n) =>
+        EqualWidth.Decimals(min, max, n).Select(b => b.ToString(CultureInfo.InvariantCulture)).ToArray();
 
     private static string[] BuildDateBoundaries(DateOnly min, DateOnly max, int n) =>
-        BuildLongBoundaries(min.DayNumber, max.DayNumber, n)
+        EqualWidth.Longs(min.DayNumber, max.DayNumber, n)
             .Select(day => $"date '{DateOnly.FromDayNumber((int)day).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)}'")
             .ToArray();
 
     // pg `timestamp` (no time zone) is trusted-UTC per PgTypeMap -- ticks arithmetic needs no
     // time zone conversion, only the two endpoints' wall-clock values.
     private static string[] BuildTimestampBoundaries(DateTime min, DateTime max, int n) =>
-        BuildLongBoundaries(min.Ticks, max.Ticks, n)
+        EqualWidth.Longs(min.Ticks, max.Ticks, n)
             .Select(ticks => $"timestamp '{new DateTime(ticks, DateTimeKind.Unspecified)
                 .ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}'")
             .ToArray();
@@ -296,7 +216,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
     // Explicit UTC conversion (not merely trusting Npgsql's default session time zone) -- probe and
     // boundary math both operate in UTC regardless of the connection's configured time zone.
     private static string[] BuildTimestamptzBoundaries(DateTimeOffset min, DateTimeOffset max, int n) =>
-        BuildLongBoundaries(min.UtcDateTime.Ticks, max.UtcDateTime.Ticks, n)
+        EqualWidth.Longs(min.UtcDateTime.Ticks, max.UtcDateTime.Ticks, n)
             .Select(ticks => $"timestamptz '{new DateTime(ticks, DateTimeKind.Utc)
                 .ToString("yyyy-MM-dd HH:mm:ss.ffffff", CultureInfo.InvariantCulture)}+00'")
             .ToArray();
@@ -381,9 +301,9 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         // No `table:`/`schema:` option -- the dataset name is the object name, qualified by its own dot.
         var (schema, table) = PgDdl.SplitEntity(spec.Dataset);
         var columns = hints.Columns is { Count: > 0 }
-            ? string.Join(", ", hints.Columns.Select(Quote))
+            ? string.Join(", ", hints.Columns.Select(PgDdl.Quote))
             : "*";
-        var sql = $"select {columns} from {Quote(schema)}.{Quote(table)}";
+        var sql = $"select {columns} from {PgDdl.Quote(schema)}.{PgDdl.Quote(table)}";
         // Trust boundary (mirrors ReadHints' own doc comment): PredicateSql is engine-generated SQL, not
         // end-user/attacker input -- the planner builds it from the pipeline's own predicate pushdown
         // logic, so it is concatenated raw rather than parameterized. Identifiers (schema/table/columns)
@@ -409,7 +329,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         if (spec is { WatermarkCursor: not null, WatermarkValue: not null })
         {
             var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{Quote(spec.WatermarkCursor)} {op} '{spec.WatermarkValue!.Replace("'", "''")}'");
+            predicates.Add($"{PgDdl.Quote(spec.WatermarkCursor)} {op} '{spec.WatermarkValue!.Replace("'", "''")}'");
         }
 
         // The bounded-window upper bound joins the SAME AND-chain as
@@ -417,7 +337,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         // BoundedWindow-capable-connector contract (DatasetSpec.WatermarkUpperBound's doc comment).
         if (spec.WatermarkCursor is not null && spec.WatermarkUpperBound is not null)
         {
-            predicates.Add($"{Quote(spec.WatermarkCursor)} <= '{spec.WatermarkUpperBound.Replace("'", "''")}'");
+            predicates.Add($"{PgDdl.Quote(spec.WatermarkCursor)} <= '{spec.WatermarkUpperBound.Replace("'", "''")}'");
         }
 
         // Each term is individually parenthesized before the AND-join (SQL's AND binds tighter than OR):
@@ -430,8 +350,6 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
             ? $"{sql} where {string.Join(" and ", predicates.Select(p => $"({p})"))}"
             : sql;
     }
-
-    private static string Quote(string identifier) => $"\"{identifier.Replace("\"", "\"\"")}\"";
 }
 
 /// <summary>One independently readable slice of a postgres dataset (the whole dataset when
@@ -462,13 +380,27 @@ internal sealed class PostgresPartition(string connectionString, string selectSq
             throw new PzConnectorException($"postgres read failed: {ex.Message}", ex.IsTransient, innerException: ex);
         }
 
-        // Manual-enumerator pattern: CS1626 forbids a `yield return` *inside* a try/catch block, but does
-        // NOT forbid one in a separate statement that merely follows a try/catch -- so driving the inner
-        // enumerator by hand (try/catch around MoveNextAsync only, yield outside the catch) lets a fault
-        // raised by Npgsql mid-stream (after the reader opened successfully above) surface as a classified
-        // PzConnectorException, using the exact same IsTransient rule as the connection-open catch above,
-        // instead of escaping as a raw NpgsqlException.
-        var enumerator = DataReaderSource.ReadBatchesAsync(reader, options.TargetBatchBytes, ct).GetAsyncEnumerator();
+        await foreach (var batch in PgBatchStream.ReadAsync(
+            reader, options.TargetBatchBytes, "postgres read failed mid-stream", ct).ConfigureAwait(false))
+        {
+            yield return batch;
+        }
+    }
+}
+
+/// <summary>Drains an open <see cref="NpgsqlDataReader"/> into Arrow batches and owns the reader from
+/// here on (disposed on every exit path). CS1626 forbids a <c>yield return</c> inside a try/catch, but
+/// not one that merely follows it, so the inner enumerator is driven by hand: only
+/// <c>MoveNextAsync</c> sits inside the catch, which lets a fault Npgsql raises mid-stream surface as a
+/// classified <see cref="PzConnectorException"/> (same <c>IsTransient</c> rule as the connection-open
+/// catches) instead of escaping as a raw <see cref="NpgsqlException"/>.</summary>
+internal static class PgBatchStream
+{
+    public static async IAsyncEnumerable<RecordBatch> ReadAsync(
+        NpgsqlDataReader reader, int targetBatchBytes, string midStreamFailure,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var enumerator = DataReaderSource.ReadBatchesAsync(reader, targetBatchBytes, ct).GetAsyncEnumerator(ct);
         try
         {
             while (true)
@@ -480,8 +412,7 @@ internal sealed class PostgresPartition(string connectionString, string selectSq
                 }
                 catch (NpgsqlException ex)
                 {
-                    throw new PzConnectorException(
-                        $"postgres read failed mid-stream: {ex.Message}", ex.IsTransient, innerException: ex);
+                    throw new PzConnectorException($"{midStreamFailure}: {ex.Message}", ex.IsTransient, innerException: ex);
                 }
 
                 if (!moved)

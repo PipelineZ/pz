@@ -43,7 +43,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             var error = new PzError(PzErrorCode.ConnectorNotInstalled,
                 $"connector '{def.Source.Connector}' is not installed", def.Source.FilePath, null,
                 "run 'pz restore'");
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, error);
+            return NodeResult.Failed(node, error);
         }
 
         await using var source = await connector.OpenAsync(
@@ -55,7 +55,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         if (ColumnPointerSupport.Refusal(def.Dataset.Options, connector.DatasetConfigSchema, def.Source.Connector,
                 def.Source.Name, def.Dataset.Name, def.Source.FilePath) is { } pointerRefusal)
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, pointerRefusal);
+            return NodeResult.Failed(node, pointerRefusal);
         }
 
         // Hand a gate-aware source its operation gate before any plan/read call. The gate exists even
@@ -119,8 +119,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             && CursorContract.ResolveDeclaredType(def.Dataset) is { } contractType
             && !CursorTypeGuard.Fits(stored.TypeName, contractType))
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
-                CursorTypeGuard.Mismatch(def, stored, "is declared as", contractType));
+            return NodeResult.Failed(node, CursorTypeGuard.Mismatch(def, stored, "is declared as", contractType));
         }
 
         // A windowed dataset (incremental.MaxWindow present -- DagCompiler
@@ -161,7 +160,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     def.Source.FilePath, null,
                     "run with --full-refresh to restart the windowed backfill from initial, or align " +
                     "columns: with the stored watermark's type");
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, mismatchError);
+                return NodeResult.Failed(node, mismatchError);
             }
 
             lowerWm ??= new Watermark(incremental.Cursor, declaredType, incremental.Initial!, "initial");
@@ -337,10 +336,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 await CaptureWatermarkAsync(ctx, def, nativeTable, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
             if (nativeWatermarkError is not null)
             {
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, nativeWatermarkError);
+                return NodeResult.Failed(node, nativeWatermarkError);
             }
 
-            PzMeters.RowsMoved.Add(nativeRows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
+            PzMeters.RowsMoved.Add(nativeRows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
             // Ops: universal tier only -- the native tier never routes through a .NET gate.
             var nativeSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, nativeRows, TimeSpan.Zero, null,
                 WatermarkCandidate: nativeWatermarkCandidate, SyncStateCandidate: null);
@@ -400,8 +399,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             var span = shape == ResolvedReadShape.Cdc
                 ? "one log position cannot span partitions"
                 : "one opaque token cannot span partitions";
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
-                new PzError(PzErrorCode.SyncPartitionedReadConflict,
+            return NodeResult.Failed(node, new PzError(PzErrorCode.SyncPartitionedReadConflict,
                     $"source '{def.Source.Name}' dataset '{def.Dataset.Name}' is sync-state but its connector " +
                     $"returned {partitions.Count} partitions -- {span}",
                     def.Source.FilePath, null,
@@ -420,7 +418,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         if (connector.Capabilities.HasFlag(ConnectorCapabilities.StablePartitionIds) && shape != ResolvedReadShape.Cdc
             && ctx.SourceSliceRows is null)
         {
-            return Stamp(await ExecutePartitionModeAsync(node, def, ctx, source, partitions, streamingSource,
+            return Stamp(await ExecutePartitionModeAsync(node, def, ctx, partitions, streamingSource,
                 spec, hints, schema, gate, windowLower, windowUpper, upperInclusive, declaredType, caughtUp, shape,
                 plainFloor, ct).ConfigureAwait(false));
         }
@@ -453,7 +451,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // the list path below starts ALL partition tasks at once, backpressured only by the bounded
         // channel(4) -- for a streaming source that would materialize millions of pending tasks up front,
         // defeating laziness. So the streaming variant gates in-flight partition reads with a SemaphoreSlim
-        // sized to Environment.ProcessorCount -- a bounded I/O fan-out default, no YAML knob. Determinism
+        // sized to PartitionModeLoader.MaxConcurrentPartitionReads. Determinism
         // is unaffected: partitions already funnel through the one bounded channel into the one serialized
         // DuckDB ingest, so cross-partition row order was never guaranteed either way.
         var skipGuard = new SkippedReadGuard(def, shape);
@@ -461,7 +459,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             ? PumpPartitionsAsync(partitions!, channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipGuard)
             : PumpStreamingPartitionsAsync(
                 streamingSource.PlanReadStreamingAsync(spec, hints, pumpCts.Token),
-                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, Environment.ProcessorCount, skipGuard);
+                channel.Writer, pumpCts, stall, ctx.EffectiveBatch, skipGuard);
         Activity.Current = nodeActivity;
 
         try
@@ -520,7 +518,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     .ConfigureAwait(false);
                 if (cdcError is not null)
                 {
-                    return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, cdcError);
+                    return NodeResult.Failed(node, cdcError);
                 }
 
                 cdcStats = cdcCounts;
@@ -559,25 +557,16 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 await CaptureWatermarkAsync(ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
             if (watermarkError is not null)
             {
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, watermarkError);
+                return NodeResult.Failed(node, watermarkError);
             }
 
-            PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
+            PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
 
-            // One Snapshot() call feeds both the pz.ops.* meters and NodeResult.Ops —
-            // never snapshot twice, since OpStats is a point-in-time read of mutable Interlocked counters.
-            var opStats = gate?.Snapshot();
-            if (opStats is { } stats)
-            {
-                var instanceTag = new KeyValuePair<string, object?>("pz.instance", InstanceKey.For(node));
-                PzMeters.OpsExecuted.Add(stats.Executed, instanceTag);
-                PzMeters.OpsRetried.Add(stats.Retried, instanceTag);
-                PzMeters.OpsThrottleWait.Add(stats.ThrottleWaitMs, instanceTag);
-            }
+            var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
-            var legacySuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
+            var channelSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
                 stall.ToTimings(), watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats, Cdc: cdcStats);
-            return Stamp(await SchemaDriftGate.ApplyAsync(legacySuccess, node, def, hints, tableName, ctx, ct)
+            return Stamp(await SchemaDriftGate.ApplyAsync(channelSuccess, node, def, hints, tableName, ctx, ct)
                 .ConfigureAwait(false));
         }
         catch
@@ -620,14 +609,14 @@ public sealed class SourceLoadExecutor : INodeExecutor
     internal static ReadHints NativeHints(SourceDatasetDef def) =>
         def.Hints is { } plan ? new ReadHints(plan.Columns, plan.PredicateSql) : ReadHints.None;
 
-    /// <summary>The compiler decided what the single reading pipeline
-    /// makes pushable; this decides whether THIS connector gets it. The two halves are gated
+    /// <summary>The compiler decided what the single reading pipeline makes pushable; this decides whether
+    /// THIS connector gets it. The two halves are gated
     /// independently because a connector may honour one and not the other. An absent capability means
     /// push nothing for that half, silently — this is an optimisation, and the pipeline's own SQL still
     /// runs in DuckDB over whatever landed, so a connector that receives nothing produces exactly the
     /// same rows, just after moving more of them.</summary>
-    /// <paramref name="limit"/> (a fresh preview's slice) reaches every connector whatever it advertises: the
-    /// engine re-applies it, so honouring it is only an optimisation.
+    /// <param name="limit">A fresh preview's slice. It reaches every connector whatever it advertises: the
+    /// engine re-applies it, so honouring it is only an optimisation.</param>
     internal static ReadHints HintsFor(SourceDatasetDef def, ConnectorCapabilities caps, long? limit = null)
     {
         if (def.Hints is not { } plan)
@@ -753,7 +742,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                     $"select * exclude (_pz_op, _pz_lsn, _pz_changed_at) from {changesTable} limit 0", ct)
                     .ConfigureAwait(false);
                 await ctx.Duck.ExecuteAsync(
-                    $"create or replace table {canonicalTable}__deletes as " +
+                    $"create or replace table {StagingNames.DeletesOf(canonicalTable)} as " +
                     $"select * exclude (_pz_op, _pz_lsn, _pz_changed_at) from {changesTable} limit 0", ct)
                     .ConfigureAwait(false);
                 return (null, new CdcStats(0, 0, 0));
@@ -773,7 +762,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             $"  select *, row_number() over (partition by {keyList} order by _pz_lsn desc) as _pz_rn " +
             $"  from {changesTable}) where _pz_rn = 1 and _pz_op <> 'delete'", ct).ConfigureAwait(false);
         await ctx.Duck.ExecuteAsync(
-            $"create or replace table {canonicalTable}__deletes as " +
+            $"create or replace table {StagingNames.DeletesOf(canonicalTable)} as " +
             $"select * exclude (_pz_op, _pz_lsn, _pz_changed_at, _pz_rn) from (" +
             $"  select *, row_number() over (partition by {keyList} order by _pz_lsn desc) as _pz_rn " +
             $"  from {changesTable}) where _pz_rn = 1 and _pz_op = 'delete'", ct).ConfigureAwait(false);
@@ -789,11 +778,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// <summary>Partition-scoped mode entry point. Validates every planned partition's identity
     /// (StablePartitionIds contract) before any extraction starts, then hands the identified list to
     /// <see cref="PartitionModeLoader"/> for per-partition part-table staging + ledger-gated completion.
-    /// The epilogue below deliberately mirrors <see cref="ExecuteAsync"/>'s legacy-branch
-    /// trim/watermark/sync/meters statements — a parallel copy that keeps the legacy path byte-identical
-    /// rather than threading a shared helper through both.</summary>
+    /// The epilogue (trim, watermark capture, sync candidate, meters) follows the same sequence as the
+    /// channel branch of <see cref="ExecuteAsync"/>, but reports partition stats instead of stall timings.</summary>
     private static async Task<NodeResult> ExecutePartitionModeAsync(DagNode node, SourceDatasetDef def,
-        RunContext ctx, ISource source, IReadOnlyList<IDatasetPartition>? partitions,
+        RunContext ctx, IReadOnlyList<IDatasetPartition>? partitions,
         IStreamingSource? streamingSource, DatasetSpec spec, ReadHints hints, Schema schema, OperationGate? gate,
         string? windowLower, string? windowUpper, bool upperInclusive, string? declaredType, bool caughtUp,
         ResolvedReadShape shape,
@@ -813,7 +801,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // pre-validate up front the way the list branch below does.
             (loadError, rows, stats) = await PartitionModeLoader.LoadStreamingAsync(node, ctx,
                 streamingSource.PlanReadStreamingAsync(spec, hints, ct), schema, tableName,
-                windowLower, windowUpper, reusedCount: 0, def, ct, skipGuard).ConfigureAwait(false);
+                windowLower, windowUpper, def, ct, skipGuard).ConfigureAwait(false);
         }
         else
         {
@@ -843,8 +831,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
             if (problems.Count > 0)
             {
                 // Ordinals only — raw partition ids never surface in errors.
-                return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero,
-                    new PzError(PzErrorCode.PartitionIdentityInvalid,
+                return NodeResult.Failed(node, new PzError(PzErrorCode.PartitionIdentityInvalid,
                         $"source '{def.Source.Name}' dataset '{def.Dataset.Name}': connector declares " +
                         $"StablePartitionIds but its planned partitions violate the identity contract: " +
                         string.Join("; ", problems),
@@ -880,13 +867,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
         if (loadError is not null)
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, loadError);
+            return NodeResult.Failed(node, loadError);
         }
 
-        // Epilogue — same statements as the legacy branch (windowed trim + recount, watermark
-        // capture, sync poll, meters); see the legacy branch above and mirror it exactly, with
-        // rows recomputed from the trim's count when windowed. Timings deliberately null and
-        // Partitions carrying the stats.
+        // Epilogue: sync candidate, windowed trim (rows become the post-trim count), watermark capture,
+        // meters. Timings are null; Partitions carries the stats.
         SyncState? syncCandidate = null;
         if (shape == ResolvedReadShape.Feed && partitions is { Count: 1 } &&
             partitions[0] is ISyncStatePartition syncPartition &&
@@ -909,18 +894,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
             ctx, def, tableName, windowUpper, windowLower, upperInclusive, declaredType, caughtUp, ct).ConfigureAwait(false);
         if (watermarkError is not null)
         {
-            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Failed, 0, TimeSpan.Zero, watermarkError);
+            return NodeResult.Failed(node, watermarkError);
         }
 
-        PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
-        var opStats = gate?.Snapshot();
-        if (opStats is { } snapshot)
-        {
-            var instanceTag = new KeyValuePair<string, object?>("pz.instance", InstanceKey.For(node));
-            PzMeters.OpsExecuted.Add(snapshot.Executed, instanceTag);
-            PzMeters.OpsRetried.Add(snapshot.Retried, instanceTag);
-            PzMeters.OpsThrottleWait.Add(snapshot.ThrottleWaitMs, instanceTag);
-        }
+        PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
+        var opStats = OpsMetering.RecordAndSnapshot(gate, node);
 
         var partitionSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
             Timings: null, watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats,
@@ -930,7 +908,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
     }
 
     /// <summary>Universal-path engine backstop, shared by the
-    /// legacy and streaming branches. The candidate-cap (WindowMath.Min in CaptureWatermarkAsync) and
+    /// channel and partition-mode paths. The candidate-cap (WindowMath.Min in CaptureWatermarkAsync) and
     /// window-scoped MAX keep the WATERMARK value safe against an over-delivering connector, but neither
     /// removes the out-of-window rows from staging CONTENT -- honoring DatasetSpec.WatermarkLowerBound/
     /// WatermarkUpperBound is MAY, not MUST, and a force_universal tier flip can land the whole backlog
@@ -952,9 +930,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // exact. windowLower is null only for a SQL ceiling whose floor evaluated to NULL (first run, bare
         // watermark()); then there is no lower half to cut.
         var upperOp = upperInclusive ? ">" : ">=";
-        var lowerHalf = windowLower is null ? "" : $"{quoted} <= '{windowLower.Replace("'", "''")}' or ";
+        var lowerHalf = windowLower is null ? "" : $"{quoted} <= {ArrowInterop.QuoteLiteral(windowLower)} or ";
         await ctx.Duck.ExecuteAsync(
-            $"delete from {tableName} where {lowerHalf}{quoted} {upperOp} '{windowUpper.Replace("'", "''")}'",
+            $"delete from {tableName} where {lowerHalf}{quoted} {upperOp} {ArrowInterop.QuoteLiteral(windowUpper)}",
             ct).ConfigureAwait(false);
 
         return await ctx.Duck.ScalarAsync<long>($"select count(*) from {tableName}", ct).ConfigureAwait(false);
@@ -970,7 +948,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // A floor of the wrong type would fail the delete below on a bare conversion error. A type outside the
         // cursor set is left to CaptureWatermarkAsync, which reports it for every incremental read.
         var duckType = await ctx.Duck.ScalarAsync<string>(
-            $"select column_type from (describe {tableName}) where lower(column_name) = lower('{cursor.Replace("'", "''")}')", ct)
+            $"select column_type from (describe {tableName}) where lower(column_name) = lower({ArrowInterop.QuoteLiteral(cursor)})", ct)
             .ConfigureAwait(false);
         if (TryMapDuckToCursorType(duckType, out var landedType) && !CursorTypeGuard.Fits(floor.TypeName, landedType))
         {
@@ -979,7 +957,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
         var quoted = ArrowInterop.QuoteQualified(cursor);
         await ctx.Duck.ExecuteAsync(
-            $"delete from {tableName} where {quoted} <= '{floor.Value.Replace("'", "''")}'", ct).ConfigureAwait(false);
+            $"delete from {tableName} where {quoted} <= {ArrowInterop.QuoteLiteral(floor.Value)}", ct).ConfigureAwait(false);
         return await ctx.Duck.ScalarAsync<long>($"select count(*) from {tableName}", ct).ConfigureAwait(false);
     }
 
@@ -1196,7 +1174,6 @@ public sealed class SourceLoadExecutor : INodeExecutor
     {
         var table = StagingNames.ForSourceLoad(def.Source.Name, def.Dataset.Name);
         var datasetLabel = $"{def.Source.Name}.{def.Dataset.Name}";
-        var pathLiteral = entry.PriorStagingPath.Replace("'", "''");
 
         // The dispatcher runs nodes concurrently and DuckSession serializes per-STATEMENT, not
         // per-sequence (the run's one DuckDB connection is gated by a semaphore around a single statement's
@@ -1205,13 +1182,12 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // with a duplicate-ATTACH error, sending the loser through the exact fallback-to-connector path
         // reuse exists to avoid. A per-node alias (derived from the node's own content-addressed ID)
         // removes the shared mutable name entirely, so concurrent reuses never collide.
-        var alias = "pz_prior_" + new string(node.Id.Value.Where(char.IsLetterOrDigit).ToArray());
-        var quotedAlias = ArrowInterop.QuoteQualified(alias);
-        var attached = false;
+        var alias = "pz_prior_" + PartitionLedger.NodeKey(node);
+        PzMeta.AttachScope? priorScope = null;
         try
         {
-            await ctx.Duck.ExecuteAsync($"attach '{pathLiteral}' as {quotedAlias} (read_only)", ct).ConfigureAwait(false);
-            attached = true;
+            priorScope = await PzMeta.AttachReadOnlyAsync(ctx.Duck, alias, entry.PriorStagingPath, ct).ConfigureAwait(false);
+            var quotedAlias = priorScope.QuotedAlias;
 
             await ctx.Duck.ExecuteAsync($"create or replace table {table} as select * from {quotedAlias}.{table}", ct)
                 .ConfigureAwait(false);
@@ -1232,10 +1208,10 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // ran). Probed via the attached catalog's information_schema so a non-cdc dataset (no deletes
             // table) simply copies nothing. table = "staging.<name>"; the deletes table's unqualified name
             // is "<name>__deletes" (alias is [A-Za-z0-9_] only, so a plain literal is injection-safe).
-            var deletesTable = table + "__deletes";
-            var deletesName = (table.Split('.', 2)[1] + "__deletes").Replace("'", "''");
+            var deletesTable = StagingNames.DeletesOf(table);
+            var deletesName = ArrowInterop.QuoteLiteral(table.Split('.', 2)[1] + StagingNames.DeletesSuffix);
             var hasDeletes = await ctx.Duck.ScalarAsync<long>(
-                $"select count(*) from information_schema.tables where table_catalog = '{alias}' and table_name = '{deletesName}'", ct)
+                $"select count(*) from information_schema.tables where table_catalog = '{alias}' and table_name = {deletesName}", ct)
                 .ConfigureAwait(false);
             if (hasDeletes > 0)
             {
@@ -1248,7 +1224,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 ? new Watermark(wm.Cursor, wm.Type, wm.Value, ctx.Paths.RunId)
                 : null;
 
-            PzMeters.RowsMoved.Add(rows, new KeyValuePair<string, object?>("pz.node.kind", "SourceLoad"));
+            PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
             // Deliberately NOT routed through SchemaDriftGate: this table was landed by the FAILED
             // run, whose own gate pass already accepted/seeded its schema (or the run wouldn't have
             // produced a reusable ReuseEntry) — re-DESCRIBEing a byte-identical copy would only
@@ -1280,16 +1256,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
         finally
         {
-            if (attached)
+            if (priorScope is not null)
             {
-                try
-                {
-                    await ctx.Duck.ExecuteAsync($"detach {quotedAlias}", CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort: a failed detach must never mask the reuse result/fallback decision.
-                }
+                await priorScope.DisposeAsync().ConfigureAwait(false);
             }
         }
     }
@@ -1332,9 +1301,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
     /// external cancel). A clean run completes the channel with no error.</summary>
     private static async Task PumpStreamingPartitionsAsync(
         IAsyncEnumerable<IDatasetPartition> partitions, ChannelWriter<RecordBatch> writer, CancellationTokenSource pumpCts,
-        StallAccumulator stall, BatchOptions batchOptions, int maxConcurrency, SkippedReadGuard skipGuard)
+        StallAccumulator stall, BatchOptions batchOptions, SkippedReadGuard skipGuard)
     {
-        using var gate = new SemaphoreSlim(maxConcurrency);
+        using var gate = new SemaphoreSlim(PartitionModeLoader.MaxConcurrentPartitionReads);
         var tasks = new List<Task>();
 
         try
@@ -1531,12 +1500,6 @@ public sealed class SourceLoadExecutor : INodeExecutor
         }
     }
 
-    /// <summary>Mirrors <c>DagCompiler</c>'s compile-time contract check for a <c>columns:</c>-declared
-    /// cursor. That check only fires when a contract is declared; this runtime check is what catches an
-    /// unsupported type for a dataset with no declared contract, whose actual type is only known once
-    /// the staging table exists.</summary>
-    private static readonly string[] AllowedCursorTypes = ["int", "bigint", "decimal", "date", "timestamp"];
-
     /// <summary>After the staging table for an incremental dataset exists (either tier — native CTAS or
     /// universal Arrow ingest), probes the cursor column's actual DuckDB type and, unless the extract was
     /// empty (NULL max — no candidate, previous watermark stands), computes the new candidate watermark
@@ -1598,7 +1561,7 @@ public sealed class SourceLoadExecutor : INodeExecutor
         try
         {
             duckType = await ctx.Duck.ScalarAsync<string>(
-                $"select column_type from (describe {tableName}) where lower(column_name) = lower('{cursor.Replace("'", "''")}')", ct)
+                $"select column_type from (describe {tableName}) where lower(column_name) = lower({ArrowInterop.QuoteLiteral(cursor)})", ct)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -1611,9 +1574,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
                 $"watermark cursor probe failed: {sanitized}", isTransient: false, innerException: ex);
         }
 
+        // DagCompiler checks a columns:-declared cursor at compile time; a dataset without a contract
+        // only reveals its cursor's type here, once the staging table exists.
         if (!TryMapDuckToCursorType(duckType, out var typeName))
         {
-            var allowed = string.Join(", ", AllowedCursorTypes);
+            var allowed = CursorContract.AllowedTypesText;
             var error = new PzError(PzErrorCode.UnsupportedCursorType,
                 $"source '{def.Source.Name}.{def.Dataset.Name}': incremental cursor column '{cursor}' landed " +
                 $"as DuckDB type '{duckType}', which is not a supported watermark cursor type -- allowed: {allowed}",
@@ -1660,10 +1625,9 @@ public sealed class SourceLoadExecutor : INodeExecutor
         // the comparison.
         if (windowUpper is not null)
         {
-            var upperLiteral = windowUpper.Replace("'", "''");
             var upperOp = upperInclusive ? "<=" : "<";
-            var lowerHalf = windowLower is null ? "" : $"{q} > '{windowLower.Replace("'", "''")}' and ";
-            maxSql += $" where {lowerHalf}{q} {upperOp} '{upperLiteral}'";
+            var lowerHalf = windowLower is null ? "" : $"{q} > {ArrowInterop.QuoteLiteral(windowLower)} and ";
+            maxSql += $" where {lowerHalf}{q} {upperOp} {ArrowInterop.QuoteLiteral(windowUpper)}";
         }
 
         string? value;

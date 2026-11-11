@@ -4,8 +4,8 @@ using Pz.Connectors.Abstractions;
 
 namespace Pz.Connector.SqlServer;
 
-/// <summary>Per-column effective DDL type via the ratified
-/// hierarchy -- declared `columns:` entry > derived from OutputSpec.MaxTextLengths with 2x bucket
+/// <summary>Per-column effective DDL type, resolved in priority
+/// order -- declared `columns:` entry > derived from OutputSpec.MaxTextLengths with 2x bucket
 /// headroom > nvarchar(4000) -- for Arrow String columns; MsDdl.DdlType for everything else.
 /// Validation aggregates every bad `columns:` entry into ONE non-transient exception (error
 /// philosophy: report all), offline, before any connection is opened.</summary>

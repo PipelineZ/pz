@@ -169,40 +169,21 @@ internal sealed class SqlServerCdcPartition(string connectionString, DatasetSpec
         }
     }
 
-    // Manual-enumerator pattern (CS1626: no yield inside try/catch) -- mirrors SqlServerPartition and
-    // PostgresCdcPartition: a mid-stream SqlException classifies as PzConnectorException, connection and
-    // reader are disposed on every exit path (normal completion, mid-stream fault, or abandoned enumeration).
+    // Streams the reader (disposing it) and then releases the connection, on every exit path: normal
+    // completion, mid-stream fault, or abandoned enumeration.
     private async IAsyncEnumerable<RecordBatch> DrainAsync(
         SqlDataReader reader, SqlConnection connection, BatchOptions options,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var enumerator = SqlServerArrowReader.ReadBatchesAsync(reader, options, ct).GetAsyncEnumerator(ct);
         try
         {
-            while (true)
+            await foreach (var batch in SqlServerBatchStream.ReadAsync(reader, options, Wrap, ct).ConfigureAwait(false))
             {
-                bool moved;
-                try
-                {
-                    moved = await enumerator.MoveNextAsync().ConfigureAwait(false);
-                }
-                catch (SqlException ex)
-                {
-                    throw Wrap(ex);
-                }
-
-                if (!moved)
-                {
-                    yield break;
-                }
-
-                yield return enumerator.Current;
+                yield return batch;
             }
         }
         finally
         {
-            await enumerator.DisposeAsync().ConfigureAwait(false);
-            await reader.DisposeAsync().ConfigureAwait(false);
             await connection.DisposeAsync().ConfigureAwait(false);
         }
     }

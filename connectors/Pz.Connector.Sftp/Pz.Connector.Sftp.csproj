@@ -34,4 +34,13 @@
     <PackageReference Include="Sylvan.Data.Csv" Version="1.4.4" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Shared connector mechanics compiled from one source file; connectors never reference each other. -->
+    <Compile Include="..\..\src\Shared\Csv\CsvArrowReader.cs" Link="Shared\Csv\CsvArrowReader.cs" />
+    <Compile Include="..\..\src\Shared\Csv\CsvColumnWriter.cs" Link="Shared\Csv\CsvColumnWriter.cs" />
+    <Compile Include="..\..\src\Shared\Sinks\PartitionedWriteSession.cs" Link="Shared\Sinks\PartitionedWriteSession.cs" />
+    <Compile Include="..\..\src\Shared\Parquet\ParquetBatchWriter.cs" Link="Shared\Parquet\ParquetBatchWriter.cs" />
+    <Compile Include="..\..\src\Shared\Paths\PathGlob.cs" Link="Shared\Paths\PathGlob.cs" />
+  </ItemGroup>
+
 </Project>

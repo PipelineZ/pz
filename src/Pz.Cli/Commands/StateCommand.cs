@@ -64,18 +64,7 @@ internal static class StateCommand
     }
 
     /// <summary>Shared by every subcommand: `pz state` must not be pointable at a stray `.pz`.</summary>
-    internal static bool ProjectExists(string projectDir)
-    {
-        if (File.Exists(Path.Combine(projectDir, "project.yml")))
-        {
-            return true;
-        }
-
-        Console.Error.WriteLine(
-            $"error {PzErrorCode.YamlShape}: project.yml is missing — run pz state from a project directory " +
-            "or pass --project <dir>");
-        return false;
-    }
+    internal static bool ProjectExists(string projectDir) => SharedInputHelpers.ProjectYmlExists("state", projectDir);
 
     internal static string StateDir(string projectDir) => Path.Combine(projectDir, ".pz", "state");
 
@@ -88,25 +77,10 @@ internal static class StateCommand
     private static bool TryResolveBackends(
         string projectDir, TimeProvider time, out StateBackends backends, out int exitCode)
     {
-        backends = null!;
         exitCode = ExitCodes.Ok;
-        try
+        if (SharedInputHelpers.TryResolveStateBackends(projectDir, time, out backends))
         {
-            var (name, state, connections) =
-                ProjectLoader.LoadStateOnly(projectDir, SharedInputHelpers.SnapshotEnvironment());
-            backends = StateBackendFactory.Create(state, name, connections, projectDir, time);
             return true;
-        }
-        catch (PzValidationException ex)
-        {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
-        }
-        catch (PzConfigException ex)
-        {
-            Console.Error.WriteLine($"error {ex.Error}");
         }
 
         exitCode = ExitCodes.ConfigError;

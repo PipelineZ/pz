@@ -33,9 +33,9 @@ internal static class VerifyTools
             return Task.FromResult(ToolEnvelope.Ok(json =>
             {
                 json.WriteStartObject("result");
-                WriteNodes(json, dag.Nodes);
-                WriteStringArray(json, "notices", notices);
-                WriteWarnings(json, dag.Warnings);
+                EnvelopeJson.WriteDagNodes(json, dag.Nodes);
+                EnvelopeJson.WriteStringArray(json, "notices", notices);
+                EnvelopeJson.WriteWarnings(json, dag.Warnings);
                 json.WriteEndObject();
             }));
         }
@@ -98,7 +98,7 @@ internal static class VerifyTools
                 json.WriteStartObject("result");
                 json.WriteNumber("pipelines", project.Pipelines.Count);
                 json.WriteNumber("connections_checked", connectionsChecked);
-                WriteStringArray(json, "undeclared_datasets", dry.UndeclaredDatasets);
+                EnvelopeJson.WriteStringArray(json, "undeclared_datasets", dry.UndeclaredDatasets);
                 json.WriteEndObject();
             });
         }
@@ -161,68 +161,6 @@ internal static class VerifyTools
         {
             return ToolEnvelope.Errors(ex.Errors);
         }
-    }
-
-    private static void WriteNodes(Utf8JsonWriter json, IReadOnlyList<DagNode> nodes)
-    {
-        json.WriteStartArray("nodes");
-        foreach (var node in nodes)
-        {
-            json.WriteStartObject();
-            json.WriteString("id", node.Id.Value);
-            json.WriteString("name", node.Name);
-            json.WriteString("kind", node.Kind.ToString());
-            json.WriteStartArray("dependsOn");
-            foreach (var dep in node.DependsOn)
-            {
-                json.WriteStringValue(dep.Value);
-            }
-
-            json.WriteEndArray();
-            json.WriteEndObject();
-        }
-
-        json.WriteEndArray();
-    }
-
-    private static void WriteWarnings(Utf8JsonWriter json, IReadOnlyList<PzWarning> warnings)
-    {
-        json.WriteStartArray("warnings");
-        foreach (var w in warnings)
-        {
-            json.WriteStartObject();
-            json.WriteString("code", w.Code);
-            json.WriteString("message", w.Message);
-            if (w.File is { } file)
-            {
-                json.WriteString("file", file);
-            }
-
-            if (w.Line is { } line)
-            {
-                json.WriteNumber("line", line);
-            }
-
-            if (w.Hint is { } hint)
-            {
-                json.WriteString("hint", hint);
-            }
-
-            json.WriteEndObject();
-        }
-
-        json.WriteEndArray();
-    }
-
-    private static void WriteStringArray(Utf8JsonWriter json, string propertyName, IReadOnlyList<string> values)
-    {
-        json.WriteStartArray(propertyName);
-        foreach (var value in values)
-        {
-            json.WriteStringValue(value);
-        }
-
-        json.WriteEndArray();
     }
 
     // Mirrors PlanWriter.StrategyName (internal to Pz.Engine, not visible across assemblies) so the

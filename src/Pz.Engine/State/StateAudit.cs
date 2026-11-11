@@ -1,7 +1,7 @@
 using System.Buffers;
-using System.Globalization;
 using System.Text;
 using System.Text.Json;
+using Pz.Engine.Artifacts;
 
 namespace Pz.Engine.State;
 
@@ -39,8 +39,6 @@ public sealed class StateAudit(string stateDir, TimeProvider time)
 {
     public const string FileName = "audit.jsonl";
 
-    private const string TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
-
     private string Path => System.IO.Path.Combine(stateDir, FileName);
 
     /// <summary>The exact ledger line for an entry, without its trailing newline. Public because
@@ -52,7 +50,7 @@ public sealed class StateAudit(string stateDir, TimeProvider time)
         using (var writer = new Utf8JsonWriter(buffer))
         {
             writer.WriteStartObject();
-            writer.WriteString("ts", time.GetUtcNow().UtcDateTime.ToString(TimestampFormat, CultureInfo.InvariantCulture));
+            writer.WriteString("ts", ArtifactTimestamp.Render(time.GetUtcNow().UtcDateTime));
             writer.WriteString("action", entry.Action);
             writer.WriteString("key", entry.Key);
             WriteIfPresent(writer, "cursor", entry.Cursor);

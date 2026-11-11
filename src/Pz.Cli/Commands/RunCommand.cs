@@ -21,7 +21,6 @@ using Pz.Engine.Planning;
 using Pz.Engine.Resilience;
 using Pz.Engine.Dispatch;
 using Pz.Engine.State;
-using Pz.Engine.Validation;
 using Pz.PackageManagement.Hosting;
 
 namespace Pz.Cli.Commands;
@@ -213,10 +212,7 @@ internal static class RunCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return ExitCodes.ConfigError;
         }
@@ -240,14 +236,8 @@ internal static class RunCommand
             IReadOnlySet<NodeId>? selection;
             using (phases.Begin(RunPhaseClock.Validate))
             {
-                var dry = await SqlDryCompiler.RunAsync(fullDag, project.Extensions, ct);
-                if (dry.Errors.Count > 0)
+                if (!await SharedInputHelpers.DryCompilePassesAsync(fullDag, project, ct))
                 {
-                    foreach (var error in dry.Errors)
-                    {
-                        Console.Error.WriteLine($"error {error}");
-                    }
-
                     return ExitCodes.ConfigError;
                 }
 
@@ -257,10 +247,7 @@ internal static class RunCommand
                 }
                 catch (PzValidationException ex)
                 {
-                    foreach (var error in ex.Errors)
-                    {
-                        Console.Error.WriteLine($"error {error}");
-                    }
+                    SharedInputHelpers.WriteErrors(ex.Errors);
 
                     return ExitCodes.ConfigError;
                 }
@@ -278,9 +265,7 @@ internal static class RunCommand
             // local I/O shapes (PZ0531/PZ0532/PZ0533); anything else stays the generic PZ0500.
             // PzValidationException from --select parsing below is handled locally within ExecuteRun and
             // never reaches here.
-            Console.Error.WriteLine(EngineFailureMapper.TryMap(ex) is { } mapped
-                ? $"error {mapped}"
-                : $"error {PzErrorCode.UnexpectedEngineFailure}: unexpected engine failure — {ex.Message}");
+            Console.Error.WriteLine($"error {EngineFailureMapper.Map(ex)}");
             return ExitCodes.Fatal;
         }
     }
@@ -443,10 +428,7 @@ internal static class RunCommand
         var extensions = await DuckExtensions.LoadAsync(duck, project.Extensions, ct);
         if (extensions.Errors.Count > 0)
         {
-            foreach (var error in extensions.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(extensions.Errors);
 
             return ExitCodes.ConfigError;
         }
@@ -470,10 +452,7 @@ internal static class RunCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return ExitCodes.ConfigError;
         }
@@ -492,10 +471,7 @@ internal static class RunCommand
         }
         catch (PzValidationException ex)
         {
-            foreach (var error in ex.Errors)
-            {
-                Console.Error.WriteLine($"error {error}");
-            }
+            SharedInputHelpers.WriteErrors(ex.Errors);
 
             return ExitCodes.ForPlanFailure(ex);
         }
@@ -507,7 +483,7 @@ internal static class RunCommand
         // being alive. RunEventPublisher is the second CompositeRunEvents target, mapping the same
         // callbacks onto the bus for whichever renderer --log-format selected. Writes go through
         // backends.Artifacts (Local or SQL).
-        var startedAtIso = startedAt.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
+        var startedAtIso = ArtifactTimestamp.Render(startedAt.UtcDateTime);
         var snapshotEvents = new SnapshotRunEvents(backends.Artifacts, runId, startedAtIso);
         var bus = new RunEventBus();
         var publisher = new RunEventPublisher(bus, runId, TimeProvider.System, phases);

@@ -13,10 +13,9 @@ namespace Pz.Engine.Planning;
 /// per node and disposes it before returning; the probe never touches the network or DuckDB.</summary>
 public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 {
-    // Mirrors PostgresSource's MinPartitions/MaxPartitions bounds so a config that will actually fail
-    // at run time (partitions outside
-    // [1,16]) never shows a 0 or 17 in plan.json -- this is a display-clamp only; the executor's real
-    // PlanReadAsync call is still what enforces the bound and throws PzConnectorException at run time.
+    // Mirrors PostgresSource's MinPartitions/MaxPartitions bounds so a config that will fail at run time
+    // (partitions outside [1,16]) never shows a 0 or 17 in plan.json. A display clamp only: the executor's
+    // real PlanReadAsync call is what enforces the bound and throws PzConnectorException.
     private const int MinDeclaredPartitions = 1;
     private const int MaxDeclaredPartitions = 16;
 
@@ -34,29 +33,26 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         var planned = new List<PlannedNode>(dag.Nodes.Count);
         var errors = new List<PzError>();
 
-        // rate_limit is INSTANCE-level (ConnectionDef/ConnectionDef), but planning runs
-        // per dataset/output node -- one HashSet per PlanAsync invocation, threaded into both loop
-        // arms below, de-dupes the PZ0317 gate to one error per instance regardless of how many
-        // dataset/output nodes share it.
+        // rate_limit is connection-level, but planning runs per dataset/output node: one set per PlanAsync
+        // call, threaded into both node arms below, de-dupes the PZ0317 gates to one error per connection
+        // however many dataset/output nodes, in either direction, share it.
         var pacingRefused = new HashSet<string>();
 
-        // CheckpointableReads without StablePartitionIds is a connector defect
-        // — checkpoints are keyed by stable partition identity. Static capability read, aggregated,
-        // de-duped per instance like the PZ0317 gates above.
+        // CheckpointableReads without StablePartitionIds is a connector defect (checkpoints are keyed by
+        // stable partition identity). Static capability read, aggregated, de-duped per source connection like the
+        // PZ0317 gates above.
         var identityRefused = new HashSet<string>();
 
-        // Mode-vs-capability refusal, deduped per (sink instance,
-        // mode) -- one error per instance+mode however many outputs share it.
+        // Mode-vs-capability refusal, deduped per (sink connection, mode): one error per pair however many
+        // outputs share it.
         var modeRefused = new HashSet<string>();
 
-        // ChangeCapture capability refusal (PZ0338), deduped per
-        // source instance -- mirrors pacingRefused above so several cdc datasets sharing one
-        // incapable connector collapse to one error, not one per dataset.
+        // ChangeCapture capability refusal (PZ0338), deduped per source connection like pacingRefused, so
+        // several cdc datasets sharing one incapable connector collapse to one error.
         var changeCaptureRefused = new HashSet<string>();
 
-        // Every SourceLoad node's resolved read shape,
-        // populated by PlanSourceLoadAsync -- feeds the delivery-guarantee pass below (this planner's
-        // half of PZ0214, split from DagCompiler's compile-time half).
+        // Every SourceLoad node's resolved read shape, populated by PlanSourceLoadAsync. Feeds the
+        // delivery-guarantee pass below, this planner's half of PZ0214 (DagCompiler holds the compile-time half).
         var shapeByNode = new Dictionary<NodeId, ResolvedReadShape>();
 
         // Connector failures while planning: one error per refused connection, however many datasets and outputs
@@ -86,7 +82,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             }
         }
 
-        // Feed-side delivery-guarantee pass -- the planner's half of the (read x write) matrix, the
+        // Feed-side delivery-guarantee pass: the planner's half of the (read x write) matrix, the
         // counterpart of DagCompiler's incremental-side, compile-time half.
         // Only reachable for a dataset DagCompiler could not classify: an implicit OR explicit `mode: auto`
         // dataset (SyncMode null, or SyncMode.Auto) that THIS connector resolves to Feed. DagCompiler
@@ -222,9 +218,9 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 $"use a BoundedWindow-capable connector for this dataset, or {fix}"));
         }
 
-        // ChangeCapture capability gate, same never-connects
-        // shape as the BoundedWindow gate just above. Deduped per source instance (changeCaptureRefused)
-        // so several cdc datasets sharing one incapable connector collapse to one error.
+        // ChangeCapture capability gate, same never-connects shape as the BoundedWindow gate just above.
+        // Deduped per source connection (changeCaptureRefused) so several cdc datasets sharing one
+        // incapable connector collapse to one error.
         if (def.Dataset.SyncMode?.Mode == SyncMode.Cdc && connectorFound &&
             !connector!.Capabilities.HasFlag(ConnectorCapabilities.ChangeCapture) &&
             changeCaptureRefused.Add("source:" + def.Source.Name))
@@ -236,14 +232,14 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "use a ChangeCapture-capable connector (postgres, sqlserver) or a different sync mode"));
         }
 
-        // Pacing capability gate. Static read (no OpenAsync). Instance-level
-        // config, per-dataset planning pass -- pacingRefused de-dupes to one error per instance.
+        // Pacing capability gate. Static read (no OpenAsync). Connection-level config, per-dataset
+        // planning pass: pacingRefused de-dupes to one error per connection.
         if (def.Source.RateLimit is not null && connectorFound &&
             !connector!.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations) &&
-            pacingRefused.Add("source:" + def.Source.Name))
+            pacingRefused.Add(def.Source.Name))
         {
             errors.Add(new PzError(PzErrorCode.PacingUnsupported,
-                $"source '{def.Source.Name}': rate_limit is configured but connector " +
+                $"connection '{def.Source.Name}': rate_limit is configured but connector " +
                 $"'{def.Source.Connector}' does not support gated operations (pacing would be silently ignored)",
                 def.Source.FilePath, null,
                 "remove rate_limit, or use a connector that declares the GatedOperations capability"));
@@ -261,19 +257,19 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         // IOperationGateAware.
         if (def.Source.RateLimit is not null && connectorFound &&
             connector is INativeOnlySource &&
-            pacingRefused.Add("source:" + def.Source.Name))
+            pacingRefused.Add(def.Source.Name))
         {
             errors.Add(new PzError(PzErrorCode.PacingUnsupported,
-                $"source '{def.Source.Name}': rate_limit is configured but connector " +
+                $"connection '{def.Source.Name}': rate_limit is configured but connector " +
                 $"'{def.Source.Connector}' reads natively (its source path performs no gateable " +
                 "operations); remove rate_limit from the source",
                 def.Source.FilePath, null,
                 "remove rate_limit from the source (native reads are never paced)"));
         }
 
-        // CheckpointableReads without StablePartitionIds is a connector defect
-        // — checkpoints are keyed by stable partition identity. Static capability read, aggregated,
-        // de-duped per instance like the PZ0317 gates above.
+        // CheckpointableReads without StablePartitionIds is a connector defect (checkpoints are keyed by
+        // stable partition identity). Static capability read, aggregated, de-duped per source connection like the
+        // PZ0317 gates above.
         if (connectorFound &&
             connector!.Capabilities.HasFlag(ConnectorCapabilities.CheckpointableReads) &&
             !connector.Capabilities.HasFlag(ConnectorCapabilities.StablePartitionIds) &&
@@ -286,13 +282,12 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "fix the connector to declare both capabilities, or neither"));
         }
 
-        // Resolve the dataset's read shape up front -- every
-        // remaining gate/return below (PZ0316, the force_universal/native-scan returns) needs it, and
-        // resolution requires the OPENED ISource (INaturalReadShapeSource is additive on ISource, not the
-        // unopened connector), so the connector opens here rather than only on the native-scan-probe
-        // path further down. OpenAsync is the same "cheap and offline" call TryGetNativeScan
-        // relies on below (class doc above), so opening it this early adds no network behavior --
-        // including under force_universal.
+        // Resolve the dataset's read shape up front: every remaining gate/return below (PZ0316, the
+        // force_universal/native-scan returns) needs it, and resolution requires the OPENED ISource
+        // (INaturalReadShapeSource is additive on ISource, not the unopened connector), so the connector
+        // opens here rather than only on the native-scan-probe path further down. OpenAsync is the same
+        // "cheap and offline" call TryGetNativeScan relies on below (class doc above), so opening it this
+        // early adds no network behavior, including under force_universal.
         ISource? opened = null;
         if (connectorFound)
         {
@@ -325,8 +320,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             _ => throw new ArgumentOutOfRangeException(nameof(shape), shape, "unknown resolved read shape"),
         };
 
-        // Incremental-declared-but-feed-natural conflict. A
-        // dataset declaring cursor-incremental (YAML `sync: {mode: incremental}` or a SQL `watermark()`,
+        // Incremental-declared-but-feed-natural conflict. A dataset declaring cursor-incremental (YAML `sync: {mode: incremental}` or a SQL `watermark()`,
         // both resolving to Incremental here) on a connector that manages its OWN change feed for this
         // dataset (INaturalReadShapeSource resolving Feed, e.g. http with a `delta_pointer` option) pits two
         // resume mechanisms against each other -- the ordered cursor AND the connector's opaque token both
@@ -365,8 +359,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "`sync: {mode: incremental}` dataset for partitioned/streaming reads"));
         }
 
-        // Path-templating capability gate (mirrors the BoundedWindow check just
-        // above): DagCompiler's PZ0217/0218/0221 already validated the templating *syntax*
+        // Path-templating capability gate (mirrors the BoundedWindow check above): DagCompiler's PZ0217/0218/0221 already validated the templating *syntax*
         // connector-agnostically, but only the planner has the connector instance + its declared
         // Capabilities. A connector that ignores the tokens would silently write/read a literal
         // "{yyyy}" folder instead of routing per the calendar -- refuse it here instead.
@@ -381,10 +374,9 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "use a PathTemplating-capable connector, or remove the date tokens / partition_by"));
         }
 
-        // files_per_partition only has meaning on a
-        // universal partitioned read. On a native-only source the dataset plans onto the
-        // native tier (where DuckDB gets the file list in one scan and needs no coalescing), so the
-        // option would be silently ignored — refuse it loudly instead. Same planner-reads-options
+        // files_per_partition only has meaning on a universal partitioned read. On a native-only source
+        // the dataset plans onto the native tier (where DuckDB gets the file list in one scan and needs
+        // no coalescing), so the option would be silently ignored; refuse it loudly instead. Same planner-reads-options
         // precedent as the PathTemplating gate above; static marker check, never connects.
         if (def.Dataset.Options.ContainsKey("files_per_partition") && connectorFound &&
             connector is INativeOnlySource)
@@ -684,7 +676,7 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         if (partitionColumns.Count > 0)
         {
             var path = def.Output.Options.TryGetValue("path", out var pathOpt) ? pathOpt?.ToString() : null;
-            var rendersFromPath = path is not null && Pz.Connectors.Abstractions.Paths.PathTemplate.HasDateTokens(path);
+            var rendersFromPath = path is not null && PathTemplate.HasDateTokens(path);
             var required = rendersFromPath
                 ? ConnectorCapabilities.PathTemplating
                 : ConnectorCapabilities.ColumnPartitionedWrites;
@@ -701,16 +693,15 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
             }
         }
 
-        // Pacing capability gate, sink-side mirror of the source check in
-        // PlanSourceLoadAsync above. Static Capabilities read (no OpenAsync); connector is already
-        // known non-null here (the TryGetSink guard above returned early otherwise). Instance-level
-        // config, per-output planning pass -- pacingRefused de-dupes to one error per instance.
+        // Pacing capability gate, sink-side mirror of the source check in PlanSourceLoadAsync above.
+        // Static Capabilities read (no OpenAsync). Connection-level config, per-output planning pass:
+        // pacingRefused de-dupes to one error per connection, shared with the source-side gates.
         if (def.Sink.RateLimit is not null &&
             !connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations) &&
-            pacingRefused.Add("sink:" + def.Sink.Name))
+            pacingRefused.Add(def.Sink.Name))
         {
             errors.Add(new PzError(PzErrorCode.PacingUnsupported,
-                $"sink '{def.Sink.Name}': rate_limit is configured but connector " +
+                $"connection '{def.Sink.Name}': rate_limit is configured but connector " +
                 $"'{def.Sink.Connector}' does not support gated operations (pacing would be silently ignored)",
                 def.Sink.FilePath, null,
                 "remove rate_limit, or use a connector that declares the GatedOperations capability"));
@@ -740,10 +731,10 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
                 "use a replace-capable connector, or change the output's mode:"));
         }
 
-        // ApplyDeletes capability gate (PZ0339), sink-side
-        // counterpart of PlanSourceLoadAsync's ChangeCapture gate. Static Capabilities read (no
-        // OpenAsync). `on_delete: ignore` needs no capability. Deduped per (sink instance, "on_delete")
-        // via the same modeRefused set the merge/replace gates above use.
+        // ApplyDeletes capability gate (PZ0339), sink-side counterpart of PlanSourceLoadAsync's
+        // ChangeCapture gate. Static Capabilities read (no OpenAsync). `on_delete: ignore` needs no
+        // capability. Deduped per (sink connection, "on_delete") via the same modeRefused set the
+        // merge/replace gates above use.
         if (def.Output.OnDelete is "delete" or "soft" &&
             !connector.Capabilities.HasFlag(ConnectorCapabilities.ApplyDeletes) &&
             modeRefused.Add("sink:" + def.Sink.Name + ":on_delete"))

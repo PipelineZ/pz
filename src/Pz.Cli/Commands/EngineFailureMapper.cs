@@ -29,6 +29,12 @@ public static class EngineFailureMapper
     // Windows-only in practice.
     private const int Win32SharingViolation = unchecked((int)0x80070020);
 
+    /// <summary>The error to report for an escaped exception: the fingerprinted local I/O failure when
+    /// there is one, otherwise PZ0500 carrying the exception's own message.</summary>
+    public static PzError Map(Exception ex) =>
+        TryMap(ex) ?? new PzError(
+            PzErrorCode.UnexpectedEngineFailure, $"unexpected engine failure — {ex.Message}", null, null, null);
+
     public static PzError? TryMap(Exception ex) => ex switch
     {
         UnauthorizedAccessException => new PzError(

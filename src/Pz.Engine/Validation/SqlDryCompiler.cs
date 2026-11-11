@@ -91,7 +91,7 @@ public static class SqlDryCompiler
         }
 
         var columnDdl = string.Join(", ",
-            columns.Select(kv => $"{QuoteIdentifier(kv.Key)} {ContractTypes.ToDuckDdl(kv.Value)}"));
+            columns.Select(kv => $"{ArrowInterop.QuoteQualified(kv.Key)} {ContractTypes.ToDuckDdl(kv.Value)}"));
         await duck.ExecuteAsync($"create table {StagingRelation(node.Name)} ({columnDdl})", ct).ConfigureAwait(false);
         available.Add(node.Id);
     }
@@ -161,10 +161,5 @@ public static class SqlDryCompiler
         }
     }
 
-    /// <summary>Quotes a single (dot-free) identifier by reusing <c>ArrowInterop.QuoteQualified</c> --
-    /// the engine's one existing identifier-quoting helper (see <c>DuckSession</c>/ingest call sites) --
-    /// rather than duplicating quoting logic here. It splits on '.', which is a no-op for a plain name.</summary>
-    private static string QuoteIdentifier(string identifier) => ArrowInterop.QuoteQualified(identifier);
-
-    private static string StagingRelation(string name) => $"staging.{QuoteIdentifier(name)}";
+    private static string StagingRelation(string name) => $"staging.{ArrowInterop.QuoteQualified(name)}";
 }

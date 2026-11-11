@@ -1,6 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
-using System.Text;
 using System.Text.RegularExpressions;
 using Apache.Arrow;
 using Azure;
@@ -9,6 +8,8 @@ using Azure.Storage.Files.DataLake.Models;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Paths;
+using Pz.Shared.Sql;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.AzureBlob;
@@ -22,8 +23,7 @@ namespace Pz.Connector.AzureBlob;
 /// tier.</summary>
 internal sealed class AzureSource(ConnectorConfig config) : ISource
 {
-    /// <summary>Mirrors <c>Pz.Connector.LocalFiles.CsvSource.GetSchemaAsync</c>'s cross-connector-replicated
-    /// pattern: for csv, peek the first matched blob's actual header and report only the declared `columns:`
+    /// <summary>For csv, peek the first matched blob's actual header and report only the declared `columns:`
     /// contract entries also present there (the contract-pruning rule). For parquet,
     /// download the first matched blob and read its footer via <see cref="AzureParquetReader.ReadSchema"/>.
     /// For json/xlsx/avro, there is no header row to peek and no footer to read (xlsx's header row names
@@ -87,7 +87,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// <summary>Emits <c>read_parquet('&lt;url&gt;')</c> / <c>read_csv('&lt;url&gt;', header = true,
     /// auto_detect = true | auto_detect = false, columns = {…})</c> / <c>read_json('&lt;url&gt;',
     /// auto_detect = true | columns = {…}, format = 'newline_delimited')</c> wrapped by
-    /// <see cref="AzureWindowSql.Wrap"/> for windowed datasets. When `path` is date-templated and the
+    /// <see cref="NativeScanWindow.Wrap"/> for windowed datasets. When `path` is date-templated and the
     /// dataset is windowed (both watermark bounds present), scans the watermark-window's minimal cover
     /// instead of the single literal path, emitting a DuckDB list literal (<c>read_parquet(['url1',
     /// 'url2'])</c>) so a query never re-reads out-of-window partitions; a single-element cover (or a
@@ -112,16 +112,16 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         var loc = AzureUrl.ParseDataset(spec.Options, context);
         var keyPatterns = CoverKeys(loc.Key, spec);
         var urlList = string.Join(", ", keyPatterns.Select(k =>
-            $"'{AzureUrl.Escape(AzureUrl.Render(loc with { Key = k }))}'"));
+            $"'{DuckDbSqlText.EscapeLiteral(AzureUrl.Render(loc with { Key = k }))}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Source));
-        var declared = ExtractColumns(spec); // null (contract-less) or declared (partial or full)
+        var declared = ColumnTypeCatalog.ContractColumns(spec); // null (contract-less) or declared (partial or full)
         var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 
         scan = new NativeScan(
-            AzureWindowSql.Wrap(fragment, spec),
+            NativeScanWindow.Wrap(fragment, spec),
             ["install azure", "load azure", secret, .. AzureAuth.TransportStatements(), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = FileFormatCatalog.ReadMechanism(format),
@@ -211,7 +211,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     {
         foreach (var key in CoverKeys(loc.Key, spec))
         {
-            var regex = new Regex(GlobToRegexPattern(key), RegexOptions.None);
+            var regex = new Regex(PathGlob.ToRegexPattern(key), RegexOptions.None);
             await foreach (var name in EnumeratePrefixAsync(loc, PathTemplate.StaticPrefix(key), ct).ConfigureAwait(false))
             {
                 if (regex.IsMatch(name))
@@ -281,40 +281,8 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// <see cref="PathTemplate.StaticPrefix"/>; this applies the wildcard portion.</summary>
     internal static IReadOnlyList<string> MatchGlob(IEnumerable<string> blobNames, string pattern)
     {
-        var regex = new Regex(GlobToRegexPattern(pattern), RegexOptions.None);
+        var regex = new Regex(PathGlob.ToRegexPattern(pattern), RegexOptions.None);
         return blobNames.Where(n => regex.IsMatch(n)).ToArray();
-    }
-
-    private static string GlobToRegexPattern(string pattern)
-    {
-        var sb = new StringBuilder("^");
-        for (var i = 0; i < pattern.Length; i++)
-        {
-            var c = pattern[i];
-            if (c == '*')
-            {
-                if (i + 1 < pattern.Length && pattern[i + 1] == '*')
-                {
-                    sb.Append(".*");
-                    i++;
-                }
-                else
-                {
-                    sb.Append("[^/]*");
-                }
-            }
-            else if (c == '?')
-            {
-                sb.Append("[^/]");
-            }
-            else
-            {
-                sb.Append(Regex.Escape(c.ToString()));
-            }
-        }
-
-        sb.Append('$');
-        return sb.ToString();
     }
 
     /// <summary>The directory portion of a listing prefix, for the DataLake (<c>abfss</c>) directory-scoped
@@ -331,9 +299,8 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     private static PzConnectorException NoMatch(DatasetSpec spec, AzureLocation loc) =>
         new($"dataset '{spec.Dataset}': no blobs matched '{AzureUrl.Render(loc)}'", isTransient: false);
 
-    /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/> (mirrors
-    /// <c>Pz.Connector.LocalFiles.CsvSource.ReadHeaderAsync</c>, replicated per this connector's
-    /// no-cross-connector-reference rule). Leaves no data rows consumed beyond the header.</summary>
+    /// <summary>Peeks a csv blob's actual header row for <see cref="GetSchemaAsync"/>. Leaves no data
+    /// rows consumed beyond the header.</summary>
     private static async Task<HashSet<string>> ReadCsvHeaderAsync(Stream blob, char delimiter, CancellationToken ct)
     {
         using var textReader = new StreamReader(blob, leaveOpen: true);
@@ -356,11 +323,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
     /// callers) or "csv/tsv/json" (the shared universal-tier-refusal precheck). Missing contract is a
     /// permanent failure.</summary>
     private static IReadOnlyDictionary<string, string> GetColumnsContract(DatasetSpec spec, string formatName) =>
-        ExtractColumns(spec) ?? throw new PzConnectorException(
+        ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': azure {formatName} requires a declared columns: contract", isTransient: false, code: PzConnectorErrorCodes.Config);
 
-    private static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) && value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
 }

@@ -3,12 +3,13 @@ using System.Diagnostics;
 using Pz.Core.Dag;
 using Pz.Core.Validation;
 using Pz.Diagnostics.Otel;
+using Pz.Engine.Artifacts;
 using Pz.Engine.Execution;
 
 namespace Pz.Engine.Dispatch;
 
 /// <summary>
-/// Topological, max-concurrency-gated scheduler over a <see cref="CompiledDag"/>. Every node
+/// Topological, max-concurrency-gated dispatcher over a <see cref="CompiledDag"/>. Every node
 /// tracked by this run (the "effective set" — see <see cref="ExecuteAsync"/>) transitions exactly
 /// once into a terminal <see cref="NodeStatus"/> (Success, Failed, or Skipped); each transition
 /// appends one <see cref="NodeResult"/> to the run's result list and fires
@@ -37,20 +38,6 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
         [NodeKind.Check] = "node.Check",
         [NodeKind.SinkWrite] = "node.SinkWrite",
     }.ToFrozenDictionary();
-
-    /// <summary>The <c>pz.node.kind</c> metric tag <see cref="KeyValuePair{TKey,TValue}"/>
-    /// is likewise constant per <see cref="NodeKind"/> — caching it avoids both the enum
-    /// <c>ToString()</c> allocation and a fresh boxed tag value on every
-    /// <c>PzMeters.NodeDuration.Record</c> call.</summary>
-    internal static readonly FrozenDictionary<NodeKind, KeyValuePair<string, object?>> NodeKindTags =
-        new Dictionary<NodeKind, KeyValuePair<string, object?>>
-        {
-            [NodeKind.SourceLoad] = new("pz.node.kind", "SourceLoad"),
-            [NodeKind.Pipeline] = new("pz.node.kind", "Pipeline"),
-            [NodeKind.Check] = new("pz.node.kind", "Check"),
-            [NodeKind.SinkWrite] = new("pz.node.kind", "SinkWrite"),
-        }.ToFrozenDictionary();
-
 
     /// <summary>Executes the dag topologically. Selection (when non-null) is expanded to include all
     /// required ancestors (run-time semantics — differs deliberately from compile's selection-exact).
@@ -148,7 +135,7 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
 
             if (recorded)
             {
-                // Best-effort: a throwing subscriber must not break scheduler control flow (in
+                // Best-effort: a throwing subscriber must not break dispatcher control flow (in
                 // particular, must not prevent the Skip-cascade the caller runs right after this).
                 ctx.Events.SafeNodeCompleted(result);
             }
@@ -297,13 +284,13 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
                             }
 
                             result = NodeFailureGuidance.FoldHint(result);
-                            nodeActivity?.SetTag("pz.node.status", StatusTag(result.Status));
+                            nodeActivity?.SetTag("pz.node.status", NodeResultJson.StatusName(result.Status));
                             NodeSpanTags.Apply(nodeActivity, result);
                             RemoteMetrics.Record(node, result);
 
                             if (result.Status != NodeStatus.Skipped)
                             {
-                                PzMeters.NodeDuration.Record(result.Duration.TotalMilliseconds, NodeKindTags[result.Kind]);
+                                PzMeters.NodeDuration.Record(result.Duration.TotalMilliseconds, NodeMetricTags.Kind[result.Kind]);
                             }
 
                             RecordTerminal(result);
@@ -551,16 +538,6 @@ public sealed class RunOrchestrator(INodeExecutor executor, RunContext ctx)
 
         return map;
     }
-
-    /// <summary>Lowercase primitive status value for the "node.&lt;kind&gt;" span's status tag —
-    /// mirrors the vocabulary <c>https://pipelinez.dev/events/</c> already uses for NDJSON's status field.</summary>
-    private static string StatusTag(NodeStatus status) => status switch
-    {
-        NodeStatus.Success => "success",
-        NodeStatus.Failed => "failed",
-        NodeStatus.Skipped => "skipped",
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "unknown node status"),
-    };
 
     /// <summary>Matches <c>DagCompiler</c>'s (kindRank, Name ordinal) tie-break so simultaneously-
     /// ready nodes are dispatched in the same deterministic order compile-time ordering uses.</summary>

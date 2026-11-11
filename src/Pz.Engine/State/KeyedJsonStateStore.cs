@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using Pz.Core.Artifacts;
 using Pz.Core.Validation;
+using Pz.Engine.Artifacts;
 
 namespace Pz.Engine.State;
 
@@ -46,9 +47,14 @@ public sealed class KeyedJsonStateStore<T>(
     /// <see cref="Get"/> is called per node from executors the dispatcher runs in parallel.</summary>
     private readonly ConcurrentDictionary<string, string> _seen = new(StringComparer.Ordinal);
 
+    private string FilePath => Path.Combine(stateDir, fileName);
+
+    private void NoteCorrupt(string path, Action<string>? notice) =>
+        notice?.Invoke($"{corruptNoticeSubject} '{path}' is corrupt or has an unexpected shape -- a full extract will occur.");
+
     public T? Get(string key, Action<string>? notice = null)
     {
-        var path = Path.Combine(stateDir, fileName);
+        var path = FilePath;
         T? value = null;
         if (File.Exists(path))
         {
@@ -59,7 +65,7 @@ public sealed class KeyedJsonStateStore<T>(
             else
             {
                 // Set treats a corrupt file as empty, so that is what this read observed.
-                notice?.Invoke($"{corruptNoticeSubject} '{path}' is corrupt or has an unexpected shape -- a full extract will occur.");
+                NoteCorrupt(path, notice);
             }
         }
 
@@ -78,7 +84,7 @@ public sealed class KeyedJsonStateStore<T>(
     /// whose enumeration order is not contractual.</summary>
     public IReadOnlyList<KeyValuePair<string, T>>? ListAll(Action<string>? notice = null)
     {
-        var path = Path.Combine(stateDir, fileName);
+        var path = FilePath;
         if (!File.Exists(path))
         {
             return [];
@@ -86,7 +92,7 @@ public sealed class KeyedJsonStateStore<T>(
 
         if (!TryReadAll(path, out var entries))
         {
-            notice?.Invoke($"{corruptNoticeSubject} '{path}' is corrupt or has an unexpected shape -- a full extract will occur.");
+            NoteCorrupt(path, notice);
             return null;
         }
 
@@ -95,7 +101,7 @@ public sealed class KeyedJsonStateStore<T>(
 
     public void Set(string key, T value)
     {
-        var path = Path.Combine(stateDir, fileName);
+        var path = FilePath;
         using var fileLock = AcquireLock(path);
         // If the file is corrupt (exists but fails to parse), treat it as empty. This is safe:
         // corrupt state means no entries (never an error); the engine always reads Get()
@@ -131,7 +137,7 @@ public sealed class KeyedJsonStateStore<T>(
     /// cref="Set"/>'s corrupt-file handling): there is nothing to remove, so no rewrite happens at all.</summary>
     public void Remove(string key)
     {
-        var path = Path.Combine(stateDir, fileName);
+        var path = FilePath;
         if (!File.Exists(path))
         {
             return;
@@ -230,7 +236,7 @@ public sealed class KeyedJsonStateStore<T>(
 
         AtomicFile.Write(path, stream =>
         {
-            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true, IndentSize = 2, NewLine = "\n" }))
+            using (var writer = new Utf8JsonWriter(stream, StableJsonWriter.Options))
             {
                 writer.WriteStartObject();
                 writer.WriteNumber("version", 1);

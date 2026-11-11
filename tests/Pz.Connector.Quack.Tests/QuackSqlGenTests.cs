@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Quack;
 
 namespace Pz.Connector.Quack.Tests;
 
@@ -147,15 +148,6 @@ public sealed class QuackSqlGenTests
         var inclusive = Spec() with { WatermarkCursor = "id", WatermarkValue = "100", WatermarkLowerInclusive = true };
         Assert.Equal($"(select * from {WhAlias}.\"events\" where \"id\" >= 100)", QuackSql.ScanFragment(WhAlias, inclusive));
     }
-
-    [Theory]
-    [InlineData("42", "42")]
-    [InlineData("-7", "-7")]
-    [InlineData("3.50", "3.50")]
-    [InlineData("2026-08-19", "'2026-08-19'")]
-    [InlineData("2026-08-19T12:30:00.000001", "'2026-08-19 12:30:00.000001'")]
-    public void Watermark_literals_render_by_canonical_shape(string canonical, string expected) =>
-        Assert.Equal(expected, QuackSql.RenderWatermarkLiteral(canonical));
 
     [Fact]
     public void Scan_predicates_are_injection_safe()

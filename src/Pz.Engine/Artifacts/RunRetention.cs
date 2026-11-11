@@ -214,12 +214,10 @@ public static class RunSweeper
     /// candidate forever ("no staging database") and the whole reason this overload exists -- bounding
     /// table growth -- would silently not happen.
     ///
-    /// **Local staging is swept under a remote store too.** "DeleteStaging is local-only because staging
-    /// never leaves the machine" says where staging
-    /// LIVES, not that a remote sweep may ignore it: <c>.pz/runs/&lt;id&gt;/staging.duckdb</c> is written
-    /// on every run whatever the backend, and if this sweep skipped it, neither automatic retention nor
-    /// `pz clean` at ANY flag combination would ever reclaim it -- unbounded local disk growth on exactly
-    /// the VM-plus-shared-store deployment the how-to endorses. So a non-local store's candidate list is
+    /// **Local staging is swept under a remote store too.** <c>.pz/runs/&lt;id&gt;/staging.duckdb</c> is
+    /// written on every run whatever the backend, and if this sweep skipped it, neither automatic
+    /// retention nor `pz clean` at ANY flag combination would ever reclaim it -- unbounded local disk
+    /// growth on a VM that keeps its state in a shared store. So a non-local store's candidate list is
     /// unioned with <see cref="Scan"/>'s local facts (<see cref="WithLocalDiskFacts"/>), which also makes
     /// <see cref="SweepOutcome.BytesFreed"/> and the live-run guard real for those candidates, and a
     /// <see cref="SweepAction.DeleteDir"/> deletes the local run directory in addition to the store's

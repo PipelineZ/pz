@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using Pz.Core.Loading;
+using Pz.Core.Model;
 
 namespace Pz.Core.Incremental;
 
@@ -9,8 +10,8 @@ namespace Pz.Core.Incremental;
 /// yyyy-MM-ddTHH:mm:ss.ffffff — see DatasetSpec.WatermarkValue's doc). Lives in Pz.Core (not Pz.Engine)
 /// because DagCompiler's compile-time window validation needs the same rules and layering is strictly
 /// downward. No clock, no I/O — window bounds are a pure function of (type, lower, window, until).
-/// typeName values are the AllowedCursorTypes set; an unknown type throws ArgumentOutOfRangeException
-/// (callers validate first — reaching that throw is an engine bug, not a config error).</summary>
+/// typeName values are the <see cref="Pz.Core.Model.CursorContract.AllowedTypes"/> set; an unknown type
+/// throws ArgumentOutOfRangeException (callers validate first — reaching that throw is an engine bug, not a config error).</summary>
 public static class WindowMath
 {
     private const string TimestampFormat = "yyyy-MM-ddTHH:mm:ss.ffffff";
@@ -22,7 +23,7 @@ public static class WindowMath
     /// the compile-time callers that validate up front — but a plain fact of life for `pz state`, whose
     /// input is a file a human may have hand-edited.</summary>
     public static bool IsKnownType(string typeName) =>
-        typeName is "int" or "bigint" or "decimal" or "date" or "timestamp";
+        Array.IndexOf(CursorContract.AllowedTypes, typeName) >= 0;
 
     public static bool TryCanonicalize(string typeName, string raw, out string canonical)
     {

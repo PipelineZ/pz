@@ -299,7 +299,7 @@ internal static class McpCommand
     /// <see cref="PzValidationException"/> they already are), then <see cref="RunCommand.ExecuteRun"/>.
     /// Always <c>--log-format json</c> (an MCP caller has no console to render a live tree into) and
     /// always <c>--fail-fast=false</c>/<c>--no-lock-check=false</c> -- an agent-driven run behaves like a
-    /// plain `pz run`, never like a CI-tuned one. Deliberately still skips <c>--otel-endpoint</c>/
+    /// plain `pz run`, never like a CI-tuned one. Deliberately skips <c>--otel-endpoint</c>/
     /// <c>--state-url</c> resolution -- neither is part of the MCP tool surface.
     ///
     /// Runs the PZ0604 (<see cref="PzErrorCode.McpRunLockHeld"/>) lock probe FIRST, before opening the
@@ -319,12 +319,7 @@ internal static class McpCommand
         var compileNotices = new List<string>();
         try
         {
-            var env = SharedInputHelpers.SnapshotEnvironment();
-            project = ProjectLoader.Load(projectDir, env);
-            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
-            var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            using var sqlAst = new DuckDbSqlAstReader();
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
+            (project, fullDag) = LoadAndCompile(projectDir, compileNotices);
         }
         catch (PzValidationException ex)
         {
@@ -381,16 +376,15 @@ internal static class McpCommand
             // Mirrors RunCommand.Execute's own outer catch: an unexpected exception must never surface
             // as a raw stack trace/unhandled fault to the MCP client, and the same three diagnosable
             // local I/O shapes get fingerprinted.
-            return new McpRunOutcome(ExitCodes.Fatal, [EngineFailureMapper.TryMap(ex) ?? new PzError(
-                PzErrorCode.UnexpectedEngineFailure, $"unexpected engine failure — {ex.Message}", null, null, null)]);
+            return new McpRunOutcome(ExitCodes.Fatal, [EngineFailureMapper.Map(ex)]);
         }
     }
 
     /// <summary>The <see cref="CliServices.RetryAsync"/> wiring: load+compile
     /// exactly like <see cref="RunAsync"/> above (including real compile-notices capture), the same
     /// <see cref="SqlDryCompiler"/> tier-4 pre-flight <see cref="RetryCommand.Execute"/> runs before
-    /// touching prior-run state, then <see cref="RetryCommand.BuildRetryPlan"/> -- the same extracted
-    /// core `pz retry` itself now calls -- then <see cref="RunCommand.ExecuteRun"/> with the resulting
+    /// touching prior-run state, then <see cref="RetryCommand.BuildRetryPlan"/> -- the extracted
+    /// core `pz retry` itself calls -- then <see cref="RunCommand.ExecuteRun"/> with the resulting
     /// selection/reuse/carried-forward. Same PZ0604 lock pre-check as <see cref="RunAsync"/>, for the same
     /// reason: <c>ExecuteRun</c> would otherwise block on the OS lock with no operator to arbitrate.</summary>
     private static async Task<McpRunOutcome> RetryAsync(string projectDir, bool fullRefresh, CancellationToken ct)
@@ -405,12 +399,7 @@ internal static class McpCommand
         var compileNotices = new List<string>();
         try
         {
-            var env = SharedInputHelpers.SnapshotEnvironment();
-            project = ProjectLoader.Load(projectDir, env);
-            project = SharedInputHelpers.AnchorToProjectDir(project, projectDir);
-            var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
-            using var sqlAst = new DuckDbSqlAstReader();
-            fullDag = DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst);
+            (project, fullDag) = LoadAndCompile(projectDir, compileNotices);
         }
         catch (PzValidationException ex)
         {
@@ -470,9 +459,19 @@ internal static class McpCommand
         {
             // Mirrors RunAsync's own catch above: the same three diagnosable local I/O shapes get
             // fingerprinted.
-            return new McpRunOutcome(ExitCodes.Fatal, [EngineFailureMapper.TryMap(ex) ?? new PzError(
-                PzErrorCode.UnexpectedEngineFailure, $"unexpected engine failure — {ex.Message}", null, null, null)]);
+            return new McpRunOutcome(ExitCodes.Fatal, [EngineFailureMapper.Map(ex)]);
         }
+    }
+
+    /// <summary>Load, anchor and compile for the MCP run tools; compile notices are collected into
+    /// <paramref name="compileNotices"/> rather than printed, since the result envelope carries them.</summary>
+    private static (PzProject Project, CompiledDag Dag) LoadAndCompile(string projectDir, List<string> compileNotices)
+    {
+        var env = SharedInputHelpers.SnapshotEnvironment();
+        var project = SharedInputHelpers.AnchorToProjectDir(ProjectLoader.Load(projectDir, env), projectDir);
+        var renderCtx = new RenderContext(project, Guid.NewGuid().ToString("N"), DateTimeOffset.UtcNow) { Env = env };
+        using var sqlAst = new DuckDbSqlAstReader();
+        return (project, DagCompiler.Compile(project, renderCtx, compileNotices, sqlAst));
     }
 
     /// <summary>Projects the run-time warning events onto

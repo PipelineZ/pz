@@ -2,6 +2,7 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.TestKit;
+using Pz.Shared.Csv;
 using Renci.SshNet.Common;
 using Sylvan.Data.Csv;
 
@@ -469,6 +470,32 @@ public class SftpWriteSessionTests
         Assert.Equal(2, ids.GetValue(1));
         Assert.Equal("Alice", names.GetString(0));
         Assert.Equal("Bob", names.GetString(1));
+    }
+
+    [Fact]
+    public async Task Parquet_timestamps_keep_microsecond_precision()
+    {
+        var schema = new Schema([new Field("at", new TimestampType(TimeUnit.Microsecond, "+00:00"), nullable: true)], null);
+        var at = new DateTimeOffset(2026, 7, 12, 8, 30, 15, TimeSpan.Zero).AddTicks(1_234_560); // .123456
+        using var batch = new RecordBatch(
+            schema, [new TimestampArray.Builder(new TimestampType(TimeUnit.Microsecond, "+00:00")).Append(at).Build()], 1);
+
+        var fs = new FakeSftpFileSystem();
+        var session = await SftpParquetWriteSession.CreateAsync(
+            fs, ownsFileSystem: false, "out/.pz-tmp-a-events.parquet", "out/events.parquet", schema,
+            new CountingOperationGate(), "sftp parquet sink test", CancellationToken.None);
+        await session.WriteBatchAsync(batch, CancellationToken.None);
+        await session.CommitAsync(CancellationToken.None);
+        await session.DisposeAsync();
+
+        var batches = new List<RecordBatch>();
+        await foreach (var b in SftpParquetReader.ReadAsync(
+            fs.OpenRead("out/events.parquet"), null, "test", BatchOptions.Default, CancellationToken.None))
+        {
+            batches.Add(b);
+        }
+
+        Assert.Equal(at, ((TimestampArray)Assert.Single(batches).Column(0)).GetTimestamp(0));
     }
 
     [Fact]

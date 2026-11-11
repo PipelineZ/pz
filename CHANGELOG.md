@@ -7,6 +7,26 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **s3, gcs: `pz validate --connect` no longer promises a probe "in a later version".** Both connectors' connection
+  check said a deep probe "arrives with pz validate --connect in a later version", but that check is what
+  `pz validate --connect` runs. It now says that connectivity is not probed and is verified at run time.
+- **postgres, sqlserver: refusing an option a change-capture dataset cannot take no longer cites a `table` option**,
+  which no longer exists; the message says the dataset reads its entity's table directly.
+- **postgres: range partitioning over an extreme double or decimal range no longer overflows.** Boundaries were
+  computed as `min + (max - min) * i / n`, which threw for a decimal range near `decimal.MaxValue` and produced
+  infinite boundaries for a double range near `double.MaxValue`. They now divide before multiplying, as the
+  sqlserver connector already did, and both connectors share that arithmetic.
+- **`rate_limit:` on a connector that cannot pace is reported once per connection.** A connection both read and
+  written raised PZ0317 twice, once per direction; the message now names the connection.
+- **sqlserver: `partitions:` no longer rounds a fractional or boolean value.** A run that skipped `pz validate`
+  read `partitions: 3.7` as 4 and `partitions: true` as 1; both are now refused with the same "must be an integer"
+  error postgres gives, and the two connectors share that parse.
+- **sftp: parquet writes keep microsecond timestamps.** The universal-tier parquet writer declared timestamp columns
+  in a way Parquet.Net stores at millisecond precision, so `12:30:15.123456` landed as `12:30:15.123`. They are now
+  written as microseconds, like the localfiles, azureblob and gcs parquet writers.
+
 ## [0.18.0] - 2026-11-09
 
 ### Breaking

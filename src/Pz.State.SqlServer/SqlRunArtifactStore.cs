@@ -58,7 +58,6 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
 
     private const int MaxWatermarkValueLength = 256;
 
-
     /// <summary>Serializes concurrent <see cref="WriteSnapshot"/> calls for the SAME run id within this
     /// store instance -- mirrors <c>LocalRunArtifactStore</c>'s per-run <c>RunResultsWriter</c> lock
     /// (that class's doc comment): two <c>NodeCompleted</c> callbacks racing on the same run must never
@@ -68,10 +67,11 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     private readonly Lock _runLocksGate = new();
 
     /// <summary>The per-node fingerprint (see <see cref="NodeFingerprint"/>) this store last
-    /// successfully upserted, keyed by run id then node id -- what turns <see cref="SnapshotRunEvents"/>'s
+    /// successfully upserted, keyed by run id then node id -- what turns <c>SnapshotRunEvents</c>'s
     /// cumulative node list (every node completed so far, re-sent whole on every call) back into a
-    /// delta. A 300-node run used to cost ~45k round trips (1+2+...+300 upserts across 300 snapshots);
-    /// a node's row is now upserted once when new, then again only if its content genuinely changes.
+    /// delta. Without it a 300-node run would cost ~45k round trips (1+2+...+300 upserts across 300
+    /// snapshots); with it a node's row is upserted once when new, then again only if its content
+    /// genuinely changes.
     /// Guarded by <see cref="LockFor"/> the same as the rest of a run's state -- every read/write of an
     /// entry happens inside that run's <c>lock</c> block in <see cref="WriteSnapshot"/>.</summary>
     private readonly Dictionary<string, Dictionary<string, string>> _lastWritten = new(StringComparer.Ordinal);
@@ -297,10 +297,10 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// field tuples can never collide onto the same joined string.</summary>
     private static string NodeFingerprint(NodeResult node)
     {
-        var provenance = node.Provenance is { } p ? ProvenanceName(p) : "";
+        var provenance = NodeResultJson.ProvenanceName(node.Provenance) ?? "";
         var payload = SerializePayload(node) ?? "";
         return string.Join('\u001f',
-            node.Name, node.Kind.ToString(), NodeStatusName(node.Status),
+            node.Name, node.Kind.ToString(), NodeResultJson.StatusName(node.Status),
             node.RowsMoved.ToString(CultureInfo.InvariantCulture),
             ((long)node.Duration.TotalMilliseconds).ToString(CultureInfo.InvariantCulture),
             node.Error?.Code ?? "", node.Error?.Message ?? "", provenance,
@@ -368,7 +368,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
 
     private void UpsertNode(SqlConnection sqlConnection, SqlTransaction transaction, string runId, NodeResult node)
     {
-        var provenance = node.Provenance is { } p ? ProvenanceName(p) : null;
+        var provenance = NodeResultJson.ProvenanceName(node.Provenance);
         var payload = SerializePayload(node);
 
         using var command = new SqlCommand(
@@ -402,7 +402,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         command.Parameters.AddWithValue("@node_id", node.Id.Value);
         command.Parameters.AddWithValue("@name", node.Name);
         command.Parameters.AddWithValue("@kind", node.Kind.ToString());
-        command.Parameters.AddWithValue("@status", NodeStatusName(node.Status));
+        command.Parameters.AddWithValue("@status", NodeResultJson.StatusName(node.Status));
         command.Parameters.AddWithValue("@rows_moved", node.RowsMoved);
         command.Parameters.AddWithValue("@duration_ms", (long)node.Duration.TotalMilliseconds);
         command.Parameters.AddWithValue("@error_code", (object?)node.Error?.Code ?? DBNull.Value);
@@ -443,8 +443,8 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
                 }
 
                 status = reader.GetString(0);
-                startedAtIso = FormatIso(reader.GetDateTime(1));
-                finishedAtIso = reader.IsDBNull(2) ? null : FormatIso(reader.GetDateTime(2));
+                startedAtIso = ArtifactTimestamp.Render(reader.GetDateTime(1));
+                finishedAtIso = reader.IsDBNull(2) ? null : ArtifactTimestamp.Render(reader.GetDateTime(2));
             }
 
             var nodes = new List<PriorNode>();
@@ -511,9 +511,9 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     /// so a genuine connectivity failure is never mistaken for skip-the-unreadable.</summary>
     private sealed class UnreadableRunException : Exception;
 
-    /// <summary>Parses the <c>observed_schema</c> object out of a node's <c>payload</c> column, mirroring
-    /// <see cref="RunResultsReader"/>'s <c>TryParse</c> local-store logic -- <see cref="PriorNode.Observed"/>
-    /// must be populated for a SQL-backed run too, or <c>pz schema accept</c> is a no-op under
+    /// <summary>Parses the <c>observed_schema</c> object out of a node's <c>payload</c> column through the
+    /// same reader the local store uses (<see cref="NodeResultJson.ReadObservedSchema"/>) --
+    /// <see cref="PriorNode.Observed"/> must be populated for a SQL-backed run too, or <c>pz schema accept</c> is a no-op under
     /// <c>state: {backend: sqlserver}</c>.
     /// Omit-when-absent: null payload, no <c>observed_schema</c> property, or a shape missing
     /// <c>hintsHash</c>/<c>columns</c> all yield null rather than throwing -- <see cref="ValidatePayload"/>
@@ -534,25 +534,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
             return null;
         }
 
-        var hintsHash = obsElement.TryGetProperty("hintsHash", out var hh) ? hh.GetString() : null;
-        if (hintsHash is null || !obsElement.TryGetProperty("columns", out var colsElement) ||
-            colsElement.ValueKind != JsonValueKind.Array)
-        {
-            return null;
-        }
-
-        var columns = new List<SchemaColumn>();
-        foreach (var col in colsElement.EnumerateArray())
-        {
-            var name = col.TryGetProperty("name", out var n) ? n.GetString() : null;
-            var type = col.TryGetProperty("type", out var t) ? t.GetString() : null;
-            if (name is not null && type is not null)
-            {
-                columns.Add(new SchemaColumn(name, type));
-            }
-        }
-
-        return new ObservedSchema(columns, hintsHash);
+        return NodeResultJson.ReadObservedSchema(obsElement);
     }
 
     private static void ValidatePayload(string? payload)
@@ -573,8 +555,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
     }
 
     /// <summary>The additive-optional ABI payloads, serialized together -- same
-    /// field shapes/names as <c>RunResultsWriter.WriteNode</c>'s JSON, so a future reader can share
-    /// parsing logic. Null when every one of them is null, so a node untouched by any of those
+    /// field shapes/names as <c>RunResultsWriter.WriteNode</c>'s JSON (<see cref="NodeResultJson"/>). Null when every one of them is null, so a node untouched by any of those
     /// features writes no payload at all. Internal for the same no-Docker test seam as
     /// <see cref="ParseObservedSchema"/>.</summary>
     internal static string? SerializePayload(NodeResult node)
@@ -590,77 +571,7 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         {
             writer.WriteStartObject();
 
-            if (node.Timings is { } timings)
-            {
-                writer.WriteStartObject("timings");
-                writer.WriteNumber("producerStallMs", (long)timings.ProducerStall.TotalMilliseconds);
-                writer.WriteNumber("consumerStallMs", (long)timings.ConsumerStall.TotalMilliseconds);
-                writer.WriteEndObject();
-            }
-
-            if (node.Ops is { } ops)
-            {
-                writer.WriteStartObject("ops");
-                writer.WriteNumber("executed", ops.Executed);
-                writer.WriteNumber("retried", ops.Retried);
-                writer.WriteNumber("throttle_wait_ms", ops.ThrottleWaitMs);
-                writer.WriteEndObject();
-            }
-
-            if (node.Partitions is { } partitions)
-            {
-                writer.WriteStartObject("partitions");
-                writer.WriteNumber("total", partitions.Total);
-                writer.WriteNumber("completed", partitions.Completed);
-                writer.WriteNumber("reused", partitions.Reused);
-                writer.WriteNumber("resumed", partitions.Resumed);
-                writer.WriteEndObject();
-            }
-
-            if (node.Delivery is { } delivery)
-            {
-                writer.WriteStartObject("delivery");
-                writer.WriteString("abort_semantics", delivery.AbortSemantics);
-                writer.WriteNumber("rows_visible", delivery.RowsVisible);
-                writer.WriteNumber("resumed_rows", delivery.ResumedRows);
-                writer.WriteEndObject();
-            }
-
-            if (node.Cdc is { } cdc)
-            {
-                writer.WriteStartObject("cdc");
-                writer.WriteNumber("inserts", cdc.Inserts);
-                writer.WriteNumber("updates", cdc.Updates);
-                writer.WriteNumber("deletes", cdc.Deletes);
-                if (node.SyncStateCandidate is { } position)
-                {
-                    writer.WriteString("position", position.Token);
-                }
-                else
-                {
-                    writer.WriteNull("position");
-                }
-
-                writer.WriteEndObject();
-            }
-
-            if (node.Observed is { } observed)
-            {
-                writer.WriteStartObject("observed_schema");
-                writer.WriteStartArray("columns");
-                foreach (var col in observed.Columns)
-                {
-                    writer.WriteStartObject();
-                    writer.WriteString("name", col.Name);
-                    writer.WriteString("type", col.Type);
-                    writer.WriteEndObject();
-                }
-
-                writer.WriteEndArray();
-                writer.WriteString("hintsHash", observed.HintsHash);
-                writer.WriteEndObject();
-            }
-
+            NodeResultJson.WriteStatsBlocks(writer, node);
             NodeFactsJson.Write(writer, node.Facts);
 
             writer.WriteEndObject();
@@ -695,29 +606,8 @@ public sealed class SqlRunArtifactStore(SqlStateConnection connection, string pr
         DateTimeOffset.Parse(iso, CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal).UtcDateTime;
 
-    /// <summary>Inverse of <see cref="ParseIso"/>, in the same shape <c>RunResultsWriter</c> writes to
-    /// <c>run_results.json</c>'s <c>startedAt</c>/<c>finishedAt</c> -- so `pz runs` renders identically
-    /// whether the backend is local or SQL Server.</summary>
-    private static string FormatIso(DateTime utc) =>
-        utc.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
-
     /// <summary>Mirrors <c>RunResultsWriter.WriteSnapshot</c>'s contract: every status but "running" is
     /// terminal (RunResultsReader.cs's <see cref="PriorRun"/> doc lists "running" as the one
     /// non-terminal value a crashed run's last snapshot can be left holding).</summary>
     private static bool IsTerminal(string status) => status != "running";
-
-    private static string NodeStatusName(NodeStatus status) => status switch
-    {
-        NodeStatus.Success => "success",
-        NodeStatus.Failed => "failed",
-        NodeStatus.Skipped => "skipped",
-        _ => throw new ArgumentOutOfRangeException(nameof(status), status, "unknown node status"),
-    };
-
-    private static string ProvenanceName(NodeProvenance provenance) => provenance switch
-    {
-        NodeProvenance.Reused => "reused",
-        NodeProvenance.CarriedForward => "carried_forward",
-        _ => throw new ArgumentOutOfRangeException(nameof(provenance), provenance, "unknown provenance"),
-    };
 }

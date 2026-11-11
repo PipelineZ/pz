@@ -25,8 +25,8 @@ internal static class MsDdl
     /// Three or more parts are refused
     /// rather than quoted as one identifier -- <c>Quote("db.dbo")</c> is the single identifier literally
     /// named <c>db.dbo</c>, so a cross-database name would silently read nothing. Deliberately a twin of
-    /// <c>PgDdl.SplitEntity</c> rather than a shared helper: connectors load into separate ALCs and share
-    /// only the Abstractions ABI, which stays closed.</summary>
+    /// <c>PgDdl.SplitEntity</c> rather than a shared helper: connectors share only the Abstractions ABI,
+    /// which stays closed.</summary>
     public static (string Schema, string Table) SplitEntity(string entity, string defaultSchema = "dbo")
     {
         var parts = entity.Split('.');

@@ -5,6 +5,7 @@ using Google.Protobuf;
 using Google.Protobuf.WellKnownTypes;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Protocol.V1;
+using Pz.Shared;
 
 namespace Pz.PackageManagement.ProcessHosting;
 
@@ -14,9 +15,10 @@ namespace Pz.PackageManagement.ProcessHosting;
 /// implemented anyway so a round trip through the wire shape is provably lossless (see ShimTests), and
 /// so this class is the single place that shape is defined rather than split across callers.
 ///
-/// <para>Mirrors <c>tests/fixtures/PcpFakeConnector/PcpService.cs</c>'s <c>StructMapping</c>/
-/// <c>SpecMapping</c> exactly -- that fixture is the reference peer this shim talks to, and any drift
-/// between the two would only ever show up as a wire-level test failure, never a compile error.</para></summary>
+/// <para>Mirrors <c>tests/fixtures/PcpFakeConnector/PcpService.cs</c>'s <c>SpecMapping</c> exactly --
+/// that fixture is the reference peer this shim talks to, and any drift between the two would only
+/// ever show up as a wire-level test failure, never a compile error. The <c>Struct</c> decoding is
+/// <c>Pz.Shared.StructMapping</c>, compiled into this assembly and the connector SDK alike.</para></summary>
 public static class MessageMapping
 {
     // ---- google.protobuf.Struct <-> IReadOnlyDictionary<string, object?> ---------------------
@@ -32,21 +34,7 @@ public static class MessageMapping
         return result;
     }
 
-    public static IReadOnlyDictionary<string, object?> ToDictionary(Struct? value)
-    {
-        var result = new Dictionary<string, object?>(StringComparer.Ordinal);
-        if (value is null)
-        {
-            return result;
-        }
-
-        foreach (var (key, item) in value.Fields)
-        {
-            result[key] = ToObject(item);
-        }
-
-        return result;
-    }
+    public static IReadOnlyDictionary<string, object?> ToDictionary(Struct? value) => StructMapping.ToDictionary(value);
 
     private static Value ToValue(object? value) => value switch
     {
@@ -67,66 +55,6 @@ public static class MessageMapping
         System.Collections.IEnumerable list => Value.ForList([.. list.Cast<object?>().Select(ToValue)]),
         _ => Value.ForString(value.ToString() ?? string.Empty),
     };
-
-    private static object? ToObject(Value value) => value.KindCase switch
-    {
-        Value.KindOneofCase.NumberValue => NormalizeNumber(value.NumberValue),
-        Value.KindOneofCase.StringValue => value.StringValue,
-        Value.KindOneofCase.BoolValue => value.BoolValue,
-        Value.KindOneofCase.StructValue => ToNestedMap(value.StructValue),
-        Value.KindOneofCase.ListValue => value.ListValue.Values.Select(ToObject).ToList(),
-        _ => null,
-    };
-
-    /// <summary>protobuf's <c>Struct</c> has only <c>number</c> (a double), so an integer value this
-    /// shim reads back (a round trip through <see cref="ToStruct"/>, or a future Struct-shaped response
-    /// from the connector) arrives as a double. Mirrors <c>Pz.Connectors.Sdk.StructMapping.NormalizeNumber</c>
-    /// exactly: normalize an integral value within the range a double still represents exactly
-    /// (|x| &lt;= 2^53) to <see cref="long"/>; a fractional value, or one wider than that range, stays a
-    /// double, since rounding it would silently change its value or its precision.</summary>
-    private static object NormalizeNumber(double d) =>
-        double.IsFinite(d) && d == Math.Truncate(d) && d >= -MaxSafeInteger && d <= MaxSafeInteger
-            // The (object) cast on the untaken branch is load-bearing: without it the ?: operator
-            // unifies on double (long -> double is an implicit numeric conversion), silently widening
-            // the long branch back to a double before it is ever boxed.
-            ? (long)d
-            : (object)d;
-
-    private const double MaxSafeInteger = 9_007_199_254_740_992d; // 2^53
-
-    /// <summary>A nested option map (e.g. a <c>columns:</c> contract) arrives with no .NET type
-    /// attached, and the ABI reads one of them two different ways: <c>columns:</c> is an
-    /// <c>IReadOnlyDictionary&lt;string, string&gt;</c> in-proc, while everything else is read as
-    /// <c>object?</c>-valued. An all-string map is rebuilt as <see cref="StringValuedMap"/>, which
-    /// answers to both shapes, rather than picking one and silently making the other invisible.
-    ///
-    /// <para>ORDER IS LOAD-BEARING AND ONLY C# GUARANTEES IT. LocalFiles binds a <c>columns:</c>
-    /// contract to the csv header BY POSITION, so the order the host declared must survive the wire.
-    /// It does here because Google.Protobuf's <c>MapField</c> enumerates in insertion order on the C#
-    /// side of this transport, and the rebuild below walks the fields in that order -- an
-    /// implementation property of one runtime, not a protobuf guarantee (proto3 map entries are
-    /// explicitly unordered), tracked as a spec-level hazard rather than papered over here. See
-    /// <c>PcpService.StructMapping.ToNestedMap</c>, which this mirrors exactly.</para></summary>
-    private static object ToNestedMap(Struct value)
-    {
-        var plain = new Dictionary<string, object?>(StringComparer.Ordinal);
-        var strings = new Dictionary<string, string>(StringComparer.Ordinal);
-        var allStrings = value.Fields.Count > 0;
-        foreach (var (key, item) in value.Fields)
-        {
-            plain[key] = ToObject(item);
-            if (item.KindCase == Value.KindOneofCase.StringValue)
-            {
-                strings[key] = item.StringValue;
-            }
-            else
-            {
-                allStrings = false;
-            }
-        }
-
-        return allStrings ? new StringValuedMap(strings) : plain;
-    }
 
     // ---- DatasetSpec ---------------------------------------------------------------------------
 
@@ -437,36 +365,4 @@ public static class MessageMapping
         using var reader = new ArrowStreamReader(buffer, leaveOpen: true);
         return await reader.GetSchema(ct).ConfigureAwait(false);
     }
-}
-
-/// <summary>A nested option map whose values are all strings, readable either as
-/// <c>IReadOnlyDictionary&lt;string, object?&gt;</c> (inherited) or as
-/// <c>IReadOnlyDictionary&lt;string, string&gt;</c> (explicit) -- mirrors
-/// <c>PcpFakeConnector.StringValuedMap</c> exactly; see <c>MessageMapping</c>'s private
-/// <c>ToNestedMap</c> for why both readings are needed.</summary>
-public sealed class StringValuedMap : Dictionary<string, object?>, IReadOnlyDictionary<string, string>
-{
-    private readonly Dictionary<string, string> _strings;
-
-    public StringValuedMap(Dictionary<string, string> strings)
-        : base(strings.Count, StringComparer.Ordinal)
-    {
-        _strings = strings;
-        foreach (var (key, value) in strings)
-        {
-            Add(key, value);
-        }
-    }
-
-    string IReadOnlyDictionary<string, string>.this[string key] => _strings[key];
-
-    IEnumerable<string> IReadOnlyDictionary<string, string>.Keys => _strings.Keys;
-
-    IEnumerable<string> IReadOnlyDictionary<string, string>.Values => _strings.Values;
-
-    bool IReadOnlyDictionary<string, string>.TryGetValue(string key, out string value) =>
-        _strings.TryGetValue(key, out value!);
-
-    IEnumerator<KeyValuePair<string, string>> IEnumerable<KeyValuePair<string, string>>.GetEnumerator() =>
-        _strings.GetEnumerator();
 }

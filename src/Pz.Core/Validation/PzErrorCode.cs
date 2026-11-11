@@ -5,26 +5,37 @@ public static class PzErrorCode
     // 01xx load, 02xx semantic, 030x connector host/registry, 031x native path, 032x restore/lock,
     // 033x connectivity, 04xx SQL, 05xx runtime, 051x data checks, 06xx MCP server — the
     // authoring/verification tools exposed over the Model Context Protocol.
+    // A YAML file is malformed or has the wrong shape: a syntax error, a missing required field, a value
+    // that is not the mapping/list/scalar the key expects, or an unknown key. The message names the file
+    // and key; fix the YAML as the hint shows.
     public const string YamlShape = "PZ0101";
     // --vars: raw JSON text failed to parse, or parsed to something other than a JSON object.
     public const string VarsInvalid = "PZ0102";
+    // A `${VAR}` or env('VAR') reference names an environment variable that is not set. Set it before
+    // running pz, or remove the reference.
     public const string UndeclaredEnvVar = "PZ0103";
+    // A pipeline's Scriban template failed to parse or render: a syntax error, a function outside the
+    // sandbox, an unknown variable, or a source()/sink() call split across lines.
     public const string TemplateError = "PZ0104";
+    // Two names that must be unique collide: pipeline files whose stems match (case-insensitively), or
+    // two datasets that stage to one relation. Rename one.
     public const string DuplicateName = "PZ0110";
+    // A sidecar pipelines/configs/*.yml names a pipeline that has no .sql file. Fix its `pipeline:` key
+    // or remove the sidecar.
     public const string SidecarUnknownPipeline = "PZ0111";
-    // The sink-output `input:` field was removed — a pipeline declares its load inline as
-    // `INSERT INTO {{ sink('<sink>', '<output>') }}`. A leftover `input:` is rejected at load time so
-    // the migration is explicit, not silently ignored.
+    // An `input:` key was given to a sink. A sink has no input binding: the pipeline whose SQL carries
+    // `INSERT INTO {{ sink('<connection>', '<entity>') }}` IS the input. Remove the key.
     public const string RemovedInputField = "PZ0112";
     /// <summary>A sidecar check definition is invalid: unknown type, missing/malformed per-type
     /// options, or unknown option keys.</summary>
     public const string InvalidCheck = "PZ0113";
     public const string InvalidEngineConfig = "PZ0120";
-    // A source/sink file's `retry:` block is malformed (shape, bounds, or an unparseable duration).
-    // One code for the whole block, mirroring InvalidEngineConfig's granularity.
+    // A `retry:` block (connection, entity read/write side, or call site) is malformed: shape, bounds, or
+    // an unparseable duration. One code for the whole block, mirroring InvalidEngineConfig's granularity.
     public const string RetryConfigInvalid = "PZ0121";
-    // A source/sink file's top-level `max_concurrency:` is malformed (not an integer, or < 1). One
-    // code for the whole check, mirroring RetryConfigInvalid's granularity.
+    // A connection's `max_concurrency:` is malformed (not an integer, or < 1), or is given on an entity
+    // or call, where it does not apply. One code for the whole check, mirroring RetryConfigInvalid's
+    // granularity.
     public const string ConcurrencyConfigInvalid = "PZ0122";
     // project.yml's top-level `retention:` is malformed -- a scalar outside the off-set
     // (off/false/no), or a map whose keep_last is missing, non-integer, or < 1. One code for the
@@ -52,7 +63,7 @@ public static class PzErrorCode
     // `observed_schema` (the dataset is under `on_source_drift: ignore`, is a `columns:` contract
     // dataset the gate never DESCRIBEs, or -- the known warn+retry-reuse edge -- the latest run reused
     // a previously-staged SourceLoad and therefore carries `Observed = null` for it even though drift
-    // was reported on an earlier run). Reuses DriftPolicyInvalid's PZ012x family rather than a new range.
+    // was reported on an earlier run).
     public const string SchemaAcceptTargetInvalid = "PZ0127";
     public const string InitTargetNotEmpty = "PZ0130"; // `pz init`: target directory exists and is not empty
     public const string InitTemplateUnknown = "PZ0131";   // `pz init --template`: no such template id
@@ -94,12 +105,19 @@ public static class PzErrorCode
     // already taken by the render-time catch, which this is not -- CanonicalJson.Serialize runs
     // during DagCompiler's node-building, after rendering has already succeeded.
     public const string UnsupportedOptionValue = "PZ0137";
+    // A ref(), source() or sink() names a pipeline or connection that does not exist (also raised for a
+    // malformed source() call). The hint offers the nearest declared name.
     public const string UnresolvedRef = "PZ0201";
+    // The ref() graph between pipelines contains a cycle; the message lists it. Remove or redirect one ref().
     public const string Cycle = "PZ0202";
     // PZ0203 (was SinkInputMissing: a YAML `input:` that matched no pipeline/source dataset) is
     // retired -- YAML `input:` binding was removed entirely (inline `INSERT INTO {{ sink(...) }}` is
     // the sole load path), so the code is unreachable. The number is not reallocated.
+    // An ephemeral pipeline refs another ephemeral pipeline. Ephemerals are inlined one level deep;
+    // materialize one of them as table/view.
     public const string EphemeralChain = "PZ0204";
+    // An ephemeral pipeline declares checks. It produces no node for them to depend on; materialize it
+    // as table/view or remove the checks.
     public const string ChecksOnEphemeral = "PZ0205";
     // Inline sink binding: an output is bound by exactly one pipeline's sink() call.
     public const string SinkBindingConflict = "PZ0206"; // multiple pipelines claim one output (ERROR)
@@ -109,8 +127,7 @@ public static class PzErrorCode
     // not reallocated.
     public const string SinkOutputUnbound = "PZ0207";
     public const string InvalidSinkCall = "PZ0208";     // malformed sink() call (see DagCompiler)
-    // PZ0210 is already taken by SelectorNoMatch below -- skipped, not renumbered.
-    public const string MergeRequiresKeys = "PZ0209";   // `mode: merge` output declares no keys:
+    public const string MergeRequiresKeys = "PZ0209";   // `strategy: 'merge'` output declares no keys:
     public const string SelectorNoMatch = "PZ0210";
     public const string KeysWithoutMerge = "PZ0211";    // non-merge output declares keys:
     public const string CursorInvalid = "PZ0212";       // incremental cursor missing from, or mistyped in, a declared columns: contract
@@ -118,8 +135,8 @@ public static class PzErrorCode
     // initial, undeclared cursor type, form/type mismatch, until <= initial, or query-mode. One code
     // for the family, mirroring CursorInvalid's granularity.
     public const string WindowConfigInvalid = "PZ0213";
-    // An incremental dataset structurally feeds a mode: append sink output that has not declared
-    // `accept_duplicates: true` — append delivery is at-least-once (duplicate windows: `pz run` after
+    // An incremental dataset structurally feeds a `strategy: append` sink output that has not declared
+    // `duplicates: accept` — append delivery is at-least-once (duplicate windows: `pz run` after
     // a partial failure, a failed watermark persist, a partial --select, a reuse-fallback retry), so
     // the combination requires recorded consent.
     public const string IncrementalAppendUnacknowledged = "PZ0214";
@@ -131,8 +148,8 @@ public static class PzErrorCode
     // `pz run`/`pz plan`.
     public const string SelectionConflict = "PZ0216";
     // DagCompiler validation of date-templated dataset paths: `path` has date tokens
-    // ({yyyy}/{MM}/{dd}/{HH}/{mm}) but the dataset has no `incremental.cursor`, or the declared cursor
-    // type is not date/timestamp -- there is nothing to substitute the tokens from at extraction time.
+    // ({yyyy}/{MM}/{dd}/{HH}/{mm}) but the dataset declares no `sync: {mode: incremental}` cursor, or the
+    // declared cursor type is not date/timestamp -- there is nothing to substitute the tokens from at extraction time.
     public const string TemplatedPathCursorInvalid = "PZ0217";
     // The path's token sequence itself is malformed (unknown token, or not a contiguous coarse->fine
     // run) -- delegates to PathTemplate.Validate, re-raised here as an aggregated compile error naming
@@ -171,11 +188,10 @@ public static class PzErrorCode
     // pipeline file/reason; next step is to check the shape against the one recognized pattern
     // (<cursor column> > or >= <expression containing watermark()>).
     public const string UnrecognizedWatermarkExpression = "PZ0224";
-    // WatermarkInference's per-dataset fold: the dataset has BOTH a YAML `incremental:`
-    // block AND a SQL watermark() declaration ("either/or"; a windowed YAML incremental, i.e.
-    // `max_window` non-null, always also has a non-null `incremental:`, so it hits this case too --
-    // its own more specific "windowed backfill is YAML-only" message takes precedence, still just one
-    // PZ0225). Fires only after UnrecognizedWatermarkExpression passes (PZ0224 doesn't block further
+    // WatermarkInference's per-dataset fold: the dataset has BOTH a declared
+    // `sync: {mode: incremental}` AND a SQL watermark() declaration ("either/or"; a windowed incremental,
+    // i.e. `max_window` set, hits this case too -- its own more specific "windowed backfill is
+    // YAML-only" message takes precedence, still just one PZ0225). Fires only after UnrecognizedWatermarkExpression passes (PZ0224 doesn't block further
     // analysis). Recognized comparisons disagreeing on the cursor column ACROSS pipelines is not
     // represented here: PZ0349 refuses a source read by more than one pipeline.
     public const string ConflictingIncrementalDeclaration = "PZ0225";
@@ -193,8 +209,8 @@ public static class PzErrorCode
     // ref()-ing that pipeline, so the shared relation is a file the author wrote and can open. With one
     // reader, what a pipeline's SQL asks for IS what pz extracts, which is what makes ReadHints
     // projection/predicate pushdown decidable without cross-file inference. Raised in DagCompiler
-    // stage 6, BEFORE watermark inference, so PZ0225's cross-pipeline arm is unreachable rather than
-    // merely redundant. Message lists every reading file sorted ordinally and shows the staging pipeline
+    // before watermark inference, so the inference never has to reconcile two pipelines' declarations
+    // for one dataset. Message lists every reading file sorted ordinally and shows the staging pipeline
     // to add. Counts pipelines, not references -- a self-join is one reader.
     public const string SourceReadByMultiplePipelines = "PZ0349";
     // A watermark() comparison declares an UPPER bound on the cursor with no lower bound anywhere for
@@ -203,12 +219,12 @@ public static class PzErrorCode
     // resume semantics belongs in the WHERE without a watermark() call, where it rides ReadHints as an
     // ordinary predicate.
     public const string WatermarkCeilingWithoutFloor = "PZ0351";
-    // Retired (was: a sink output's `mode:` outside append/replace/merge). Write strategy is a sink()
-    // keyword argument now, and SinkFunction refuses one outside replace/append/merge at the call site
+    // Retired (was: a sink output's `mode:` outside append/replace/merge). The write strategy is a sink()
+    // keyword argument (or `write.strategy`), and both surfaces refuse one outside replace/append/merge
     // (PZ0334), so no OutputDef can reach DagCompiler carrying an unknown mode. Whether the target
     // connector supports a KNOWN mode is still the planner's PZ0324. The number is not reallocated.
     public const string WriteModeUnknown = "PZ0228";
-    // `incremental:` + `cursor_order: desc` + `max_pages` -- a truncated descending crawl would advance
+    // `sync: {mode: incremental}` + `cursor_order: desc` + `max_pages` -- a truncated descending crawl would advance
     // the MAX(cursor) watermark past unfetched rows, and no safe resume exists (advancing skips them;
     // not advancing re-fetches the same head forever). Refused at compile when declared; HttpPartition's
     // runtime guard covers the undeclared case.
@@ -251,8 +267,8 @@ public static class PzErrorCode
     public const string TemplatingCapabilityMissing = "PZ0314";
     // Two resume mechanisms declared for one dataset. Guards two conflicts the unified `sync:` block
     // does not rule out:
-    //   1. WatermarkInference (see WatermarkInference.cs ~184): a SQL `watermark()` declaration targeting a
-    //      dataset that also declares `sync: {mode: auto}` -- ordered cursor (SQL) vs. opaque token (YAML).
+    //   1. WatermarkInference: a SQL `watermark()` declaration targeting a dataset that also declares
+    //      `sync: {mode: auto}` or `{mode: cdc}` -- ordered cursor (SQL) vs. opaque token (YAML).
     //   2. ExecutionPlanner's per-node guard (feed-natural conflict): a cursor-incremental dataset (YAML
     //      `sync: {mode: incremental}` or SQL watermark()) on a connector that manages its OWN change feed
     //      for it (INaturalReadShapeSource resolves Feed, e.g. http `delta_pointer`) -- the ordered cursor
@@ -266,8 +282,8 @@ public static class PzErrorCode
     // ConnectorCapabilities.GatedOperations -- raised by the planner (never mid-run, mirroring
     // PZ0313/PZ0314), because a connector that ignores the gate silently never paces.
     public const string PacingUnsupported = "PZ0317";
-    // rate_limit: block is malformed, out of bounds, or declared at dataset/output level (it is
-    // instance-level only).
+    // rate_limit: block is malformed, out of bounds, or declared on an entity or call (it is
+    // connection-level only).
     public const string RateLimitConfigInvalid = "PZ0318";
     // A connector declared StablePartitionIds but a planned partition lacks IIdentifiedPartition / has
     // an empty or duplicate id (run-time, returned NodeResult), or declared CheckpointableReads without
@@ -279,13 +295,13 @@ public static class PzErrorCode
     // NuGetResolver.ParseRequirementRange's floating-version-range rejection.
     public const string FloatingVersionRejected = "PZ0323";
 
-    // A sink output's KNOWN mode (PZ0228 already killed unknown strings at compile time) is not
+    // A sink output's write strategy (always one of replace/append/merge by this point) is not
     // supported by the target connector -- merge without the Merge capability, or replace without
     // ReplaceWrites. Raised by the planner (never mid-run, mirroring PZ0313/PZ0314/PZ0317) rather than
     // from BeginWriteAsync at run time.
     public const string WriteModeUnsupported = "PZ0324";
     // Two resolved packages provide the same lib/ or native/ file name, and both must be flattened into
-    // one connector package's directory for its ALC to probe them. Raised by PackageMaterializer rather
+    // one connector package's directory for the connector process to probe them. Raised by PackageMaterializer rather
     // than resolved by picking a winner: the flattening is a plain copy, so a "winner" is whichever
     // package enumeration reached last.
     public const string PackageAssetCollision = "PZ0325";
@@ -309,17 +325,17 @@ public static class PzErrorCode
     // NOTE: Pz.PackageManagement cannot reference Pz.Core (see RestoreException's doc comment), so every
     // PZ032x code above is ALSO duplicated as a bare string literal over there (NuGetResolver.cs,
     // RestoreException.cs, DriftChecker.cs comments). This registry is the source of truth for the
-    // *value*, but nothing enforces the two staying in sync -- that drift is how PZ0322 came to be used
-    // for two unrelated errors. Changing a PZ032x value here means grepping PackageManagement for the
-    // old literal too.
+    // *value*, but nothing enforces the two staying in sync: one code must mean one error in both
+    // places. Changing a PZ032x value here means grepping PackageManagement for the old literal too.
     public const string ConnectionCheckFailed = "PZ0330";
     public const string SchemaDrift = "PZ0331";
-    // A dataset declares the old top-level `incremental:` block, which the unified
-    // `sync: { mode: incremental }` block replaced. The message carries the exact rewrite (the old
-    // cursor value, interpolated when parseable) so the migration is copy-pasteable, not just "removed".
+    // A dataset declares a top-level `incremental:` block. Incremental reads are declared as
+    // `sync: { mode: incremental, cursor: ... }`. The message carries the exact rewrite (the cursor
+    // value, interpolated when parseable) so the fix is copy-pasteable.
     public const string RetiredReadSurface = "PZ0332";
-    // A sink output declares the old `mode:`/`keys:`/`accept_duplicates:` surface directly instead of
-    // the unified `write:` block.
+    // A sink declares `mode:`/`accept_duplicates:` or a `write:` wrapper directly. Write options are
+    // `strategy`, `keys`, `duplicates` and `on_delete`, given as sink() keyword arguments or under an
+    // entity's `write:` block.
     public const string RetiredWriteSurface = "PZ0333";
     // A dataset's `sync:` block is malformed -- not a mapping, missing/unknown `mode`,
     // `mode: incremental` missing `cursor`, `mode: cdc` missing/malformed cdc-specific sub-keys, or an
@@ -328,8 +344,8 @@ public static class PzErrorCode
     public const string SyncModeInvalid = "PZ0334";
     // A resolved read shape paired with a `write:` strategy the compile-time pairing matrix refuses.
     // Currently: an explicitly declared `sync: {mode: incremental}` dataset feeding
-    // `write.strategy: replace` (DagCompiler stage 10b) -- discards previously loaded rows every run,
-    // defeating the point of an ordered-cursor read.
+    // `write.strategy: replace` (DagCompiler.CheckDeliveryMatrices) -- discards previously loaded rows
+    // every run, defeating the point of an ordered-cursor read.
     public const string IncompatiblePair = "PZ0335";
     // A cdc-fed `write.strategy: merge` output has not declared `write.on_delete` -- deletes on the
     // source table need an explicit routing choice (delete/soft/ignore); there is no safe default.
@@ -357,10 +373,10 @@ public static class PzErrorCode
     // SinkWriteExecutor as a NodeResult failure, before the upsert drain starts.
     public const string CdcDeleteKeysUnavailable = "PZ0340";
 
-    // The sink `outputs:` block is retired -- every write option is a sink() keyword argument now, so
-    // the option and the pipeline that writes it are visible in one file rather than two. Loud and
-    // PZ-coded, following the PZ0332/PZ0333 precedent; the hint reconstructs the exact call the retired
-    // block was equivalent to.
+    // An `outputs:` block was found. There are no per-target output profiles: each place is a
+    // top-level connection, and write options are sink() keyword arguments (or an entity's `write:`
+    // block). Loud and PZ-coded, following the PZ0332/PZ0333 precedent; the hint reconstructs the exact
+    // call the block was equivalent to.
     public const string RetiredOutputsBlock = "PZ0347";
 
     // An entity name that cannot name anything -- empty, an empty dotted segment, or embedded
@@ -391,9 +407,8 @@ public static class PzErrorCode
     // whole migration for that file.
     public const string RetiredConnectionDirectory = "PZ0346";
 
-    // project.yml declared `feeds:`, which was removed -- feeds are host configuration
-    // (PZ_FEEDS / --feeds), not pipeline authoring. Loud and PZ-coded, following the PZ0346/PZ0348
-    // retired-surface precedent.
+    // project.yml declares `feeds:`. Feeds are host configuration (PZ_FEEDS / --feeds), not pipeline
+    // authoring. Loud and PZ-coded, following the PZ0346/PZ0348 retired-surface precedent.
     public const string FeedsRemoved = "PZ0352";
 
     /// <summary>A connector refused to build a native fragment because the config it was handed cannot

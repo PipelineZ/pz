@@ -105,8 +105,7 @@ internal static class PgDdl
     /// cref="BuildCreateTableSql"/>) if missing, otherwise enforces <c>schema_policy</c>.
     /// <c>fail_on_change</c> (the default) compares every schema-declared column's name and type against
     /// <c>information_schema.columns</c>, throwing on the FIRST mismatch (missing column or type drift).
-    /// <c>evolve</c> is a clean not-supported error (descope valve -- schema evolution is not implemented
-    /// in v0). Runs inside the caller's transaction so a missing-target CREATE TABLE is rolled back along
+    /// <c>evolve</c> is a clean not-supported error (schema evolution is not implemented). Runs inside the caller's transaction so a missing-target CREATE TABLE is rolled back along
     /// with everything else if the session is later aborted.</summary>
     public static async Task EnsureTargetAsync(
         NpgsqlConnection connection, NpgsqlTransaction tx, string schemaPolicy,
@@ -130,9 +129,10 @@ internal static class PgDdl
             return;
         }
 
-        // fail_on_change (default, and the only other value v0 recognizes): existing target's columns
-        // must match name-for-name and type-for-type (see NormalizeTypeName for the aliases postgres's
-        // information_schema actually reports, e.g. "timestamp with time zone" for timestamptz).
+        // fail_on_change (the default; `additive` behaves the same apart from the soft-delete column
+        // below): existing target's columns must match name-for-name and type-for-type (see
+        // NormalizeTypeName for the aliases postgres's information_schema actually reports, e.g.
+        // "timestamp with time zone" for timestamptz).
         var existingColumns = await LoadExistingColumnsAsync(connection, tx, pgSchema, table, ct).ConfigureAwait(false);
         foreach (var field in arrowSchema.FieldsList)
         {

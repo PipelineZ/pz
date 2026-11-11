@@ -4,6 +4,7 @@ using Parquet;
 using Parquet.Schema;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.Sftp;
 
@@ -192,14 +193,13 @@ internal static class SftpParquetReader
     }
 
     private static Schema BuildArrowSchema(IReadOnlyList<DataField> fields, string context) =>
-        new(fields.Select(f => SftpTypeNameMap.ToArrowField(f.Name, ToV0TypeName(f, context))).ToArray(), null);
+        new(fields.Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ToV0TypeName(f, context))).ToArray(), null);
 
-    /// <summary>Mirrors <c>AzureParquetTypeMap.ToV0TypeName</c>/LocalFiles' <c>ParquetTypeMap</c> field
-    /// by field, except decimal: those two only ever build a schema (row reading for parquet runs on
-    /// the native tier for both), so they map decimal straight through as a v0 type name. This reader
-    /// executes actual row reads in managed code and decimal is out of the v0 matrix here (parity with
-    /// <c>ParquetSinkWriteSession.BuildDataField</c>'s decimal refusal on the write side), so it fails
-    /// fast naming the column instead of reaching a read that was never going to work.</summary>
+    /// <summary>The same footer-to-v0 mapping as the shared <c>ParquetTypeMap</c>, except decimal. That map
+    /// only ever builds a schema (localfiles and azureblob read parquet rows on the native tier), so it
+    /// passes decimal through as a v0 type name. This reader reads rows in managed code, where decimal is
+    /// outside the v0 matrix (the parquet writer refuses it too), so it fails fast naming the column
+    /// instead of reaching a read that could never work.</summary>
     private static string ToV0TypeName(DataField field, string context)
     {
         if (field is DecimalDataField)

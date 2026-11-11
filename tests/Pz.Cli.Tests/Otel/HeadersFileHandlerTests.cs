@@ -1,5 +1,5 @@
 using System.Net;
-using Pz.Cli.Otel;
+using Pz.Shared;
 
 namespace Pz.Cli.Tests.Otel;
 

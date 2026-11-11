@@ -6,6 +6,7 @@ using Parquet;
 using Parquet.Schema;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Parquet;
 
 namespace Pz.Connector.AzureBlob;
 
@@ -175,7 +176,8 @@ internal sealed class AzureParquetWriteSession : AzureWriteSession
         BlobContainerClient container, string tempBlobName, string finalBlobName, Schema arrowSchema,
         CancellationToken ct, IOperationGate? gate)
     {
-        var fields = AzureBlobFormat.BuildDataFields(arrowSchema);
+        var fields = ParquetBatchWriter.BuildDataFields(
+            arrowSchema, AzureBlobFormat.ParquetSinkName, AzureBlobFormat.ParquetDecimalRefusal);
         var tempBlob = container.GetBlockBlobClient(tempBlobName);
         Stream? stream = null;
         try
@@ -194,7 +196,7 @@ internal sealed class AzureParquetWriteSession : AzureWriteSession
                         innerException: ex);
                 }
             }, ct).ConfigureAwait(false);
-            var writer = await AzureBlobFormat.CreateParquetWriterAsync(stream, fields, ct).ConfigureAwait(false);
+            var writer = await ParquetBatchWriter.CreateWriterAsync(stream, fields, ct).ConfigureAwait(false);
             return new AzureParquetWriteSession(container, tempBlobName, finalBlobName, fields, stream, writer, gate);
         }
         catch
@@ -218,7 +220,7 @@ internal sealed class AzureParquetWriteSession : AzureWriteSession
     {
         try
         {
-            await AzureBlobFormat.WriteRowGroupAsync(_writer!, _fields, batch, ct).ConfigureAwait(false);
+            await ParquetBatchWriter.WriteRowGroupAsync(_writer!, _fields, batch, AzureBlobFormat.ParquetSinkName, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is RequestFailedException or IOException)
         {

@@ -1,4 +1,5 @@
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Quack;
 
 namespace Pz.Connector.DuckLake;
 
@@ -12,8 +13,6 @@ internal static class DuckLakeCatalog
     internal const string Postgres = "postgres";
     internal const string Quack = "quack";
     internal const string MotherDuck = "motherduck";
-
-    private const int DefaultQuackPort = 9494;
 
     private static readonly string[] PostgresKeys = ["host", "port", "database", "user", "password"];
     private static readonly string[] QuackKeys = ["uri", "token"];
@@ -64,7 +63,7 @@ internal static class DuckLakeCatalog
                 Require("data_path");
                 Forbid(["path"], DuckDb);
                 Forbid(PostgresKeys, Postgres);
-                if (config.GetString("uri") is { Length: > 0 } uri && !TryParseQuackUri(uri, out _, out _))
+                if (config.GetString("uri") is { Length: > 0 } uri && !QuackUri.TryParse(uri, out _, out _))
                 {
                     errors.Add("'uri' must be of the form quack:host[:port]");
                 }
@@ -108,66 +107,5 @@ internal static class DuckLakeCatalog
         }
 
         return errors;
-    }
-
-    /// <summary>Accepts <c>quack:host</c>, <c>quack:host:port</c> and <c>quack://host[:port]</c>, where
-    /// host is a name, an IPv4 literal, or a bracketed IPv6 literal; the port defaults to the quack
-    /// server's own default. Kept in lockstep with the quack connector's <c>QuackUri.TryParse</c>.</summary>
-    internal static bool TryParseQuackUri(string uri, out string host, out int port)
-    {
-        host = "";
-        port = DefaultQuackPort;
-        if (!uri.StartsWith("quack:", StringComparison.Ordinal))
-        {
-            return false;
-        }
-
-        var rest = uri["quack:".Length..].TrimStart('/').TrimEnd('/');
-        if (rest.Length == 0 || rest.Contains('/'))
-        {
-            return false;
-        }
-
-        // An IPv6 literal must be bracketed (`quack:[::1]:9494`): the brackets stay part of the host,
-        // since the server's own canonical form keeps them, and everything after `]` is the optional
-        // port. An unbracketed host may not contain a colon at all -- `quack:::1` is ambiguous, not
-        // an address.
-        string portPart;
-        if (rest[0] == '[')
-        {
-            var close = rest.IndexOf(']', StringComparison.Ordinal);
-            if (close < 2)
-            {
-                return false;
-            }
-
-            host = rest[..(close + 1)];
-            portPart = rest[(close + 1)..];
-            if (portPart.Length == 0)
-            {
-                return true;
-            }
-
-            if (portPart[0] != ':')
-            {
-                return false;
-            }
-
-            portPart = portPart[1..];
-        }
-        else
-        {
-            var colon = rest.IndexOf(':', StringComparison.Ordinal);
-            if (colon < 0)
-            {
-                host = rest;
-                return true;
-            }
-
-            host = rest[..colon];
-            portPart = rest[(colon + 1)..];
-        }
-
-        return host.Length > 0 && int.TryParse(portPart, out port) && port is > 0 and <= 65535;
     }
 }

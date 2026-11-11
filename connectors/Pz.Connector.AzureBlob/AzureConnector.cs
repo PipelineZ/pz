@@ -30,7 +30,7 @@ public sealed class AzureConnector : ISourceConnector, ISinkConnector, INativeOn
     // Strict source-dataset schema: unknown/typo'd options fail `pz validate` with PZ0301 instead of
     // being silently ignored — parity with postgres/localfiles. Mirrors what AzureUrl.ParseDataset/
     // AzureSource actually read: scheme (az/azure/abfss), container + path (required), format (parquet
-    // default), and the generic columns: contract (AzureTypeNameMap's eight type names).
+    // default), and the generic columns: contract (ColumnTypeCatalog's eight type names).
     // files_per_partition is deliberately ACCEPTED here (int-or-string, DagCompiler's PZ0222 owns value
     // shape) so the plan-time PZ0312 refusal on this native-only source keeps owning that case with its
     // targeted message.

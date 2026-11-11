@@ -51,28 +51,4 @@ public class EnvInterpolatorTests
         Assert.Equal("${A}b1", result);
         Assert.Empty(errors);
     }
-
-    [Fact]
-    public void InterpolateTree_reaches_nested_connection_dictionaries_and_lists()
-    {
-        var errors = new List<PzError>();
-        var tree = new Dictionary<string, object?>
-        {
-            ["connection"] = new Dictionary<string, object?>
-            {
-                ["host"] = "${DB_HOST}",
-                ["port"] = 1433L,
-                ["failover"] = new List<object?> { "${DB_HOST}-b" },
-            },
-        };
-
-        var result = (Dictionary<string, object?>)EnvInterpolator.InterpolateTree(
-            tree, new Dictionary<string, string> { ["DB_HOST"] = "srv1" }, "sources/db.yml", errors)!;
-
-        var connection = (Dictionary<string, object?>)result["connection"]!;
-        Assert.Equal("srv1", connection["host"]);
-        Assert.Equal(1433L, connection["port"]);
-        Assert.Equal("srv1-b", ((List<object?>)connection["failover"]!)[0]);
-        Assert.Empty(errors);
-    }
 }

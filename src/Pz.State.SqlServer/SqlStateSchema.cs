@@ -286,14 +286,13 @@ public static class SqlStateSchema
             "EXEC(@sql);",
             sqlConnection, transaction);
         command.Parameters.AddWithValue("@schema", schema);
-        command.Parameters.Add("@pk", System.Data.SqlDbType.NVarChar, 128).Value = primaryKeyName;
+        command.Parameters.Add("@pk", SqlDbType.NVarChar, 128).Value = primaryKeyName;
         command.ExecuteNonQuery();
     }
 
-    /// <summary>`MigrateToV1` created `schema_version` with no key at all -- the gap that let two
-    /// racing first-use callers each successfully INSERT their own row instead of the second one being
-    /// refused loudly (the defect <see cref="EnsureCurrent"/>'s `sp_getapplock` above now prevents from
-    /// EVER happening again, but an existing database may already carry it from before this fix). A
+    /// <summary>`MigrateToV1` creates `schema_version` with no key at all, so a database first used by
+    /// two racing callers before <see cref="EnsureCurrent"/> took its `sp_getapplock` may hold two
+    /// rows. This adds the key (and heals such a database). A
     /// single-row table needs a constant key -- `id` (always 1), not `version`, since `version` itself
     /// is exactly the column a duplicate-insert race could have made non-unique. De-duplicates first,
     /// keeping one row at the highest `version`: the race leaves two rows at the SAME version, so the
@@ -355,7 +354,7 @@ public static class SqlStateSchema
             sqlConnection, transaction);
         command.Parameters.AddWithValue("@schema", schema);
         command.Parameters.AddWithValue("@table", table);
-        command.Parameters.Add("@columns", System.Data.SqlDbType.NVarChar, -1).Value = columns;
+        command.Parameters.Add("@columns", SqlDbType.NVarChar, -1).Value = columns;
         command.ExecuteNonQuery();
     }
 

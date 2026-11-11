@@ -100,8 +100,6 @@ public sealed class DuckDbSqlGenTests
     [Fact]
     public void Identifiers_and_literals_are_injection_safe()
     {
-        Assert.Equal("\"ev\"\"ents\"", DuckDbSql.QuoteIdent("ev\"ents"));
-        Assert.Equal("o''clock", DuckDbSql.EscapeLiteral("o'clock"));
         Assert.Equal($"{WhAlias}.\"we\"\"ird\".\"ev\"\"ents\"", DuckDbSql.QualifiedTable(WhAlias, "we\"ird.ev\"ents"));
     }
 
@@ -180,17 +178,6 @@ public sealed class DuckDbSqlGenTests
     {
         var spec = new DatasetSpec("appdb", "raw.events", new Dictionary<string, object?>());
         Assert.Equal($"{WhAlias}.\"raw\".\"events\"", DuckDbSql.ScanFragment(WhAlias, spec));
-    }
-
-    [Theory]
-    [InlineData("42", "42")]
-    [InlineData("-7", "-7")]
-    [InlineData("3.50", "3.50")]
-    [InlineData("2026-08-19", "'2026-08-19'")]
-    [InlineData("2026-08-19T12:30:00.000001", "'2026-08-19 12:30:00.000001'")]
-    public void Watermark_literals_render_by_canonical_shape(string canonical, string expected)
-    {
-        Assert.Equal(expected, DuckDbSql.RenderWatermarkLiteral(canonical));
     }
 
     [Fact]

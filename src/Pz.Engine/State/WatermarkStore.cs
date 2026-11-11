@@ -15,8 +15,6 @@ namespace Pz.Engine.State;
 /// caller can tell the operator a full extract will occur -- it never throws.</summary>
 public sealed class WatermarkStore(IKeyedStateStore<Watermark> store)
 {
-    private readonly IKeyedStateStore<Watermark> _store = store;
-
     /// <summary>The local backend, wired to <c>&lt;project&gt;/.pz/state/watermarks.json</c>.</summary>
     public static WatermarkStore Local(string stateDir) => new(new KeyedJsonStateStore<Watermark>(
         stateDir, "watermarks.json", "watermarks", "Watermark state file", ReadEntry, WriteEntry));
@@ -43,20 +41,20 @@ public sealed class WatermarkStore(IKeyedStateStore<Watermark> store)
         writer.WriteString("runId", wm.RunId);
     }
 
-    public Watermark? Get(string sourceDataset, Action<string>? notice = null) => _store.Get(sourceDataset, notice);
+    public Watermark? Get(string sourceDataset, Action<string>? notice = null) => store.Get(sourceDataset, notice);
 
-    public void Set(string sourceDataset, Watermark wm) => _store.Set(sourceDataset, wm);
+    public void Set(string sourceDataset, Watermark wm) => store.Set(sourceDataset, wm);
 
     /// <summary>Every stored watermark, ordinal by key. Null when the file is corrupt, empty when
     /// absent — see <see cref="KeyedJsonStateStore{T}.ListAll"/>.</summary>
     public IReadOnlyList<KeyValuePair<string, Watermark>>? ListAll(Action<string>? notice = null) =>
-        _store.ListAll(notice);
+        store.ListAll(notice);
 
     /// <summary>`pz state clear` drops an entry so the next run extracts in full. The one remedy for an
     /// entry whose cursor type pz has no arithmetic for, which
     /// <see cref="Pz.Core.Incremental.WindowMath"/> can neither canonicalize nor compare. See
     /// <see cref="KeyedJsonStateStore{T}.Remove"/> for the no-op-on-missing semantics.</summary>
-    public void Remove(string sourceDataset) => _store.Remove(sourceDataset);
+    public void Remove(string sourceDataset) => store.Remove(sourceDataset);
 
     public static string Key(string source, string dataset) => $"{source}.{dataset}";
 }

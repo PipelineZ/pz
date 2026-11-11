@@ -236,6 +236,31 @@ internal static class TestDags
         return (new CompiledDag([sinkNode]), registry);
     }
 
+    /// <summary>One <see cref="ConnectionDef"/> ("warehouse") carrying <paramref name="rateLimit"/>, both read
+    /// (one SourceLoad) and written (one SinkWrite) through connector "stub" with
+    /// <paramref name="capabilities"/> -- the shape that must still yield one PZ0317, not one per
+    /// direction.</summary>
+    public static (CompiledDag Dag, ConnectorRegistry Registry) DagAndRegistryWithReadAndWrittenRateLimit(
+        ConnectorCapabilities capabilities, RateLimitDef? rateLimit)
+    {
+        var registry = new ConnectorRegistry();
+        registry.AddSource("stub", new StubConfigurableCapabilitiesSource(capabilities));
+        registry.AddSink("stub", new StubConfigurableCapabilitiesSink(capabilities));
+
+        var dataset = new DatasetDef("orders", new Dictionary<string, object?>(), null);
+        var connection = new ConnectionDef("warehouse", "stub", new Dictionary<string, object?>(), [dataset],
+            "connections.yml", RateLimit: rateLimit)
+        {
+            Outputs = [new OutputDef("out", "stg_orders", "replace", "fail_on_change", new Dictionary<string, object?>())],
+        };
+        var sourceNode = new DagNode(new NodeId("src-rw-00"), NodeKind.SourceLoad, "src_stub__orders", [], null,
+            new SourceDatasetDef(connection, dataset));
+        var sinkNode = new DagNode(new NodeId("sink-rw-00"), NodeKind.SinkWrite, "stub.out", [], null,
+            new SinkOutputDef(connection, connection.Outputs[0]));
+
+        return (new CompiledDag([sourceNode, sinkNode]), registry);
+    }
+
     /// <summary>Sink-only single-node DAG (no source/pipeline) for the unsigned-packaged-extension gate
     /// (PZ0359) tests: one <see cref="ConnectionDef"/> instance carrying <paramref name="allowUnsignedExtensions"/>,
     /// feeding a caller-supplied sink connector so each test can set the exact `LOAD` setup statement it

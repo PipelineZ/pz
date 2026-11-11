@@ -8,7 +8,7 @@ namespace Pz.State.SqlServer;
 /// (never reached) or PZ0529 (reached, the operation failed).
 ///
 /// It takes a connection STRING, not a connector: the state store must be usable by management verbs
-/// (`pz state show`, `pz cdc status`) without package restore or ALC loading, which is the whole reason
+/// (`pz state show`, `pz cdc status`) without package restore or connector hosting, which is the whole reason
 /// this lives in a directly-referenced assembly rather than behind the connector ABI.
 ///
 /// Secret hygiene: the connection string never reaches an error message. Failures are reported with the

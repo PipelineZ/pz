@@ -257,7 +257,7 @@ public sealed class AzureNativeEndToEndTests(AzuriteFixture fixture)
     /// watermark window spans only the middle day. The generated scan SQL is asserted to name only the
     /// 07-12 folder (never 07-11/07-13), and -- the stronger, data-level proof -- the query actually
     /// executed against DuckDB returns only the two rows seeded under 07-12, with the 07-11/07-13 rows
-    /// entirely absent. No <see cref="DatasetSpec.WatermarkCursor"/> is set, so <c>AzureWindowSql.Wrap</c>
+    /// entirely absent. No <see cref="DatasetSpec.WatermarkCursor"/> is set, so <c>NativeScanWindow.Wrap</c>
     /// adds no row-level predicate: the row set is pruned by the folder-level cover alone.</summary>
     [SkippableFact]
     public async Task Native_pruning_reads_only_window_day()

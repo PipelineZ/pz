@@ -1,9 +1,8 @@
 namespace Pz.Core.Model;
 
-/// <summary>The optional `retry:` block — declared at instance level (sources/sinks file top level)
-/// and/or dataset/output level. Every member
-/// nullable — an absent key means "inherit that field from the next level up" (dataset/output ->
-/// instance -> engine default); the cascade happens in Pz.Engine (RetryPolicyResolver), never here,
+/// <summary>The optional `retry:` block — declared at connection level and/or on an entity's
+/// read/write side. Every member nullable — an absent key means "inherit that field from the next
+/// level up" (read/write side -> connection -> engine default); the cascade happens in Pz.Engine (RetryPolicyResolver), never here,
 /// because Pz.Core cannot see RetryPolicy.Default (layering is strictly downward). Runtime execution
 /// policy like CheckNodeDef.SampleValues: deliberately excluded from DagCompiler's canonical-hash
 /// input, so declaring/changing it never changes a NodeId.</summary>

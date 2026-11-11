@@ -5,20 +5,22 @@ using Pz.Core.Validation;
 namespace Pz.Core.Loading;
 
 /// <summary>The YAML twin of <c>SinkFunction</c>'s keyword arguments. Same names, same validity rules,
-/// same PZ codes — only the hint is YAML-shaped, because
-/// moving an option between the two surfaces has to be cut-and-paste.
+/// same PZ codes — only the hint is YAML-shaped, because moving an option between the two surfaces has
+/// to be cut-and-paste.
 ///
-/// Deliberately NOT shared with <c>SinkFunction</c>: that one reads Scriban syntax nodes and reports
-/// against a pipeline file and line, this one reads a YAML map and reports against connections.yml.
-/// The overlap is the rule table, which is short, and a shared abstraction over both argument shapes
-/// would be longer than the duplication.</summary>
+/// Only the vocabularies are shared with <c>SinkFunction</c>: that one reads Scriban syntax nodes and
+/// reports against a pipeline file and line, this one reads a YAML map and reports against
+/// connections.yml. The rest of the rule table is short, and a shared abstraction over both argument
+/// shapes would be longer than the duplication.</summary>
 internal static class WriteOptionsLoader
 {
-    private static readonly string[] WriteStrategies = ["replace", "append", "merge"];
+    internal static readonly string[] WriteStrategies = ["replace", "append", "merge"];
 
-    /// <summary>Mirrors <c>SinkFunction.SchemaPolicies</c>, the kwarg surface's copy of the same
-    /// vocabulary.</summary>
-    private static readonly string[] SchemaPolicies = ["fail_on_change", "additive", "evolve"];
+    /// <summary>The schema-drift vocabulary, shared with the <c>sink()</c> kwarg surface. A connector is
+    /// free to refuse a policy it does not implement (the builtin sinks refuse <c>evolve</c> themselves),
+    /// but a string outside this set is a typo: it would reach the connector and be treated as
+    /// <c>fail_on_change</c> without a word.</summary>
+    internal static readonly string[] SchemaPolicies = ["fail_on_change", "additive", "evolve"];
 
     /// <summary>Parses one <c>entities: &lt;e&gt;: write:</c> block, or null when it is malformed --
     /// errors are aggregated, never thrown, so one load reports every bad block.</summary>
@@ -69,7 +71,7 @@ internal static class WriteOptionsLoader
             }
             else
             {
-                var nearMiss = policyValue is string bad ? ScriptKwargs.NearMiss(SchemaPolicies, bad) : null;
+                var nearMiss = policyValue is string bad ? NearMiss.Find(SchemaPolicies, bad) : null;
                 Error(errors, PzErrorCode.SyncModeInvalid, where,
                     $"'schema_policy' must be one of: {string.Join(", ", SchemaPolicies)} (got '{policyValue}')" +
                     (nearMiss is null ? "" : $" -- did you mean '{nearMiss}'"),

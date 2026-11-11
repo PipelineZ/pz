@@ -1,6 +1,6 @@
-using System.Security.Cryptography;
-using System.Text;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.DuckDb;
 
@@ -12,17 +12,14 @@ namespace Pz.Connector.DuckDb;
 /// ONE alias per connection, shared by reads and writes: a DuckDB database file cannot be attached
 /// twice in one session (a second attach of the same file under another alias is a unique-file-handle
 /// conflict), so the read-only/read-write alias split other database connectors use is not available
-/// here. The alias carries the same determinism/collision rule those connectors' aliases follow.
-/// Kept in lockstep with the ducklake/quack/motherduck connectors' Sql classes (replicated, never
-/// referenced).</summary>
+/// here.</summary>
 internal static class DuckDbSql
 {
-    /// <summary>Sanitized connection name plus the first 8 lowercase hex chars of SHA-256 of the RAW
-    /// name: <see cref="Sanitize"/> maps every non-alphanumeric to '_', so distinct names like
-    /// "prod-db" and "prod_db" would otherwise collide on one alias — and <c>attach if not exists</c>
-    /// is first-wins, a silent wrong-file I/O bug.</summary>
+    /// <summary>The connection's attach alias. Must stay distinct per raw connection name:
+    /// <c>attach if not exists</c> is first-wins, so two connections sharing an alias would silently
+    /// read and write the wrong file (see <see cref="DuckDbSqlText.ConnectionAlias"/>).</summary>
     internal static string Alias(string connectionName) =>
-        $"pz_duckdb_{Sanitize(connectionName)}_{HashSuffix(connectionName)}";
+        DuckDbSqlText.ConnectionAlias("pz_duckdb", connectionName);
 
     /// <summary>Resolves the connection's <c>path:</c> to an absolute path: relative paths join the
     /// CLI-injected <c>base_dir</c> (never user-written), falling back to the process working
@@ -70,8 +67,8 @@ internal static class DuckDbSql
     {
         var (schema, table) = SplitEntity(entity);
         return schema is null
-            ? $"{alias}.{QuoteIdent(table)}"
-            : $"{alias}.{QuoteIdent(schema)}.{QuoteIdent(table)}";
+            ? $"{alias}.{DuckDbSqlText.QuoteIdentifier(table)}"
+            : $"{alias}.{DuckDbSqlText.QuoteIdentifier(schema)}.{DuckDbSqlText.QuoteIdentifier(table)}";
     }
 
     /// <summary>Setup for either direction: one read-write attach of the database file, idempotent
@@ -80,95 +77,15 @@ internal static class DuckDbSql
     /// No extension is needed and the path carries no credentials, so a connect-failure echo of it is
     /// harmless and useful.</summary>
     internal static IReadOnlyList<string> SetupStatements(string resolvedPath, string alias) =>
-        [$"attach if not exists '{EscapeLiteral(resolvedPath)}' as {alias}"];
+        [$"attach if not exists '{DuckDbSqlText.EscapeLiteral(resolvedPath)}' as {alias}"];
 
     /// <summary>The scan fragment: a declared <c>columns:</c> contract prunes the read (only declared
     /// columns are projected); the plain (unwindowed) incremental watermark IS pushed into the
     /// fragment (DuckDB pushes the filter into the attached catalog's scan); the window ceiling is
     /// MUST-apply. The engine embeds the fragment after FROM, so a plain scan stays the bare qualified
     /// table and anything with a projection or predicate becomes a parenthesized subquery.</summary>
-    internal static string ScanFragment(string alias, DatasetSpec spec)
-    {
-        var table = QualifiedTable(alias, spec.Dataset);
-
-        var columns = ExtractColumns(spec);
-        var projection = columns is { Count: > 0 }
-            ? string.Join(", ", columns.Keys.Select(QuoteIdent))
-            : "*";
-
-        var predicates = new List<string>();
-        if (spec is { WatermarkCursor: { } cursor, WatermarkValue: { } low })
-        {
-            var op = spec.WatermarkLowerInclusive ? ">=" : ">";
-            predicates.Add($"{QuoteIdent(cursor)} {op} {RenderWatermarkLiteral(low)}");
-        }
-
-        if (spec is { WatermarkCursor: { } upperCursor, WatermarkUpperBound: { } high })
-        {
-            predicates.Add($"{QuoteIdent(upperCursor)} <= {RenderWatermarkLiteral(high)}");
-        }
-
-        if (projection == "*" && predicates.Count == 0)
-        {
-            return table;
-        }
-
-        var where = predicates.Count > 0 ? $" where {string.Join(" and ", predicates)}" : "";
-        return $"(select {projection} from {table}{where})";
-    }
-
-    /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
-    /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal:
-    /// numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
-    /// becoming a space so the literal coerces against DATE/TIMESTAMP columns and still compares
-    /// lexically against a text-typed cursor.</summary>
-    internal static string RenderWatermarkLiteral(string canonical)
-    {
-        if (IsCanonicalNumeric(canonical))
-        {
-            return canonical;
-        }
-
-        var value = IsCanonicalTimestamp(canonical)
-            ? canonical[..10] + ' ' + canonical[11..]
-            : canonical;
-        return $"'{EscapeLiteral(value)}'";
-    }
-
-    /// <summary>Optional leading '-', digits, at most one '.'. A canonical date ("2020-01-01") has an
-    /// interior '-', so it never matches and falls through to the quoted form.</summary>
-    private static bool IsCanonicalNumeric(string value)
-    {
-        var i = value.StartsWith('-') ? 1 : 0;
-        var sawDigit = false;
-        var sawDot = false;
-        for (; i < value.Length; i++)
-        {
-            if (value[i] == '.')
-            {
-                if (sawDot)
-                {
-                    return false;
-                }
-
-                sawDot = true;
-            }
-            else if (char.IsAsciiDigit(value[i]))
-            {
-                sawDigit = true;
-            }
-            else
-            {
-                return false;
-            }
-        }
-
-        return sawDigit;
-    }
-
-    private static bool IsCanonicalTimestamp(string value) =>
-        value.Length >= 19 && value[10] == 'T' &&
-        value[4] == '-' && value[7] == '-' && value[13] == ':' && value[16] == ':';
+    internal static string ScanFragment(string alias, DatasetSpec spec) =>
+        DuckDbSqlText.ScanFragment(QualifiedTable(alias, spec.Dataset), spec);
 
     /// <summary>The copy statement(s) for one output. <c>{{source}}</c> is the engine's placeholder
     /// for the staged relation (substituted by SinkWriteExecutor). Append and merge first create the
@@ -198,7 +115,7 @@ internal static class DuckDbSql
                         $"output '{table}': merge requires at least one key column", isTransient: false, code: PzConnectorErrorCodes.Config);
                 }
 
-                var on = string.Join(" and ", keys.Select(k => $"t.{QuoteIdent(k)} = s.{QuoteIdent(k)}"));
+                var on = string.Join(" and ", keys.Select(k => $"t.{DuckDbSqlText.QuoteIdentifier(k)} = s.{DuckDbSqlText.QuoteIdentifier(k)}"));
 
                 // DuckDB's MERGE matches every source row independently against the target as it stood
                 // before the statement ran: two staged rows sharing a key the target lacks would BOTH take
@@ -206,7 +123,7 @@ internal static class DuckDbSql
                 // in an undefined order. The sink contract says duplicate keys within one batch collapse
                 // to a single connector-determined survivor, so the staged side is made key-unique
                 // (qualify row_number() per key group) before MERGE ever sees it.
-                var partitionBy = string.Join(", ", keys.Select(k => $"s.{QuoteIdent(k)}"));
+                var partitionBy = string.Join(", ", keys.Select(k => $"s.{DuckDbSqlText.QuoteIdentifier(k)}"));
                 var dedupedSource = $"(select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1)";
                 sql = string.Format(null, create, table) +
                     $"merge into {table} as t using {dedupedSource} as s on {on} " +
@@ -220,19 +137,4 @@ internal static class DuckDbSql
         }
     }
 
-    internal static string QuoteIdent(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
-
-    internal static string EscapeLiteral(string value) => value.Replace("'", "''");
-
-    internal static IReadOnlyDictionary<string, string>? ExtractColumns(DatasetSpec spec) =>
-        spec.Options.TryGetValue("columns", out var value) &&
-        value is IReadOnlyDictionary<string, string> { Count: > 0 } columns
-            ? columns
-            : null;
-
-    private static string Sanitize(string name) => new([.. name.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
-
-    /// <summary>Deterministic, no randomness, so an alias is stable across runs and processes.</summary>
-    private static string HashSuffix(string name) =>
-        Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 }

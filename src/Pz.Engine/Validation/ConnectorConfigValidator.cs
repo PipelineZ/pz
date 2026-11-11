@@ -14,7 +14,7 @@ namespace Pz.Engine.Validation;
 /// <summary>Tier 3 of `pz validate`: connector-published JSON Schema validation of every source/sink
 /// connection block, every source dataset's options, every sink output's <c>write:</c> options (when
 /// the sink offers <see cref="IOutputConfigSchema"/> -- optional, so a sink that does not is left
-/// unchecked exactly as before that capability existed), plus each resolved connector's own
+/// unchecked), plus each resolved connector's own
 /// cross-field <see cref="IConnector.ValidateAsync"/>. Never throws for a config violation -- every
 /// finding becomes one aggregated <see cref="PzError"/> naming the yml file and the offending path.
 /// Two rules keep the aggregate readable: (1) when the connection schema flags a key as MISSING
@@ -56,10 +56,9 @@ public static class ConnectorConfigValidator
     /// ConnectionConfigSchema, every source dataset's options against DatasetConfigSchema, then the
     /// connector's own ValidateAsync for cross-field rules. All errors aggregated; never throws for
     /// validation failures. Config is validated as the user wrote it (pre-base_dir-injection).
-    /// <paramref name="warnings"/> is optional (additive parameter, default null) and, when given,
-    /// collects every connector's own non-blocking <see cref="ValidationResult.Warnings"/> -- a caller
-    /// that does not pass it simply does not see them, unchanged from before this parameter
-    /// existed. <paramref name="anchored"/> is the same project with its connections anchored to the project
+    /// <paramref name="warnings"/> is optional and, when given, collects every connector's own
+    /// non-blocking <see cref="ValidationResult.Warnings"/>; a caller that does not pass it does not see
+    /// them. <paramref name="anchored"/> is the same project with its connections anchored to the project
     /// directory (`base_dir`), as the plan opens them: the offline probes open connectors with it, so a relative
     /// path resolves against the project wherever pz runs. Without it the probes use the as-written config.</summary>
     public static async Task<IReadOnlyList<PzError>> ValidateAsync(
@@ -458,15 +457,10 @@ public static class ConnectorConfigValidator
                 continue;
             }
 
-            JsonElement root;
-            try
+            // A malformed schema is skipped here: JsonSchema.FromText in ValidateSchema reports it in its own terms.
+            if (!TryParseSchema(schemaText, out var root))
             {
-                using var schemaDoc = JsonDocument.Parse(schemaText);
-                root = schemaDoc.RootElement.Clone();
-            }
-            catch (JsonException)
-            {
-                continue; // malformed schema: JsonSchema.FromText below reports it in its own terms
+                continue;
             }
 
             if (root.ValueKind != JsonValueKind.Object ||
@@ -638,15 +632,10 @@ public static class ConnectorConfigValidator
             return false;
         }
 
-        JsonElement root;
-        try
+        // A malformed schema is left to the generic branch, which reports it in the library's terms.
+        if (!TryParseSchema(schemaText, out var root))
         {
-            using var schemaDoc = JsonDocument.Parse(schemaText);
-            root = schemaDoc.RootElement.Clone();
-        }
-        catch (JsonException)
-        {
-            return false; // malformed schema: the generic branch reports it in the library's terms
+            return false;
         }
 
         if (!TryResolve(root, schemaSegments.Take(schemaSegments.Count - 1), out var container) ||
@@ -697,13 +686,7 @@ public static class ConnectorConfigValidator
             return false;
         }
 
-        JsonElement schemaRoot;
-        try
-        {
-            using var schemaDoc = JsonDocument.Parse(schemaText);
-            schemaRoot = schemaDoc.RootElement.Clone();
-        }
-        catch (JsonException)
+        if (!TryParseSchema(schemaText, out var schemaRoot))
         {
             return false;
         }
@@ -750,13 +733,7 @@ public static class ConnectorConfigValidator
             return false;
         }
 
-        JsonElement schemaRoot;
-        try
-        {
-            using var schemaDoc = JsonDocument.Parse(schemaText);
-            schemaRoot = schemaDoc.RootElement.Clone();
-        }
-        catch (JsonException)
+        if (!TryParseSchema(schemaText, out var schemaRoot))
         {
             return false;
         }
@@ -771,6 +748,22 @@ public static class ConnectorConfigValidator
 
         readAs = kind;
         return true;
+    }
+
+    /// <summary>False for schema text that is not parseable JSON.</summary>
+    private static bool TryParseSchema(string schemaText, out JsonElement root)
+    {
+        try
+        {
+            using var schemaDoc = JsonDocument.Parse(schemaText);
+            root = schemaDoc.RootElement.Clone();
+            return true;
+        }
+        catch (JsonException)
+        {
+            root = default;
+            return false;
+        }
     }
 
     private static bool DeclaresBooleanOrNumeric(JsonElement declaredType) => declaredType.ValueKind switch

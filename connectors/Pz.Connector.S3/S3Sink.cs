@@ -3,6 +3,7 @@ using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.S3;
 
@@ -44,7 +45,7 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
             : $"{spec.Output}.{format.Extension}";
         var key = prefix.Length > 0 ? $"{prefix}/{objectName}" : objectName;
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to 's3://{Esc(bucket)}/{Esc(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            $"copy (select * from {{{{source}}}}) to 's3://{DuckDbSqlText.EscapeLiteral(bucket)}/{DuckDbSqlText.EscapeLiteral(key)}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             [.. S3Sql.SetupStatements(config, S3Sql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO s3 {format.Name}",
@@ -58,5 +59,4 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
-    private static string Esc(string value) => S3Sql.Esc(value);
 }

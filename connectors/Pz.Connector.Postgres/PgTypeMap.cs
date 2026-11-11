@@ -1,6 +1,6 @@
 namespace Pz.Connector.Postgres;
 
-/// <summary>Documents the v0 postgres → ADO.NET(Npgsql) CLR → Arrow type matrix. <see
+/// <summary>Documents the postgres → ADO.NET(Npgsql) CLR → Arrow type matrix. <see
 /// cref="Pz.Connectors.Abstractions.Batches.DataReaderSource"/> maps generically off
 /// <c>reader.GetFieldType(i)</c> — it never inspects postgres type names — so nothing here is
 /// consulted at runtime; this table exists purely so the mapping is documented in one place and the

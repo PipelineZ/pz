@@ -3,7 +3,6 @@ using System.Runtime.ExceptionServices;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
-using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.DuckDb;
 
@@ -20,11 +19,17 @@ namespace Pz.Engine.Execution;
 /// partition's part table dropped, but siblings keep running. An ENGINE-side fault (append/ledger
 /// statement failure) is a different regime entirely: it escapes <see cref="RunPartitionAsync"/> raw
 /// and self-cancels the shared <see cref="CancellationTokenSource"/> from INSIDE the faulting task,
-/// mirroring how the legacy channel path's <c>PumpPartitionAsync</c> self-cancels <c>pumpCts</c> in its
+/// mirroring how the channel path's <c>PumpPartitionAsync</c> self-cancels <c>pumpCts</c> in its
 /// own catch — siblings tear down immediately rather than only once the orchestration's
 /// <see cref="Task.WhenAll(Task[])"/> observes the fault.</summary>
 internal static class PartitionModeLoader
 {
+    /// <summary>Bound on partition reads in flight at once, for both this loader and the channel path's
+    /// streaming pump: a bounded I/O fan-out default with no YAML knob. Without the shared bounded channel
+    /// there is no backpressure, and a lazily enumerated source must not materialize millions of pending
+    /// reads up front.</summary>
+    internal static int MaxConcurrentPartitionReads => Environment.ProcessorCount;
+
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadAsync(
         DagNode node, RunContext ctx, IReadOnlyList<(IIdentifiedPartition Partition, string Id)> partitions,
         Schema schema, string mainTable, string? windowLower, string? windowUpper, long reusedCount,
@@ -79,9 +84,7 @@ internal static class PartitionModeLoader
 
         var failures = new ConcurrentQueue<PzConnectorException>();
 
-        // Bounded fan-out: without the shared bounded channel there is no backpressure, so the
-        // same ProcessorCount bound the streaming path uses applies here.
-        using var admission = new SemaphoreSlim(Environment.ProcessorCount);
+        using var admission = new SemaphoreSlim(MaxConcurrentPartitionReads);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var tasks = pending.Select(p => RunAdmittedAsync(duck, p.Partition, p.Id, nodeId, nodeKey, mainTable,
             schema, ctx.EffectiveBatch, admission, loadCts, failures, checkpoints, OnResumed, skipGuard)).ToArray();
@@ -116,14 +119,15 @@ internal static class PartitionModeLoader
     /// validated AT ADMISSION time — one partition at a time — instead of up front over a whole
     /// materialized list. Admission mirrors <c>SourceLoadExecutor.PumpStreamingPartitionsAsync</c>:
     /// enumerate under <c>loadCts.Token</c>, a <see cref="SemaphoreSlim"/> of
-    /// <see cref="Environment.ProcessorCount"/> bounds in-flight reads, and the task list is pruned of
+    /// <see cref="MaxConcurrentPartitionReads"/> bounds in-flight reads, and the task list is pruned of
     /// already-succeeded entries after each admission so it never grows unbounded over a
     /// millions-of-partitions source. A sync dataset can never reach here — the planner already
     /// refuses a streaming + sync combination (<see cref="PzErrorCode.SyncPartitionedReadConflict"/>),
-    /// so there is no done-skip exception to plumb through this path.</summary>
+    /// so there is no done-skip exception to plumb through this path. No partial prior copy is applied up
+    /// front for a lazily planned stream, so <see cref="PartitionStats.Reused"/> is always 0 here.</summary>
     public static async Task<(PzError? Error, long Rows, PartitionStats Stats)> LoadStreamingAsync(
         DagNode node, RunContext ctx, IAsyncEnumerable<IDatasetPartition> stream, Schema schema,
-        string mainTable, string? windowLower, string? windowUpper, long reusedCount, SourceDatasetDef def,
+        string mainTable, string? windowLower, string? windowUpper, SourceDatasetDef def,
         CancellationToken ct, SkippedReadGuard? skipGuard = null)
     {
         var duck = ctx.Duck;
@@ -148,7 +152,7 @@ internal static class PartitionModeLoader
         void OnResumed() => Interlocked.Increment(ref resumedCount);
 
         var failures = new ConcurrentQueue<PzConnectorException>();
-        using var admission = new SemaphoreSlim(Environment.ProcessorCount);
+        using var admission = new SemaphoreSlim(MaxConcurrentPartitionReads);
         using var loadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         var tasks = new List<Task>();
@@ -247,7 +251,7 @@ internal static class PartitionModeLoader
             EmitRecordedFailuresNotice(ctx, failures);
 
             // Ordinals only — raw partition ids never surface in errors.
-            return (identityError, 0, new PartitionStats(observed, done.Count + admitted, reusedCount, resumedCount));
+            return (identityError, 0, new PartitionStats(observed, done.Count + admitted, 0, resumedCount));
         }
 
         try
@@ -272,7 +276,7 @@ internal static class PartitionModeLoader
         ThrowIfAnyFailed(failures, observed);
 
         var rows = await duck.ScalarAsync<long>($"select count(*) from {mainTable}", ct).ConfigureAwait(false);
-        var stats = new PartitionStats(observed, done.Count + admitted, reusedCount, resumedCount);
+        var stats = new PartitionStats(observed, done.Count + admitted, 0, resumedCount);
         return (null, rows, stats);
     }
 
@@ -289,10 +293,8 @@ internal static class PartitionModeLoader
         var nodeId = node.Id.Value;
         var nodeKey = PartitionLedger.NodeKey(node);
         var datasetLabel = $"{def.Source.Name}.{def.Dataset.Name}";
-        var alias = "pz_prior4_" + nodeKey;
-        var quotedAlias = ArrowInterop.QuoteQualified(alias);
-        var pathLiteral = entry.PriorStagingPath.Replace("'", "''");
-        var attached = false;
+        var alias = "pz_priorpart_" + nodeKey;
+        PzMeta.AttachScope? priorScope = null;
         var copiedMain = false;
         var copiedLedger = false;
         var copiedParts = new List<string>();
@@ -323,8 +325,8 @@ internal static class PartitionModeLoader
 
         try
         {
-            await duck.ExecuteAsync($"attach '{pathLiteral}' as {quotedAlias} (read_only)", ct).ConfigureAwait(false);
-            attached = true;
+            priorScope = await PzMeta.AttachReadOnlyAsync(duck, alias, entry.PriorStagingPath, ct).ConfigureAwait(false);
+            var quotedAlias = priorScope.QuotedAlias;
 
             Dictionary<string, long> priorDone;
             try
@@ -373,18 +375,18 @@ internal static class PartitionModeLoader
             copiedMain = true;
 
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.DoneTable} where node_id = '{PartitionLedger.Escape(nodeId)}'", ct)
+                $"delete from {PartitionLedger.DoneTable} where node_id = '{PzMeta.Escape(nodeId)}'", ct)
                 .ConfigureAwait(false);
             await duck.ExecuteAsync(
                 $"insert into {PartitionLedger.DoneTable} select * from {quotedAlias}.pz_meta.partitions_done " +
-                $"where node_id = '{PartitionLedger.Escape(nodeId)}'", ct).ConfigureAwait(false);
+                $"where node_id = '{PzMeta.Escape(nodeId)}'", ct).ConfigureAwait(false);
             copiedLedger = true;
 
             // Checkpointed prefixes ride along when intact; a torn one just restarts fresh.
             var priorCheckpoints = await PartitionLedger.ReadCheckpointsAsync(duck, nodeId, ct, quotedAlias)
                 .ConfigureAwait(false);
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}'", ct)
+                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}'", ct)
                 .ConfigureAwait(false);
             foreach (var (pid, (checkpoint, rows)) in priorCheckpoints)
             {
@@ -407,8 +409,8 @@ internal static class PartitionModeLoader
                     }
 
                     await duck.ExecuteAsync(
-                        $"insert into {PartitionLedger.CheckpointTable} values ('{PartitionLedger.Escape(nodeId)}', " +
-                        $"'{PartitionLedger.Escape(pid)}', '{PartitionLedger.Escape(checkpoint)}', {rows})", ct)
+                        $"insert into {PartitionLedger.CheckpointTable} values ('{PzMeta.Escape(nodeId)}', " +
+                        $"'{PzMeta.Escape(pid)}', '{PzMeta.Escape(checkpoint)}', {rows})", ct)
                         .ConfigureAwait(false);
                     copiedParts.Add(partTable);
                 }
@@ -434,10 +436,10 @@ internal static class PartitionModeLoader
                 try
                 {
                     await duck.ExecuteAsync(
-                        $"delete from {PartitionLedger.DoneTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
+                        $"delete from {PartitionLedger.DoneTable} where node_id = '{PzMeta.Escape(nodeId)}'",
                         CancellationToken.None).ConfigureAwait(false);
                     await duck.ExecuteAsync(
-                        $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}'",
+                        $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}'",
                         CancellationToken.None).ConfigureAwait(false);
                 }
                 catch
@@ -458,16 +460,9 @@ internal static class PartitionModeLoader
         }
         finally
         {
-            if (attached)
+            if (priorScope is not null)
             {
-                try
-                {
-                    await duck.ExecuteAsync($"detach {quotedAlias}", CancellationToken.None).ConfigureAwait(false);
-                }
-                catch
-                {
-                    // Best-effort: a failed detach must never mask the outcome.
-                }
+                await priorScope.DisposeAsync().ConfigureAwait(false);
             }
         }
     }
@@ -476,7 +471,7 @@ internal static class PartitionModeLoader
         IDuckSession duck, string quotedAlias, string nodeId, CancellationToken ct)
     {
         var count = await duck.ScalarAsync<long>(
-            $"select count(*) from {quotedAlias}.pz_meta.node_window where node_id = '{PartitionLedger.Escape(nodeId)}'",
+            $"select count(*) from {quotedAlias}.pz_meta.node_window where node_id = '{PzMeta.Escape(nodeId)}'",
             ct).ConfigureAwait(false);
         if (count == 0)
         {
@@ -484,10 +479,10 @@ internal static class PartitionModeLoader
         }
 
         var lower = await duck.ScalarAsync<string>(
-            $"select lower from {quotedAlias}.pz_meta.node_window where node_id = '{PartitionLedger.Escape(nodeId)}'",
+            $"select lower from {quotedAlias}.pz_meta.node_window where node_id = '{PzMeta.Escape(nodeId)}'",
             ct).ConfigureAwait(false);
         var upper = await duck.ScalarAsync<string>(
-            $"select upper from {quotedAlias}.pz_meta.node_window where node_id = '{PartitionLedger.Escape(nodeId)}'",
+            $"select upper from {quotedAlias}.pz_meta.node_window where node_id = '{PzMeta.Escape(nodeId)}'",
             ct).ConfigureAwait(false);
         return (lower, upper);
     }
@@ -629,8 +624,8 @@ internal static class PartitionModeLoader
             var partTable = PartitionLedger.PartTable(nodeKey, pid);
             await duck.ExecuteAsync($"drop table if exists {partTable}", loadCts.Token).ConfigureAwait(false);
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-                $"and partition_id = '{PartitionLedger.Escape(pid)}'", loadCts.Token).ConfigureAwait(false);
+                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+                $"and partition_id = '{PzMeta.Escape(pid)}'", loadCts.Token).ConfigureAwait(false);
             await duck.CreateEmptyTableAsync(partTable, schema, loadCts.Token).ConfigureAwait(false);
 
             var rows = 0L;
@@ -688,7 +683,7 @@ internal static class PartitionModeLoader
         {
             // Engine-side fault (a setup statement, AppendArrowBatchAsync, or the completion
             // transaction) escaped the isolated read-fault handling above. Self-cancel loadCts from
-            // INSIDE this faulting task — mirroring the legacy channel path's PumpPartitionAsync
+            // INSIDE this faulting task — mirroring the channel path's PumpPartitionAsync
             // self-cancelling pumpCts in its own catch — so every in-flight sibling tears down
             // immediately instead of only once the orchestration's Task.WhenAll observes this fault.
             loadCts.Cancel();
@@ -744,8 +739,8 @@ internal static class PartitionModeLoader
         {
             await duck.ExecuteAsync($"drop table if exists {partTable}", token).ConfigureAwait(false);
             await duck.ExecuteAsync(
-                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-                $"and partition_id = '{PartitionLedger.Escape(pid)}'", token).ConfigureAwait(false);
+                $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+                $"and partition_id = '{PzMeta.Escape(pid)}'", token).ConfigureAwait(false);
             await duck.CreateEmptyTableAsync(partTable, schema, token).ConfigureAwait(false);
         }
 
@@ -817,7 +812,7 @@ internal static class PartitionModeLoader
         var name = table.Split('.')[1];
         var exists = await duck.ScalarAsync<long>(
             "select count(*) from information_schema.tables where table_schema = 'staging' " +
-            $"and table_name = '{PartitionLedger.Escape(name)}'", ct).ConfigureAwait(false);
+            $"and table_name = '{PzMeta.Escape(name)}'", ct).ConfigureAwait(false);
         return exists == 0
             ? null
             : await duck.ScalarAsync<long>($"select count(*) from {table}", ct).ConfigureAwait(false);
@@ -849,10 +844,10 @@ internal static class PartitionModeLoader
         await duck.ExecuteTransactionAsync(
         [
             $"delete from {mainTable}",
-            $"delete from {PartitionLedger.DoneTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-            $"and partition_id = '{PartitionLedger.Escape(pid)}'",
-            $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PartitionLedger.Escape(nodeId)}' " +
-            $"and partition_id = '{PartitionLedger.Escape(pid)}'",
+            $"delete from {PartitionLedger.DoneTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+            $"and partition_id = '{PzMeta.Escape(pid)}'",
+            $"delete from {PartitionLedger.CheckpointTable} where node_id = '{PzMeta.Escape(nodeId)}' " +
+            $"and partition_id = '{PzMeta.Escape(pid)}'",
         ], ct).ConfigureAwait(false);
 
         await DropBestEffortAsync(duck, PartitionLedger.PartTable(nodeKey, pid)).ConfigureAwait(false);
@@ -864,7 +859,7 @@ internal static class PartitionModeLoader
         var name = mainTable.Split('.')[1];
         var exists = await duck.ScalarAsync<long>(
             "select count(*) from information_schema.tables where table_schema = 'staging' " +
-            $"and table_name = '{PartitionLedger.Escape(name)}'", ct).ConfigureAwait(false);
+            $"and table_name = '{PzMeta.Escape(name)}'", ct).ConfigureAwait(false);
         if (exists == 0)
         {
             await duck.CreateEmptyTableAsync(mainTable, schema, ct).ConfigureAwait(false);

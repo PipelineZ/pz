@@ -10,8 +10,6 @@ namespace Pz.Engine.State;
 /// occur); never throws.</summary>
 public sealed class SyncStateStore(IKeyedStateStore<SyncState> store)
 {
-    private readonly IKeyedStateStore<SyncState> _store = store;
-
     /// <summary>The local backend, wired to <c>&lt;project&gt;/.pz/state/sync-state.json</c>.</summary>
     public static SyncStateStore Local(string stateDir) => new(new KeyedJsonStateStore<SyncState>(
         stateDir, "sync-state.json", "syncState", "Sync-state file", ReadEntry, WriteEntry));
@@ -34,20 +32,20 @@ public sealed class SyncStateStore(IKeyedStateStore<SyncState> store)
         writer.WriteString("runId", state.RunId);
     }
 
-    public SyncState? Get(string sourceDataset, Action<string>? notice = null) => _store.Get(sourceDataset, notice);
+    public SyncState? Get(string sourceDataset, Action<string>? notice = null) => store.Get(sourceDataset, notice);
 
-    public void Set(string sourceDataset, SyncState state) => _store.Set(sourceDataset, state);
+    public void Set(string sourceDataset, SyncState state) => store.Set(sourceDataset, state);
 
     /// <summary>`pz state show` reports sync state read-only — no write
     /// subcommand accepts a sync-state key, because an opaque connector token has no previous value to roll
     /// back to. `pz cdc drop` remains the way to clear one.</summary>
     public IReadOnlyList<KeyValuePair<string, SyncState>>? ListAll(Action<string>? notice = null) =>
-        _store.ListAll(notice);
+        store.ListAll(notice);
 
     /// <summary>`pz cdc drop` calls this so the next run re-snapshots the dataset instead of resuming
     /// from a now-dropped position. See <see
     /// cref="KeyedJsonStateStore{T}.Remove"/> for the no-op-on-missing/corrupt semantics.</summary>
-    public void Remove(string sourceDataset) => _store.Remove(sourceDataset);
+    public void Remove(string sourceDataset) => store.Remove(sourceDataset);
 
     public static string Key(string source, string dataset) => $"{source}.{dataset}";
 }

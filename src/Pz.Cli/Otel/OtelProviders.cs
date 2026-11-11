@@ -3,6 +3,7 @@ using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 using Pz.Diagnostics.Otel;
+using Pz.Shared;
 
 namespace Pz.Cli.Otel;
 

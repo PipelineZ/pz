@@ -419,7 +419,7 @@ public class WatermarkInferenceTests
     public void Cursor_with_mixed_case_type_is_PZ0227_matching_YAML_route_exactness()
     {
         // The cursor-type check must be Ordinal (exact-lowercase), the same as the YAML route's
-        // stage-0 validation (DagCompiler Array.IndexOf(AllowedCursorTypes, ...)), CursorLiterals,
+        // stage-0 validation (Array.IndexOf(CursorContract.AllowedTypes, ...)), CursorLiterals,
         // bound evaluation, WindowMath and PipelineExecutor — all exact-lowercase. A mixed-case
         // 'TIMESTAMP' that slipped through here would compile on the SQL route then die at runtime.
         var pipeline = Pipeline("p", "pipelines/p.sql");

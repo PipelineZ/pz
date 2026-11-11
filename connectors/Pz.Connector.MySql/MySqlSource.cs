@@ -1,5 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Toolkit.Formats;
 
 namespace Pz.Connector.MySql;
 
@@ -22,12 +23,12 @@ internal sealed class MySqlSource(ConnectorConfig config) : ISource, IProjecting
     /// on_source_drift gate) never calls this.</summary>
     public ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
     {
-        var columns = MySqlSql.ExtractColumns(spec) ?? throw new PzConnectorException(
+        var columns = ColumnTypeCatalog.ContractColumns(spec) ?? throw new PzConnectorException(
             $"dataset '{spec.Dataset}': mysql is native-only and has no offline schema probe -- " +
             "declare a columns: contract to validate shape, or skip --connect for this dataset",
             isTransient: false, code: PzConnectorErrorCodes.Config);
 
-        var fields = columns.Select(kv => MySqlTypeNameMap.ToArrowField(kv.Key, kv.Value)).ToArray();
+        var fields = columns.Select(kv => ColumnTypeCatalog.ToArrowField(kv.Key, kv.Value)).ToArray();
         return new ValueTask<DatasetSchema>(new DatasetSchema(new Schema(fields, null)));
     }
 

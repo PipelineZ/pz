@@ -1,3 +1,4 @@
+using Pz.Shared;
 namespace Pz.Connectors.Sdk.Tests;
 
 /// <summary>The numeric-option probe is answered by the SDK, from what <see cref="StructMapping"/>

@@ -11,7 +11,7 @@ namespace Pz.Core.Templating;
 
 /// <summary>
 /// Renders a pipeline's SQL through a sandboxed Scriban template context: only the
-/// whitelisted <c>source</c>/<c>ref</c>/<c>sink</c>/<c>var</c>/<c>env</c> functions and
+/// whitelisted <c>source</c>/<c>ref</c>/<c>sink</c>/<c>watermark</c>/<c>var</c>/<c>env</c> functions and
 /// <c>this</c>/<c>run_id</c>/<c>run_started_at</c> constants are reachable. All Scriban
 /// builtin objects (date, string, object, array, io, ...) are stripped so they cannot be
 /// invoked, and strict-variable mode turns any other unknown identifier into an error
@@ -39,21 +39,17 @@ public static class TemplateRenderer
             }
         });
 
-        // A custom function for the same reason sink() is one -- see ScriptKwargs. Its errors join
-        // sink()'s in one post-render throw, so a single pass reports every malformed call on both
-        // surfaces.
         var callErrors = new List<PzError>();
+        // source() and sink() are custom functions so pz sees the real keyword-argument names instead of
+        // letting Scriban misbind them (see ScriptKwargs). Their errors accumulate in `callErrors` and are
+        // thrown together AFTER the render, so one pass reports every malformed call on both surfaces.
+        // source() records a dependency; sink() records a binding (validated and exclusivity-checked later,
+        // in DagCompiler) and renders a marker DagCompiler's prefix-extraction stage recognizes verbatim --
+        // no name validation here, matching source()/ref()'s "record now, resolve later" pattern.
         globals.Inner.SetValue("source", new SourceFunction(pipeline, dependencies, callErrors), readOnly: true);
-        // Records the binding (validated/exclusivity-checked later, in DagCompiler) and
-        // renders a marker DagCompiler's prefix-extraction stage recognizes verbatim — no name
-        // validation here, matching source()/ref()'s "record now, resolve later" pattern.
-        // A custom function rather than an imported delegate, so pz sees the real keyword-argument names
-        // instead of letting Scriban misbind them (see SinkFunction).
-        // Its kwarg errors accumulate in `sinkErrors` and are thrown together AFTER the render, so one
-        // pass reports every malformed call rather than stopping at the first.
         globals.Inner.SetValue("sink", new SinkFunction(pipeline, inlineBindings, callErrors), readOnly: true);
         // Records the reference (shape-validated later, in DagCompiler/WatermarkInference) and
-        // renders a deterministic quoted sentinel — "record now, resolve later", same as sink().
+        // renders a deterministic quoted sentinel.
         globals.Inner.SetValue("watermark", new ScalarFunction("watermark", ["source", "dataset"], args =>
         {
             var wmRef = new WatermarkRef(args[0], args[1]);
@@ -111,7 +107,7 @@ public static class TemplateRenderer
         new("^environment variable '(?<name>[^']+)' is not set$", RegexOptions.Compiled);
 
     private const string SandboxHint =
-        "only source()/ref()/sink()/var()/env() and the this/run_id/run_started_at constants are " +
+        "only source()/ref()/sink()/watermark()/var()/env() and the this/run_id/run_started_at constants are " +
         "reachable inside {{ }} -- check this expression for a typo or an unsupported function/variable";
 
     /// <summary>A <c>source()</c>/<c>sink()</c> call is documented (<c>authoring-for-agents.md</c>) to
@@ -229,7 +225,7 @@ public static class TemplateRenderer
         if (UnknownVarPattern.Match(message) is { Success: true } varMatch)
         {
             var name = varMatch.Groups["name"].Value;
-            var nearMiss = ScriptKwargs.NearMiss(ctx.Project.Vars.Keys, name);
+            var nearMiss = NearMiss.Find(ctx.Project.Vars.Keys, name);
             var hint = nearMiss is null
                 ? $"declare '{name}' under project.yml's vars:, or pass it with --vars"
                 : $"did you mean '{nearMiss}'?";

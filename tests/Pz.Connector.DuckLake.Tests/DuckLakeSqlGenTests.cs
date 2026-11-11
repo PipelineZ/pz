@@ -67,17 +67,6 @@ public sealed class DuckLakeSqlGenTests
         }
     }
 
-    [Theory]
-    [InlineData("42", "42")]
-    [InlineData("-7", "-7")]
-    [InlineData("3.50", "3.50")]
-    [InlineData("2026-08-19", "'2026-08-19'")]
-    [InlineData("2026-08-19T12:30:00.000001", "'2026-08-19 12:30:00.000001'")]
-    public void Watermark_literals_render_by_canonical_shape(string canonical, string expected)
-    {
-        Assert.Equal(expected, DuckLakeSql.RenderWatermarkLiteral(canonical));
-    }
-
     [Fact]
     public void Duckdb_catalog_setup_is_extension_then_attach()
     {
