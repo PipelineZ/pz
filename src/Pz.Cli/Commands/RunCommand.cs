@@ -483,7 +483,7 @@ internal static class RunCommand
         // being alive. RunEventPublisher is the second CompositeRunEvents target, mapping the same
         // callbacks onto the bus for whichever renderer --log-format selected. Writes go through
         // backends.Artifacts (Local or SQL).
-        var startedAtIso = startedAt.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", CultureInfo.InvariantCulture);
+        var startedAtIso = ArtifactTimestamp.Render(startedAt.UtcDateTime);
         var snapshotEvents = new SnapshotRunEvents(backends.Artifacts, runId, startedAtIso);
         var bus = new RunEventBus();
         var publisher = new RunEventPublisher(bus, runId, TimeProvider.System, phases);

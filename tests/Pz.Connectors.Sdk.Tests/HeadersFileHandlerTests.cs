@@ -3,8 +3,8 @@ using Pz.Shared;
 
 namespace Pz.Connectors.Sdk.Tests;
 
-/// <summary>The connector's copy of the headers file handler behaves like the host's: the file is read before every
-/// request, the body is gzipped, and a bad file is reported once without its content.</summary>
+/// <summary>The headers file handler as the connector SDK uses it, including its synchronous send path: the file is
+/// read before every request, the body is gzipped, and a bad file is reported once without its content.</summary>
 public sealed class HeadersFileHandlerTests : IDisposable
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("pz-sdk-headers-").FullName;
