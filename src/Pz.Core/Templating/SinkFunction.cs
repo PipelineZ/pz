@@ -218,9 +218,9 @@ internal sealed class SinkFunction : KeywordCallFunction
         return value;
     }
 
-    /// <summary>The call-site twin of <c>ProjectLoader.ParseRetry</c> -- same fields, same validity
-    /// rules, same PZ0301 code; only the hint is call-site shaped. Kept apart from the loader's copy because
-    /// its messages name the <c>sink()</c> call and carry the call-site hint.</summary>
+    /// <summary>The loader's own <c>retry:</c> parser, run against the kwarg's value, so a block reads and
+    /// fails identically whether it sits under <c>write:</c>, in <c>source()</c> or here. The loader reports
+    /// against the file with no line; its errors are re-stamped with this call's line.</summary>
     private RetryDef? ParseRetry(Dictionary<string, (object? Value, int Line)> kwargs, string sink, string output)
     {
         if (Take(kwargs, "retry") is not { } arg)
@@ -228,74 +228,12 @@ internal sealed class SinkFunction : KeywordCallFunction
             return null;
         }
 
-        const string hint = "retry: { max_attempts: 8, base_delay: '2s', max_delay: '5m' }";
-        if (arg.Value is not Dictionary<string, object?> retryMap)
-        {
-            Error(PzErrorCode.RetryConfigInvalid, arg.Line,
-                $"sink('{sink}', '{output}'): 'retry' must be a mapping with " +
-                "max_attempts/base_delay/max_delay", hint);
-            return null;
-        }
-
-        var valid = true;
-        int? maxAttempts = null;
-        if (retryMap.TryGetValue("max_attempts", out var attemptsRaw) && attemptsRaw is not null)
-        {
-            // Through the loader's own reader, not a local `is int`: a literal written at the call site
-            // arrives as int (Scriban), the same value reached via var() as long (the YAML loader and
-            // --vars both produce long), so a local single-shape check would refuse the other.
-            if (ProjectLoader.TryGetInt(retryMap, "max_attempts") is { } i and >= 1)
-            {
-                maxAttempts = i;
-            }
-            else
-            {
-                Error(PzErrorCode.RetryConfigInvalid, arg.Line,
-                    $"sink('{sink}', '{output}'): retry.max_attempts must be an integer >= 1 " +
-                    $"(got '{Show(attemptsRaw)}')", hint);
-                valid = false;
-            }
-        }
-
-        var baseDelay = ParseDelay(retryMap, "base_delay", sink, output, arg.Line, hint, ref valid);
-        var maxDelay = ParseDelay(retryMap, "max_delay", sink, output, arg.Line, hint, ref valid);
-        if (baseDelay is { } b && maxDelay is { } m && m < b)
-        {
-            Error(PzErrorCode.RetryConfigInvalid, arg.Line,
-                $"sink('{sink}', '{output}'): retry.max_delay must be >= retry.base_delay", hint);
-            valid = false;
-        }
-
-        foreach (var unknown in retryMap.Keys
-            .Where(k => k is not ("max_attempts" or "base_delay" or "max_delay"))
-            .OrderBy(k => k, StringComparer.Ordinal))
-        {
-            Error(PzErrorCode.RetryConfigInvalid, arg.Line,
-                $"sink('{sink}', '{output}'): unknown retry key '{unknown}'", hint);
-            valid = false;
-        }
-
-        return valid ? new RetryDef(maxAttempts, baseDelay, maxDelay) : null;
-    }
-
-    private TimeSpan? ParseDelay(Dictionary<string, object?> retryMap, string key, string sink, string output,
-        int line, string hint, ref bool valid)
-    {
-        if (!retryMap.TryGetValue(key, out var raw) || raw is null)
-        {
-            return null;
-        }
-
-        if (!DurationParser.TryParse(raw.ToString(), out var duration) || duration <= TimeSpan.Zero)
-        {
-            Error(PzErrorCode.RetryConfigInvalid, line,
-                $"sink('{sink}', '{output}'): retry.{key} must be a positive duration like 500ms, 2s, " +
-                $"5m, 1h, or 1d (got '{Show(raw)}')", hint);
-            valid = false;
-            return null;
-        }
-
-        return duration;
+        var loaderErrors = new List<PzError>();
+        var retry = ProjectLoader.ParseRetry(
+            new Dictionary<string, object?>(StringComparer.Ordinal) { ["retry"] = arg.Value },
+            Pipeline.FilePath, loaderErrors, $"sink('{sink}', '{output}') ");
+        AddAtLine(loaderErrors, arg.Line);
+        return retry;
     }
 
     /// <summary>The pz-owned kwarg name <paramref name="option"/> is a near miss of, or null if it is

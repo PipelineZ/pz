@@ -152,9 +152,8 @@ public static partial class ProjectLoader
             return null;
         }
 
-        // The kwarg surface (SinkFunction.ParseRetry) already refuses an unknown retry key under this
-        // same code -- the two surfaces must agree, since moving a retry: block between them is meant
-        // to be cut-and-paste.
+        // source() and sink() run this same parser over their retry: kwarg, so an unknown key fails
+        // identically on every surface a retry: block can be cut-and-pasted between.
         var beforeUnknownKeys = errors.Count;
         RefuseUnknownKeys(retryYaml, ["max_attempts", "base_delay", "max_delay"], PzErrorCode.RetryConfigInvalid,
             relativePath, $"{context}retry: ", errors);

@@ -161,7 +161,8 @@ public class SinkFunctionTests
     [InlineData("{{ sink('lake', 'a', retry: 3) }}", "'retry' must be a mapping")]
     [InlineData("{{ sink('lake', 'a', retry: { max_attempts: 0 }) }}", "max_attempts must be an integer >= 1")]
     [InlineData("{{ sink('lake', 'a', retry: { base_delay: 'soon' }) }}", "positive duration")]
-    [InlineData("{{ sink('lake', 'a', retry: { bogus: 1 }) }}", "unknown retry key 'bogus'")]
+    [InlineData("{{ sink('lake', 'a', retry: { bogus: 1 }) }}", "unknown key 'bogus'")]
+    [InlineData("{{ sink('lake', 'a', retry: { max_delays: '5m' }) }}", "did you mean 'max_delay'")]
     [InlineData("{{ sink('lake', 'a', strategy: 'merge', strategy: 'append') }}", "more than once")]
     public void Malformed_call_is_rejected(string call, string expected)
     {
