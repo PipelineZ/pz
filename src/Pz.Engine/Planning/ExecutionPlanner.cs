@@ -34,8 +34,8 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         var errors = new List<PzError>();
 
         // rate_limit is connection-level, but planning runs per dataset/output node: one set per PlanAsync
-        // call, threaded into both node arms below, de-dupes the PZ0317 gate to one error per connection and
-        // direction however many dataset/output nodes share it.
+        // call, threaded into both node arms below, de-dupes the PZ0317 gates to one error per connection
+        // however many dataset/output nodes, in either direction, share it.
         var pacingRefused = new HashSet<string>();
 
         // CheckpointableReads without StablePartitionIds is a connector defect (checkpoints are keyed by
@@ -233,13 +233,13 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         }
 
         // Pacing capability gate. Static read (no OpenAsync). Connection-level config, per-dataset
-        // planning pass: pacingRefused de-dupes to one error per connection and direction.
+        // planning pass: pacingRefused de-dupes to one error per connection.
         if (def.Source.RateLimit is not null && connectorFound &&
             !connector!.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations) &&
-            pacingRefused.Add("source:" + def.Source.Name))
+            pacingRefused.Add(def.Source.Name))
         {
             errors.Add(new PzError(PzErrorCode.PacingUnsupported,
-                $"source '{def.Source.Name}': rate_limit is configured but connector " +
+                $"connection '{def.Source.Name}': rate_limit is configured but connector " +
                 $"'{def.Source.Connector}' does not support gated operations (pacing would be silently ignored)",
                 def.Source.FilePath, null,
                 "remove rate_limit, or use a connector that declares the GatedOperations capability"));
@@ -257,10 +257,10 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         // IOperationGateAware.
         if (def.Source.RateLimit is not null && connectorFound &&
             connector is INativeOnlySource &&
-            pacingRefused.Add("source:" + def.Source.Name))
+            pacingRefused.Add(def.Source.Name))
         {
             errors.Add(new PzError(PzErrorCode.PacingUnsupported,
-                $"source '{def.Source.Name}': rate_limit is configured but connector " +
+                $"connection '{def.Source.Name}': rate_limit is configured but connector " +
                 $"'{def.Source.Connector}' reads natively (its source path performs no gateable " +
                 "operations); remove rate_limit from the source",
                 def.Source.FilePath, null,
@@ -695,13 +695,13 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         // Pacing capability gate, sink-side mirror of the source check in PlanSourceLoadAsync above.
         // Static Capabilities read (no OpenAsync). Connection-level config, per-output planning pass:
-        // pacingRefused de-dupes to one error per connection and direction.
+        // pacingRefused de-dupes to one error per connection, shared with the source-side gates.
         if (def.Sink.RateLimit is not null &&
             !connector.Capabilities.HasFlag(ConnectorCapabilities.GatedOperations) &&
-            pacingRefused.Add("sink:" + def.Sink.Name))
+            pacingRefused.Add(def.Sink.Name))
         {
             errors.Add(new PzError(PzErrorCode.PacingUnsupported,
-                $"sink '{def.Sink.Name}': rate_limit is configured but connector " +
+                $"connection '{def.Sink.Name}': rate_limit is configured but connector " +
                 $"'{def.Sink.Connector}' does not support gated operations (pacing would be silently ignored)",
                 def.Sink.FilePath, null,
                 "remove rate_limit, or use a connector that declares the GatedOperations capability"));

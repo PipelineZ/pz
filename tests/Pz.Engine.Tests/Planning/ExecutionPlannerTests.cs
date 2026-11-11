@@ -351,7 +351,7 @@ public sealed class ExecutionPlannerTests
     }
 
     // rate_limit + non-GatedOperations connector capability gate
-    // (PZ0317), de-duplicated per instance -- mirrors the PZ0313/PZ0314 arrangement above.
+    // (PZ0317), de-duplicated per connection -- mirrors the PZ0313/PZ0314 arrangement above.
 
     [Fact]
     public async Task Rate_limit_without_capability_refused()
@@ -400,6 +400,18 @@ public sealed class ExecutionPlannerTests
         Assert.Contains("orders_sink", error.ToString());
         Assert.Contains("stub", error.ToString());
         Assert.Contains("GatedOperations", error.ToString());
+    }
+
+    [Fact]
+    public async Task Refusal_deduped_across_directions_of_one_connection()
+    {
+        var (dag, registry) = TestDags.DagAndRegistryWithReadAndWrittenRateLimit(
+            ConnectorCapabilities.None, new RateLimitDef(60, null));
+        var ex = await Assert.ThrowsAsync<PzValidationException>(
+            () => new ExecutionPlanner(registry).PlanAsync(dag, forceUniversal: false, default));
+
+        var error = Assert.Single(ex.Errors, e => e.Code == PzErrorCode.PacingUnsupported);
+        Assert.Contains("connection 'warehouse'", error.Message, StringComparison.Ordinal);
     }
 
     // PZ0317 corner: GatedOperations is a connector-wide capability flag, but a connector can adopt it
