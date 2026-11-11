@@ -2,8 +2,8 @@ using System.Globalization;
 using System.Text;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
-using Pz.Connectors.Toolkit.Sql;
 using Pz.Shared.Quack;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.DuckLake;
 

@@ -4,10 +4,10 @@ using Apache.Arrow;
 using Apache.Arrow.Types;
 using Google.Cloud.Storage.V1;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit.Sql;
 using Pz.Connectors.Toolkit;
 using Pz.Connectors.Toolkit.Formats;
 using Pz.Shared.Sinks;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.Gcs;
 

@@ -3,6 +3,7 @@ using Azure.Storage;
 using Azure.Storage.Blobs;
 using Azure.Storage.Files.DataLake;
 using Pz.Connectors.Abstractions;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.AzureBlob;
 
@@ -194,5 +195,5 @@ internal static class AzureAuth
     public static string SecretName(string subject) =>
         "pz_azure_" + new string([.. subject.Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_')]);
 
-    private static string E(string? value) => AzureUrl.Escape(value ?? "");
+    private static string E(string? value) => DuckDbSqlText.EscapeLiteral(value ?? "");
 }

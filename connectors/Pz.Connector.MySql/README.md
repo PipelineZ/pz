@@ -189,7 +189,7 @@ offline probe, and that trade is confined to two places:
 
 ## Type mapping
 
-`MySqlTypeNameMap` maps the generic `columns:` contract's type names to Arrow types — used only by
+The toolkit's `ColumnTypeCatalog` maps the generic `columns:` contract's type names to Arrow types — used only by
 `GetSchemaAsync` above, since a native scan otherwise never needs a schema before DuckDB executes
 the read:
 
@@ -216,7 +216,7 @@ retryable failure mode in the connector's own code): `CreateSecretSql`'s missing
 `database` guards (unreachable in practice once the connection schema's `required: [host,
 database]` has already been enforced, present as defense-in-depth), the `PZ0312` refusal stubs
 (`PlanReadAsync`/`BeginWriteAsync`, reached only if something forces the universal tier),
-`MySqlTypeNameMap`'s unknown-`columns:`-type error, and `GetSchemaAsync`'s contract-less refusal
+`ColumnTypeCatalog`'s unknown-`columns:`-type error, and `GetSchemaAsync`'s contract-less refusal
 (reached only by `pz validate --connect`'s drift precheck). The one place this connector *does*
 classify transient vs. permanent is the connectivity check itself (`MySqlGreeting.ProbeAsync` —
 see [Control plane](#control-plane-what-zero-driver-costs) above), which returns a
@@ -238,7 +238,6 @@ connectors/Pz.Connector.MySql/
 ├── MySqlSource.cs         # ISource: native scan (always succeeds), PZ0312 refusal stub, schema-from-contract
 ├── MySqlSink.cs           # ISink: native copy (append/replace), PZ0312 refusal stub
 ├── MySqlGreeting.cs       # the zero-driver TCP handshake-packet connectivity probe
-├── MySqlTypeNameMap.cs    # columns: contract type name → Arrow type matrix
 └── pz.connector.json      # manifest: name "mysql", protocol major range, capabilities [source, sink]
 ```
 

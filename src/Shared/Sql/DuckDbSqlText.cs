@@ -3,27 +3,30 @@ using System.Text;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
 
-namespace Pz.Connectors.Toolkit.Sql;
+namespace Pz.Shared.Sql;
 
 /// <summary>Text building blocks for SQL a connector hands DuckDB: native-scan fragments, setup
-/// statements and copy statements. Every value spliced into such SQL goes through one of these, so
-/// identifier quoting, literal escaping and watermark rendering cannot drift between connectors.</summary>
-public static class DuckDbSqlText
+/// statements and copy statements. Identifier quoting, literal escaping and watermark rendering live
+/// here once, so the connectors that build such SQL cannot drift apart.
+///
+/// <para>Compiled into the connectors that generate DuckDB SQL from this one source file: connectors
+/// never reference each other, and this is not part of the published toolkit's API.</para></summary>
+internal static class DuckDbSqlText
 {
     /// <summary>Double-quotes <paramref name="name"/> as one identifier, doubling any embedded quote.
     /// The ANSI form DuckDB, SQLite and Postgres all accept; MySQL's backtick form is not this.</summary>
-    public static string QuoteIdentifier(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
+    internal static string QuoteIdentifier(string name) => $"\"{name.Replace("\"", "\"\"")}\"";
 
     /// <summary>Escapes <paramref name="value"/> for the inside of a single-quoted literal by doubling
     /// every single quote. The caller supplies the surrounding quotes.</summary>
-    public static string EscapeLiteral(string value) => value.Replace("'", "''");
+    internal static string EscapeLiteral(string value) => value.Replace("'", "''");
 
     /// <summary>Renders the engine's canonical watermark string (plain digits for int/bigint/decimal,
     /// <c>yyyy-MM-dd</c> for date, <c>yyyy-MM-ddTHH:mm:ss.ffffff</c> for timestamp) as a literal.
     /// Numerics stay bare; anything else is quoted, with a canonical timestamp's <c>T</c> separator
     /// becoming a space so the literal coerces against DATE/TIMESTAMP columns and still compares
     /// lexically against a text-typed cursor.</summary>
-    public static string WatermarkLiteral(string canonical)
+    internal static string WatermarkLiteral(string canonical)
     {
         if (IsCanonicalNumeric(canonical))
         {
@@ -41,7 +44,7 @@ public static class DuckDbSqlText
     /// watermark's lower bound (strict or inclusive) and the window's upper bound become predicates. The
     /// engine embeds the fragment after FROM, so a plain scan stays the bare relation and anything with a
     /// projection or predicate becomes a parenthesized subquery.</summary>
-    public static string ScanFragment(string relation, DatasetSpec spec)
+    internal static string ScanFragment(string relation, DatasetSpec spec)
     {
         var columns = ColumnTypeCatalog.ContractColumns(spec);
         var projection = columns is { Count: > 0 }
@@ -74,12 +77,12 @@ public static class DuckDbSqlText
     /// <c>a-b</c> and <c>a_b</c> would collide; the hash suffix (see <see cref="StableSuffix"/>) of the
     /// raw name keeps them apart. Deterministic, so the alias is stable across runs and processes and
     /// a once-per-run setup statement keyed by its text is recognized as the same statement.</summary>
-    public static string ConnectionAlias(string prefix, string connectionName) =>
+    internal static string ConnectionAlias(string prefix, string connectionName) =>
         $"{prefix}_{Sanitize(connectionName)}_{StableSuffix(connectionName)}";
 
     /// <summary>The first 8 lowercase hex characters of the SHA-256 of <paramref name="name"/>'s UTF-8
     /// bytes: a short, deterministic discriminator for generated object names.</summary>
-    public static string StableSuffix(string name) =>
+    internal static string StableSuffix(string name) =>
         Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(name)))[..8];
 
     private static string Sanitize(string name) =>

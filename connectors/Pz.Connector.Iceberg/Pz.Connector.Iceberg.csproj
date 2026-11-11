@@ -25,6 +25,7 @@
   <ItemGroup>
     <!-- Shared connector mechanics compiled from one source file; connectors never reference each other. -->
     <Compile Include="..\..\src\Shared\Probes\TcpProbe.cs" Link="Shared\Probes\TcpProbe.cs" />
+    <Compile Include="..\..\src\Shared\Sql\DuckDbSqlText.cs" Link="Shared\Sql\DuckDbSqlText.cs" />
   </ItemGroup>
 
 </Project>

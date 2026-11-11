@@ -5,6 +5,7 @@ using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
 using Pz.Shared.Sinks;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.AzureBlob;
 
@@ -46,7 +47,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Sink));
 
         copy = new NativeCopy(
-            $"copy (select * from {{{{source}}}}) to '{AzureUrl.Escape(AzureUrl.Render(loc))}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
+            $"copy (select * from {{{{source}}}}) to '{DuckDbSqlText.EscapeLiteral(AzureUrl.Render(loc))}' ({FileFormatCatalog.CopyClause(format, spec.Options, context)})",
             ["install azure", "load azure", secret, .. AzureAuth.TransportStatements(), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO azure {format.Name}",

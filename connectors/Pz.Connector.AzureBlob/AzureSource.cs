@@ -8,8 +8,8 @@ using Azure.Storage.Files.DataLake.Models;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Paths;
 using Pz.Connectors.Toolkit.Formats;
-using Pz.Connectors.Toolkit.Sql;
 using Pz.Shared.Paths;
+using Pz.Shared.Sql;
 using Sylvan.Data.Csv;
 
 namespace Pz.Connector.AzureBlob;
@@ -112,7 +112,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         var loc = AzureUrl.ParseDataset(spec.Options, context);
         var keyPatterns = CoverKeys(loc.Key, spec);
         var urlList = string.Join(", ", keyPatterns.Select(k =>
-            $"'{AzureUrl.Escape(AzureUrl.Render(loc with { Key = k }))}'"));
+            $"'{DuckDbSqlText.EscapeLiteral(AzureUrl.Render(loc with { Key = k }))}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Source));
         var declared = ColumnTypeCatalog.ContractColumns(spec); // null (contract-less) or declared (partial or full)

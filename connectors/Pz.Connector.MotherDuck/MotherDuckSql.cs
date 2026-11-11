@@ -1,6 +1,6 @@
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
-using Pz.Connectors.Toolkit.Sql;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.MotherDuck;
 

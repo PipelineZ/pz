@@ -1,10 +1,13 @@
 using Pz.Connectors.Abstractions;
 
-namespace Pz.Connectors.Toolkit.Sql;
+namespace Pz.Shared.Sql;
 
 /// <summary>Pushes a windowed incremental's bounds down into a native-scan fragment, so every file
-/// connector filters a window with the same predicate shape, quoting and escaping.</summary>
-public static class NativeScanWindow
+/// connector filters a window with the same predicate shape, quoting and escaping.
+///
+/// <para>Compiled into the localfiles, s3, gcs and azureblob connectors from this one source file:
+/// connectors never reference each other.</para></summary>
+internal static class NativeScanWindow
 {
     /// <summary>Wraps <paramref name="fragment"/> (a bare <c>read_csv(...)</c>/<c>read_json(...)</c>/
     /// <c>read_parquet(...)</c> call, or a declared-contract cast subquery) in
@@ -13,7 +16,7 @@ public static class NativeScanWindow
     /// the engine stamps for a windowed dataset. Every other spec (no watermark, or a lower bound
     /// only) returns <paramref name="fragment"/> unchanged, so an unwindowed fragment stays
     /// byte-identical.</summary>
-    public static string Wrap(string fragment, DatasetSpec spec)
+    internal static string Wrap(string fragment, DatasetSpec spec)
     {
         if (spec.WatermarkCursor is null || spec.WatermarkUpperBound is null)
         {

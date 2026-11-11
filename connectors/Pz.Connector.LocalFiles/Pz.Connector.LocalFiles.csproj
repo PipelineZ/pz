@@ -49,6 +49,8 @@
     <Compile Include="..\..\src\Shared\Csv\CsvColumnWriter.cs" Link="Shared\Csv\CsvColumnWriter.cs" />
     <Compile Include="..\..\src\Shared\Parquet\ParquetBatchWriter.cs" Link="Shared\Parquet\ParquetBatchWriter.cs" />
     <Compile Include="..\..\src\Shared\Parquet\ParquetTypeMap.cs" Link="Shared\Parquet\ParquetTypeMap.cs" />
+    <Compile Include="..\..\src\Shared\Sql\DuckDbSqlText.cs" Link="Shared\Sql\DuckDbSqlText.cs" />
+    <Compile Include="..\..\src\Shared\Sql\NativeScanWindow.cs" Link="Shared\Sql\NativeScanWindow.cs" />
   </ItemGroup>
 
 </Project>

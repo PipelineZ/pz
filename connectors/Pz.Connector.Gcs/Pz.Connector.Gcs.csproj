@@ -32,6 +32,8 @@
     <!-- Shared connector mechanics compiled from one source file; connectors never reference each other. -->
     <Compile Include="..\..\src\Shared\Sinks\PartitionedWriteSession.cs" Link="Shared\Sinks\PartitionedWriteSession.cs" />
     <Compile Include="..\..\src\Shared\Parquet\ParquetBatchWriter.cs" Link="Shared\Parquet\ParquetBatchWriter.cs" />
+    <Compile Include="..\..\src\Shared\Sql\DuckDbSqlText.cs" Link="Shared\Sql\DuckDbSqlText.cs" />
+    <Compile Include="..\..\src\Shared\Sql\NativeScanWindow.cs" Link="Shared\Sql\NativeScanWindow.cs" />
   </ItemGroup>
 
 </Project>

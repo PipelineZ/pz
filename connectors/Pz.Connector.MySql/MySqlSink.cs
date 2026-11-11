@@ -1,6 +1,6 @@
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
-using Pz.Connectors.Toolkit.Sql;
+using Pz.Shared.Sql;
 
 namespace Pz.Connector.MySql;
 

@@ -1,8 +1,8 @@
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Toolkit.Formats;
-using Pz.Connectors.Toolkit.Sql;
+using Pz.Shared.Sql;
 
-namespace Pz.Connectors.Toolkit.Tests.Sql;
+namespace Pz.Connector.DuckDb.Tests;
 
 public sealed class DuckDbSqlTextTests
 {

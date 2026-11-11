@@ -43,8 +43,6 @@ internal static class AzureUrl
         };
     }
 
-    public static string Escape(string value) => value.Replace("'", "''");
-
     private static string? Str(IReadOnlyDictionary<string, object?> options, string key) =>
         options.TryGetValue(key, out var v) ? v?.ToString() : null;
 
