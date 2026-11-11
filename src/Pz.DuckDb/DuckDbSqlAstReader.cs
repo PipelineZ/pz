@@ -927,7 +927,8 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
         duck.Scalar($"select json_deserialize_sql({ArrowInterop.QuoteLiteral(root.ToJsonString())})");
 
     /// <summary>Thin synchronous wrapper over <see cref="DuckSession"/> — the reader's members are sync
-    /// because DagCompiler.Compile is.</summary>
+    /// because DagCompiler.Compile is. One parse-only in-memory session per reader instance; parsing
+    /// reads no catalog, so reuse cannot change a result.</summary>
     private sealed class DuckDbSync : IDisposable
     {
         private readonly DuckSession _session;
