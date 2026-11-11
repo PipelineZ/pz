@@ -21,7 +21,6 @@ namespace Pz.Connector.Postgres;
 /// max, or an empty/all-NULL column) collapsing to 1 partition.</summary>
 internal sealed class PostgresSource(string connectionString) : ISource, IChangeCaptureAdmin
 {
-    private const int MinPartitions = 1;
     private const int MaxPartitions = 16;
 
     // The DataReaderSource type matrix's orderable CLR shapes (see PgTypeMap): every numeric and
@@ -105,8 +104,8 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
             return [new PostgresPartition(connectionString, select)];
         }
 
-        var partitionCount = ParsePartitionCount(spec);
-        if (partitionCount == MinPartitions)
+        var partitionCount = PartitionCount.Parse(spec, MaxPartitions);
+        if (partitionCount == PartitionCount.Min)
         {
             return [new PostgresPartition(connectionString, select)];
         }
@@ -139,52 +138,6 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
         }
 
         return partitions;
-    }
-
-    private static int ParsePartitionCount(DatasetSpec spec)
-    {
-        if (!spec.Options.TryGetValue("partitions", out var raw) || raw is null)
-        {
-            return MinPartitions;
-        }
-
-        if (!TryParseInt32(raw, out var n))
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        if (n < MinPartitions || n > MaxPartitions)
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be between {MinPartitions} and {MaxPartitions}, got {n}",
-                isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        return n;
-    }
-
-    // TryParse pattern (not Convert.ToInt32, which throws a raw, unnamed FormatException for a
-    // non-integer-shaped string like "four") -- every failure mode below is folded into a single `false`
-    // so the caller can surface one named PzConnectorException instead.
-    private static bool TryParseInt32(object raw, out int value)
-    {
-        switch (raw)
-        {
-            case int i:
-                value = i;
-                return true;
-            case long l when l is >= int.MinValue and <= int.MaxValue:
-                value = (int)l;
-                return true;
-            case long or double or decimal:
-                value = 0;
-                return false;
-            default:
-                return int.TryParse(
-                    Convert.ToString(raw, CultureInfo.InvariantCulture), NumberStyles.Integer,
-                    CultureInfo.InvariantCulture, out value);
-        }
     }
 
     private async Task<(object? Min, object? Max)> ProbeRangeAsync(

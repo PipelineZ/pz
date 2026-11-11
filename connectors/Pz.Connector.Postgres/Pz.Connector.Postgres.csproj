@@ -34,6 +34,7 @@
   <ItemGroup>
     <!-- Shared connector mechanics compiled from one source file; connectors never reference each other. -->
     <Compile Include="..\..\src\Shared\Partitioning\EqualWidth.cs" Link="Shared\Partitioning\EqualWidth.cs" />
+    <Compile Include="..\..\src\Shared\Partitioning\PartitionCount.cs" Link="Shared\Partitioning\PartitionCount.cs" />
   </ItemGroup>
 
 </Project>

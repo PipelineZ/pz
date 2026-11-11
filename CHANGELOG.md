@@ -18,6 +18,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   computed as `min + (max - min) * i / n`, which threw for a decimal range near `decimal.MaxValue` and produced
   infinite boundaries for a double range near `double.MaxValue`. They now divide before multiplying, as the
   sqlserver connector already did, and both connectors share that arithmetic.
+- **sqlserver: `partitions:` no longer rounds a fractional or boolean value.** A run that skipped `pz validate`
+  read `partitions: 3.7` as 4 and `partitions: true` as 1; both are now refused with the same "must be an integer"
+  error postgres gives, and the two connectors share that parse.
 - **sftp: parquet writes keep microsecond timestamps.** The universal-tier parquet writer declared timestamp columns
   in a way Parquet.Net stores at millisecond precision, so `12:30:15.123456` landed as `12:30:15.123`. They are now
   written as microseconds, like the localfiles, azureblob and gcs parquet writers.

@@ -5,6 +5,7 @@ using Apache.Arrow;
 using Microsoft.Data.SqlClient;
 using Pz.Connectors.Abstractions;
 using Pz.Shared;
+using Pz.Shared.Partitioning;
 
 namespace Pz.Connector.SqlServer;
 
@@ -76,7 +77,6 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
             : sql;
     }
 
-    private const int MinPartitions = 1;
     private const int MaxPartitions = 16;
 
     public async ValueTask<DatasetSchema> GetSchemaAsync(DatasetSpec spec, CancellationToken ct)
@@ -203,8 +203,8 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
             return [new SqlServerPartition(connectionString, select)];
         }
 
-        var partitionCount = ParsePartitionCount(spec);
-        if (partitionCount == MinPartitions)
+        var partitionCount = PartitionCount.Parse(spec, MaxPartitions);
+        if (partitionCount == PartitionCount.Min)
         {
             return [new SqlServerPartition(connectionString, select)];
         }
@@ -238,34 +238,6 @@ public sealed partial class SqlServerSource(string connectionString) : ISource, 
         }
 
         return selects;
-    }
-
-    private static int ParsePartitionCount(DatasetSpec spec)
-    {
-        if (!spec.Options.TryGetValue("partitions", out var raw) || raw is null)
-        {
-            return MinPartitions;
-        }
-
-        int n;
-        try
-        {
-            n = Convert.ToInt32(raw, CultureInfo.InvariantCulture);
-        }
-        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be an integer, got '{raw}'", isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        if (n < MinPartitions || n > MaxPartitions)
-        {
-            throw new PzConnectorException(
-                $"dataset '{spec.Dataset}': 'partitions' must be between {MinPartitions} and {MaxPartitions}, got {n}",
-                isTransient: false, code: PzConnectorErrorCodes.Config);
-        }
-
-        return n;
     }
 
     private async Task<(object? Min, object? Max)> ProbeRangeAsync(
