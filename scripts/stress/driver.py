@@ -3,7 +3,7 @@
 import json, os, pathlib, shutil, subprocess, sys
 
 W = pathlib.Path(os.environ.get("PZ_STRESS_ROOT", "/tmp/pz-stress"))
-PZ = os.environ.get("PZ_CLI_DLL", "src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll")
+PZ = os.environ.get("PZ_CLI_DLL", "src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll")
 RESULTS = W / "results.jsonl"
 HERE = pathlib.Path(__file__).resolve().parent
 

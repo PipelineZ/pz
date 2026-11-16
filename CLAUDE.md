@@ -40,7 +40,7 @@ call. `outputs:` is retired (PZ0347); leftovers are PZ0346.
 
 ## Build & test
 
-Requires the .NET 10 SDK. Docker is optional — suites needing Postgres/MinIO (Testcontainers) use
+Requires the .NET 11 SDK. Docker is optional — suites needing Postgres/MinIO (Testcontainers) use
 `Xunit.SkippableFact` and SKIP cleanly without it (`tests/Pz.TestSupport/DockerFacts.cs`).
 
 ```bash

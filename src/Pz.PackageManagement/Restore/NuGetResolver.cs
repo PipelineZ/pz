@@ -13,7 +13,7 @@ namespace Pz.PackageManagement.Restore;
 /// restore`/MSBuild involved).</summary>
 public static class NuGetResolver
 {
-    private static readonly NuGetFramework TargetFramework = NuGetFramework.Parse("net10.0");
+    private static readonly NuGetFramework TargetFramework = NuGetFramework.Parse("net11.0");
     private static readonly FrameworkReducer Reducer = new();
 
     /// <summary>Resolves <paramref name="requirements"/> (id + version RANGE in
@@ -200,7 +200,7 @@ public static class NuGetResolver
         return (null, null);
     }
 
-    /// <summary>Lib assets from the nearest-net10.0 framework group. The materializer places them
+    /// <summary>Lib assets from the nearest-net11.0 framework group. The materializer places them
     /// straight into the package's own flat lib/ dir, so each asset carries both the name it lands under
     /// and the <c>lib/&lt;tfm&gt;/</c> path it must be extracted from — the chosen framework is part of
     /// that path, and dropping it is what let archive order substitute a net472 build for a net9.0

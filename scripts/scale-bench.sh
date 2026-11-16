@@ -11,7 +11,7 @@
 # Usage: scripts/scale-bench.sh   (PZ_DLL overrides the CLI under test)
 set -euo pipefail
 
-PZ_DLL="${PZ_DLL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll}"
+PZ_DLL="${PZ_DLL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll}"
 OUT="$(mktemp -d)"
 trap 'rm -rf "$OUT"' EXIT
 

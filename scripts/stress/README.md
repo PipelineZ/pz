@@ -13,7 +13,7 @@ side is holding data DuckDB was supposed to hold on disk.
 
 ```bash
 export PZ_STRESS_ROOT=/var/tmp/pz-stress          # scratch: generated data + projects + samples
-export PZ_CLI_DLL=src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll
+export PZ_CLI_DLL=src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll
 dotnet build Pz.slnx -c Release
 
 python3 scripts/stress/gen.py all                 # generate every scenario family

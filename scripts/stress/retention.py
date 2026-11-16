@@ -3,7 +3,7 @@
 import os, pathlib, shutil, subprocess, sys
 
 W = pathlib.Path(os.environ.get("PZ_STRESS_ROOT", "/tmp/pz-stress"))
-PZ = os.environ.get("PZ_CLI_DLL", "src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll")
+PZ = os.environ.get("PZ_CLI_DLL", "src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll")
 name, n = sys.argv[1], int(sys.argv[2])
 proj = W / "scen" / name
 shutil.rmtree(proj / ".pz", ignore_errors=True)

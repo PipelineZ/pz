@@ -27,7 +27,7 @@ echo "rows: ${ROW_COUNT} (seed ${SEED})"
 
 echo "-- Building Release --"
 dotnet build "${ROOT_DIR}/Pz.slnx" -c Release --nologo -v quiet
-PZ=(dotnet "${ROOT_DIR}/src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll")
+PZ=(dotnet "${ROOT_DIR}/src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll")
 
 echo "-- Starting MinIO container --"
 docker run -d --name "${CONTAINER}" -e "MINIO_ROOT_USER=${MINIO_USER}" \

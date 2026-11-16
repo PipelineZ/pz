@@ -26,7 +26,7 @@ echo "rows: ${ROW_COUNT}"
 
 echo "-- Building Release --"
 dotnet build "${ROOT_DIR}/Pz.slnx" -c Release --nologo -v quiet
-PZ=(dotnet "${ROOT_DIR}/src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll")
+PZ=(dotnet "${ROOT_DIR}/src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll")
 
 echo "-- Starting SQL Server container --"
 docker run -d --name "${CONTAINER}" -e ACCEPT_EULA=Y -e "MSSQL_SA_PASSWORD=${SA_PASSWORD}" \

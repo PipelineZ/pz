@@ -7,6 +7,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **pz now targets .NET 11 (`net11.0`, SDK 11.0.100).** The `pz` tool, and the published `Pz.Connectors.Abstractions`,
+  `Pz.Connectors.Toolkit`, `Pz.Connectors.TestKit` and `Pz.Connectors.Sdk` packages, target `net11.0` only.
+  Migration: install the .NET 11 SDK to install or build pz. An external connector must retarget to `net11.0`
+  before taking these packages' next version; connectors already built on an earlier SDK keep working, since the
+  engine talks to them over PCP, not in process.
+
 ### Fixed
 
 - **s3, gcs: `pz validate --connect` no longer promises a probe "in a later version".** Both connectors' connection

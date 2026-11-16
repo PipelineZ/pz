@@ -316,7 +316,7 @@ public sealed class HandshakeTests : IDisposable
     private static string FixtureExecutablePath()
     {
         var baseDir = new DirectoryInfo(AppContext.BaseDirectory);
-        var tfm = baseDir.Name;                    // net10.0
+        var tfm = baseDir.Name;                    // net11.0
         var config = baseDir.Parent!.Name;          // Debug | Release
         // .../tests/Pz.PackageManagement.Tests/bin/<config>/<tfm>/ -> .../tests/
         var testsDir = baseDir.Parent!.Parent!.Parent!.Parent!.FullName;
@@ -325,7 +325,7 @@ public sealed class HandshakeTests : IDisposable
     }
 
     /// <summary>Short, outside the test output tree: a unix domain socket path is capped at roughly 104
-    /// bytes (<c>sun_path</c>), and the deep <c>tests/.../bin/Release/net10.0/...</c> tree this
+    /// bytes (<c>sun_path</c>), and the deep <c>tests/.../bin/Release/net11.0/...</c> tree this
     /// assembly lives under leaves no room for <c>control.sock</c>/<c>control.sock.data</c> on top.</summary>
     private string NewSocketDir()
     {
