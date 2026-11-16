@@ -7,7 +7,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
-### Changed (breaking)
+## [0.19.0] - 2026-11-16
+
+### Breaking
 
 - **pz now targets .NET 11 (`net11.0`, SDK 11.0.100).** The `pz` tool, and the published `Pz.Connectors.Abstractions`,
   `Pz.Connectors.Toolkit`, `Pz.Connectors.TestKit` and `Pz.Connectors.Sdk` packages, target `net11.0` only.
