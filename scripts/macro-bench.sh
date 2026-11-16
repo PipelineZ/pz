@@ -60,7 +60,7 @@ dotnet build "${ROOT_DIR}/Pz.slnx" -c Release --nologo -v quiet
 echo "build OK"
 echo
 
-PZ_CLI_DLL="${ROOT_DIR}/src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll"
+PZ_CLI_DLL="${ROOT_DIR}/src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll"
 if [[ ! -f "${PZ_CLI_DLL}" ]]; then
     echo "error: Pz.Cli.dll not found at ${PZ_CLI_DLL}" >&2
     exit 1
@@ -139,7 +139,7 @@ build_project_tree "${WORK_DIR}/project_pcp_tiny" localfiles-pcp "${TINY_CSV_PAT
 
 PKG_ID="LocalFilesPcp"
 PKG_VERSION="1.0.0"
-FIXTURE_EXE="${ROOT_DIR}/tests/fixtures/PcpFakeConnector/bin/Release/net10.0/PcpFakeConnector"
+FIXTURE_EXE="${ROOT_DIR}/tests/fixtures/PcpFakeConnector/bin/Release/net11.0/PcpFakeConnector"
 RID="$(dotnet --info | awk '/^ RID:/ { print $2 }')"
 
 if [[ ! -x "${FIXTURE_EXE}" ]]; then

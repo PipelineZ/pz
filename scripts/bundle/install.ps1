@@ -1,6 +1,6 @@
 #Requires -Version 5.1
 # Installs/updates pz as a dotnet tool from THIS bundle's local feed only (no network).
-# Prerequisite: .NET 10 SDK on the machine (`dotnet tool install` needs the SDK, not just a runtime).
+# Prerequisite: .NET 11 SDK on the machine (`dotnet tool install` needs the SDK, not just a runtime).
 param(
     [string]$ToolPath = "C:\pz\tool"
 )

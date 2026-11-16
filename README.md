@@ -19,7 +19,7 @@ $ pz run --all
 $ cat out/order_totals/*.csv
 ```
 
-No Docker, no database, no network calls after the install. All you need is the .NET 10 SDK. Here's
+No Docker, no database, no network calls after the install. All you need is the .NET 11 SDK. Here's
 what the run prints:
 
 ```console

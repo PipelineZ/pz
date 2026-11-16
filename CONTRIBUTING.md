@@ -2,7 +2,7 @@
 
 ## Build & test prerequisites
 
-- .NET 10 SDK (`10.0.x`).
+- .NET 11 SDK (`11.0.x`).
 - Docker is **optional**. The full solution builds and tests without it: connector acceptance suites
   that need a real Postgres or MinIO instance (via Testcontainers) use
   [`Xunit.SkippableFact`](https://www.nuget.org/packages/Xunit.SkippableFact) and SKIP cleanly (not fail)

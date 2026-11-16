@@ -86,7 +86,7 @@ jobs:
           fetch-depth: 0 # MinVer computes the release version from this tag + history.
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: dotnet pack src/Pz.Cli -c Release -r ${{ matrix.rid }} -o packages
       - name: Assert the Linux binaries start on glibc 2.39 (Ubuntu 24.04) and older
         if: startsWith(matrix.rid, 'linux-')
@@ -128,7 +128,7 @@ jobs:
           fetch-depth: 0 # MinVer computes the release version from this tag + history.
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: scripts/verify-tool-install.sh
       - run: scripts/verify-aot.sh
       - run: scripts/verify-sdk-package.sh
@@ -148,7 +148,7 @@ jobs:
           fetch-depth: 0 # MinVer computes the release version from this tag + history.
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: dotnet build Pz.slnx -c Release
       # Same test invocation as ci.yml's ubuntu leg, deliberately: PZ_TESTS_OFFLINE=1 for hermeticity
       # and --blame-hang so a stall names itself. Without them a release is *more* fragile than the CI

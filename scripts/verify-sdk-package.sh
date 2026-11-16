@@ -42,7 +42,7 @@ echo "work dir: ${WORK_DIR}"
 
 echo "-- Building pz --"
 dotnet build "${ROOT_DIR}/src/Pz.Cli" -c Release --nologo -v quiet
-PZ="${ROOT_DIR}/src/Pz.Cli/bin/Release/net10.0/Pz.Cli"
+PZ="${ROOT_DIR}/src/Pz.Cli/bin/Release/net11.0/Pz.Cli"
 [[ -x "${PZ}" ]] || { echo "FAIL: no pz binary at ${PZ}"; exit 1; }
 
 # A <PzPackaging> set in the PROJECT FILE must win over the SDK's default exactly as a -p: global
@@ -57,7 +57,7 @@ verify_project_level_packaging() {
   <Import Project="${ROOT_DIR}/src/Pz.Connectors.Sdk/build/Pz.Connectors.Sdk.props" />
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net10.0</TargetFramework>
+    <TargetFramework>net11.0</TargetFramework>
     <PzPackaging>self-contained</PzPackaging>
   </PropertyGroup>
   <Import Project="${ROOT_DIR}/src/Pz.Connectors.Sdk/build/Pz.Connectors.Sdk.targets" />

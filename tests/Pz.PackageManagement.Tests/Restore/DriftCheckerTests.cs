@@ -7,7 +7,7 @@ public class DriftCheckerTests
 {
     private static LockedPackage Locked(string id, string version, bool requested = true) =>
         new(id, version, new string('a', 128),
-            new LockedAssets([new LockedAsset($"{id}.dll", $"lib/net10.0/{id}.dll")], []), requested);
+            new LockedAssets([new LockedAsset($"{id}.dll", $"lib/net11.0/{id}.dll")], []), requested);
 
     private static string PackagesDirWith(params (string Id, string Version)[] installed)
     {

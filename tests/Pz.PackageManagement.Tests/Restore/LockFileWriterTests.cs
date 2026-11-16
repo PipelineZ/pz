@@ -4,7 +4,7 @@ namespace Pz.PackageManagement.Tests.Restore;
 
 public sealed class LockFileWriterTests
 {
-    private static LockedAsset Lib(string file) => new(file, $"lib/net10.0/{file}");
+    private static LockedAsset Lib(string file) => new(file, $"lib/net11.0/{file}");
 
     private static LockFile Sample() => new(LockFileWriter.CurrentVersion, "linux-x64",
     [
@@ -39,7 +39,7 @@ public sealed class LockFileWriterTests
         var hash = new string('b', 128);
         LockFileWriter.Write(new LockFile(LockFileWriter.CurrentVersion, "linux-x64", [
             new LockedPackage("Alpha", "1.0.0", "aa", new LockedAssets(
-                [new LockedAsset("a.dll", "lib/net10.0/a.dll", hash)],
+                [new LockedAsset("a.dll", "lib/net11.0/a.dll", hash)],
                 [new LockedAsset("n.so", "runtimes/linux-x64/native/n.so")])),
         ]), path);
 

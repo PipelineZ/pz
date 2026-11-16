@@ -39,7 +39,7 @@ For the repeated runs scenarios 03 and 04 ask for, call the built binary instead
 `dotnet run` overhead:
 
 ```console
-$ pz() { "$(git rev-parse --show-toplevel)/src/Pz.Cli/bin/Release/net10.0/Pz.Cli" "$@"; }
+$ pz() { "$(git rev-parse --show-toplevel)/src/Pz.Cli/bin/Release/net11.0/Pz.Cli" "$@"; }
 ```
 
 Then run any project from this directory:

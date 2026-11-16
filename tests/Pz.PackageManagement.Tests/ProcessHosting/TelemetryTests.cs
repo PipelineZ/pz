@@ -244,7 +244,7 @@ public sealed class TelemetryTests : IDisposable
     }
 
     /// <summary>Short, outside the test output tree: a unix domain socket path is capped at roughly 104
-    /// bytes (<c>sun_path</c>), and the deep <c>tests/.../bin/Release/net10.0/...</c> tree this assembly
+    /// bytes (<c>sun_path</c>), and the deep <c>tests/.../bin/Release/net11.0/...</c> tree this assembly
     /// lives under leaves no room for <c>control.sock</c>/<c>control.sock.data</c> on top.</summary>
     private string NewSocketDir()
     {

@@ -86,7 +86,7 @@
          by the name people actually know it by. Naming the bundled connectors is not padding either,
          it is what someone searching "duckdb postgres etl" needs to see to recognize a match. -->
     <Description>PipelineZ (pz): a lightweight, developer-first batch data pipeline engine for SQL-based ETL/ELT, powered by DuckDB, that can run anywhere without requiring a data platform. Describe your pipeline in plain SQL files. Bundles connectors for local files, S3, Azure Blob, Google Cloud Storage, Postgres, SQL Server, MySQL, SQLite, DuckDB, DuckLake, Apache Iceberg, Quack, MotherDuck and HTTP.</Description>
-    <!-- Hybrid Native AOT tool packaging (.NET 10 RID-specific tools). `dotnet pack` with no -r
+    <!-- Hybrid Native AOT tool packaging (.NET 10+ RID-specific tools). `dotnet pack` with no -r
          produces the `pz` POINTER package that lists the RID sub-packages below; `dotnet pack -r
          <rid>` produces that RID's self-contained Native AOT package and must run on a machine whose
          OS matches the RID (AOT cannot cross-compile between OSes — release.yml runs one pack job
@@ -94,7 +94,7 @@
          fallback that serves every platform not in this list. Install is unchanged for users:
          `dotnet tool install -g pz` picks the right sub-package, and RID sub-packages must all be
          pushed BEFORE the pointer or installs fail in the gap. RollForward is intentionally omitted:
-         the `any` fallback targets net10.0 exactly (Global Constraints: TFM net10.0 everywhere), so
+         the `any` fallback targets net11.0 exactly (Global Constraints: TFM net11.0 everywhere), so
          there is no older major runtime to roll forward from. -->
     <ToolPackageRuntimeIdentifiers>linux-x64;linux-arm64;win-x64;osx-arm64;any</ToolPackageRuntimeIdentifiers>
     <PublishAot>true</PublishAot>
@@ -140,5 +140,20 @@
     <TrimmerRootAssembly Include="Google.Apis.Storage.v1" />
     <TrimmerRootAssembly Include="Google.Cloud.Storage.V1" />
   </ItemGroup>
+
+  <!-- A RID-less `dotnet pack` must produce the `pz` pointer package only. Every RID sub-package is
+       packed by its own explicit `dotnet pack -r <rid>` (release.yml's per-OS matrix, and
+       verify-tool-install.sh), which restores for that RID first; the SDK's own inner packs from the
+       pointer build would rebuild the host's AOT sub-package against a RID-less restore (NETSDK1047)
+       and race the explicit pack for the same .nupkg. Clearing the flag at execution time skips those
+       inner packs; the pointer's RID list was already fixed at evaluation from
+       ToolPackageRuntimeIdentifiers, so it still names every sub-package. -->
+  <Target Name="_PzPackPointerOnly"
+          BeforeTargets="SetDotnetToolPackageType"
+          Condition="'$(RuntimeIdentifier)' == ''">
+    <PropertyGroup>
+      <CreateRidSpecificToolPackages>false</CreateRidSpecificToolPackages>
+    </PropertyGroup>
+  </Target>
 
 </Project>

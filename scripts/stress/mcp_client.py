@@ -2,7 +2,7 @@
 """Minimal stdio JSON-RPC client for `pz mcp`. Usage: mcp_client.py <project> [--allow-run] [tool [json_args]]..."""
 import json, subprocess, sys, threading, time, os
 
-PZ = os.environ.get("PZ_CLI_DLL", "src/Pz.Cli/bin/Release/net10.0/Pz.Cli.dll")
+PZ = os.environ.get("PZ_CLI_DLL", "src/Pz.Cli/bin/Release/net11.0/Pz.Cli.dll")
 
 project = sys.argv[1]
 rest = sys.argv[2:]

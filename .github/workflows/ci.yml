@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: dotnet build Pz.slnx -c Release
       # Both legs run the full suite. On ubuntu, Linux Docker runs the Testcontainers suites that need no
       # network beyond their image (Postgres, SQL Server, State.SqlServer, DuckLake-Postgres catalog,
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: dotnet build Pz.slnx -c Release
       - name: docker suites that need DuckDB extensions
         run: |
@@ -96,7 +96,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: scripts/verify-tool-install.sh
       # The offline VM bundle is the install path for a machine with no nuget.org access, and it was
       # only ever run by hand when cutting a release -- so its packable-set guard drifted unnoticed
@@ -116,7 +116,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: dotnet build tests/Pz.Connector.LocalFiles.Tests -c Release
       - run: dotnet build tests/Pz.DuckDb.Tests -c Release
       - run: dotnet test tests/Pz.Connector.LocalFiles.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
@@ -134,7 +134,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - name: Trust a throwaway Azurite certificate
         run: |
           dir="$RUNNER_TEMP/azurite-tls"
@@ -169,7 +169,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: scripts/verify-aot.sh
       # The connector-side packaging proof: the fixture published through Pz.Connectors.Sdk's targets
       # (AOT, then self-contained), packed, restored from a local feed, run, and conformance-tested.
@@ -204,7 +204,7 @@ jobs:
           workspaces: rust
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       # tonic-build (rust/pz-connector/build.rs) shells out to protoc to compile the PCP .proto
       # contract; nothing here vendors a protoc binary.
       - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler

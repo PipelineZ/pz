@@ -27,7 +27,7 @@ public sealed class AssetSelectionTests
     }
 
     /// <summary>The archive lists net472 first. A file-name lookup takes it; the resolver's own
-    /// nearest-framework choice is net9.0, and that is what must be installed on a net10.0 host.</summary>
+    /// nearest-framework choice is net9.0, and that is what must be installed on a net11.0 host.</summary>
     [Fact]
     public async Task Nearest_target_framework_is_installed_not_the_first_in_the_archive()
     {
