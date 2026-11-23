@@ -15,7 +15,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     1.5. Migration: if other tools still on DuckDB 1.5 open a file the `duckdb` connector creates, set
     `storage_version: v1.5.0` on that connection before the file is first created.
   - Extensions listed under `extensions:` in `project.yml` are installed for DuckDB 2.0.1, so a community
-    extension must be published for that version. Until it is, the run fails with `PZ0402`.
+    extension must be published for that version. Until it is, the run fails with `PZ0402`. Query.Farm's
+    extensions (`crypto`, `rapidfuzz`, `hashfuncs`, `lindel` and others) are distributed for DuckDB 2.0 from
+    Query.Farm's own repository, not the community one, and refuse to load when installed from it.
   - The `motherduck` connector fails until MotherDuck's extension supports DuckDB 2.0.1: it refuses to attach
     (`PZ0311`, "not yet supported"). Migration: stay on the previous pz release for MotherDuck projects.
   - Contract-less csv/json integer columns beyond int64 are detected as `HUGEINT` and lose nothing, so the

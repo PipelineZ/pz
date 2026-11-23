@@ -24,6 +24,11 @@ public sealed class SqlDryCompilerExtensionTests
     public async Task A_listed_extension_function_dry_compiles()
     {
         var result = await SqlDryCompiler.RunAsync(JevVersionDag(), ["jev"], default);
+        // A community extension is built per DuckDB version, after that version ships; until jev is
+        // built for the DuckDB pz ships, its download is a 404 and there is nothing to compile against.
+        Skip.If(result.Errors.Any(e => e.Code == PzErrorCode.ExtensionLoadFailed &&
+                e.Message.Contains("(HTTP 404)", StringComparison.Ordinal)),
+            "jev is not yet published for this DuckDB version");
         Assert.Empty(result.Errors);
     }
 
