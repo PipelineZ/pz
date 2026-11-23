@@ -7,6 +7,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **STRUCT, LIST, MAP and fixed-size ARRAY columns cross pz's Arrow path**, nested to any depth over the flat
+  types. An Arrow source (every out-of-process connector) can now emit them and they land as DuckDB's nested
+  types, instead of being flattened to JSON text. On the way out, a sink receives them only when it declares the
+  new `NestedTypes` capability (connector ABI, additive); for any other sink the output still fails `PZ0546`
+  before anything is written, now saying the sink does not accept nested columns, with the same
+  `col::JSON::VARCHAR` hint. No built-in sink declares it yet. VARIANT, UNION and FLOAT or narrow-integer leaves
+  stay refused (`PZ0546`).
+
 ## [0.21.0] - 2026-11-23
 
 ### Added

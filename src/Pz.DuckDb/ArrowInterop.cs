@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using Apache.Arrow;
 using Apache.Arrow.C;
@@ -25,6 +26,12 @@ internal static class ArrowInterop
     /// <summary>Arrow v0-matrix type → DuckDB DDL type. Throws NotSupportedException naming the type otherwise.</summary>
     internal static string ToDuckDbType(IArrowType type) => type switch
     {
+        // Nested types compose the matrix: an Arrow source may land them, as a sink may receive them.
+        ListType list => $"{ToDuckDbType(list.ValueDataType)}[]",
+        FixedSizeListType list => $"{ToDuckDbType(list.ValueDataType)}[{list.ListSize.ToString(CultureInfo.InvariantCulture)}]",
+        MapType map => $"MAP({ToDuckDbType(map.KeyField.DataType)}, {ToDuckDbType(map.ValueField.DataType)})",
+        StructType @struct when @struct.Fields.Count > 0 =>
+            $"STRUCT({string.Join(", ", @struct.Fields.Select(f => $"{QuoteIdentifier(f.Name)} {ToDuckDbType(f.DataType)}"))})",
         Int32Type => "INTEGER",
         Int64Type => "BIGINT",
         DoubleType => "DOUBLE",
@@ -56,19 +63,7 @@ internal static class ArrowInterop
         for (var i = 0; i < fields.Length; i++)
         {
             var field = nativeSchema.FieldsList[i];
-            IArrowType? normalizedType = field.DataType switch
-            {
-                Int32Type => field.DataType,
-                Int64Type => field.DataType,
-                DoubleType => field.DataType,
-                Decimal128Type => field.DataType,
-                StringType => field.DataType,
-                BooleanType => field.DataType,
-                Date32Type => field.DataType,
-                TimestampType { Unit: TimeUnit.Microsecond } => new TimestampType(TimeUnit.Microsecond, "+00:00"),
-                _ => null,
-            };
-
+            var normalizedType = ArrowColumnConcat.IsCarried(field) ? Normalize(field.DataType) : null;
             if (normalizedType is null)
             {
                 (unsupported ??= []).Add((field.Name, field.DataType.Name));
@@ -83,6 +78,20 @@ internal static class ArrowInterop
             ? new Schema(fields, null)
             : throw new UnsupportedArrowTypeException(unsupported, "the Arrow path");
     }
+
+    /// <summary>A carried type with every timestamp, at any depth, marked UTC (DuckDB exports TIMESTAMP and
+    /// TIMESTAMPTZ alike as microsecond timestamps); children keep their names and become nullable.</summary>
+    private static IArrowType Normalize(IArrowType type) => type switch
+    {
+        TimestampType => new TimestampType(TimeUnit.Microsecond, "+00:00"),
+        ListType list => new ListType(Child(list.ValueField)),
+        FixedSizeListType list => new FixedSizeListType(Child(list.ValueField), list.ListSize),
+        MapType map => new MapType(Child(map.KeyField), Child(map.ValueField), map.KeySorted),
+        StructType @struct => new StructType(@struct.Fields.Select(Child).ToList()),
+        _ => type,
+    };
+
+    private static Field Child(Field field) => new(field.Name, Normalize(field.DataType), nullable: true);
 
     /// <summary>"a.b" → "\"a\".\"b\"" (each part double-quote-doubled).</summary>
     internal static string QuoteQualified(string qualifiedName)

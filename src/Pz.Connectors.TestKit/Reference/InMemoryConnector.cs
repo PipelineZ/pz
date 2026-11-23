@@ -18,7 +18,7 @@ public sealed class InMemoryConnector : ISourceConnector, ISinkConnector
     public ConnectorCapabilities Capabilities =>
         ConnectorCapabilities.PartitionedRead | ConnectorCapabilities.Transactional |
         ConnectorCapabilities.Merge | ConnectorCapabilities.ReplaceWrites |
-        ConnectorCapabilities.BoundedWindow;
+        ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.NestedTypes;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "properties": {}, "additionalProperties": false }""";

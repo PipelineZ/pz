@@ -231,8 +231,18 @@ public sealed class SinkWriteExecutor : INodeExecutor
         }
         catch (UnsupportedArrowTypeException ex)
         {
-            return NodeResult.Failed(node, await StagedColumns.UnsupportedForArrowAsync(ctx.Duck, relation, ex,
-                def.Output.Name, def.Sink.Connector, def.Sink.FilePath, ct).ConfigureAwait(false));
+            return NodeResult.Failed(node, await StagedColumns.UnsupportedForArrowAsync(ctx.Duck, relation,
+                [.. ex.Columns.Select(c => c.Name)], nestedOnly: false, def.Output.Name, def.Sink.Connector,
+                def.Sink.FilePath, ct).ConfigureAwait(false));
+        }
+
+        // STRUCT/LIST/MAP cross the Arrow path, but only to a sink that says it writes them.
+        if (!connector.Capabilities.HasFlag(ConnectorCapabilities.NestedTypes)
+            && schema.FieldsList.Where(f => ArrowColumnConcat.IsNested(f.DataType)).Select(f => f.Name).ToList() is
+                { Count: > 0 } nested)
+        {
+            return NodeResult.Failed(node, await StagedColumns.UnsupportedForArrowAsync(ctx.Duck, relation, nested,
+                nestedOnly: true, def.Output.Name, def.Sink.Connector, def.Sink.FilePath, ct).ConfigureAwait(false));
         }
 
         if (connector.Capabilities.HasFlag(ConnectorCapabilities.TextLengthStats))

@@ -30,17 +30,23 @@ public static class StagedColumns
         return columns;
     }
 
-    /// <summary>PZ0546 for an output whose staged input has columns the connector's Arrow path cannot carry:
-    /// each column with its DuckDB type, and a cast per column that turns it into one it can.</summary>
+    /// <summary>PZ0546 for an output whose staged input has columns the connector cannot receive over pz's
+    /// Arrow path: each column with its DuckDB type, and a cast per column that turns it into one it can.
+    /// <paramref name="nestedOnly"/>: the columns cross the Arrow path, but this sink does not declare
+    /// <see cref="Pz.Connectors.Abstractions.ConnectorCapabilities.NestedTypes"/>.</summary>
     public static async Task<PzError> UnsupportedForArrowAsync(IDuckSession duck, string from,
-        UnsupportedArrowTypeException ex, string output, string connector, string? file, CancellationToken ct)
+        IReadOnlyCollection<string> columns, bool nestedOnly, string output, string connector, string? file,
+        CancellationToken ct)
     {
-        var names = ex.Columns.Select(c => c.Name).ToHashSet(StringComparer.Ordinal);
+        var names = columns.ToHashSet(StringComparer.Ordinal);
         var described = await DescribeAsync(duck, from, ct).ConfigureAwait(false);
         var offending = described.Where(c => names.Contains(c.Name)).ToList();
+        var listed = string.Join(", ", offending.Select(c => $"{c.Name} ({c.Type})"));
         return new PzError(PzErrorCode.SinkColumnTypeUnsupported,
-            $"output '{output}': connector '{connector}' receives rows over pz's Arrow path, which does not carry " +
-            $"column(s) {string.Join(", ", offending.Select(c => $"{c.Name} ({c.Type})"))}; nothing was written",
+            nestedOnly
+                ? $"output '{output}': connector '{connector}' does not accept nested column(s) {listed}; nothing was written"
+                : $"output '{output}': connector '{connector}' receives rows over pz's Arrow path, which does not carry " +
+                  $"column(s) {listed}; nothing was written",
             file, null,
             $"cast in the pipeline: {string.Join(", ", offending.Select(c => CastFor(c.Name, c.Type)))}");
     }
