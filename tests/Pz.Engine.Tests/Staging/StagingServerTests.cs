@@ -79,6 +79,35 @@ public sealed class StagingServerTests : IDisposable
         Assert.Equal(5L, await client.ScalarAsync<long>("select count(*) from run.staging.orders"));
     }
 
+    // A client's SQL runs inside the serving process, which has quack's client side and httpfs loaded.
+    // Neither may reach the network from there: not another quack server, not a URL. Each attempt must
+    // fail on the lockdown itself, not on something incidental such as a closed port or a missing token.
+    [SkippableFact]
+    public async Task A_client_cannot_reach_the_network_through_the_server()
+    {
+        var dir = await RunDir();
+        await using var server = await StagingServer.StartAsync(dir, "localhost", null, default);
+        await using var other = await StagingServer.StartAsync(await RunDir(), "localhost", null, default);
+        await using var client = await AttachAsync(server);
+        string Remote(string sql) =>
+            $"select * from quack_query('{server.Uri}', '{sql.Replace("'", "''")}', token := '{server.Token}')";
+
+        // A client can create an in-memory secret in the serving process; with the other server's real
+        // token in it, an attach fails only if the lockdown blocks the connection itself.
+        await client.ExecuteAsync(Remote($"create secret hop (type quack, token '{other.Token}', scope '{other.Uri}')"));
+        var nestedQuery = $"select * from quack_query('{other.Uri}', 'select 42', token := '{other.Token}')";
+        foreach (var attempt in new[]
+                 {
+                     nestedQuery,
+                     $"attach '{other.Uri}' as hop (READ_WRITE)",
+                     "select * from read_text('http://127.0.0.1:9/pz-probe')",
+                 })
+        {
+            var ex = await Assert.ThrowsAnyAsync<Exception>(() => client.ExecuteAsync(Remote(attempt)));
+            Assert.Contains("disabled by configuration", ex.Message, StringComparison.Ordinal);
+        }
+    }
+
     [SkippableFact]
     public async Task A_wrong_token_is_refused()
     {
