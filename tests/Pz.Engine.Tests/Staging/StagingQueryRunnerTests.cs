@@ -105,6 +105,8 @@ public sealed class StagingQueryRunnerTests : IDisposable
     [InlineData("select * from staging.nope")]
     [InlineData("select * from read_text('/etc/hostname')")]
     [InlineData("select * from read_csv('http://127.0.0.1:9/x.csv')")]
+    [InlineData("select * from iceberg_scan('/tmp/pz-no-such-table')")]
+    [InlineData("select * from (select set_config('enable_external_access', 'true'))")]
     public async Task Anything_but_a_read_of_the_runs_tables_is_PZ0545(string sql)
     {
         var dir = await RunDir();
