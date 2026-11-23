@@ -7,6 +7,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **An output with a column pz's Arrow path cannot carry now fails `PZ0546` before anything is written**, instead
+  of an unexpected engine failure (PZ0500) partway through the drain. It applies to every sink that receives rows
+  over Arrow (Postgres, SQL Server, MySQL, Http, every out-of-process connector), not to native copies (files,
+  DuckDB-family). Those columns are STRUCT, LIST, MAP, VARIANT, ENUM, TINYINT, SMALLINT, unsigned integers,
+  FLOAT, BLOB, TIME, INTERVAL and nanosecond/millisecond/second timestamps. The error names every such column
+  with its DuckDB type, and its hint gives the cast that fixes each one (`rec::JSON::VARCHAR`, `qty::INTEGER`,
+  `f::DOUBLE`, …).
+- **A failed check over a table with such a column reports its sample rows** (as DuckDB's text) instead of
+  failing the run with an engine error, and `duplicates: latest`, the CDC deletes guard and the redact-mark
+  check (PZ0403) no longer fail on them either.
+
 ## [0.20.0] - 2026-11-23
 
 ### Breaking

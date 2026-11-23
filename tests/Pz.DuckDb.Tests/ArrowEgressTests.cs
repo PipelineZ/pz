@@ -213,7 +213,7 @@ public sealed class ArrowEgressTests : IDisposable
     {
         await using var duck = Open();
 
-        var ex = await Assert.ThrowsAsync<NotSupportedException>(
+        var ex = await Assert.ThrowsAsync<UnsupportedArrowTypeException>(
             async () => await duck.GetResultSchemaAsync("select [1, 2, 3] as xs"));
 
         Assert.Contains("xs", ex.Message);
@@ -224,7 +224,7 @@ public sealed class ArrowEgressTests : IDisposable
     {
         await using var duck = Open();
 
-        var ex = await Assert.ThrowsAsync<NotSupportedException>(async () =>
+        var ex = await Assert.ThrowsAsync<UnsupportedArrowTypeException>(async () =>
         {
             await foreach (var batch in duck.QueryArrowAsync("select [1, 2, 3] as xs"))
             {
@@ -233,7 +233,7 @@ public sealed class ArrowEgressTests : IDisposable
         });
 
         Assert.Contains("xs", ex.Message);
-        Assert.Contains("List", ex.Message);
+        Assert.Equal("list", Assert.Single(ex.Columns).ArrowType);
     }
 
     [Fact]

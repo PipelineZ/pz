@@ -284,6 +284,24 @@ public sealed class SqlDryCompilerTests
     }
 
     [Fact]
+    public async Task Marks_are_checked_against_an_output_with_nested_and_narrow_columns()
+    {
+        // The output's column names are read with describe, not an Arrow schema peek, so a STRUCT, LIST,
+        // VARIANT or SMALLINT column in the output does not fail validation.
+        var srcId = Id("1");
+        var src = SourceLoadNode(srcId, "s", "d", new Dictionary<string, string> { ["id"] = "bigint", ["email"] = "varchar" });
+        var sql = "select id, email, {'e': email} as contact, [id] as ids, id::SMALLINT as small, " +
+            "'{}'::JSON::VARIANT as rec from staging.src_s__d";
+        var def = new PipelineDef("stg", sql, "table", [], [], "pipelines/stg.sql") { RedactedColumns = ["email", "nope"] };
+        var dag = new CompiledDag([src, new DagNode(Id("2"), NodeKind.Pipeline, "stg", [srcId], sql, def)]);
+
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
+
+        Assert.Empty(result.Errors);
+        Assert.Contains("'nope'", Assert.Single(result.Warnings).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task A_mark_on_a_missing_column_is_PZ0403_naming_pipeline_and_column()
     {
         var result = await SqlDryCompiler.RunAsync(MarkedDag(["contcat"]), [], default);

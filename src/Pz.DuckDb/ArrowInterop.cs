@@ -52,10 +52,11 @@ internal static class ArrowInterop
     internal static Schema NormalizeNativeArrowSchema(Schema nativeSchema)
     {
         var fields = new Field[nativeSchema.FieldsList.Count];
+        List<(string Name, string ArrowType)>? unsupported = null;
         for (var i = 0; i < fields.Length; i++)
         {
             var field = nativeSchema.FieldsList[i];
-            IArrowType normalizedType = field.DataType switch
+            IArrowType? normalizedType = field.DataType switch
             {
                 Int32Type => field.DataType,
                 Int64Type => field.DataType,
@@ -65,14 +66,22 @@ internal static class ArrowInterop
                 BooleanType => field.DataType,
                 Date32Type => field.DataType,
                 TimestampType { Unit: TimeUnit.Microsecond } => new TimestampType(TimeUnit.Microsecond, "+00:00"),
-                _ => throw new NotSupportedException(
-                    $"DuckDB column '{field.Name}' has Arrow type '{field.DataType}', which has no DuckDB mapping in the v0 type matrix."),
+                _ => null,
             };
+
+            if (normalizedType is null)
+            {
+                (unsupported ??= []).Add((field.Name, field.DataType.Name));
+                continue;
+            }
 
             fields[i] = new Field(field.Name, normalizedType, nullable: true);
         }
 
-        return new Schema(fields, null);
+        // Every unsupported column at once, so the caller can name them all in one error.
+        return unsupported is null
+            ? new Schema(fields, null)
+            : throw new UnsupportedArrowTypeException(unsupported, "the Arrow path");
     }
 
     /// <summary>"a.b" → "\"a\".\"b\"" (each part double-quote-doubled).</summary>

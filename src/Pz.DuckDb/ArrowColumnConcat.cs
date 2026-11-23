@@ -24,17 +24,17 @@ internal readonly record struct ColumnSlice(IArrowArray Array, int Offset, int L
 /// <see cref="NotSupportedException"/> — there is no fallback.</summary>
 internal static class ArrowColumnConcat
 {
-    /// <summary>Throws <see cref="NotSupportedException"/> naming the first column whose type is outside the
-    /// v0 matrix.</summary>
+    /// <summary>Throws <see cref="UnsupportedArrowTypeException"/> naming every column whose type is outside
+    /// the v0 matrix.</summary>
     public static void EnsureSupported(Schema schema)
     {
-        foreach (var field in schema.FieldsList)
+        var unsupported = schema.FieldsList
+            .Where(f => !IsSupported(f.DataType.TypeId))
+            .Select(f => (f.Name, f.DataType.Name))
+            .ToList();
+        if (unsupported.Count > 0)
         {
-            if (!IsSupported(field.DataType.TypeId))
-            {
-                throw new NotSupportedException(
-                    $"egress concatenation does not support column '{field.Name}' with Arrow type '{field.DataType}'");
-            }
+            throw new UnsupportedArrowTypeException(unsupported, "egress concatenation");
         }
     }
 
