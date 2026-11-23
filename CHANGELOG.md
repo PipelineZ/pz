@@ -7,6 +7,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-23
+
 ### Added
 
 - **`variant: [<column>, …]` lands JSON as DuckDB's `VARIANT`**, on any read, in YAML or as a `source()` kwarg.
