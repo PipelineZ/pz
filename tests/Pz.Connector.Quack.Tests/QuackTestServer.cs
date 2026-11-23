@@ -15,6 +15,9 @@ internal sealed class QuackTestServer(DuckSession server, string uri, string tok
 
     public string Token => token;
 
+    /// <summary>The serving session itself, for asserting on the server's own catalog.</summary>
+    public DuckSession Session => server;
+
     // FreePort's listener is closed before quack_serve binds, so another process can take the port in
     // between; quack_serve then fails synchronously ("Failed to bind ..."), and a fresh port is tried.
     private const int BindAttempts = 5;

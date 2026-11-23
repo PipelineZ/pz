@@ -22,6 +22,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
     (`PZ0311`, "not yet supported"). Migration: stay on the previous pz release for MotherDuck projects.
   - Contract-less csv/json integer columns beyond int64 are detected as `HUGEINT` and lose nothing, so the
     `PZ0523` lossy-integer warning now fires only for whole numbers beyond 2^53 written as decimals.
+- **quack: `strategy: merge` is a real `MERGE INTO` on the server, so a batch must carry every target column.**
+  The old merge pulled the whole target through the client and recreated it, which dropped its constraints and
+  indexes and nulled any column the batch omitted on matched rows. The batch is now shipped into a scratch table on
+  the server and merged there in one transaction: only the batch crosses the wire, and the target keeps its
+  constraints, which the server enforces. Migration: a pipeline whose batch omits a column of its quack merge target
+  now fails (`table "…" has N columns but M values were supplied`); select every target column, `null` for the ones
+  it does not have.
 
 ### Added
 

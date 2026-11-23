@@ -24,9 +24,9 @@ Declared in `QuackConnector.Capabilities`:
 | Flag | What it means here |
 |---|---|
 | `NativeScan` | every read is a scan fragment over the connection's attach alias |
-| `NativeCopy` | every write is native DuckDB SQL against the same attach alias — `INSERT`/`CREATE OR REPLACE TABLE`/merge-by-replace |
+| `NativeCopy` | every write is native DuckDB SQL against the same attach alias — `INSERT`/`CREATE OR REPLACE TABLE`/`MERGE INTO` |
 | `ReplaceWrites` | the sink supports `strategy: replace` |
-| `Merge` | the sink supports `strategy: merge` — merge-by-replace, see below |
+| `Merge` | the sink supports `strategy: merge` — a server-side `MERGE INTO`, see below |
 | `BoundedWindow` | `cursor <= upper` is applied alongside `cursor > lower` — required for the windowed-incremental trio (`initial`/`max_window`/`until`) |
 | `InclusiveWatermarkBound` | the connector honors an inclusive lower-bound watermark comparison (`>=` instead of `>`) when the engine asks for one |
 
@@ -113,26 +113,21 @@ skips an existing alias). Then:
   (PZ0214).
 - `strategy: replace` — `create or replace table … as select * from {{source}}`. Runs as one
   statement, mechanism `quack create-or-replace`.
-- `strategy: merge` — **merge-by-replace**, mechanism `quack merge-by-replace`. A quack-attached
-  table accepts only bulk `CREATE TABLE AS`/`INSERT` from the wire protocol — no row-level
-  `UPDATE`/`DELETE`/`MERGE` — so a merge pulls the target through the client, computes the merged set
-  locally (source rows win on key match; unmatched target rows are kept), and rewrites the whole
-  remote table in one `create or replace table`. Requires at least one declared key column (refused
-  at compile time otherwise). That rewrite is the full blast radius of merge-by-replace, every time:
-  - Primary keys, `NOT NULL`/`DEFAULT` constraints and indexes on the target do not survive it — the
-    replacement table has none of them.
-  - The target's column order follows the source batch's order, not whatever order it had before.
-  - A matched row is replaced wholesale by the source row, not column-patched: **a column the source
-    batch omits comes back NULL on matched rows**, so keep the pipeline's column set (and order)
-    stable across runs.
-  - Duplicate keys within one source batch collapse to one connector-determined survivor before the
-    rewrite runs.
-  - The `create or replace table` itself is one statement executed by the server — whether it is
-    atomic is the server's guarantee, not pz's. A failed rewrite can leave the target missing or
-    partial until the next run, which recomputes the same result: the merge is idempotent.
-  - An empty source batch still runs the rewrite: with zero source rows nothing ever matches, so
-    every target row survives untouched (the table is recreated, not skipped). Cost grows with the
-    target table's size, since the whole table crosses the wire on every merge.
+- `strategy: merge` — mechanism `quack merge`. Quack runs `UPDATE`/`MERGE` only when every table
+  the statement reads is on the server, so the merge happens there in one transaction:
+  `create or replace table <alias>."pz_merge_<hash>" as <batch, one row per key>;`
+  `merge into <target> … using <scratch> … when matched then update when not matched then insert;`
+  `drop table <scratch>;`. Only the batch crosses the wire. Requires at least one declared key
+  column (refused at compile time otherwise).
+  - The target keeps its primary keys, `NOT NULL`/`DEFAULT` constraints, indexes and column order,
+    and the server goes on enforcing them: a batch that violates one fails the merge.
+  - Every target column is written, so a batch that omits a target column fails the merge
+    (`table "…" has N columns but M values were supplied`) instead of nulling it.
+  - Duplicate keys within one batch collapse to one connector-determined survivor on the way into
+    the scratch table; declare `duplicates: latest` with `order_by` to choose it.
+  - A failed merge rolls back whole: the target is unchanged and no scratch table is left behind.
+    The scratch name is stable per target, so two runs merging into one target at once would share
+    it; keep one writer per target.
 
 The connector does not create schemas: a `schema.table` entity's schema must already exist on the
 server before a read or write against it.
@@ -162,17 +157,10 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
 - **TLS is the reverse proxy's job.** The connector has no TLS configuration of its own — put a
   reverse proxy in front of the quack server for anything that isn't a trusted loopback/private
   network.
-- **Merge is merge-by-replace.** The quack extension exposes no row-level DML on attached tables, so
-  a merge pulls the target through the client, computes the merged set locally (source rows win on
-  key match; unmatched target rows are kept), and rewrites the whole remote table in one
-  `create or replace table`. That rewrite is the full blast radius, every time: primary keys,
-  `NOT NULL`/`DEFAULT` constraints and indexes on the target do not survive it; the target's column
-  order follows the source batch's order; a matched row is replaced wholesale, so a column the source
-  batch omits becomes NULL on matched rows — keep the pipeline's column set stable; duplicate keys
-  within one source batch collapse to one connector-determined survivor; and whether the rewrite
-  itself is atomic is the server's guarantee, not pz's — a failed rewrite can leave the target
-  missing or partial until the next run, which recomputes the same result (the merge is idempotent).
-  Cost grows with the target table's size.
+- **Merge runs on the server.** The batch is shipped into a scratch table beside the target and
+  merged there with one `MERGE INTO`, in one transaction, because Quack refuses an `UPDATE`/`MERGE`
+  that reads the client's own tables. The target's constraints and indexes survive, and only the
+  batch crosses the wire.
 - **Not path-scoped.** No `base_dir`, no `.pz` guard — a quack connection names a remote server, not
   a location inside the project directory, so neither the `base_dir` injection nor the `.pz/`
   containment check that localfiles/sqlite/duckdb/ducklake apply has anything to attach to here.
