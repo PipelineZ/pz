@@ -7,6 +7,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A watermark bound over a `timestamptz` (`updated_at > {{ watermark(...) }} - interval 2 hour`) is no longer
+  refused as volatile (`PZ0224`) on DuckDB 2.0.** DuckDB 2.0 marks the timestamptz overloads of `+`, `-`,
+  `date_trunc` and similar functions as depending on the session time zone, and the determinism check counted
+  that against the whole operator. Both sides of the comparison run in the run's one DuckDB session, so the time
+  zone cannot differ between them; such overloads no longer count. `now()`, `current_timestamp`, `random()` and
+  `age()` are still refused.
+
 ## [0.19.0] - 2026-11-16
 
 ### Breaking

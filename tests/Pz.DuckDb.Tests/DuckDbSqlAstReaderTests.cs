@@ -219,6 +219,23 @@ public sealed class DuckDbSqlAstReaderTests
         Assert.Contains("random", violation.Reason, StringComparison.OrdinalIgnoreCase);
     }
 
+    // A timestamptz overload depends only on the session TimeZone, which both sides of the comparison
+    // share, so it does not make the operator volatile; the one-argument age() reads the clock, so it
+    // still does.
+    [Fact]
+    public void Timestamptz_arithmetic_is_accepted_but_age_is_rejected()
+    {
+        var arithmetic = Analyze(
+            $"select * from staging.src_crm__orders o where o.updated_at > '{S}'::timestamptz - interval 2 hour");
+        Assert.Empty(arithmetic.Violations);
+        Assert.Single(arithmetic.Comparisons);
+
+        var age = Analyze(
+            $"select * from staging.src_crm__orders o where o.updated_at > '{S}' - age('{S}'::timestamptz)");
+        Assert.Empty(age.Comparisons);
+        Assert.Contains("'age'", Assert.Single(age.Violations).Reason, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Value_side_function_absent_from_the_catalog_is_rejected_naming_the_function()
     {
