@@ -7,9 +7,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-11-23
+
 ### Breaking
 
-- **pz runs on DuckDB 2.0.1** (DuckDB.NET 2.0.1). What changes for a project:
+- **pz runs on DuckDB 2.0.1** (DuckDB.NET 2.0.1-preview.1, the only 2.0.1 binding published so far). What changes for a project:
   - A DuckDB database file pz creates (the `duckdb` sink, and each run's `staging.duckdb`) is in DuckDB 2.0's
     format, which DuckDB 1.5 cannot open. Existing 1.5 files are read and written in place and stay readable by
     1.5. Migration: if other tools still on DuckDB 1.5 open a file the `duckdb` connector creates, set
