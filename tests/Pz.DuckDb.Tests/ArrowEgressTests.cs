@@ -214,7 +214,7 @@ public sealed class ArrowEgressTests : IDisposable
         await using var duck = Open();
 
         var ex = await Assert.ThrowsAsync<UnsupportedArrowTypeException>(
-            async () => await duck.GetResultSchemaAsync("select [1, 2, 3] as xs"));
+            async () => await duck.GetResultSchemaAsync("select '{}'::JSON::VARIANT as xs"));
 
         Assert.Contains("xs", ex.Message);
     }
@@ -226,14 +226,14 @@ public sealed class ArrowEgressTests : IDisposable
 
         var ex = await Assert.ThrowsAsync<UnsupportedArrowTypeException>(async () =>
         {
-            await foreach (var batch in duck.QueryArrowAsync("select [1, 2, 3] as xs"))
+            await foreach (var batch in duck.QueryArrowAsync("select '{}'::JSON::VARIANT as xs"))
             {
                 using var b = batch;
             }
         });
 
         Assert.Contains("xs", ex.Message);
-        Assert.Equal("list", Assert.Single(ex.Columns).ArrowType);
+        Assert.Equal("struct", Assert.Single(ex.Columns).ArrowType); // VARIANT's extension struct
     }
 
     [Fact]

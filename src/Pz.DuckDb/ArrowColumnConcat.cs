@@ -24,12 +24,12 @@ internal readonly record struct ColumnSlice(IArrowArray Array, int Offset, int L
 /// <see cref="NotSupportedException"/> — there is no fallback.</summary>
 internal static class ArrowColumnConcat
 {
-    /// <summary>Throws <see cref="UnsupportedArrowTypeException"/> naming every column whose type is outside
-    /// the v0 matrix.</summary>
+    /// <summary>Throws <see cref="UnsupportedArrowTypeException"/> naming every column pz's Arrow path does
+    /// not carry (see <see cref="IsCarried(Field)"/>).</summary>
     public static void EnsureSupported(Schema schema)
     {
         var unsupported = schema.FieldsList
-            .Where(f => !IsSupported(f.DataType.TypeId))
+            .Where(f => !IsCarried(f))
             .Select(f => (f.Name, f.DataType.Name))
             .ToList();
         if (unsupported.Count > 0)
@@ -40,6 +40,30 @@ internal static class ArrowColumnConcat
 
     private static bool IsSupported(ArrowTypeId type) =>
         type is ArrowTypeId.Boolean or ArrowTypeId.String || FixedWidth(type) > 0;
+
+    /// <summary>The Arrow extension a field carries, from its metadata; DuckDB marks VARIANT this way.</summary>
+    private const string ExtensionNameKey = "ARROW:extension:name";
+
+    /// <summary>A field pz's Arrow path carries: a v0-matrix leaf, or a list, fixed-size list, struct or map
+    /// whose children are carried, at any depth. An extension type (VARIANT's binary encoding) and a union
+    /// are not: a sink could not interpret either.</summary>
+    internal static bool IsCarried(Field field) =>
+        field.Metadata?.ContainsKey(ExtensionNameKey) != true && IsCarried(field.DataType);
+
+    internal static bool IsCarried(IArrowType type) => type switch
+    {
+        ListType list => IsCarried(list.ValueField),
+        FixedSizeListType list => IsCarried(list.ValueField),
+        MapType map => IsCarried(map.KeyField) && IsCarried(map.ValueField),
+        StructType @struct => @struct.Fields.Count > 0 && @struct.Fields.All(IsCarried),
+        // DuckDB's TIMESTAMP is microseconds; TIMESTAMP_NS/_MS/_S export as other units pz does not map.
+        TimestampType timestamp => timestamp.Unit == TimeUnit.Microsecond,
+        _ => IsSupported(type.TypeId),
+    };
+
+    /// <summary>True for a list, fixed-size list, struct or map: a column with child arrays.</summary>
+    internal static bool IsNested(IArrowType type) =>
+        type is ListType or FixedSizeListType or MapType or StructType;
 
     /// <summary>Bytes per value of a fixed-width matrix type; 0 for every other type.</summary>
     private static int FixedWidth(ArrowTypeId type) => type switch
@@ -57,6 +81,11 @@ internal static class ArrowColumnConcat
     public static IArrowArray Concatenate(
         IArrowType type, ReadOnlySpan<ColumnSlice> slices, int length, MemoryAllocator allocator)
     {
+        if (IsNested(type))
+        {
+            return ConcatenateNested(type, slices, length, allocator);
+        }
+
         ArrowBuffer validity = ArrowBuffer.Empty;
         ArrowBuffer values = ArrowBuffer.Empty;
         ArrowBuffer data = ArrowBuffer.Empty;
@@ -92,6 +121,111 @@ internal static class ArrowColumnConcat
             validity.Dispose();
             values.Dispose();
             data.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>A nested column: its own validity (and, for a list or map, rebased offsets) written like a
+    /// leaf's, then each child concatenated recursively over the child rows the slices cover. Every buffer at
+    /// every depth is rented from <paramref name="allocator"/>; none aliases an input. (Apache.Arrow's own
+    /// concatenator returns its input for a single slice and reuses child buffers, which would leave an
+    /// output pointing into a chunk the caller is about to release.)</summary>
+    private static IArrowArray ConcatenateNested(
+        IArrowType type, ReadOnlySpan<ColumnSlice> slices, int length, MemoryAllocator allocator)
+    {
+        ArrowBuffer validity = ArrowBuffer.Empty;
+        ArrowBuffer offsets = ArrowBuffer.Empty;
+        var children = new List<IArrowArray>();
+        try
+        {
+            validity = ConcatenateValidity(slices, length, allocator, out var nullCount);
+            ArrowBuffer[] buffers;
+            switch (type)
+            {
+                case StructType @struct:
+                    for (var k = 0; k < @struct.Fields.Count; k++)
+                    {
+                        // A struct's children are indexed like the struct itself, its offset included.
+                        var childSlices = new ColumnSlice[slices.Length];
+                        for (var i = 0; i < slices.Length; i++)
+                        {
+                            var parent = slices[i].Array.Data;
+                            childSlices[i] = new ColumnSlice(
+                                ArrowArrayFactory.BuildArray(parent.Children[k]), parent.Offset + slices[i].Offset, slices[i].Length);
+                        }
+
+                        children.Add(Concatenate(@struct.Fields[k].DataType, childSlices, length, allocator));
+                    }
+
+                    buffers = [validity];
+                    break;
+                case FixedSizeListType fixedList:
+                {
+                    var size = fixedList.ListSize;
+                    var childSlices = new ColumnSlice[slices.Length];
+                    for (var i = 0; i < slices.Length; i++)
+                    {
+                        var parent = slices[i].Array.Data;
+                        childSlices[i] = new ColumnSlice(ArrowArrayFactory.BuildArray(parent.Children[0]),
+                            checked((parent.Offset + slices[i].Offset) * size), checked(slices[i].Length * size));
+                    }
+
+                    children.Add(Concatenate(fixedList.ValueDataType, childSlices, checked(length * size), allocator));
+                    buffers = [validity];
+                    break;
+                }
+
+                case ListType or MapType:
+                {
+                    // A map is a list of key/value structs: the same offsets, one struct child.
+                    offsets = Rent(checked((length + 1) * sizeof(int)), allocator, out var offsetsSpan);
+                    var outOffsets = MemoryMarshal.Cast<byte, int>(offsetsSpan);
+                    var childSlices = new ColumnSlice[slices.Length];
+                    var row = 0;
+                    var at = 0;
+                    IArrowType? childType = null;
+                    for (var i = 0; i < slices.Length; i++)
+                    {
+                        var parent = slices[i].Array.Data;
+                        var source = MemoryMarshal.Cast<byte, int>(parent.Buffers[1].Span)
+                            .Slice(parent.Offset + slices[i].Offset, slices[i].Length + 1);
+                        var start = source[0];
+                        var count = source[slices[i].Length] - start;
+                        for (var r = 0; r < slices[i].Length; r++)
+                        {
+                            outOffsets[row + r] = source[r] - start + at;
+                        }
+
+                        var child = ArrowArrayFactory.BuildArray(parent.Children[0]);
+                        childType ??= child.Data.DataType;
+                        childSlices[i] = new ColumnSlice(child, start, count);
+                        row += slices[i].Length;
+                        at = checked(at + count);
+                    }
+
+                    outOffsets[length] = at;
+                    childType ??= type is ListType list ? list.ValueDataType : ((MapType)type).Fields[0].DataType;
+                    children.Add(Concatenate(childType, childSlices, at, allocator));
+                    buffers = [validity, offsets];
+                    break;
+                }
+
+                default:
+                    throw new NotSupportedException($"egress concatenation does not support Arrow type '{type}'");
+            }
+
+            return ArrowArrayFactory.BuildArray(new ArrayData(type, length, nullCount, 0, buffers,
+                children.Select(c => c.Data)));
+        }
+        catch
+        {
+            validity.Dispose();
+            offsets.Dispose();
+            foreach (var child in children)
+            {
+                child.Dispose();
+            }
+
             throw;
         }
     }

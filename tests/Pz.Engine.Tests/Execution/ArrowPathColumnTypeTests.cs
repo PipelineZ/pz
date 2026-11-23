@@ -28,7 +28,7 @@ public sealed class ArrowPathColumnTypeTests : IAsyncLifetime
         try { Directory.Delete(_dir, recursive: true); } catch { /* best-effort cleanup */ }
     }
 
-    private RunContext Context(PlainSinkConnector sink)
+    private RunContext Context(ISinkConnector sink)
     {
         var registry = new ConnectorRegistry();
         registry.AddSink("cdcdelete", sink);
@@ -60,15 +60,44 @@ public sealed class ArrowPathColumnTypeTests : IAsyncLifetime
         var error = result.Error!;
         Assert.Equal(PzErrorCode.SinkColumnTypeUnsupported, error.Code);
         Assert.Equal("sinks/cap.yml", error.File);
-        foreach (var expected in new[] { "s (STRUCT(a INTEGER))", "l (INTEGER[])", "rec (VARIANT)", "small (SMALLINT)", "f (FLOAT)" })
+        foreach (var expected in new[] { "rec (VARIANT)", "small (SMALLINT)", "f (FLOAT)" })
         {
             Assert.Contains(expected, error.Message, StringComparison.Ordinal);
         }
 
+        // STRUCT and LIST cross the Arrow path; they are refused separately, by this sink's missing NestedTypes.
         Assert.DoesNotContain("name", error.Message, StringComparison.Ordinal);
-        Assert.Equal("cast in the pipeline: s::JSON::VARCHAR, l::JSON::VARCHAR, rec::JSON::VARCHAR, small::INTEGER, f::DOUBLE",
-            error.Hint);
+        Assert.DoesNotContain("STRUCT", error.Message, StringComparison.Ordinal);
+        Assert.Equal("cast in the pipeline: rec::JSON::VARCHAR, small::INTEGER, f::DOUBLE", error.Hint);
         Assert.Null(sink.Session);
+    }
+
+    [Fact]
+    public async Task Nested_columns_to_a_sink_without_NestedTypes_fail_PZ0546_naming_them()
+    {
+        await _duck.ExecuteAsync("create table staging.stg_orders as select 1 as id, {'a': 1} as s, [1, 2] as l, 'ok' as name");
+        var sink = new PlainSinkConnector();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(SinkNode(), Context(sink), default);
+
+        var error = result.Error!;
+        Assert.Equal(PzErrorCode.SinkColumnTypeUnsupported, error.Code);
+        Assert.Contains("does not accept nested column(s) s (STRUCT(a INTEGER)), l (INTEGER[])", error.Message, StringComparison.Ordinal);
+        Assert.Equal("cast in the pipeline: s::JSON::VARCHAR, l::JSON::VARCHAR", error.Hint);
+        Assert.Null(sink.Session);
+    }
+
+    [Fact]
+    public async Task Nested_columns_reach_a_sink_that_declares_NestedTypes()
+    {
+        await _duck.ExecuteAsync("create table staging.stg_orders as select range as id, {'a': range, 'b': [range]} as s, " +
+            "map(['k'], [range]) as m from range(3000)");
+        var sink = new Pz.Connectors.TestKit.Reference.InMemoryConnector();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(SinkNode(), Context(sink), default);
+
+        Assert.True(result.Status == NodeStatus.Success, result.Error?.ToString());
+        Assert.Equal(3000L, result.RowsMoved);
     }
 
     [Fact]
@@ -117,7 +146,7 @@ public sealed class ArrowPathColumnTypeTests : IAsyncLifetime
     public async Task The_schema_peek_names_every_unsupported_column_at_once()
     {
         var ex = await Assert.ThrowsAsync<UnsupportedArrowTypeException>(() =>
-            _duck.GetResultSchemaAsync("select 1 as ok, 2::SMALLINT as a, [1] as b, 3::BIGINT as c, {'x': 1} as d"));
+            _duck.GetResultSchemaAsync("select 1 as ok, 2::SMALLINT as a, 1.5::FLOAT as b, 3::BIGINT as c, '{}'::JSON::VARIANT as d, [1] as e"));
 
         Assert.Equal(["a", "b", "d"], ex.Columns.Select(c => c.Name));
     }
@@ -127,7 +156,7 @@ public sealed class ArrowPathColumnTypeTests : IAsyncLifetime
     {
         var ex = await Assert.ThrowsAsync<UnsupportedArrowTypeException>(async () =>
         {
-            await foreach (var batch in _duck.QueryArrowAsync("select 1 as ok, 2::SMALLINT as a, [1] as b"))
+            await foreach (var batch in _duck.QueryArrowAsync("select 1 as ok, 2::SMALLINT as a, '{}'::JSON::VARIANT as b, {'x': 1} as c"))
             {
                 batch.Dispose();
             }

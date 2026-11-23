@@ -102,4 +102,11 @@ public enum ConnectorCapabilities
     /// <summary>The connector reports remote stats through <c>ConnectorStats.Current</c>; the TestKit
     /// runs its stats checks. The engine accepts stats with or without it.</summary>
     ReportsStats = 4194304,
+
+    /// <summary>The sink writes nested columns -- Arrow <c>list</c>, <c>fixed_size_list</c>, <c>struct</c> and
+    /// <c>map</c> (DuckDB LIST, ARRAY, STRUCT, MAP) of the flat types, at any depth -- in its write session.
+    /// Without it, the engine refuses an output with such a column (PZ0546) before the session opens, so a
+    /// sink only ever sees the types it declared. Sources need no flag: nested columns a source emits land
+    /// as DuckDB's nested types.</summary>
+    NestedTypes = 8388608,
 }

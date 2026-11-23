@@ -253,10 +253,11 @@ public sealed class CheckExecutor : INodeExecutor
         {
             return await FirstBatchAsync(duck, sql, ct).ConfigureAwait(false);
         }
-        catch (UnsupportedArrowTypeException)
+        catch (NotSupportedException)
         {
-            // A column the Arrow path does not carry (STRUCT, LIST, VARIANT, SMALLINT…) must not turn a
-            // failed check into an engine failure: sample the same rows with every cell as DuckDB's text.
+            // A column the Arrow path does not carry (VARIANT, SMALLINT…), or a nested one the sample formatter
+            // does not render, must not turn a failed check into an engine failure: sample the same rows with
+            // every cell as DuckDB's text.
             return await FirstBatchAsync(duck, $"select cast(columns(*) as varchar) from ({sql}) q", ct)
                 .ConfigureAwait(false);
         }
