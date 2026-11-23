@@ -82,6 +82,8 @@ internal sealed class SourceFunction : KeywordCallFunction
         var sync = ProjectLoader.ParseSyncMode(plain, entity, Pipeline.FilePath, subErrors);
         var retry = ProjectLoader.ParseRetry(plain, Pipeline.FilePath, subErrors,
             $"source('{connection}', '{entity}') ");
+        var variant = ProjectLoader.ParseVariant(plain, Pipeline.FilePath, subErrors,
+            $"source('{connection}', '{entity}') ");
         AddAtLine(subErrors, line);
 
         var columns = ParseColumns(kwargs, connection, entity, line);
@@ -92,14 +94,18 @@ internal sealed class SourceFunction : KeywordCallFunction
         }
 
         var options = kwargs
-            .Where(kv => kv.Key is not ("columns" or "sync" or "retry" or ColumnContract.PointersOption))
+            .Where(kv => kv.Key is not ("columns" or "sync" or "retry" or "variant" or ColumnContract.PointersOption))
             .ToDictionary(kv => kv.Key, kv => kv.Value.Value, StringComparer.Ordinal);
         columns?.AddPointersTo(options);
         options = options.OrderBy(kv => kv.Key, StringComparer.Ordinal)
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
         return declaredAtCallSite
-            ? new SourceReadOptions(columns?.Types, sync, retry, options) { RedactedColumns = columns?.Redacted ?? [] }
+            ? new SourceReadOptions(columns?.Types, sync, retry, options)
+            {
+                RedactedColumns = columns?.Redacted ?? [],
+                Variant = variant,
+            }
             : SourceReadOptions.Default;
     }
 

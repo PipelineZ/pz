@@ -196,6 +196,7 @@ public static partial class DagCompiler
                     new DatasetDef(dep.Dataset, r.Options, r.Columns, r.Sync, r.Retry)
                     {
                         RedactedColumns = r.RedactedColumns,
+                        Variant = r.Variant,
                     });
             }
         }
@@ -621,6 +622,21 @@ public static partial class DagCompiler
                 {
                     canonicalParts.Add(CanonicalJson.Serialize(hints.Columns));
                     canonicalParts.Add(hints.PredicateSql ?? "");
+                }
+
+                // Appended only when declared, so a project without it keeps a byte-identical Id.
+                if (dataset.Variant.Count > 0)
+                {
+                    canonicalParts.Add("variant:" + CanonicalJson.Serialize(dataset.Variant));
+                    if (effectiveDataset.SyncMode?.Incremental?.Cursor is { } cursor
+                        && dataset.Variant.Contains(cursor, StringComparer.OrdinalIgnoreCase))
+                    {
+                        stagingCollisions.Add(new PzError(PzErrorCode.VariantConfigInvalid,
+                            $"source '{source.Name}.{dataset.Name}': variant: names the incremental cursor '{cursor}'",
+                            source.FilePath, null,
+                            "remove the cursor from variant: -- a watermark compares a typed column, not a VARIANT"));
+                        continue;
+                    }
                 }
 
                 var id = NodeId.Compute(string.Join('\n', canonicalParts));

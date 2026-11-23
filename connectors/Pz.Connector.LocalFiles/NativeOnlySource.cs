@@ -43,7 +43,7 @@ internal sealed class NativeOnlySource(string baseDir, bool rootDeclared) : ISou
         var absPath = ResolvePath(spec, format);
         var declared = ColumnTypeCatalog.ContractColumns(spec);
         var urlArg = $"'{DuckDbSqlText.EscapeLiteral(absPath)}'";
-        var request = new FormatReadRequest(urlArg, 1, declared);
+        var request = FormatReadRequest.For(spec, urlArg, 1, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         scan = new NativeScan(NativeScanWindow.Wrap(fragment, spec), FileFormatCatalog.SetupStatements(format))
         {

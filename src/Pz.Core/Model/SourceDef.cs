@@ -6,6 +6,11 @@ public sealed record DatasetDef(string Name, IReadOnlyDictionary<string, object?
     /// <summary>Contract columns marked <c>redact: true</c>, as written, in file order. Read only by
     /// <c>pz preview</c>; never part of the NodeId, so adding a mark forces no re-extraction.</summary>
     public IReadOnlyList<string> RedactedColumns { get; init; } = [];
+
+    /// <summary><c>variant:</c> -- landed columns of JSON text that become DuckDB VARIANT right after the land,
+    /// in declared order. On a JSON file read, <c>record</c> lands each object whole as that one column.
+    /// Part of the NodeId when non-empty: it changes the staged shape.</summary>
+    public IReadOnlyList<string> Variant { get; init; } = [];
 }
 
 /// <summary>The unified read-mode declaration (<c>sync: { mode: incremental | cdc | auto }</c> under an

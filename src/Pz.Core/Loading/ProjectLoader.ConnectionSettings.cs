@@ -135,6 +135,47 @@ public static partial class ProjectLoader
     /// against (layering). Errors are PZ0121, aggregate, and name the file — <paramref name="context"/>
     /// additionally names the entity block per the repo's error rule; connection-level call sites
     /// pass "".</summary>
+    /// <summary><c>variant:</c> -- a list of distinct, non-empty column names; absent is empty.</summary>
+    internal static IReadOnlyList<string> ParseVariant(Dictionary<string, object?> yaml, string relativePath,
+        List<PzError> errors, string context = "")
+    {
+        if (!yaml.TryGetValue("variant", out var value) || value is null)
+        {
+            return [];
+        }
+
+        if (value is string || value is not System.Collections.IEnumerable items)
+        {
+            errors.Add(VariantError(relativePath, $"{context}variant: takes a list of column names"));
+            return [];
+        }
+
+        var names = new List<string>();
+        foreach (var item in items)
+        {
+            if (item is not string name || string.IsNullOrWhiteSpace(name))
+            {
+                errors.Add(VariantError(relativePath, $"{context}variant: takes a list of column names"));
+                return [];
+            }
+
+            if (names.Contains(name, StringComparer.OrdinalIgnoreCase))
+            {
+                errors.Add(VariantError(relativePath, $"{context}variant: names '{name}' twice"));
+                return [];
+            }
+
+            names.Add(name);
+        }
+
+        return names;
+    }
+
+    private static PzError VariantError(string relativePath, string message) =>
+        new(PzErrorCode.VariantConfigInvalid, message, relativePath, null,
+            "write variant: [payload] -- the landed columns of JSON text to turn into VARIANT; " +
+            "on a JSON file, variant: [record] lands each object whole");
+
     internal static RetryDef? ParseRetry(Dictionary<string, object?> yaml, string relativePath, List<PzError> errors,
         string context = "")
     {

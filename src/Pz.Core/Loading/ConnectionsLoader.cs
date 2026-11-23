@@ -276,7 +276,7 @@ internal static class ConnectionsLoader
 
         var options = read
             .Where(kv => kv.Key is not ("columns" or "incremental" or "retry" or "sync" or "rate_limit"
-                or "schema" or "table" or ColumnContract.PointersOption))
+                or "schema" or "table" or "variant" or ColumnContract.PointersOption))
             .ToDictionary(kv => kv.Key, kv => kv.Value);
         parsedContract?.AddPointersTo(options);
 
@@ -285,6 +285,7 @@ internal static class ConnectionsLoader
             ProjectLoader.ParseRetry(read, FileName, errors, $"{where} read "))
         {
             RedactedColumns = redacted,
+            Variant = ProjectLoader.ParseVariant(read, FileName, errors, $"{where} read "),
         };
     }
 

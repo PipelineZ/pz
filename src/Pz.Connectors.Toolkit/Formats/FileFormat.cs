@@ -30,4 +30,22 @@ public sealed record FileFormat(
 public sealed record FormatReadRequest(
     string UrlArg,
     int FileCount,
-    IReadOnlyDictionary<string, string>? DeclaredColumns);
+    IReadOnlyDictionary<string, string>? DeclaredColumns)
+{
+    /// <summary>A JSON read lands each object whole as one VARIANT column named <c>record</c>
+    /// (<c>variant: [record]</c>) instead of auto-detected columns. Use <see cref="For"/> to set it from a
+    /// spec.</summary>
+    public bool RecordAsVariant { get; init; }
+
+    /// <summary>The request for <paramref name="spec"/>, with <see cref="RecordAsVariant"/> set when the
+    /// read's <c>variant:</c> names <c>record</c>.</summary>
+    public static FormatReadRequest For(Pz.Connectors.Abstractions.DatasetSpec spec, string urlArg, int fileCount,
+        IReadOnlyDictionary<string, string>? declaredColumns) =>
+        new(urlArg, fileCount, declaredColumns)
+        {
+            RecordAsVariant = spec.VariantColumns.Contains(VariantRecordColumn, StringComparer.OrdinalIgnoreCase),
+        };
+
+    /// <summary>The column a JSON read with <c>variant: [record]</c> lands each object in.</summary>
+    public const string VariantRecordColumn = "record";
+}

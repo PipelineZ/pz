@@ -284,6 +284,22 @@ public sealed class SqlDryCompilerTests
     }
 
     [Fact]
+    public async Task Variant_columns_are_VARIANT_in_the_dry_tables_so_field_reads_bind()
+    {
+        var srcId = Id("1");
+        var src = SourceLoadNode(srcId, "s", "d", new Dictionary<string, string> { ["id"] = "bigint", ["payload"] = "varchar" });
+        var def0 = (SourceDatasetDef)src.Definition!;
+        src = src with { Definition = def0 with { Dataset = def0.Dataset with { Variant = ["payload", "record"] } } };
+        var sql = "select id, payload.status::INTEGER as status, record.user.name::VARCHAR as name from staging.src_s__d";
+        var def = new PipelineDef("stg", sql, "table", [], [], "pipelines/stg.sql");
+        var dag = new CompiledDag([src, new DagNode(Id("2"), NodeKind.Pipeline, "stg", [srcId], sql, def)]);
+
+        var result = await SqlDryCompiler.RunAsync(dag, [], default);
+
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
     public async Task Marks_are_checked_against_an_output_with_nested_and_narrow_columns()
     {
         // The output's column names are read with describe, not an Arrow schema peek, so a STRUCT, LIST,

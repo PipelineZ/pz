@@ -17,6 +17,9 @@ public sealed record SourceReadOptions(
     /// <summary>The call site's <c>redact: true</c> marks; see <see cref="DatasetDef.RedactedColumns"/>.</summary>
     public IReadOnlyList<string> RedactedColumns { get; init; } = [];
 
+    /// <summary>The call site's <c>variant:</c> columns; see <see cref="DatasetDef.Variant"/>.</summary>
+    public IReadOnlyList<string> Variant { get; init; } = [];
+
     public static readonly SourceReadOptions Default =
         new(null, null, null, new Dictionary<string, object?>());
 }

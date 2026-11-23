@@ -22,6 +22,7 @@ internal static class SpecMapping
             PriorSyncState = spec.HasPriorSyncState ? spec.PriorSyncState : null,
             ChangeCapture = spec.ChangeCapture,
             ChangeCaptureSlot = spec.HasChangeCaptureSlot ? spec.ChangeCaptureSlot : null,
+            VariantColumns = [.. spec.VariantColumns],
         };
 
     public static OutputSpec ToOutputSpec(OutputSpecMsg spec) =>

@@ -97,6 +97,16 @@ my-project/
   (a missing step is NULL). Other connectors refuse `pointer` (PZ0301), in `pz validate` and again
   when `pz run` opens the source. Never write `column_pointers` yourself: pz derives it (PZ0101).
 
+  `variant: [payload]` (in YAML or as a kwarg, any connector) turns landed columns of JSON text into
+  DuckDB `VARIANT` right after the land: read fields as `payload.a.b`, cast to use them
+  (`payload.status::INTEGER`), unnest an array with `unnest(payload.data::VARIANT[])`. A field added
+  or removed upstream is not schema drift. On a JSON file (localfiles, s3, gcs, azureblob)
+  `variant: [record]` lands each object whole as one `record` column instead of auto-detected
+  columns (not with `columns:`). It cannot name the incremental cursor (PZ0367); a named column that
+  was not landed, is not text, or holds text that is not JSON fails the read (PZ0547, counting rows).
+  A VARIANT column cannot go to a sink that receives rows over Arrow (PZ0546): cast it in the
+  pipeline, e.g. `payload::JSON::VARCHAR`.
+
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a
   top-level `outputs:` block are retired (`PZ0346`/`PZ0347`); everything is one `connections.yml`.

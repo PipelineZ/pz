@@ -116,7 +116,7 @@ internal sealed class AzureSource(ConnectorConfig config) : ISource
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var secret = AzureAuth.CreateSecretSql(config, AzureAuth.SecretName(spec.Source));
         var declared = ColumnTypeCatalog.ContractColumns(spec); // null (contract-less) or declared (partial or full)
-        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
+        var request = FormatReadRequest.For(spec, urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 

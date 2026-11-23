@@ -93,6 +93,7 @@ public static class MessageMapping
             msg.ChangeCaptureSlot = spec.ChangeCaptureSlot;
         }
 
+        msg.VariantColumns.AddRange(spec.VariantColumns);
         return msg;
     }
 
@@ -106,6 +107,7 @@ public static class MessageMapping
             PriorSyncState = msg.HasPriorSyncState ? msg.PriorSyncState : null,
             ChangeCapture = msg.ChangeCapture,
             ChangeCaptureSlot = msg.HasChangeCaptureSlot ? msg.ChangeCaptureSlot : null,
+            VariantColumns = [.. msg.VariantColumns],
         };
 
     // ---- ReadHints -------------------------------------------------------------------------------

@@ -150,6 +150,7 @@ message DatasetSpecMsg {
   optional string prior_sync_state = 8;     // opaque
   bool change_capture = 9;
   optional string change_capture_slot = 10;
+  repeated string variant_columns = 11;     // the read's variant: columns, in declared order
 }
 message ReadHintsMsg {
   repeated string columns = 1;

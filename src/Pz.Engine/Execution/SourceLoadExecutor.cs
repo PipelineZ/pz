@@ -363,6 +363,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
             // a queried logical schema this tier never resolves) is the native tier's stable read-shape hash input.
             // An unhinted fallback staged every column, but the baseline under this hints hash holds only the
             // hinted ones; comparing the full width would report every unread column as added.
+            if (await VariantLanding.ApplyAsync(ctx.Duck, def, nativeTable, ct).ConfigureAwait(false) is { } nativeVariantError)
+            {
+                return NodeResult.Failed(node, nativeVariantError);
+            }
+
             var driftColumns = stagedUnhinted && nativeHints?.Columns is { Count: > 0 } hintedColumns
                 ? hintedColumns
                 : null;
@@ -563,6 +568,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
             PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
 
             var opStats = OpsMetering.RecordAndSnapshot(gate, node);
+
+            if (await VariantLanding.ApplyAsync(ctx.Duck, def, tableName, ct).ConfigureAwait(false) is { } channelVariantError)
+            {
+                return NodeResult.Failed(node, channelVariantError);
+            }
 
             var channelSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
                 stall.ToTimings(), watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats, Cdc: cdcStats);
@@ -899,6 +909,11 @@ public sealed class SourceLoadExecutor : INodeExecutor
 
         PzMeters.RowsMoved.Add(rows, NodeMetricTags.Kind[NodeKind.SourceLoad]);
         var opStats = OpsMetering.RecordAndSnapshot(gate, node);
+
+        if (await VariantLanding.ApplyAsync(ctx.Duck, def, tableName, ct).ConfigureAwait(false) is { } partitionVariantError)
+        {
+            return NodeResult.Failed(node, partitionVariantError);
+        }
 
         var partitionSuccess = new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, rows, TimeSpan.Zero, null,
             Timings: null, watermarkCandidate, SyncStateCandidate: syncCandidate, Ops: opStats,
