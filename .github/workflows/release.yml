@@ -186,7 +186,9 @@ jobs:
           user: ${{ secrets.NUGET_USER }} # nuget.org profile name, NOT email -- see prerequisites above.
       # Two pushes, and the order is the contract: every `pz.<rid>`/`pz.any` sub-package and library
       # package must be live before the `pz` pointer is, or an install racing the publish resolves the
-      # pointer to a sub-package that is not there yet.
+      # pointer to a sub-package that is not there yet. `--timeout 900`: the CoreCLR `pz.any` package is the
+      # largest, and nuget.org has taken longer than the default 300 s to accept it; a timed-out push may still
+      # land, which `--skip-duplicate` makes harmless on a rerun.
       - name: Push sub-packages and libraries to nuget.org
         run: >
           find packages -name '*.nupkg' ! -regex '.*/pz\.[0-9].*' -print0 |
@@ -194,12 +196,14 @@ jobs:
           --source https://api.nuget.org/v3/index.json
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --skip-duplicate
+          --timeout 900
       - name: Push the pz pointer package last
         run: >
           dotnet nuget push packages/pz.[0-9]*.nupkg
           --source https://api.nuget.org/v3/index.json
           --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
           --skip-duplicate
+          --timeout 900
       # Downloaded by exact artifact name into its own directory -- deliberately not the `packages`
       # download above, so this zip never sits alongside a nupkg. This is the first GitHub Release
       # this repo has ever created; winget's manifest (and winget-releaser.yml) target its zip asset.
