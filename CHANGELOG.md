@@ -25,6 +25,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **`pz staging query --run <id> --sql "<select>"` runs one read-only SELECT against a finished run's staging**, so
+  you can join and filter what a run staged (why a pipeline produced 0 rows, what a source actually landed) instead
+  of sampling one node with `pz preview`. Tables are `staging.<name>`. It prints a table, or with `--json` exactly
+  one object (`runId`, `columns`, `rows`, `limit`, `truncated`) with cells formatted as `pz preview --json` formats
+  them, so PipelineX can run it as an agent job. The query runs in the session `pz preview --run` reads with: the
+  file attached read-only, filesystem and network access off, configuration locked, so it can read the run's tables
+  and nothing else. `--limit` is 1-500 (default 50). `redact: true` marks are not applied, since a query can join
+  and rename columns. `PZ0543` (no such run, cleaned, still running), `PZ0544` (option rules), `PZ0545` (the SQL did
+  not run).
 - **merge: `duplicates: fail | latest` and `order_by:` decide what happens to duplicate keys in one batch.**
   Without them a merge keeps an arbitrary row per key and warns (`PZ0522`). `duplicates: fail` fails the node
   (`PZ0541`) before anything is written. `duplicates: latest` with `order_by: [col, ...]` keeps the row with the

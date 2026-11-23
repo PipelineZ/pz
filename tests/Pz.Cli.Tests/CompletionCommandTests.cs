@@ -64,7 +64,8 @@ public sealed class CompletionCommandTests
 
     // The script as a shell runs it: `pz` is a function over the CLI this test project was built with.
     [SkippableTheory]
-    [InlineData("pz sta", "state")]
+    [InlineData("pz stat", "state")]
+    [InlineData("pz stag", "staging")]
     [InlineData("pz state ro", "rollback")]
     [InlineData("pz run --proj", "--project")]
     public void The_bash_script_completes_the_word_under_the_cursor(string line, string expected)

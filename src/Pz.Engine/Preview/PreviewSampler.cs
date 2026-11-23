@@ -11,12 +11,25 @@ public static class PreviewSampler
     public const string Redacted = "•••";
     public const int MaxCellChars = 200;
 
-    public static async Task<(IReadOnlyList<PreviewColumn> Columns, IReadOnlyList<IReadOnlyList<PreviewCell>> Rows)>
-        SampleAsync(IDuckSession duck, string relation, IReadOnlyList<string> redacted, int limit, CancellationToken ct)
+    public static Task<(IReadOnlyList<PreviewColumn> Columns, IReadOnlyList<IReadOnlyList<PreviewCell>> Rows)>
+        SampleAsync(IDuckSession duck, string relation, IReadOnlyList<string> redacted, int limit, CancellationToken ct) =>
+        SampleFromAsync(duck, relation, redacted, limit, ct);
+
+    /// <summary>The first <paramref name="limit"/> rows of a query, in its own order, cells formatted as
+    /// <see cref="SampleAsync"/> formats them. The query is the inside of a subquery, so only a single
+    /// SELECT (or WITH … SELECT) is accepted: several statements, DDL, DML or a PRAGMA fail to parse
+    /// there. Duplicate output names come back renamed (<c>id</c>, <c>id_1</c>).</summary>
+    public static Task<(IReadOnlyList<PreviewColumn> Columns, IReadOnlyList<IReadOnlyList<PreviewCell>> Rows)>
+        SampleQueryAsync(IDuckSession duck, string sql, int limit, CancellationToken ct) =>
+        // The newlines keep a trailing `-- comment` in the query from swallowing the closing parenthesis.
+        SampleFromAsync(duck, $"(\n{sql}\n) as pz_query", [], limit, ct);
+
+    private static async Task<(IReadOnlyList<PreviewColumn> Columns, IReadOnlyList<IReadOnlyList<PreviewCell>> Rows)>
+        SampleFromAsync(IDuckSession duck, string from, IReadOnlyList<string> redacted, int limit, CancellationToken ct)
     {
         var marks = redacted.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var described = await QueryStringsAsync(duck,
-            $"select column_name, column_type from (describe {relation})", ct).ConfigureAwait(false);
+            $"select column_name, column_type from (describe select * from {from})", ct).ConfigureAwait(false);
         var columns = described
             .Select(r => new PreviewColumn(r[0]!, r[1]!, marks.Contains(r[0]!)))
             .ToList();
@@ -24,7 +37,7 @@ public static class PreviewSampler
         var select = string.Join(", ", columns.Select(c => c.Redacted
             ? $"'{Redacted}' as {ArrowInterop.QuoteIdentifier(c.Name)}"
             : $"cast({ArrowInterop.QuoteIdentifier(c.Name)} as varchar) as {ArrowInterop.QuoteIdentifier(c.Name)}"));
-        var raw = await QueryStringsAsync(duck, $"select {select} from {relation} limit {limit}", ct)
+        var raw = await QueryStringsAsync(duck, $"select {select} from {from} limit {limit}", ct)
             .ConfigureAwait(false);
 
         var kinds = columns.Select(c => c.Redacted ? PreviewCellKind.Text : KindOf(c.Type)).ToList();

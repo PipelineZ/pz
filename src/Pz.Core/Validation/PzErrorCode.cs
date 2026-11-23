@@ -756,6 +756,21 @@ public static class PzErrorCode
     /// <c>order_by</c> that breaks the tie (a sequence number or a load timestamp).</summary>
     public const string MergeLatestAmbiguous = "PZ0542";
 
+    /// <summary><c>pz staging query</c> found nothing to query: the run directory or its
+    /// <c>staging.duckdb</c> is missing (cleaned), or the run is still in progress. The message names
+    /// which.</summary>
+    public const string StagingQueryUnavailable = "PZ0543";
+
+    /// <summary><c>pz staging query</c>'s options break a rule: not exactly one of <c>--run</c> and
+    /// <c>--run-dir</c>, a <c>--run</c> id that is not a plain run directory name, an empty
+    /// <c>--sql</c>, or a <c>--limit</c> outside 1-500.</summary>
+    public const string StagingQueryOptionsInvalid = "PZ0544";
+
+    /// <summary><c>pz staging query</c>'s SQL did not run: it is not a single SELECT (or WITH … SELECT), it
+    /// names a table or column the run did not stage, or DuckDB refused it (a write, a file or network
+    /// access, which the read-only session forbids). The message carries DuckDB's own first line.</summary>
+    public const string StagingQueryFailed = "PZ0545";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in
