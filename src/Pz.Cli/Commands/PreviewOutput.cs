@@ -41,8 +41,27 @@ internal static class PreviewOutput
         }
 
         json.WriteEndArray();
+        WriteRows(json, result.Rows);
+        if (result.TotalRows is { } total)
+        {
+            json.WriteNumber("totalRows", total);
+        }
+        else
+        {
+            json.WriteNull("totalRows");
+        }
+
+        json.WriteNumber("limit", result.Limit);
+        json.WriteBoolean("sliced", result.Sliced);
+        json.WriteEndObject();
+    });
+
+    /// <summary>The <c>rows</c> array: one array of cells per row, numbers and booleans as themselves, every
+    /// other value a string. Shared with <c>pz staging query</c>, whose rows are formatted the same way.</summary>
+    internal static void WriteRows(Utf8JsonWriter json, IReadOnlyList<IReadOnlyList<PreviewCell>> rows)
+    {
         json.WriteStartArray("rows");
-        foreach (var row in result.Rows)
+        foreach (var row in rows)
         {
             json.WriteStartArray();
             foreach (var cell in row)
@@ -68,19 +87,7 @@ internal static class PreviewOutput
         }
 
         json.WriteEndArray();
-        if (result.TotalRows is { } total)
-        {
-            json.WriteNumber("totalRows", total);
-        }
-        else
-        {
-            json.WriteNull("totalRows");
-        }
-
-        json.WriteNumber("limit", result.Limit);
-        json.WriteBoolean("sliced", result.Sliced);
-        json.WriteEndObject();
-    });
+    }
 
     internal static string ErrorJson(PzError error) => Write(json =>
     {
@@ -92,10 +99,20 @@ internal static class PreviewOutput
         json.WriteEndObject();
     });
 
-    internal static string ToTable(PreviewResult result)
+    internal static string ToTable(PreviewResult result) => Table(
+        result.Columns.Select(c => c.Redacted ? $"{c.Name} (redacted)" : c.Name).ToList(),
+        result.Rows,
+        result.Mode == "run"
+            ? $"{result.Rows.Count} of {result.TotalRows} rows"
+            : $"{result.Rows.Count} rows, fresh: computed from a slice of each source");
+
+    /// <summary>A text table with a one-line footer; every header and cell goes through
+    /// <see cref="Printable"/>. Shared with <c>pz staging query</c>.</summary>
+    internal static string Table(IReadOnlyList<string> headers, IReadOnlyList<IReadOnlyList<PreviewCell>> rows,
+        string footer)
     {
-        var header = result.Columns.Select(c => Printable(c.Redacted ? $"{c.Name} (redacted)" : c.Name)).ToList();
-        var cells = result.Rows
+        var header = headers.Select(Printable).ToList();
+        var cells = rows
             .Select(r => r.Select(c => c.Kind == PreviewCellKind.Null ? "NULL" : Printable(c.Text!)).ToList())
             .ToList();
         var widths = header.Select((h, i) => cells.Select(r => r[i].Length).Prepend(h.Length).Max()).ToList();
@@ -108,9 +125,7 @@ internal static class PreviewOutput
             AppendRow(table, row, widths);
         }
 
-        table.Append(result.Mode == "run"
-            ? $"{result.Rows.Count} of {result.TotalRows} rows\n"
-            : $"{result.Rows.Count} rows, fresh: computed from a slice of each source\n");
+        table.Append(footer).Append('\n');
         return table.ToString();
     }
 
@@ -152,7 +167,7 @@ internal static class PreviewOutput
     private static void AppendRow(StringBuilder table, IReadOnlyList<string> values, IReadOnlyList<int> widths) =>
         table.AppendJoin("  ", values.Select((v, i) => v.PadRight(widths[i]))).Append('\n');
 
-    private static string Write(Action<Utf8JsonWriter> write)
+    internal static string Write(Action<Utf8JsonWriter> write)
     {
         using var buffer = new MemoryStream();
         using (var json = new Utf8JsonWriter(buffer, WriterOptions))
