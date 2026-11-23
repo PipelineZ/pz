@@ -43,8 +43,29 @@ internal static class PgDdl
     }
 
     /// <summary>The DDL type keyword used both to CREATE the target when missing and as the expected
-    /// value compared against <c>information_schema.columns</c> for an existing target.</summary>
-    public static string PgTypeFor(Field field) => field.DataType.TypeId switch
+    /// value compared against <c>information_schema.columns</c> for an existing target. A list (or
+    /// fixed-size list) of a flat type is a postgres array of that type; a struct, a map, or a list of
+    /// nested values is <c>jsonb</c>.</summary>
+    public static string PgTypeFor(Field field) => field.DataType switch
+    {
+        MapType or StructType => "jsonb",
+        ListType or FixedSizeListType when ArrayElement(field.DataType) is { } element =>
+            LeafPgType(field.Name, element) + "[]",
+        ListType or FixedSizeListType => "jsonb",
+        var type => LeafPgType(field.Name, type),
+    };
+
+    /// <summary>The element type of a list or fixed-size list whose elements are flat (written as a
+    /// postgres array); null for anything else.</summary>
+    public static IArrowType? ArrayElement(IArrowType type) => type switch
+    {
+        MapType => null,
+        ListType list when list.ValueDataType is not NestedType => list.ValueDataType,
+        FixedSizeListType list when list.ValueDataType is not NestedType => list.ValueDataType,
+        _ => null,
+    };
+
+    private static string LeafPgType(string column, IArrowType type) => type.TypeId switch
     {
         ArrowTypeId.Int32 => "integer",
         ArrowTypeId.Int64 => "bigint",
@@ -55,14 +76,23 @@ internal static class PgDdl
         ArrowTypeId.Date32 => "date",
         ArrowTypeId.Timestamp => "timestamptz",
         _ => throw new PzConnectorException(
-            $"column '{field.Name}': postgres sink v0 does not support Arrow type '{field.DataType}'",
+            $"column '{column}': postgres sink v0 does not support Arrow type '{type}'",
             isTransient: false),
     };
 
     /// <summary>The <see cref="NpgsqlDbType"/> used to write each column's cells via
     /// <c>NpgsqlBinaryImporter</c> -- consistent with <see cref="PgTypeFor"/>'s DDL choice for the same
     /// Arrow type.</summary>
-    public static NpgsqlDbType NpgsqlTypeFor(Field field) => field.DataType.TypeId switch
+    public static NpgsqlDbType NpgsqlTypeFor(Field field) => field.DataType switch
+    {
+        MapType or StructType => NpgsqlDbType.Jsonb,
+        ListType or FixedSizeListType when ArrayElement(field.DataType) is { } element =>
+            NpgsqlDbType.Array | LeafNpgsqlType(field.Name, element),
+        ListType or FixedSizeListType => NpgsqlDbType.Jsonb,
+        var type => LeafNpgsqlType(field.Name, type),
+    };
+
+    private static NpgsqlDbType LeafNpgsqlType(string column, IArrowType type) => type.TypeId switch
     {
         ArrowTypeId.Int32 => NpgsqlDbType.Integer,
         ArrowTypeId.Int64 => NpgsqlDbType.Bigint,
@@ -73,7 +103,7 @@ internal static class PgDdl
         ArrowTypeId.Date32 => NpgsqlDbType.Date,
         ArrowTypeId.Timestamp => NpgsqlDbType.TimestampTz,
         _ => throw new PzConnectorException(
-            $"column '{field.Name}': postgres sink v0 does not support Arrow type '{field.DataType}'",
+            $"column '{column}': postgres sink v0 does not support Arrow type '{type}'",
             isTransient: false),
     };
 
@@ -281,7 +311,7 @@ internal static class PgDdl
     {
         await using var command = new NpgsqlCommand(
             """
-            select column_name, data_type, numeric_precision, numeric_scale
+            select column_name, data_type, numeric_precision, numeric_scale, udt_name
             from information_schema.columns
             where table_schema = @schema and table_name = @table
             """,
@@ -294,7 +324,11 @@ internal static class PgDdl
         while (await reader.ReadAsync(ct).ConfigureAwait(false))
         {
             var name = reader.GetString(0);
-            var dataType = NormalizeTypeName(reader.GetString(1));
+            // An array column reports data_type ARRAY; its element type is the udt name after the '_'
+            // ("_int4" for integer[]).
+            var dataType = reader.GetString(1) == "ARRAY"
+                ? NormalizeTypeName(reader.GetString(4).TrimStart('_')) + "[]"
+                : NormalizeTypeName(reader.GetString(1));
             int? precision = reader.IsDBNull(2) ? null : reader.GetInt32(2);
             int? scale = reader.IsDBNull(3) ? null : reader.GetInt32(3);
             columns[name] = new PgColumnType(dataType, precision, scale);
@@ -306,6 +340,8 @@ internal static class PgDdl
     private static PgColumnType ExpectedColumnType(Field field) => field.DataType.TypeId switch
     {
         ArrowTypeId.Decimal128 => new PgColumnType("numeric", 38, 9),
+        // information_schema reports no precision for an array's elements.
+        _ when ArrayElement(field.DataType) is Decimal128Type => new PgColumnType("numeric[]", null, null),
         _ => new PgColumnType(NormalizeTypeName(PgTypeFor(field)), null, null),
     };
 

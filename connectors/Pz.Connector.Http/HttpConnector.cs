@@ -30,7 +30,8 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.SyncState |
         ConnectorCapabilities.GatedOperations | ConnectorCapabilities.StablePartitionIds |
         ConnectorCapabilities.CheckpointableReads |
-        ConnectorCapabilities.Merge | ConnectorCapabilities.CheckpointableWrites;
+        ConnectorCapabilities.Merge | ConnectorCapabilities.CheckpointableWrites |
+        ConnectorCapabilities.NestedTypes;
 
     // Shared schema fragments. Each mirrors its parser exactly (HttpSchemaParserAgreementTests holds them to it).
 

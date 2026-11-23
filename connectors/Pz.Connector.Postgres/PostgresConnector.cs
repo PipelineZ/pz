@@ -30,7 +30,8 @@ public sealed class PostgresConnector : ISourceConnector, ISinkConnector, IOutpu
         ConnectorCapabilities.Merge | ConnectorCapabilities.Transactional |
         ConnectorCapabilities.ReplaceWrites |
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound |
-        ConnectorCapabilities.ApplyDeletes | ConnectorCapabilities.ChangeCapture;
+        ConnectorCapabilities.ApplyDeletes | ConnectorCapabilities.ChangeCapture |
+        ConnectorCapabilities.NestedTypes;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["host","database"], "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "database": { "type": "string" }, "user": { "type": "string" }, "password": { "type": "string" }, "ssl_mode": { "type": "string" }, "connect_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }, "command_timeout_seconds": { "type": "integer", "minimum": 0, "maximum": 86400 } }, "additionalProperties": false }""";

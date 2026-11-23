@@ -11,4 +11,7 @@
          Microsoft.AspNetCore.App (which every SDK-hosted connector already references), not from here. -->
     <PackageReference Include="Apache.Arrow" Version="23.0.0" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\Json\ArrowJsonValue.cs" Link="Shared\Json\ArrowJsonValue.cs" />
+  </ItemGroup>
 </Project>
