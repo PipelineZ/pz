@@ -160,28 +160,29 @@ public sealed class QuackSqlGenTests
     public void Copy_statements_cover_append_replace_and_merge()
     {
         var table = $"{WhAlias}.\"events\"";
-        Assert.True(QuackSql.TryCopySql(table, "append", [], out var append, out var m1));
+        Assert.True(QuackSql.TryCopySql(WhAlias, table, "append", [], out var append, out var m1));
         Assert.Equal($"create table if not exists {table} as select * from {{{{source}}}} limit 0;\ninsert into {table} by name select * from {{{{source}}}};", append);
         Assert.Equal("quack insert", m1);
 
-        Assert.True(QuackSql.TryCopySql(table, "replace", [], out var replace, out var m2));
+        Assert.True(QuackSql.TryCopySql(WhAlias, table, "replace", [], out var replace, out var m2));
         Assert.Equal($"create or replace table {table} as select * from {{{{source}}}}", replace);
         Assert.Equal("quack create-or-replace", m2);
 
-        Assert.True(QuackSql.TryCopySql(table, "merge", ["id", "region"], out var merge, out var m3));
-        const string scratch = "pz_quack_merge_ec11af20";
+        Assert.True(QuackSql.TryCopySql(WhAlias, table, "merge", ["id", "region"], out var merge, out var m3));
+        const string scratch = $"{WhAlias}.\"pz_merge_ec11af20\""; // pz_merge_ + StableSuffix(table)
         Assert.Equal(
             $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n" +
-            $"create or replace temp table {scratch} as select s.* from {{{{source}}}} as s " +
-            "qualify row_number() over (partition by s.\"id\", s.\"region\") = 1 union all by name " +
-            $"select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s " +
-            "where t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\");\n" +
-            $"create or replace table {table} as select * from {scratch};\n" +
-            $"drop table {scratch};",
+            "begin transaction;\n" +
+            $"create or replace table {scratch} as select s.* from {{{{source}}}} as s " +
+            "qualify row_number() over (partition by s.\"id\", s.\"region\") = 1;\n" +
+            $"merge into {table} as t using {scratch} as s on t.\"id\" = s.\"id\" and t.\"region\" = s.\"region\" " +
+            "when matched then update when not matched then insert;\n" +
+            $"drop table {scratch};\n" +
+            "commit;",
             merge);
-        Assert.Equal("quack merge-by-replace", m3);
+        Assert.Equal("quack merge", m3);
 
-        Assert.False(Assert.Throws<PzConnectorException>(() => QuackSql.TryCopySql(table, "merge", [], out _, out _)).IsTransient);
-        Assert.False(QuackSql.TryCopySql(table, "upsert_all", [], out _, out _));
+        Assert.False(Assert.Throws<PzConnectorException>(() => QuackSql.TryCopySql(WhAlias, table, "merge", [], out _, out _)).IsTransient);
+        Assert.False(QuackSql.TryCopySql(WhAlias, table, "upsert_all", [], out _, out _));
     }
 }

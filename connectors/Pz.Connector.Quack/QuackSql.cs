@@ -11,20 +11,11 @@ namespace Pz.Connector.Quack;
 /// string (a failed ATTACH echoes its path verbatim into the engine error); it rides a quack secret
 /// scoped to the server URI.
 ///
-/// A quack-attached table accepts only bulk CREATE TABLE AS / INSERT from the wire protocol — no
-/// row-level UPDATE/DELETE/MERGE — so merge pulls the target through the client into a temp table,
-/// resolves conflicts there, and rewrites the whole remote table with one <c>create or replace
-/// table</c>: same guarantee class as replace. That rewrite is the whole blast radius of
-/// merge-by-replace: (a) primary keys, NOT NULL/DEFAULT constraints and indexes on the target do not
-/// survive it — the replacement table has none of them; (b) the target's column order follows the
-/// source batch's order, not whatever order it had before; (c) a column the source batch omits
-/// becomes NULL on matched rows — a matched row is replaced wholesale, not column-patched, so the
-/// pipeline's column set must stay stable across runs; (d) duplicate keys within one source batch
-/// collapse to one connector-determined survivor before the rewrite runs; (e) whether the
-/// <c>create or replace table</c> itself is atomic is the server's guarantee, not pz's — a failed
-/// rewrite can leave the target missing or partial until the next run, which recomputes the same
-/// result (the merge is idempotent). Cost grows with the target table's size, since the whole table
-/// crosses the wire on every merge.</summary>
+/// Merge runs on the server: the staged batch crosses the wire once, into a scratch table beside the
+/// target, and one <c>MERGE INTO</c> applies it there. Quack executes UPDATE/MERGE only when every
+/// table they read is on the server (a statement reading the client's staging is refused with
+/// "PlanUpdate not implemented"), which is why the batch is shipped first. The target keeps its
+/// constraints, indexes and column order.</summary>
 internal static class QuackSql
 {
     /// <summary>Sanitized connection name plus the first 8 lowercase hex chars of SHA-256 of the RAW
@@ -100,7 +91,9 @@ internal static class QuackSql
     internal static string ScanFragment(string alias, DatasetSpec spec) =>
         DuckDbSqlText.ScanFragment(QualifiedTable(alias, spec.Dataset), spec);
 
-    internal static bool TryCopySql(string table, string mode, IReadOnlyList<string> keys, out string sql, out string mechanism)
+    /// <summary>The copy statement(s) for one output; <paramref name="alias"/> is the connection's attach
+    /// alias, which also holds a merge's scratch table.</summary>
+    internal static bool TryCopySql(string alias, string table, string mode, IReadOnlyList<string> keys, out string sql, out string mechanism)
     {
         var create = $"create table if not exists {table} as select * from {{{{source}}}} limit 0;\n";
         switch (mode)
@@ -121,20 +114,27 @@ internal static class QuackSql
 
                 var on = string.Join(" and ", keys.Select(k => $"t.{DuckDbSqlText.QuoteIdentifier(k)} = s.{DuckDbSqlText.QuoteIdentifier(k)}"));
 
-                // Two source rows sharing a key within one batch would otherwise both survive into
-                // the union (neither is "the target row" so neither takes the not-exists branch) and
-                // the final create-or-replace would then fail on a duplicate key from the caller's
-                // perspective. qualify row_number() keeps exactly one row per key group before the
-                // union runs — connector-determined, not first/last-wins — which is the sink
-                // contract's Absorb behaviour that a real MERGE gives the siblings for free.
+                // DuckDB's MERGE matches every source row independently against the target as it stood
+                // before the statement ran: two staged rows sharing a key the target lacks would BOTH take
+                // the not-matched branch and both insert, and duplicates of a held key would update it
+                // in an undefined order. The sink contract says duplicate keys within one batch collapse
+                // to a single connector-determined survivor, so the batch is made key-unique (qualify
+                // row_number() per key group) on its way into the scratch table.
+                //
+                // One transaction around the scratch table, the merge and the drop: a failed merge (a
+                // target constraint the batch violates) rolls back the scratch table with it, so nothing
+                // is left on the server. The scratch name is stable per target, so concurrent merges into
+                // one target from two runs would share it; one writer per target is assumed, as for every
+                // sink.
                 var partitionBy = string.Join(", ", keys.Select(k => $"s.{DuckDbSqlText.QuoteIdentifier(k)}"));
-                var dedupedSource = $"select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1";
-                var scratch = "pz_quack_merge_" + DuckDbSqlText.StableSuffix(table);
+                var scratch = $"{alias}.{DuckDbSqlText.QuoteIdentifier("pz_merge_" + DuckDbSqlText.StableSuffix(table))}";
                 sql = create +
-                    $"create or replace temp table {scratch} as {dedupedSource} union all by name select t.* from {table} as t where not exists (select 1 from {{{{source}}}} as s where {on});\n" +
-                    $"create or replace table {table} as select * from {scratch};\n" +
-                    $"drop table {scratch};";
-                mechanism = "quack merge-by-replace";
+                    "begin transaction;\n" +
+                    $"create or replace table {scratch} as select s.* from {{{{source}}}} as s qualify row_number() over (partition by {partitionBy}) = 1;\n" +
+                    $"merge into {table} as t using {scratch} as s on {on} when matched then update when not matched then insert;\n" +
+                    $"drop table {scratch};\n" +
+                    "commit;";
+                mechanism = "quack merge";
                 return true;
             default:
                 sql = "";

@@ -95,43 +95,83 @@ public sealed class QuackNativeEndToEndTests : IAsyncLifetime
         Assert.Equal("B", await duck.ScalarAsync<string>($"select name from {dim} where id = 2"));
 
         // Two source rows sharing a key within one batch collapse to one connector-determined
-        // survivor (QuackSql.TryCopySql dedups with qualify row_number() before the union with
-        // unmatched target rows) — this is the sink contract's Absorb behaviour that a real MERGE
-        // gives the siblings for free.
+        // survivor (QuackSql.TryCopySql dedups with qualify row_number() on the way into the scratch
+        // table) — the sink contract's Absorb behaviour.
         await WriteAsync(duck, "dupes", "(select 1 as id, 'a' as name union all select 1, 'b' union all select 2, 'c')", mode: "merge", keys: ["id"]);
         var dupes = await ReadAsync(duck, Spec("dupes"));
         Assert.Equal(2, await duck.ScalarAsync<long>($"select count(*) from {dupes}"));
         Assert.Equal(1, await duck.ScalarAsync<long>($"select count(*) from {dupes} where id = 1"));
 
-        var dimColumnsBefore = await duck.ScalarAsync<string>(
-            $"select string_agg(column_name, ',' order by ordinal_position) from information_schema.columns where table_name = '{dim}'");
-
-        // An empty source batch still runs merge-by-replace's rewrite (create-or-replace from the
-        // union of an empty source and every target row that fails to match nothing) — the table is
-        // recreated, not skipped, but every target row survives untouched: no row is ever a "match"
-        // against zero source rows, so every target row takes the "not exists" branch, and the empty
-        // source has the same shape as the target so the column list comes back unchanged too.
+        // An empty batch merges nothing: every target row survives untouched.
         await WriteAsync(duck, "dim", "(select 1 as id, 'a' as name where false)", mode: "merge", keys: ["id"]);
         var dimAfterEmptyMerge = await ReadAsync(duck, Spec("dim"));
         Assert.Equal(3, await duck.ScalarAsync<long>($"select count(*) from {dimAfterEmptyMerge}"));
-        Assert.Equal("a", await duck.ScalarAsync<string>($"select name from {dimAfterEmptyMerge} where id = 1"));
         Assert.Equal("B", await duck.ScalarAsync<string>($"select name from {dimAfterEmptyMerge} where id = 2"));
-        Assert.Equal("c", await duck.ScalarAsync<string>($"select name from {dimAfterEmptyMerge} where id = 3"));
-        var dimColumnsAfter = await duck.ScalarAsync<string>(
-            $"select string_agg(column_name, ',' order by ordinal_position) from information_schema.columns where table_name = '{dimAfterEmptyMerge}'");
-        Assert.Equal(dimColumnsBefore, dimColumnsAfter);
 
-        // merge-by-replace's "not exists" branch selects unmatched target rows whole, so a later
-        // batch that omits a column entirely still leaves untouched rows carrying it: id 1 never
-        // appears in the second batch below, so its region survives even though that batch's SELECT
-        // has no region column at all (UNION ALL BY NAME fills the gap with the matched side's null,
-        // not the target's prior value — id 2 IS in the second batch, so its row comes wholesale from
-        // the source and region goes null, same as a plain replace would do for that row).
-        await WriteAsync(duck, "dim2", "(select 1 as id, 'a' as name, 'east' as region union all select 2, 'b', 'west')", mode: "merge", keys: ["id"]);
-        await WriteAsync(duck, "dim2", "(select 2 as id, 'B' as name union all select 3 as id, 'c' as name)", mode: "merge", keys: ["id"]);
-        var dim2 = await ReadAsync(duck, Spec("dim2"));
-        Assert.Equal("east", await duck.ScalarAsync<string>($"select region from {dim2} where id = 1"));
-        Assert.True(await duck.ScalarAsync<bool>($"select region is null from {dim2} where id = 2"));
+        // The merge's scratch table never outlives the transaction that created it.
+        Assert.Equal(0L, await ServerScratchTablesAsync());
+    }
+
+    private Task<long> ServerScratchTablesAsync() =>
+        server!.Session.ScalarAsync<long>("select count(*) from duckdb_tables() where table_name like 'pz_merge_%'");
+
+    // quack_serve serves the server session's in-memory catalog, so server-side setup is qualified
+    // with `memory.`.
+
+    /// <summary>The merge runs on the server against the target itself, so the target keeps its
+    /// primary key and NOT NULL constraints, which the server goes on enforcing.</summary>
+    [SkippableFact]
+    public async Task Merge_keeps_the_targets_constraints()
+    {
+        DockerFacts.SkipIfOffline();
+        await server!.Session.ExecuteAsync("create table memory.keyed (id integer primary key, name varchar not null)");
+        await server.Session.ExecuteAsync("insert into memory.keyed values (1, 'a'), (2, 'b')");
+        await using var duck = DuckSession.Open(Path.Combine(dir, "client-keyed.duckdb"));
+
+        await WriteAsync(duck, "keyed", "(select 2 as id, 'B' as name union all select 3, 'c')", mode: "merge", keys: ["id"]);
+
+        Assert.Equal("1a,2B,3c", await server.Session.ScalarAsync<string>(
+            "select string_agg(id || name, ',' order by id) from memory.keyed"));
+        Assert.Equal("NOT NULL,PRIMARY KEY", await server.Session.ScalarAsync<string>(
+            "select string_agg(distinct constraint_type, ',' order by constraint_type) from duckdb_constraints() where table_name = 'keyed'"));
+        Assert.Equal(0L, await ServerScratchTablesAsync());
+    }
+
+    /// <summary>A merge that fails on the server (here a batch violating the target's NOT NULL) rolls
+    /// back whole: the target is unchanged and no scratch table is left behind.</summary>
+    [SkippableFact]
+    public async Task A_failed_merge_leaves_the_target_and_server_unchanged()
+    {
+        DockerFacts.SkipIfOffline();
+        await server!.Session.ExecuteAsync("create table memory.strict (id integer, name varchar not null)");
+        await server.Session.ExecuteAsync("insert into memory.strict values (1, 'a')");
+        await using var duck = DuckSession.Open(Path.Combine(dir, "client-strict.duckdb"));
+
+        await Assert.ThrowsAnyAsync<Exception>(() => WriteAsync(duck, "strict",
+            "(select 1 as id, null::varchar as name union all select 2, 'b')", mode: "merge", keys: ["id"]));
+        await duck.ExecuteAsync("rollback"); // the engine's own recovery after a failed native copy
+
+        Assert.Equal("1a", await server.Session.ScalarAsync<string>(
+            "select string_agg(id || name, ',' order by id) from memory.strict"));
+        Assert.Equal(0L, await ServerScratchTablesAsync());
+    }
+
+    /// <summary>The merge writes every target column, so a batch that omits one fails rather than
+    /// silently nulling it on matched rows.</summary>
+    [SkippableFact]
+    public async Task A_batch_missing_a_target_column_fails_the_merge()
+    {
+        DockerFacts.SkipIfOffline();
+        await using var duck = DuckSession.Open(Path.Combine(dir, "client-cols.duckdb"));
+        await WriteAsync(duck, "wide", "(select 1 as id, 'a' as name, 'east' as region)", mode: "merge", keys: ["id"]);
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            WriteAsync(duck, "wide", "(select 1 as id, 'A' as name)", mode: "merge", keys: ["id"]));
+        Assert.Contains("3 columns but 2 values", ex.Message, StringComparison.Ordinal);
+        await duck.ExecuteAsync("rollback");
+
+        Assert.Equal("east", await server!.Session.ScalarAsync<string>("select region from memory.wide where id = 1"));
+        Assert.Equal(0L, await ServerScratchTablesAsync());
     }
 
     [SkippableFact]

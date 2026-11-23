@@ -144,8 +144,9 @@ and the `on_source_drift` gate (which baselines from the staged DESCRIBE) are un
 - **`pz validate --connect` performs no probe.** It always reports "not checked"; credentials are
   exercised only by the first run's attach.
 - **Merge is a real `MERGE INTO`, executed by MotherDuck.** Matched rows update, unmatched rows
-  insert, and an empty source batch leaves the target untouched — there is no pull-rewrite-push round
-  trip and no blast radius on the target's constraints or indexes (unlike quack's merge-by-replace).
+  insert, and an empty source batch leaves the target untouched; the target's constraints and
+  indexes are unaffected. (quack's merge first ships the batch into a scratch table on its server,
+  since Quack runs a MERGE only over tables on the server.)
   **Duplicate keys within a batch collapse to one survivor.** MERGE matches every source row
   independently against the target as it stood *before* the statement ran, so the generated SQL keys
   the staged side unique first (`qualify row_number() over (partition by <keys>) = 1`) -- otherwise
