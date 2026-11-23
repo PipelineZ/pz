@@ -528,6 +528,10 @@ public static class PzErrorCode
     /// non-rotating refresh tokens, authorize again and update <c>auth.refresh_token</c>.</summary>
     public const string OAuth2RefreshTokenRotated = "PZ0366";
 
+    /// <summary><c>variant:</c> on a read is not a list of column names, repeats a name, or names the
+    /// read's incremental cursor (a cursor must stay a comparable column).</summary>
+    public const string VariantConfigInvalid = "PZ0367";
+
     public const string SqlDryCompile = "PZ0401";
 
     /// <summary>An extension listed under project.yml's <c>extensions:</c> could not be installed or
@@ -777,6 +781,11 @@ public static class PzErrorCode
     /// message names each column with its DuckDB type and the cast that fixes it; a sink with a native copy
     /// (files, DuckDB-family) is unaffected.</summary>
     public const string SinkColumnTypeUnsupported = "PZ0546";
+
+    /// <summary>A <c>variant:</c> column could not become VARIANT after the land: it was not landed, it is not
+    /// JSON text (VARCHAR or JSON), or some rows hold text that is not JSON. The message counts those rows;
+    /// it never quotes a value.</summary>
+    public const string VariantConversionFailed = "PZ0547";
 
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --

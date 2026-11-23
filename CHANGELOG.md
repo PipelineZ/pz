@@ -7,6 +7,19 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Added
+
+- **`variant: [<column>, …]` lands JSON as DuckDB's `VARIANT`**, on any read, in YAML or as a `source()` kwarg.
+  Each named column of JSON text becomes `VARIANT` right after the land, so pipeline SQL reads fields directly
+  (`payload.user.name::VARCHAR`, `unnest(payload.data::VARIANT[])`) instead of `json_extract` on text, and a field
+  added or removed upstream is no longer schema drift. It works the same for a native scan and for rows that
+  arrived over Arrow: an Http page's `payload`, a document store's JSON column, a CSV column of JSON. On a JSON
+  file (localfiles, s3, gcs, azureblob), `variant: [record]` lands each object whole as one `record` column
+  instead of auto-detected columns. Naming the incremental cursor is `PZ0367`; a named column that was not
+  landed, is not text, or has rows that are not JSON fails the read with `PZ0547`, which counts those rows and
+  never quotes them. Declaring it changes the read's node identity, so the first run after adding it extracts
+  again.
+
 ### Fixed
 
 - **An output with a column pz's Arrow path cannot carry now fails `PZ0546` before anything is written**, instead

@@ -43,7 +43,7 @@ internal sealed class S3Source(ConnectorConfig config) : ISource
         var urlList = string.Join(", ", keyPatterns.Select(k => $"'s3://{DuckDbSqlText.EscapeLiteral(bucket)}/{DuckDbSqlText.EscapeLiteral(k)}'"));
         var urlArg = keyPatterns.Count == 1 ? urlList : $"[{urlList}]";
         var declared = ColumnTypeCatalog.ContractColumns(spec);
-        var request = new FormatReadRequest(urlArg, keyPatterns.Count, declared);
+        var request = FormatReadRequest.For(spec, urlArg, keyPatterns.Count, declared);
         var fragment = FileFormatCatalog.ReadFragment(format, spec.Options, request, context);
         var inferred = FileFormatCatalog.SchemaInferred(format, declared);
 

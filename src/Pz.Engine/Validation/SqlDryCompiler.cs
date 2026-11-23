@@ -90,8 +90,14 @@ public static class SqlDryCompiler
             return;
         }
 
+        // A variant: column is VARIANT once landed, whatever its contract type, so pipeline SQL reading its
+        // fields binds here; one the contract does not declare (a JSON file's `record`) is added.
+        var variant = def.Dataset.Variant;
         var columnDdl = string.Join(", ",
-            columns.Select(kv => $"{ArrowInterop.QuoteQualified(kv.Key)} {ContractTypes.ToDuckDdl(kv.Value)}"));
+            columns.Select(kv => $"{ArrowInterop.QuoteQualified(kv.Key)} " +
+                    (variant.Contains(kv.Key, StringComparer.OrdinalIgnoreCase) ? "VARIANT" : ContractTypes.ToDuckDdl(kv.Value)))
+                .Concat(variant.Where(v => !columns.Keys.Contains(v, StringComparer.OrdinalIgnoreCase))
+                    .Select(v => $"{ArrowInterop.QuoteQualified(v)} VARIANT")));
         await duck.ExecuteAsync($"create table {StagingRelation(node.Name)} ({columnDdl})", ct).ConfigureAwait(false);
         available.Add(node.Id);
     }

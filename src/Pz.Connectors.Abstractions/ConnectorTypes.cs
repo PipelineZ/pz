@@ -125,6 +125,11 @@ public sealed record DatasetSpec(string Source, string Dataset, IReadOnlyDiction
 
     /// <summary>Optional `sync.slot` override (Postgres slot name). Null = connector default.</summary>
     public string? ChangeCaptureSlot { get; init; }
+
+    /// <summary>The read's <c>variant:</c> columns, which the engine turns into VARIANT after the land. A
+    /// connector needs it only to produce such a column itself: a JSON file read lands each object whole as
+    /// <c>record</c> when this names it. Every other connector lands JSON text as usual.</summary>
+    public IReadOnlyList<string> VariantColumns { get; init; } = [];
 }
 
 /// <summary>Names one output of one sink plus write disposition and options.</summary>

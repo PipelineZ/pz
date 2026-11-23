@@ -90,6 +90,9 @@ public static class FileFormatCatalog
             "csv" or "tsv" => declared is null
                 ? $"read_csv({read.UrlArg}, header = true, auto_detect = true{DelimiterSuffix(format, options, context, "delim")})"
                 : $"read_csv({read.UrlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared)}}}{DelimiterSuffix(format, options, context, "delim")})",
+            "json" when read.RecordAsVariant => declared is null
+                ? $"(select json::VARIANT as {FormatReadRequest.VariantRecordColumn} from read_json_objects({read.UrlArg}, format = '{JsonReadFormat(format, options)}'))"
+                : throw Permanent($"PZ0362: {context}: variant: [record] lands each object whole, so it takes no columns: contract -- remove one of them"),
             "json" => declared is null
                 ? $"read_json({read.UrlArg}, auto_detect = true, format = '{JsonReadFormat(format, options)}')"
                 : $"read_json({read.UrlArg}, columns = {{{ColumnsMap(declared)}}}, format = '{JsonReadFormat(format, options)}')",

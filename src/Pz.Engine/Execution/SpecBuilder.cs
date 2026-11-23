@@ -53,7 +53,7 @@ public static class SpecBuilder
             options["columns"] = def.Dataset.Columns;
         }
 
-        var spec = new DatasetSpec(def.Source.Name, def.Dataset.Name, options);
+        var spec = new DatasetSpec(def.Source.Name, def.Dataset.Name, options) { VariantColumns = def.Dataset.Variant };
         if (def.Dataset.SyncMode is { Mode: SyncMode.Cdc } cdc)
         {
             spec = spec with { ChangeCapture = true, ChangeCaptureSlot = cdc.Slot };
