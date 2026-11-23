@@ -17,12 +17,16 @@ public sealed class ConnectorProcess : IAsyncDisposable
     /// configuration reaches the child only through the Configure RPC. Identity groups
     /// (<see cref="AmbientIdentity"/>) are added only for packages that declare them. This governs what
     /// pz hands the child, not what a process running as the same user could read elsewhere. Both-case proxy variants are included because
-    /// tooling disagrees on casing and a connector may shell out to something that only honors one.</summary>
+    /// tooling disagrees on casing and a connector may shell out to something that only honors one.
+    /// <c>DOTNET_ROOT</c> (and its per-architecture forms) is where a framework-dependent .NET connector
+    /// finds its runtime when .NET is not installed in the default location; without it such a child exits
+    /// at start with "You must install or update .NET".</summary>
     private static readonly string[] CommonEnv =
     [
         "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL",
         "http_proxy", "https_proxy", "no_proxy",
         "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
+        "DOTNET_ROOT", "DOTNET_ROOT_X64", "DOTNET_ROOT_ARM64",
     ];
 
     /// <summary>Windows essentials on top of <see cref="CommonEnv"/>, equally secret-free. Without
