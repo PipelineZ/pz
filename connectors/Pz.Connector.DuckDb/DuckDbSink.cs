@@ -20,7 +20,7 @@ internal sealed class DuckDbSink(ConnectorConfig config) : ISink
             return false;
         }
 
-        copy = new NativeCopy(sql, DuckDbSql.SetupStatements(DuckDbSql.ResolvePath(config), alias))
+        copy = new NativeCopy(sql, DuckDbSql.SetupStatements(DuckDbSql.ResolvePath(config), alias, DuckDbSql.StorageVersion(config)))
         {
             Mechanism = mechanism,
         };

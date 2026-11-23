@@ -28,9 +28,9 @@ public sealed class DuckDbConnector : ISourceConnector, ISinkConnector, INativeO
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound;
 
     // base_dir is injected internally by the host (see ProjectDirectoryAnchor) and never user-written;
-    // `path` is the only user-facing connection option.
+    // `path` and `storage_version` are the user-facing connection options.
     public string ConnectionConfigSchema =>
-        """{ "type": "object", "required": ["path"], "properties": { "path": { "type": "string" } }, "additionalProperties": false }""";
+        """{ "type": "object", "required": ["path"], "properties": { "path": { "type": "string" }, "storage_version": { "type": "string", "pattern": "^(v[0-9]+\\.[0-9]+\\.[0-9]+|latest)$" } }, "additionalProperties": false }""";
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";

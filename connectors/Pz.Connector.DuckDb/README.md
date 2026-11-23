@@ -43,17 +43,27 @@ pruning happens anyway, inside the scan fragment itself), `PartitionedRead`, `Ch
 lakedb:
   connector: duckdb
   path: ./data/warehouse.duckdb   # required — the database file
+  storage_version: v1.5.0         # optional — the on-disk format a new file is created in
   entities:
     events:
       read:
         sync: { mode: incremental, cursor: updated_at }
 ```
 
-`path` is the only user-facing key (`ConnectionConfigSchema` rejects anything else). A relative path
+`path` and `storage_version` are the only user-facing keys (`ConnectionConfigSchema` rejects anything
+else). A relative path
 resolves against the **project directory** (the same `base_dir` mechanism localfiles and sqlite use,
 injected internally by the host — never write `base_dir` yourself); an absolute path passes through.
 The **entity is `table` or `schema.table`**, named the way duckdb names it — no separate
 `schema:`/`table:` options (PZ0348).
+
+`storage_version` (`vX.Y.Z` or `latest`) sets the format the file is **created** in. Without it, a
+file pz creates uses the format of the DuckDB that ships with `pz`, which an older DuckDB cannot open
+(DuckDB 1.5 refuses a file created by 2.0). Pin it when other tools read the file:
+`storage_version: v1.5.0` keeps it readable by DuckDB 1.5 and later. The pin never rewrites an existing
+file. An existing file already in the pinned format or older stays as it is. A pin below the format an
+existing file already uses fails the run, because DuckDB cannot lower a database's storage version.
+Recreate the file (or export it from a newer DuckDB) to move it to an older format.
 
 Under `pz mcp`, a `path:` that resolves outside the project directory is refused with `PZ0606`,
 exactly like localfiles and sqlite — the agent surface operates only on files inside the project.

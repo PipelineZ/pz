@@ -21,6 +21,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   - Contract-less csv/json integer columns beyond int64 are detected as `HUGEINT` and lose nothing, so the
     `PZ0523` lossy-integer warning now fires only for whole numbers beyond 2^53 written as decimals.
 
+### Added
+
+- **duckdb: `storage_version:` on a connection** sets the on-disk format a database file is created in, so a file
+  other tools read can stay openable by an older DuckDB (`storage_version: v1.5.0`). It never rewrites an existing
+  file; a pin below the format an existing file already uses fails the run, because DuckDB cannot lower it.
+
 ### Fixed
 
 - **A watermark bound over a `timestamptz` (`updated_at > {{ watermark(...) }} - interval 2 hour`) is no longer
