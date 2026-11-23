@@ -318,7 +318,14 @@ internal sealed class PlainSession : ISinkWriteSession
 {
     public bool Aborted { get; private set; }
 
-    public ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct) => ValueTask.CompletedTask;
+    /// <summary>Rows handed to <see cref="WriteBatchAsync"/> across every batch.</summary>
+    public long RowsWritten { get; private set; }
+
+    public ValueTask WriteBatchAsync(RecordBatch batch, CancellationToken ct)
+    {
+        RowsWritten += batch.Length;
+        return ValueTask.CompletedTask;
+    }
 
     public ValueTask<WriteResult> CommitAsync(CancellationToken ct) => new(new WriteResult(0, 0));
 

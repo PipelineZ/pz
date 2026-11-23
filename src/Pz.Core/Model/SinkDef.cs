@@ -10,8 +10,10 @@ namespace Pz.Core.Model;
 /// <c>= []</c>: a record positional parameter cannot default to a collection expression (CS1736 -- not
 /// a compile-time constant).
 ///
-/// <see cref="AcceptDuplicates"/> is the explicit consent flag for at-least-once delivery semantics
-/// (append fed by an incremental dataset). See <c>https://pipelinez.dev/concepts/delivery-guarantees/</c>.
+/// <see cref="Duplicates"/> is the declared <c>duplicates:</c> policy (see <see cref="DuplicatesPolicy"/>);
+/// <see cref="AcceptDuplicates"/> is its append consent to at-least-once delivery (append fed by an
+/// incremental dataset). See <c>https://pipelinez.dev/concepts/delivery-guarantees/</c>.
+/// <see cref="OrderBy"/> holds the columns that choose the survivor under <c>duplicates: latest</c>.
 ///
 /// <see cref="Input"/> is the staging relation of the pipeline whose <c>INSERT INTO {{ sink(...) }}</c>
 /// binds this output. It names the drained relation and is part of the SinkWrite NodeId.
@@ -21,8 +23,14 @@ namespace Pz.Core.Model;
 /// strategy, DagCompiler checks the cdc feed (PZ0336/PZ0337).</summary>
 public sealed record OutputDef(string Name, string Input, string Mode, string SchemaPolicy,
     IReadOnlyDictionary<string, object?> Options, IReadOnlyList<string> Keys, RetryDef? Retry = null,
-    bool AcceptDuplicates = false, string? OnDelete = null)
+    string? Duplicates = null, string? OnDelete = null, IReadOnlyList<string>? OrderBy = null)
 {
+    /// <summary>The append consent to at-least-once delivery (<c>duplicates: accept</c>).</summary>
+    public bool AcceptDuplicates => Duplicates == DuplicatesPolicy.Accept;
+
+    /// <summary><see cref="OrderBy"/>, empty when undeclared.</summary>
+    public IReadOnlyList<string> OrderByColumns => OrderBy ?? [];
+
     public OutputDef(string Name, string Input, string Mode, string SchemaPolicy,
         IReadOnlyDictionary<string, object?> Options)
         : this(Name, Input, Mode, SchemaPolicy, Options, [])

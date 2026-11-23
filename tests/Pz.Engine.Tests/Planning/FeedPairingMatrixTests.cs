@@ -16,7 +16,7 @@ public sealed class FeedPairingMatrixTests
 {
     private static OutputDef Output(string mode, bool acceptDuplicates = false, params string[] keys) =>
         new("out", "stg_orders", mode, "fail_on_change", new Dictionary<string, object?>(), keys,
-            AcceptDuplicates: acceptDuplicates);
+            Duplicates: acceptDuplicates ? "accept" : null);
 
     // (F1) feed -> replace: refused with PZ0335.
     [Fact]

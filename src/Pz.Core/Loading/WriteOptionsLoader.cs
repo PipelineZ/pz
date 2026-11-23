@@ -59,7 +59,15 @@ internal static class WriteOptionsLoader
         }
 
         var keys = ParseKeys(write, where, errors, ref valid);
-        var acceptDuplicates = ParseDuplicates(write, where, errors, ref valid);
+        var duplicates = ParseDuplicates(write, where, errors, ref valid);
+        var orderBy = ParseOrderBy(write, where, errors, ref valid);
+        foreach (var message in DuplicatesPolicy.CrossFieldErrors(duplicates, orderBy, strategy))
+        {
+            Error(errors, PzErrorCode.SyncModeInvalid, where, message,
+                "strategy: merge\n      keys: [id]\n      duplicates: latest\n      order_by: [updated_at]");
+            valid = false;
+        }
+
         var onDelete = ParseOnDelete(write, where, strategy, errors, ref valid);
 
         var schemaPolicy = "fail_on_change";
@@ -85,13 +93,13 @@ internal static class WriteOptionsLoader
         // Whatever is left is a connector write option. Ordered so CanonicalJson.Serialize -- which feeds
         // the SinkWrite NodeId -- sees the same dictionary whichever surface declared it.
         var options = write
-            .Where(kv => kv.Key is not ("strategy" or "keys" or "duplicates" or "on_delete"
+            .Where(kv => kv.Key is not ("strategy" or "keys" or "duplicates" or "order_by" or "on_delete"
                 or "schema_policy" or "retry"))
             .OrderBy(kv => kv.Key, StringComparer.Ordinal)
             .ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
 
         return valid
-            ? new SinkWriteOptions(strategy, keys, schemaPolicy, acceptDuplicates, onDelete, retry, options)
+            ? new SinkWriteOptions(strategy, keys, schemaPolicy, duplicates, onDelete, retry, options, orderBy)
             : null;
     }
 
@@ -113,24 +121,49 @@ internal static class WriteOptionsLoader
         return [];
     }
 
-    private static bool ParseDuplicates(Dictionary<string, object?> write, string where,
+    private static string? ParseDuplicates(Dictionary<string, object?> write, string where,
         List<PzError> errors, ref bool valid)
     {
         if (!write.TryGetValue("duplicates", out var value) || value is null)
         {
-            return false;
+            return null;
         }
 
-        if (value as string == "accept")
+        if (value is string s && DuplicatesPolicy.All.Contains(s, StringComparer.Ordinal))
         {
-            return true;
+            return s;
         }
 
         Error(errors, PzErrorCode.SyncModeInvalid, where,
-            $"'duplicates' must be the literal 'accept' (got '{value}')",
+            $"'duplicates' must be one of: {string.Join(", ", DuplicatesPolicy.All)} (got '{value}')",
             "strategy: append\n      duplicates: accept");
         valid = false;
-        return false;
+        return null;
+    }
+
+    /// <summary><c>order_by:</c> is one column name or a list of them.</summary>
+    private static IReadOnlyList<string> ParseOrderBy(Dictionary<string, object?> write, string where,
+        List<PzError> errors, ref bool valid)
+    {
+        if (!write.TryGetValue("order_by", out var value) || value is null)
+        {
+            return [];
+        }
+
+        if (value is string { Length: > 0 } single)
+        {
+            return [single];
+        }
+
+        if (value is List<object?> { Count: > 0 } list && list.All(i => i is string { Length: > 0 }))
+        {
+            return [.. list.Cast<string>()];
+        }
+
+        Error(errors, PzErrorCode.YamlShape, where,
+            "'order_by' must be a column name or a non-empty list of column names", "order_by: [updated_at]");
+        valid = false;
+        return [];
     }
 
     private static string? ParseOnDelete(Dictionary<string, object?> write, string where, string strategy,

@@ -110,11 +110,11 @@ public sealed class MergeKeyGuardTests : IAsyncLifetime
 
     // A plain merge (no CDC): OnDelete is null, so the CDC-deletes guard is skipped and this test isolates
     // the merge-upsert guard.
-    private static DagNode MergeSinkNode()
+    private static DagNode MergeSinkNode(string? duplicates = null, params string[] orderBy)
     {
         var sink = new ConnectionDef("cap", "cdcdelete", new Dictionary<string, object?>(), [],
             "sinks/cap.yml") { Outputs = [new OutputDef("out", "stg_orders", "merge", "fail_on_change",
-                new Dictionary<string, object?>(), ["id"])] };
+                new Dictionary<string, object?>(), ["id"], Duplicates: duplicates, OrderBy: orderBy)] };
         var def = new SinkOutputDef(sink, sink.Outputs[0]);
         return new DagNode(new NodeId("ffffffffffffffff"), NodeKind.SinkWrite, "cap.out", [], null, def);
     }
@@ -249,5 +249,116 @@ public sealed class MergeKeyGuardTests : IAsyncLifetime
         var warning = Assert.Single(events.DuplicateWarnings);
         Assert.Equal(1, warning.Groups);
         Assert.Equal(1, warning.ExtraRows);
+    }
+
+    // duplicates: fail turns the PZ0522 warning into a failure before the write: the batch never
+    // reaches the sink, so no arbitrary row is ever committed.
+    [Fact]
+    public async Task Duplicates_fail_refuses_duplicate_keys_PZ0541_before_the_copy_runs()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'newer'), (1, 'older'), (2, 'only')) t(id, name)");
+        var node = MergeSinkNode("fail");
+        var events = new RecordingEvents();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node, events), default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.MergeKeyDuplicatesRefused, result.Error!.Code);
+        Assert.Contains("1 merge key group(s)", result.Error.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("newer", result.Error.Message, StringComparison.Ordinal); // counts, never values
+        Assert.Empty(events.DuplicateWarnings);
+        Assert.Equal(0L, await _duck.ScalarAsync<long>(
+            "select count(*) from information_schema.tables where table_schema = 'staging' and table_name = 'native_out'"));
+    }
+
+    [Fact]
+    public async Task Duplicates_fail_passes_unique_keys()
+    {
+        await _duck.ExecuteAsync($"create table {Canonical} as select range as id, 'x' as name from range(3)");
+        var node = MergeSinkNode("fail");
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node), default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(3L, await _duck.ScalarAsync<long>("select count(*) from staging.native_out"));
+    }
+
+    // duplicates: latest hands the sink one row per key, the one with the highest order_by values:
+    // the sink's own arbitrary dedup then has nothing left to choose between.
+    [Fact]
+    public async Task Duplicates_latest_drains_the_highest_order_by_row_per_key()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values " +
+            "(1, 'older', 1, 1), (1, 'newest', 2, 1), (1, 'newer', 1, 9), (2, 'only', null, null), " +
+            "(3, 'dated', 1, 1), (3, 'undated', null, null)) t(id, name, version, seq)");
+        var node = MergeSinkNode("latest", "version", "seq");
+        var events = new RecordingEvents();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node, events), default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Empty(events.DuplicateWarnings);
+        Assert.Equal("1:newest,2:only,3:dated", await _duck.ScalarAsync<string>(
+            "select string_agg(id || ':' || name, ',' order by id) from staging.native_out"));
+    }
+
+    [Fact]
+    public async Task Duplicates_latest_drains_through_the_universal_path_too()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'older', 1), (1, 'newer', 2), (2, 'only', 1)) t(id, name, version)");
+        var connector = new PlainSinkConnector();
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(MergeSinkNode("latest", "version"), Context(connector), default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal(2L, connector.Session!.RowsWritten);
+    }
+
+    // Identical rows that tie are one row in two copies: either is that row, so they pass.
+    [Fact]
+    public async Task Duplicates_latest_accepts_identical_rows_that_tie()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'same', 5), (1, 'same', 5), (1, 'old', 4)) t(id, name, version)");
+        var node = MergeSinkNode("latest", "version");
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node), default);
+
+        Assert.Equal(NodeStatus.Success, result.Status);
+        Assert.Equal("1:same", await _duck.ScalarAsync<string>(
+            "select string_agg(id || ':' || name, ',') from staging.native_out"));
+    }
+
+    [Fact]
+    public async Task Duplicates_latest_refuses_differing_rows_that_tie_PZ0542()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'a', 5), (1, 'b', 5), (2, 'x', null), (2, 'y', null)) t(id, name, version)");
+        var node = MergeSinkNode("latest", "version");
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node), default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.MergeLatestAmbiguous, result.Error!.Code);
+        Assert.Contains("in 2 merge key group(s)", result.Error.Message, StringComparison.Ordinal);
+        Assert.Equal(0L, await _duck.ScalarAsync<long>(
+            "select count(*) from information_schema.tables where table_schema = 'staging' and table_name = 'native_out'"));
+    }
+
+    [Fact]
+    public async Task Duplicates_latest_refuses_an_order_by_column_missing_from_the_staged_input_PZ0542()
+    {
+        await _duck.ExecuteAsync(
+            $"create table {Canonical} as select * from (values (1, 'a'), (1, 'b')) t(id, name)");
+        var node = MergeSinkNode("latest", "updated_at");
+
+        var result = await new SinkWriteExecutor().ExecuteAsync(node, NativeContext(new NativeMergeSink(), node), default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.MergeLatestAmbiguous, result.Error!.Code);
+        Assert.Contains("[updated_at]", result.Error.Message, StringComparison.Ordinal);
     }
 }

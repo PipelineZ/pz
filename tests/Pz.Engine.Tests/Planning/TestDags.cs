@@ -81,7 +81,7 @@ internal static class TestDags
     /// a Feed-resolving source with <see cref="DagAndRegistryWithStubSource(DatasetDef, ISourceConnector, OutputDef?)"/>
     /// without tripping the feed x replace refusal (PZ0335) the default replace output would.</summary>
     public static OutputDef FeedCompatibleOutput() =>
-        new("out", "stg_orders", "append", "fail_on_change", new Dictionary<string, object?>(), [], AcceptDuplicates: true);
+        new("out", "stg_orders", "append", "fail_on_change", new Dictionary<string, object?>(), [], Duplicates: "accept");
 
     /// <summary>Feed-row pairing-matrix fixture -- a
     /// <see cref="StubFeedSource"/> (resolves Feed for every dataset) feeding one sink output whose write

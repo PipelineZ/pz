@@ -136,7 +136,9 @@ survivor per key (physical staging order, NOT cursor order — the sink ABI's do
 contract), so a stale row can win over a newer one while the watermark still advances past both; this
 event makes that collapse loud. It is a warning, never a failure: event-log-shaped inputs legitimately
 carry duplicate keys, and the fix when order matters is a deterministic dedup (e.g. max-cursor per key)
-in the pipeline. A merge output with unique staged keys never publishes it at all.
+in the pipeline. A merge output with unique staged keys never publishes it at all, and neither does
+one that declares a `duplicates:` policy: under `duplicates: fail` the node fails (`PZ0541`) instead,
+and under `duplicates: latest` the survivor is the row with the highest `order_by` values.
 
 Key column names and counts only — never row values, and never connection config.
 

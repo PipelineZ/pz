@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Diagnostics;
 using Pz.Connectors.Abstractions;
 using Pz.Core.Dag;
+using Pz.Core.Model;
 using Pz.Core.Validation;
 using Pz.Diagnostics.Otel;
 using Pz.DuckDb;
@@ -106,10 +107,35 @@ public sealed class SinkWriteExecutor : INodeExecutor
             // for event-log-shaped inputs, so unlike the NULL-key guard above this stays a warning, not a
             // failure: an event with counts only (never row values), so the author can dedup
             // deterministically in the pipeline when a specific row must win.
+            //
+            // A declared `duplicates:` policy replaces that arbitrary pick: `fail` refuses the batch,
+            // `latest` drains through a view that keeps one row per key, chosen by `order_by`.
             if (extraRows > 0)
             {
-                ctx.Events.SafeMergeKeyDuplicatesDetected(node, def.Output.Name, def.Output.Keys,
-                    duplicateGroups, extraRows);
+                switch (def.Output.Duplicates)
+                {
+                    case DuplicatesPolicy.Fail:
+                        return NodeResult.Failed(node, new PzError(PzErrorCode.MergeKeyDuplicatesRefused,
+                            $"output '{def.Output.Name}': {duplicateGroups} merge key group(s) on " +
+                            $"[{string.Join(", ", def.Output.Keys)}] repeat in the staged input ({extraRows} extra " +
+                            "row(s)), and duplicates: fail refuses to keep an arbitrary row per key",
+                            def.Sink.FilePath, null,
+                            "dedup in the pipeline so each key appears once, or set duplicates: latest with " +
+                            "order_by: [<column>] to keep the row with the highest value"));
+                    case DuplicatesPolicy.Latest:
+                        var latest = await LatestPerKeyAsync(node, def, relation, keyList, ctx, ct).ConfigureAwait(false);
+                        if (latest.Error is not null)
+                        {
+                            return NodeResult.Failed(node, latest.Error);
+                        }
+
+                        relation = latest.Relation!;
+                        break;
+                    default:
+                        ctx.Events.SafeMergeKeyDuplicatesDetected(node, def.Output.Name, def.Output.Keys,
+                            duplicateGroups, extraRows);
+                        break;
+                }
             }
         }
 
@@ -578,6 +604,53 @@ public sealed class SinkWriteExecutor : INodeExecutor
         AbortSemantics.None => "none",
         _ => throw new ArgumentOutOfRangeException(nameof(semantics), semantics, "unknown abort semantics"),
     };
+
+    /// <summary><c>duplicates: latest</c>: a view over <paramref name="relation"/> that keeps, per merge
+    /// key, the row with the highest <c>order_by</c> values (NULLs lowest). The pick must name one row,
+    /// so it fails (PZ0542) when an <c>order_by</c> column is missing or when rows that differ tie for
+    /// the top; rows that tie and are identical are the same row, so either one is that row. A temp
+    /// view keyed by the node Id: it adds nothing to <c>staging.duckdb</c>, and a retried attempt
+    /// replaces its own.</summary>
+    private static async Task<(string? Relation, PzError? Error)> LatestPerKeyAsync(DagNode node,
+        SinkOutputDef def, string relation, string keyList, RunContext ctx, CancellationToken ct)
+    {
+        var schema = await ctx.Duck.GetResultSchemaAsync($"select * from {relation}", ct).ConfigureAwait(false);
+        var staged = schema.FieldsList.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var missing = def.Output.OrderByColumns.Where(c => !staged.Contains(c)).ToList();
+        if (missing.Count > 0)
+        {
+            return (null, new PzError(PzErrorCode.MergeLatestAmbiguous,
+                $"output '{def.Output.Name}': order_by column(s) [{string.Join(", ", missing)}] are not in the " +
+                "staged input, so duplicates: latest cannot rank rows",
+                def.Sink.FilePath, null,
+                "name columns the pipeline selects into this output in order_by"));
+        }
+
+        var orderBy = string.Join(", ", def.Output.OrderByColumns.Select(c =>
+            ArrowInterop.QuoteIdentifier(c) + " desc nulls last"));
+        var tiedGroups = await ctx.Duck.ScalarAsync<long>(
+            "select count(*) from (select 1 from (" +
+            $"select {keyList}, pz_row, rank() over (partition by {keyList} order by {orderBy}) as pz_rank " +
+            $"from (select *, t as pz_row from {relation} t)) r " +
+            $"where pz_rank = 1 group by {keyList} having count(distinct pz_row) > 1) g",
+            ct).ConfigureAwait(false);
+        if (tiedGroups > 0)
+        {
+            return (null, new PzError(PzErrorCode.MergeLatestAmbiguous,
+                $"output '{def.Output.Name}': in {tiedGroups} merge key group(s) on " +
+                $"[{string.Join(", ", def.Output.Keys)}], rows that differ share the highest order_by values " +
+                $"[{string.Join(", ", def.Output.OrderByColumns)}], so duplicates: latest names no single row",
+                def.Sink.FilePath, null,
+                "add a column to order_by that breaks the tie, such as a sequence number or load timestamp"));
+        }
+
+        var view = ArrowInterop.QuoteIdentifier("pz_latest_" + node.Id.Value);
+        await ctx.Duck.ExecuteAsync(
+            $"create or replace temp view {view} as select * from {relation} " +
+            $"qualify row_number() over (partition by {keyList} order by {orderBy}) = 1",
+            ct).ConfigureAwait(false);
+        return (view, null);
+    }
 
     private static void CreateParentDirectory(string path)
     {

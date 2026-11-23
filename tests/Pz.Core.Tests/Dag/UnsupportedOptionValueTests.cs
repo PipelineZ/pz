@@ -90,7 +90,7 @@ public class UnsupportedOptionValueTests
         // cannot manufacture a Guid (every builtin object that could is stripped), so this exercises the
         // YAML surface, which types options identically to the call-site kwarg surface.
         var badValue = Guid.NewGuid();
-        var writeOptions = new SinkWriteOptions("replace", [], "fail_on_change", false, null, null,
+        var writeOptions = new SinkWriteOptions("replace", [], "fail_on_change", null, null, null,
             new Dictionary<string, object?> { ["driver_token"] = badValue });
         var sink = Sink() with { EntityWrites = new Dictionary<string, SinkWriteOptions> { ["out"] = writeOptions } };
         var p = Project(

@@ -23,6 +23,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **merge: `duplicates: fail | latest` and `order_by:` decide what happens to duplicate keys in one batch.**
+  Without them a merge keeps an arbitrary row per key and warns (`PZ0522`). `duplicates: fail` fails the node
+  (`PZ0541`) before anything is written. `duplicates: latest` with `order_by: [col, ...]` keeps the row with the
+  highest values (NULLs lowest) and fails (`PZ0542`) when an `order_by` column is missing or when rows that differ
+  tie for the top. Both are merge-only, are declared on either write surface, and work with every sink connector:
+  the engine applies them before the write. Outputs that declare neither keep their node ids.
 - **duckdb: `storage_version:` on a connection** sets the on-disk format a database file is created in, so a file
   other tools read can stay openable by an older DuckDB (`storage_version: v1.5.0`). It never rewrites an existing
   file; a pin below the format an existing file already uses fails the run, because DuckDB cannot lower it.
