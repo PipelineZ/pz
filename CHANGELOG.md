@@ -7,6 +7,20 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Breaking
+
+- **pz runs on DuckDB 2.0.1** (DuckDB.NET 2.0.1). What changes for a project:
+  - A DuckDB database file pz creates (the `duckdb` sink, and each run's `staging.duckdb`) is in DuckDB 2.0's
+    format, which DuckDB 1.5 cannot open. Existing 1.5 files are read and written in place and stay readable by
+    1.5. Migration: if other tools still on DuckDB 1.5 open a file the `duckdb` connector creates, set
+    `storage_version: v1.5.0` on that connection before the file is first created.
+  - Extensions listed under `extensions:` in `project.yml` are installed for DuckDB 2.0.1, so a community
+    extension must be published for that version. Until it is, the run fails with `PZ0402`.
+  - The `motherduck` connector fails until MotherDuck's extension supports DuckDB 2.0.1: it refuses to attach
+    (`PZ0311`, "not yet supported"). Migration: stay on the previous pz release for MotherDuck projects.
+  - Contract-less csv/json integer columns beyond int64 are detected as `HUGEINT` and lose nothing, so the
+    `PZ0523` lossy-integer warning now fires only for whole numbers beyond 2^53 written as decimals.
+
 ### Fixed
 
 - **A watermark bound over a `timestamptz` (`updated_at > {{ watermark(...) }} - interval 2 hour`) is no longer
