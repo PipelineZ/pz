@@ -1,5 +1,6 @@
 using Pz.Core.Dag;
 using Pz.Core.Model;
+using Pz.Core.Validation;
 using Pz.DuckDb;
 using Pz.Engine.Checks;
 using Pz.Engine.Execution;
@@ -422,5 +423,21 @@ public sealed class CheckExecutorTests : IAsyncLifetime
         Assert.Equal(NodeStatus.Failed, result.Status);
         Assert.Contains("1 violation(s) (samples disabled)", result.Error!.Message);
         Assert.DoesNotContain("status=bad", result.Error.Message);
+    }
+
+    [Fact]
+    public async Task A_failing_check_samples_rows_whose_columns_the_Arrow_path_does_not_carry()
+    {
+        await _duck.ExecuteAsync("create table staging.p as select * from (values " +
+            "(null::INTEGER, {'a': 1}, [1, 2], 3::SMALLINT)) t(id, s, l, small)");
+        var check = new CheckDef("not_null", ["id"], new Dictionary<string, object?>());
+
+        var result = await new CheckExecutor().ExecuteAsync(CheckNode("p", check),
+            new RunContext(_duck, new ConnectorRegistry(), new RunPaths(_dir, "test-run"), NullRunEvents.Instance), default);
+
+        Assert.Equal(NodeStatus.Failed, result.Status);
+        Assert.Equal(PzErrorCode.CheckFailed, result.Error!.Code);
+        Assert.Contains("s={'a': 1}", result.Error.Message, StringComparison.Ordinal);
+        Assert.Contains("small=3", result.Error.Message, StringComparison.Ordinal);
     }
 }

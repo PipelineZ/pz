@@ -409,7 +409,7 @@ public sealed class ArrowChunkCoalescerTests
             .Field(f => f.Name("f").DataType(FloatType.Default).Nullable(true))
             .Build();
 
-        var error = Assert.Throws<NotSupportedException>(
+        var error = Assert.Throws<UnsupportedArrowTypeException>(
             () => new ArrowChunkCoalescer(schema, LargeTarget, LargeCap, new PooledNativeAllocator()));
         Assert.Contains("'f'", error.Message, StringComparison.Ordinal);
     }

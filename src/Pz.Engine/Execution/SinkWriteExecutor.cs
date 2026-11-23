@@ -221,7 +221,19 @@ public sealed class SinkWriteExecutor : INodeExecutor
                 node.Id.Value, ctx.Paths.RunId, ctx.Attempts.TryGetValue(node.Id, out var a) ? a : 1),
         };
 
-        var schema = await ctx.Duck.GetResultSchemaAsync($"select * from {relation}", ct).ConfigureAwait(false);
+        // The Arrow path carries only the v0 type matrix. A column outside it (STRUCT, LIST, VARIANT,
+        // SMALLINT, FLOAT…) fails here, before the connector opens a write session, naming every such column
+        // and the cast that fixes it; otherwise the drain would fail partway with nothing but the Arrow type.
+        Apache.Arrow.Schema schema;
+        try
+        {
+            schema = await ctx.Duck.GetResultSchemaAsync($"select * from {relation}", ct).ConfigureAwait(false);
+        }
+        catch (UnsupportedArrowTypeException ex)
+        {
+            return NodeResult.Failed(node, await StagedColumns.UnsupportedForArrowAsync(ctx.Duck, relation, ex,
+                def.Output.Name, def.Sink.Connector, def.Sink.FilePath, ct).ConfigureAwait(false));
+        }
 
         if (connector.Capabilities.HasFlag(ConnectorCapabilities.TextLengthStats))
         {
@@ -245,8 +257,8 @@ public sealed class SinkWriteExecutor : INodeExecutor
         if (def.Output.OnDelete is "delete" or "soft" && def.CdcDeleteOrigin is { } cdcOrigin)
         {
             var deletesRelation = StagingNames.DeletesOf(StagingNames.ForSourceLoad(cdcOrigin.Source, cdcOrigin.Dataset));
-            var deletesSchema = await ctx.Duck.GetResultSchemaAsync($"select * from {deletesRelation}", ct).ConfigureAwait(false);
-            var deletesColumns = deletesSchema.FieldsList.Select(f => f.Name).ToHashSet();
+            var deletesColumns = (await StagedColumns.DescribeAsync(ctx.Duck, deletesRelation, ct).ConfigureAwait(false))
+                .Select(c => c.Name).ToHashSet();
             var missingKey = def.Output.Keys.FirstOrDefault(k => !deletesColumns.Contains(k));
             if (missingKey is not null)
             {
@@ -614,8 +626,8 @@ public sealed class SinkWriteExecutor : INodeExecutor
     private static async Task<(string? Relation, PzError? Error)> LatestPerKeyAsync(DagNode node,
         SinkOutputDef def, string relation, string keyList, RunContext ctx, CancellationToken ct)
     {
-        var schema = await ctx.Duck.GetResultSchemaAsync($"select * from {relation}", ct).ConfigureAwait(false);
-        var staged = schema.FieldsList.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var staged = (await StagedColumns.DescribeAsync(ctx.Duck, relation, ct).ConfigureAwait(false))
+            .Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var missing = def.Output.OrderByColumns.Where(c => !staged.Contains(c)).ToList();
         if (missing.Count > 0)
         {

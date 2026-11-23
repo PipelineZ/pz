@@ -148,9 +148,8 @@ public static class SqlDryCompiler
     private static async Task WarnOnMissingMarksAsync(DagNode node, PipelineDef def, IDuckSession duck,
         List<PzWarning> warnings, CancellationToken ct)
     {
-        var schema = await duck.GetResultSchemaAsync($"select * from {StagingRelation(node.Name)}", ct)
-            .ConfigureAwait(false);
-        var output = schema.FieldsList.Select(f => f.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var output = (await StagedColumns.DescribeAsync(duck, StagingRelation(node.Name), ct).ConfigureAwait(false))
+            .Select(c => c.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var mark in def.RedactedColumns.Where(m => !output.Contains(m)))
         {
             warnings.Add(new PzWarning(PzErrorCode.RedactedColumnNotInOutput,

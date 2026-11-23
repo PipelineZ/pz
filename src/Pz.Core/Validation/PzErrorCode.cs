@@ -771,6 +771,13 @@ public static class PzErrorCode
     /// access, which the read-only session forbids). The message carries DuckDB's own first line.</summary>
     public const string StagingQueryFailed = "PZ0545";
 
+    /// <summary>An output's staged input has columns the connector's Arrow path does not carry (STRUCT, LIST,
+    /// MAP, VARIANT, ENUM, SMALLINT, TINYINT, unsigned integers, FLOAT, BLOB, TIME, INTERVAL, nanosecond or
+    /// second timestamps). Raised before the connector opens a write session, so nothing is written. The
+    /// message names each column with its DuckDB type and the cast that fixes it; a sink with a native copy
+    /// (files, DuckDB-family) is unaffected.</summary>
+    public const string SinkColumnTypeUnsupported = "PZ0546";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in
