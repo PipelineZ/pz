@@ -245,10 +245,15 @@ write:
   format: parquet
   path: out-probe/
 EOF
-  local report
-  report="$(cd "${proj}" && "${PZ}" connector test "${pkg_dir}" --config probe.yml)"
+  # Captured with its exit code rather than under `set -e`, so a failing run still prints its report.
+  local report status=0
+  report="$(cd "${proj}" && "${PZ}" connector test "${pkg_dir}" --config probe.yml 2>&1)" || status=$?
+  if [[ ${status} -ne 0 ]] || grep -q "FAIL" <<<"${report}"; then
+    echo "FAIL: pz connector test exited ${status}"
+    echo "${report}"
+    exit 1
+  fi
   echo "${report}" | tail -n 5
-  ! grep -q "FAIL" <<<"${report}" || { echo "FAIL: a conformance vector failed"; echo "${report}"; exit 1; }
   echo "mode ${mode}: OK"
 }
 

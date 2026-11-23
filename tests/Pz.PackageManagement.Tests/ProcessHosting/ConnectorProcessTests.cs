@@ -200,6 +200,12 @@ public sealed class ConnectorProcessTests : IDisposable
             var aws = await SpawnedEnvironmentNames(["aws", "not-a-group"]);
 
             Assert.Contains("PATH", none);
+            if (Environment.GetEnvironmentVariable("DOTNET_ROOT") is not null)
+            {
+                // A framework-dependent connector finds its runtime through it.
+                Assert.Contains("DOTNET_ROOT", none);
+            }
+
             Assert.Empty(none.Intersect(set));
             Assert.Equal(["AZURE_CLIENT_SECRET", "AZURE_TENANT_ID", "IDENTITY_HEADER"], azure.Intersect(set).Order());
             Assert.Equal(["AWS_WEB_IDENTITY_TOKEN_FILE"], aws.Intersect(set));

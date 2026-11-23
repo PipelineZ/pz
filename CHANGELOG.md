@@ -32,6 +32,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **A failed check over a table with such a column reports its sample rows** (as DuckDB's text) instead of
   failing the run with an engine error, and `duplicates: latest`, the CDC deletes guard and the redact-mark
   check (PZ0403) no longer fail on them either.
+- **A framework-dependent out-of-process connector starts when .NET is installed outside its default location.**
+  pz now passes `DOTNET_ROOT` (and `DOTNET_ROOT_X64`/`DOTNET_ROOT_ARM64`) to the connector process; before, the
+  child exited at once with "You must install or update .NET" and the handshake failed (PZ0356). Native AOT and
+  self-contained connectors were never affected.
 
 ## [0.20.0] - 2026-11-23
 
