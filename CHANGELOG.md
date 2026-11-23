@@ -25,6 +25,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Added
 
+- **`pz staging serve --run <id>` serves a finished run's staging over the Quack protocol**, until Ctrl+C, so any
+  DuckDB 2.0 client can attach it and query the run's intermediate tables: why a pipeline produced 0 rows, what a
+  source actually landed. It prints a paste-ready `CREATE SECRET` + `ATTACH` with a fresh random token and lists the
+  tables. Everything a client reaches is read-only, and the serving process gives up filesystem and network access
+  once listening, so a token holder can read the run's tables and nothing else. It listens on localhost by default;
+  `--host` other than loopback warns that the token and data travel unencrypted. `PZ0543` covers a run that cannot
+  be served (missing, cleaned, still running, quack unavailable, address in use), `PZ0544` the option rules.
 - **merge: `duplicates: fail | latest` and `order_by:` decide what happens to duplicate keys in one batch.**
   Without them a merge keeps an arbitrary row per key and warns (`PZ0522`). `duplicates: fail` fails the node
   (`PZ0541`) before anything is written. `duplicates: latest` with `order_by: [col, ...]` keeps the row with the

@@ -113,6 +113,95 @@ public sealed class DuckSession : IDuckSession
         }
     }
 
+    /// <summary>Opens <paramref name="databasePath"/> for <c>pz staging serve</c>. The quack server serves a
+    /// database's own default catalog, whatever a session has switched to, and that catalog cannot be named
+    /// <c>staging</c> like the schema it holds (a client's <c>staging.t</c> would be ambiguous). So a small
+    /// view database is built in <paramref name="scratchDir"/>: one view per relation outside
+    /// <c>pz_meta</c>, over the staging file attached as <c>pz</c>. It is then opened read-only as the
+    /// database itself, with the staging file attached read-only beside it, and served: nothing a client
+    /// reaches is writable.
+    ///
+    /// <paramref name="beforeLockdown"/> runs before the session gives up filesystem and network access
+    /// and locks its configuration, as <see cref="OpenReadOnly"/> does, for the statements that need them
+    /// (loading quack and starting its server). Autoloading is off before the staging file is attached,
+    /// and the build connection is locked down before it reads the file's catalog. Returns the session and
+    /// the served relations, <c>schema.name</c>, ordered.</summary>
+    public static (DuckSession Session, IReadOnlyList<string> Relations) OpenForServing(string databasePath,
+        string scratchDir, IReadOnlyList<string> beforeLockdown)
+    {
+        var viewDatabase = Path.Combine(scratchDir, "run.duckdb");
+        var relations = BuildViewDatabase(databasePath, viewDatabase);
+
+        var builder = new DuckDBConnectionStringBuilder { DataSource = viewDatabase };
+        builder["ACCESS_MODE"] = "READ_ONLY";
+        var connection = new DuckDBConnection(builder.ConnectionString);
+        try
+        {
+            connection.Open();
+
+            var session = new DuckSession(connection);
+            session.ExecuteSync("SET autoinstall_known_extensions = false");
+            session.ExecuteSync("SET autoload_known_extensions = false");
+            session.ExecuteSync($"ATTACH {ArrowInterop.QuoteLiteral(databasePath)} AS {CatalogAlias} (READ_ONLY)");
+            foreach (var statement in beforeLockdown)
+            {
+                session.ExecuteSync(statement);
+            }
+
+            session.ExecuteSync("SET enable_external_access = false");
+            session.ExecuteSync("SET lock_configuration = true");
+            return (session, relations);
+        }
+        catch
+        {
+            connection.Dispose();
+            throw;
+        }
+    }
+
+    private static IReadOnlyList<string> BuildViewDatabase(string databasePath, string viewDatabase)
+    {
+        using var connection = new DuckDBConnection(
+            new DuckDBConnectionStringBuilder { DataSource = viewDatabase }.ConnectionString);
+        connection.Open();
+        var build = new DuckSession(connection);
+        build.ExecuteSync("SET autoinstall_known_extensions = false");
+        build.ExecuteSync("SET autoload_known_extensions = false");
+        build.ExecuteSync($"ATTACH {ArrowInterop.QuoteLiteral(databasePath)} AS {CatalogAlias} (READ_ONLY)");
+        build.ExecuteSync("SET enable_external_access = false");
+
+        var relations = new List<(string Schema, string Name)>();
+        using (var command = connection.CreateCommand())
+        {
+            command.CommandText =
+                $"select schema_name, table_name from duckdb_tables() where database_name = '{CatalogAlias}' " +
+                $"union all select schema_name, view_name from duckdb_views() where database_name = '{CatalogAlias}' and not internal " +
+                "order by 1, 2";
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                if (reader.GetString(0) != "pz_meta")
+                {
+                    relations.Add((reader.GetString(0), reader.GetString(1)));
+                }
+            }
+        }
+
+        foreach (var schema in relations.Select(r => r.Schema).Distinct(StringComparer.Ordinal))
+        {
+            build.ExecuteSync($"CREATE SCHEMA IF NOT EXISTS {ArrowInterop.QuoteIdentifier(schema)}");
+        }
+
+        foreach (var (schema, name) in relations)
+        {
+            var qualified = $"{ArrowInterop.QuoteIdentifier(schema)}.{ArrowInterop.QuoteIdentifier(name)}";
+            build.ExecuteSync($"CREATE VIEW {qualified} AS SELECT * FROM {CatalogAlias}.{qualified}");
+        }
+
+        build.ExecuteSync($"DETACH {CatalogAlias}");
+        return [.. relations.Select(r => $"{r.Schema}.{r.Name}")];
+    }
+
     private void AttachDatabase(string databasePath, bool readOnly = false)
     {
         ExecuteSync($"ATTACH {ArrowInterop.QuoteLiteral(databasePath)} AS {CatalogAlias}{(readOnly ? " (READ_ONLY)" : "")}");

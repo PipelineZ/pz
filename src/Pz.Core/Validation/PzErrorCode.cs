@@ -756,6 +756,16 @@ public static class PzErrorCode
     /// <c>order_by</c> that breaks the tie (a sequence number or a load timestamp).</summary>
     public const string MergeLatestAmbiguous = "PZ0542";
 
+    /// <summary><c>pz staging serve</c> could not serve the run's staging: the run directory or its
+    /// <c>staging.duckdb</c> is missing, the run is still in progress, the quack extension could not be
+    /// installed or loaded, or the server could not bind its address. The message names which.</summary>
+    public const string StagingServeUnavailable = "PZ0543";
+
+    /// <summary><c>pz staging serve</c>'s options break a rule: not exactly one of <c>--run</c> and
+    /// <c>--run-dir</c>, a <c>--run</c> id that is not a plain run directory name, a <c>--port</c> outside
+    /// 1-65535, or a <c>--host</c> that is not a host name or IP address.</summary>
+    public const string StagingServeOptionsInvalid = "PZ0544";
+
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --
     /// refused rather than written, so a generated connections.yml never carries a secret in

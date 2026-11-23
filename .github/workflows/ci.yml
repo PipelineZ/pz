@@ -119,8 +119,10 @@ jobs:
           dotnet-version: '11.0.x'
       - run: dotnet build tests/Pz.Connector.LocalFiles.Tests -c Release
       - run: dotnet build tests/Pz.DuckDb.Tests -c Release
+      - run: dotnet build tests/Pz.Engine.Tests -c Release
       - run: dotnet test tests/Pz.Connector.LocalFiles.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
       - run: dotnet test tests/Pz.DuckDb.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+      - run: dotnet test tests/Pz.Engine.Tests -c Release --no-build --filter "Category=DuckDbExtension" --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
 
   # Azure native IO over TLS. Azurite normally speaks plain http, which never exercises the DuckDB azure
   # extension's transport: its default one cannot find the system CA bundle on Linux, so every native read
