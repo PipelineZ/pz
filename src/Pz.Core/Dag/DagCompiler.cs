@@ -124,7 +124,7 @@ public static partial class DagCompiler
                 // Input stays "" here and is synthesized in stage 10 from the claimant pipeline.
                 outputsBySink.TryAdd((binding.Sink, binding.Output),
                     new OutputDef(binding.Output, string.Empty, w.Mode, w.SchemaPolicy, w.Options,
-                        w.Keys, w.Retry, w.AcceptDuplicates, w.OnDelete));
+                        w.Keys, w.Retry, w.Duplicates, w.OnDelete, w.OrderBy));
             }
         }
 
@@ -734,17 +734,25 @@ public static partial class DagCompiler
                 var isInlineBound = string.IsNullOrEmpty(output.Input);
                 var effectiveOutput = isInlineBound ? output with { Input = pipelineName } : output;
                 var inputNodeId = pipelineNodeIds[pipelineName];
-                // Keys/AcceptDuplicates/OnDelete all change what a commit under this Id MEANS -- e.g.
+                // Keys/Duplicates/OrderBy/OnDelete all change what a commit under this Id MEANS -- e.g.
                 // merge `keys:` is half the join condition a future write against the same relation
                 // performs, so a NodeId that ignored it would let `pz retry` carry forward a prior
                 // commit made under different match semantics as though it were the same output.
                 // Retry (RetryDef) is deliberately excluded: it governs how many attempts/backoff THIS
                 // run gives the write, not what got committed, so changing it must not stop `pz retry`
                 // from matching a prior success.
+                // The merge policy (`duplicates: fail|latest` and its `order_by`) is appended only when
+                // declared, so every output without one keeps the Id it had before the policy existed:
+                // an existing project's `pz retry` must still match its prior commits.
                 var canonical = string.Join('\n', "sink-write", sink.Name, output.Name, effectiveOutput.Input,
                     output.Mode, output.SchemaPolicy, outputOptionsJson,
                     CanonicalJson.Serialize(output.Keys), output.AcceptDuplicates.ToString(),
                     output.OnDelete ?? "");
+                if (output.Duplicates is DuplicatesPolicy.Fail or DuplicatesPolicy.Latest)
+                {
+                    canonical = string.Join('\n', canonical, "duplicates:" + output.Duplicates,
+                        CanonicalJson.Serialize(output.OrderByColumns));
+                }
                 var id = NodeId.Compute(canonical);
                 nodes.Add(new DagNode(id, NodeKind.SinkWrite, $"{sink.Name}.{output.Name}",
                     [inputNodeId], null, new SinkOutputDef(sink, effectiveOutput, isInlineBound)));

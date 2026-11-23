@@ -41,7 +41,7 @@ internal sealed class DuckDbSource(ConnectorConfig config) : ISource
         var alias = DuckDbSql.Alias(spec.Source);
         scan = new NativeScan(
             DuckDbSql.ScanFragment(alias, spec),
-            DuckDbSql.SetupStatements(DuckDbSql.ResolvePath(config), alias))
+            DuckDbSql.SetupStatements(DuckDbSql.ResolvePath(config), alias, DuckDbSql.StorageVersion(config)))
         {
             Mechanism = "attach",
         };

@@ -112,6 +112,23 @@ public sealed class DuckDbSqlGenTests
     }
 
     [Fact]
+    public void Setup_pins_the_storage_version_when_one_is_declared()
+    {
+        Assert.Equal(
+            [$"attach if not exists '{DbPath}' as {WhAlias} (storage_version 'v1.5.0')"],
+            DuckDbSql.SetupStatements(DbPath, WhAlias, "v1.5.0"));
+    }
+
+    [Fact]
+    public void Storage_version_is_read_from_the_connection_and_absent_when_unset()
+    {
+        Assert.Equal("v1.5.0", DuckDbSql.StorageVersion(new ConnectorConfig(
+            new Dictionary<string, object?> { ["path"] = DbPath, ["storage_version"] = "v1.5.0" })));
+        Assert.Null(DuckDbSql.StorageVersion(new ConnectorConfig(
+            new Dictionary<string, object?> { ["path"] = DbPath })));
+    }
+
+    [Fact]
     public void Setup_escapes_the_path_literal()
     {
         Assert.Equal(

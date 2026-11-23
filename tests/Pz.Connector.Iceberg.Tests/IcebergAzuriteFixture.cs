@@ -36,7 +36,9 @@ public sealed class IcebergAzuriteFixture : IAsyncLifetime
             return;
         }
 
-        container = new AzuriteBuilder(ImageName).Build();
+        // DuckDB's azure extension may ask for a newer storage API version than the pinned Azurite
+        // knows; the emulated Blob endpoint answers it the same, so the version check is skipped.
+        container = new AzuriteBuilder(ImageName).WithCommand("--skipApiVersionCheck").Build();
         await container.StartAsync().ConfigureAwait(false);
         ConnectionString = container.GetConnectionString();
         Blobs = new BlobServiceClient(ConnectionString).GetBlobContainerClient(Container);

@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Pz.Core.Dag;
 
 namespace Pz.DuckDb.Tests;
@@ -67,6 +68,14 @@ public sealed class DuckDbSqlAstReaderTests
         Assert.Equal("src_crm__orders", cmp.ColumnTable);
         Assert.Equal(inclusive, cmp.Inclusive);
     }
+
+    [Theory]
+    // DuckDB 1.x nests a typed value; 2.0 serializes the literal as written.
+    [InlineData("""{"class":"CONSTANT","value":{"type":{"id":"VARCHAR"},"is_null":false,"value":"x"}}""", "x")]
+    [InlineData("""{"class":"CONSTANT","literal":{"kind":"STRING","text":"x"}}""", "x")]
+    [InlineData("""{"class":"CONSTANT","literal":{"kind":"INTEGER","text":"1"}}""", null)]
+    public void A_string_constant_is_read_in_both_serializer_shapes(string json, string? expected) =>
+        Assert.Equal(expected, DuckDbSqlAstReader.StringConstant(JsonNode.Parse(json)!.AsObject()));
 
     [Fact]
     public void A_floor_and_a_ceiling_on_one_sentinel_are_both_recognized()
@@ -208,6 +217,23 @@ public sealed class DuckDbSqlAstReaderTests
         Assert.Empty(analysis.Comparisons);
         var violation = Assert.Single(analysis.Violations);
         Assert.Contains("random", violation.Reason, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // A timestamptz overload depends only on the session TimeZone, which both sides of the comparison
+    // share, so it does not make the operator volatile; the one-argument age() reads the clock, so it
+    // still does.
+    [Fact]
+    public void Timestamptz_arithmetic_is_accepted_but_age_is_rejected()
+    {
+        var arithmetic = Analyze(
+            $"select * from staging.src_crm__orders o where o.updated_at > '{S}'::timestamptz - interval 2 hour");
+        Assert.Empty(arithmetic.Violations);
+        Assert.Single(arithmetic.Comparisons);
+
+        var age = Analyze(
+            $"select * from staging.src_crm__orders o where o.updated_at > '{S}' - age('{S}'::timestamptz)");
+        Assert.Empty(age.Comparisons);
+        Assert.Contains("'age'", Assert.Single(age.Violations).Reason, StringComparison.Ordinal);
     }
 
     [Fact]

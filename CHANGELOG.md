@@ -7,6 +7,43 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Breaking
+
+- **pz runs on DuckDB 2.0.1** (DuckDB.NET 2.0.1). What changes for a project:
+  - A DuckDB database file pz creates (the `duckdb` sink, and each run's `staging.duckdb`) is in DuckDB 2.0's
+    format, which DuckDB 1.5 cannot open. Existing 1.5 files are read and written in place and stay readable by
+    1.5. Migration: if other tools still on DuckDB 1.5 open a file the `duckdb` connector creates, set
+    `storage_version: v1.5.0` on that connection before the file is first created.
+  - Extensions listed under `extensions:` in `project.yml` are installed for DuckDB 2.0.1, so a community
+    extension must be published for that version. Until it is, the run fails with `PZ0402`. Query.Farm's
+    extensions (`crypto`, `rapidfuzz`, `hashfuncs`, `lindel` and others) are distributed for DuckDB 2.0 from
+    Query.Farm's own repository, not the community one, and refuse to load when installed from it.
+  - The `motherduck` connector fails until MotherDuck's extension supports DuckDB 2.0.1: it refuses to attach
+    (`PZ0311`, "not yet supported"). Migration: stay on the previous pz release for MotherDuck projects.
+  - Contract-less csv/json integer columns beyond int64 are detected as `HUGEINT` and lose nothing, so the
+    `PZ0523` lossy-integer warning now fires only for whole numbers beyond 2^53 written as decimals.
+
+### Added
+
+- **merge: `duplicates: fail | latest` and `order_by:` decide what happens to duplicate keys in one batch.**
+  Without them a merge keeps an arbitrary row per key and warns (`PZ0522`). `duplicates: fail` fails the node
+  (`PZ0541`) before anything is written. `duplicates: latest` with `order_by: [col, ...]` keeps the row with the
+  highest values (NULLs lowest) and fails (`PZ0542`) when an `order_by` column is missing or when rows that differ
+  tie for the top. Both are merge-only, are declared on either write surface, and work with every sink connector:
+  the engine applies them before the write. Outputs that declare neither keep their node ids.
+- **duckdb: `storage_version:` on a connection** sets the on-disk format a database file is created in, so a file
+  other tools read can stay openable by an older DuckDB (`storage_version: v1.5.0`). It never rewrites an existing
+  file; a pin below the format an existing file already uses fails the run, because DuckDB cannot lower it.
+
+### Fixed
+
+- **A watermark bound over a `timestamptz` (`updated_at > {{ watermark(...) }} - interval 2 hour`) is no longer
+  refused as volatile (`PZ0224`) on DuckDB 2.0.** DuckDB 2.0 marks the timestamptz overloads of `+`, `-`,
+  `date_trunc` and similar functions as depending on the session time zone, and the determinism check counted
+  that against the whole operator. Both sides of the comparison run in the run's one DuckDB session, so the time
+  zone cannot differ between them; such overloads no longer count. `now()`, `current_timestamp`, `random()` and
+  `age()` are still refused.
+
 ## [0.19.0] - 2026-11-16
 
 ### Breaking

@@ -99,15 +99,16 @@ public class ExecutionToolsTests
         Assert.Contains("amount", drift.GetProperty("message").GetString(), StringComparison.Ordinal);
     }
 
-    // A contract-less csv whose integer column
-    // exceeds int64 is auto-detected as DOUBLE and silently loses digits; the run must surface the
-    // PZ0523 lossy-integer warning in the envelope's `warnings` array, same channel as drift/PZ0522.
+    // A contract-less csv column of whole numbers beyond 2^53, written with a decimal point, is
+    // auto-detected as DOUBLE and silently loses digits; the run must surface the PZ0523 lossy-integer
+    // warning in the envelope's `warnings` array, same channel as drift/PZ0522. (Plain integers beyond
+    // int64 are detected as HUGEINT and lose nothing, so they raise no warning.)
     [Fact]
     public async Task Run_surfaces_lossy_integer_inference_warnings_in_the_result()
     {
         using var p = new TempProject();
         File.WriteAllText(Path.Combine(p.Dir, "data", "orders.csv"),
-            "id,amount\n12345678901234567890,10\n98765432109876543210,20\n");
+            "id,amount\n12345678901234567890.0,10\n98765432109876543210.0,20\n");
 
         var doc = JsonDocument.Parse(await ExecutionTools.RunAsync(
             p.Dir, ["orders_out"], false, false, RealServices(), CancellationToken.None));

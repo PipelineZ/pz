@@ -614,9 +614,10 @@ public static class PzErrorCode
     /// <summary>A <c>strategy: merge</c> output's staged input holds duplicate merge-key groups, which
     /// collapse to one connector-determined survivor (physical staging order, not cursor order — the
     /// sink ABI's documented Absorb contract). A WARNING code, never a failure: event-log-shaped inputs
-    /// legitimately carry duplicate keys; the fix when order matters is a deterministic dedup in the
-    /// pipeline. Carried by the <c>merge_key_duplicates_detected</c> run event's MCP-envelope warning
-    /// projection.</summary>
+    /// legitimately carry duplicate keys. When order matters, declare <c>duplicates: latest</c> with an
+    /// <c>order_by</c> (or <c>duplicates: fail</c>, PZ0541), or dedup in the pipeline; an output with a
+    /// declared policy never raises this. Carried by the <c>merge_key_duplicates_detected</c> run event's
+    /// MCP-envelope warning projection.</summary>
     public const string MergeKeyDuplicates = "PZ0522";
 
     /// <summary>A contract-less csv/json read's DuckDB-auto-detected DOUBLE column holds only whole
@@ -740,6 +741,20 @@ public static class PzErrorCode
     /// the rule (its <c>status</c> and <c>body_contains</c>), or use <c>action: permanent</c> or
     /// <c>transient</c>.</summary>
     public const string SkippedReadOnIncremental = "PZ0540";
+
+    /// <summary>A <c>strategy: merge</c> output with <c>duplicates: fail</c> found duplicate merge-key
+    /// groups in its staged input. Without the policy they would collapse to an arbitrary survivor (the
+    /// PZ0522 warning). The node fails before anything is written; the message carries counts only,
+    /// never row values. Next step: dedup in the pipeline, or declare <c>duplicates: latest</c> with an
+    /// <c>order_by</c>.</summary>
+    public const string MergeKeyDuplicatesRefused = "PZ0541";
+
+    /// <summary>A <c>strategy: merge</c> output with <c>duplicates: latest</c> could not pick its survivor:
+    /// either an <c>order_by</c> column is not in the staged input, or, within one key, two or more rows
+    /// that differ share the highest <c>order_by</c> values (NULLs sort lowest), so "latest" names no
+    /// single row. The node fails before anything is written. Next step: add a column to
+    /// <c>order_by</c> that breaks the tie (a sequence number or a load timestamp).</summary>
+    public const string MergeLatestAmbiguous = "PZ0542";
 
     /// <summary>An authoring tool's connection-config value looks like a literal credential (a
     /// password/token/key typed directly into YAML) rather than an env var reference (`${VAR}`) --

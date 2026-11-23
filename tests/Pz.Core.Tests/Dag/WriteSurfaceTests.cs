@@ -117,4 +117,27 @@ public class WriteSurfaceTests
         Assert.Single(Assert.Throws<PzValidationException>(() => DagCompiler.Compile(p, Ctx(p))).Errors,
             e => e.Code == PzErrorCode.SinkBindingConflict);
     }
+
+    private static NodeId SinkWriteId(SinkWriteOptions write)
+    {
+        var p = Project([Pipe("a", "INSERT INTO {{ sink('lake', 'out') }} select 1 as id")], sinks: [SinkWith(write)]);
+        return Assert.Single(DagCompiler.Compile(p, Ctx(p)).Nodes, n => n.Kind == NodeKind.SinkWrite).Id;
+    }
+
+    // A merge policy changes which row a commit holds, so it is part of the SinkWrite identity; an
+    // output that declares none keeps the Id it had before the policy existed.
+    [Fact]
+    public void A_merge_policy_is_part_of_the_sink_write_id_and_its_absence_is_not()
+    {
+        var merge = SinkWriteOptions.Default with { Mode = "merge", Keys = ["id"] };
+
+        var plain = SinkWriteId(merge);
+        var fail = SinkWriteId(merge with { Duplicates = "fail" });
+        var latestV = SinkWriteId(merge with { Duplicates = "latest", OrderBy = ["v"] });
+        var latestW = SinkWriteId(merge with { Duplicates = "latest", OrderBy = ["w"] });
+
+        Assert.Equal(4, new[] { plain, fail, latestV, latestW }.Distinct().Count());
+        Assert.Equal(NodeId.Compute(string.Join('\n', "sink-write", "lake", "out", "a", "merge", "fail_on_change",
+            "{}", "[\"id\"]", "False", "")), plain);
+    }
 }

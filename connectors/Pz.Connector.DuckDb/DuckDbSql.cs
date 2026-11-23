@@ -75,9 +75,22 @@ internal static class DuckDbSql
     /// should a node retry re-issue it — the engine runs each setup statement once per run
     /// (<c>attach if not exists</c> skips an existing alias).
     /// No extension is needed and the path carries no credentials, so a connect-failure echo of it is
-    /// harmless and useful.</summary>
-    internal static IReadOnlyList<string> SetupStatements(string resolvedPath, string alias) =>
-        [$"attach if not exists '{DuckDbSqlText.EscapeLiteral(resolvedPath)}' as {alias}"];
+    /// harmless and useful.
+    ///
+    /// <paramref name="storageVersion"/> (the connection's <c>storage_version:</c>) is the on-disk
+    /// format a file is CREATED in: a file created in the engine's own latest format cannot be opened by
+    /// an older DuckDB, so a file other tools read must be pinned to a format they understand. It does
+    /// not rewrite an existing file. The schema restricts it to <c>vX.Y.Z</c> or <c>latest</c>; it is
+    /// escaped anyway.</summary>
+    internal static IReadOnlyList<string> SetupStatements(string resolvedPath, string alias, string? storageVersion = null)
+    {
+        var options = storageVersion is null ? "" : $" (storage_version '{DuckDbSqlText.EscapeLiteral(storageVersion)}')";
+        return [$"attach if not exists '{DuckDbSqlText.EscapeLiteral(resolvedPath)}' as {alias}{options}"];
+    }
+
+    /// <summary>The connection's optional <c>storage_version:</c>, or null when unset.</summary>
+    internal static string? StorageVersion(ConnectorConfig config) =>
+        config.GetString("storage_version") is { Length: > 0 } version ? version : null;
 
     /// <summary>The scan fragment: a declared <c>columns:</c> contract prunes the read (only declared
     /// columns are projected); the plain (unwindowed) incremental watermark IS pushed into the

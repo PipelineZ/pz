@@ -147,7 +147,7 @@ public class SinkFunctionTests
     [InlineData("{{ sink('lake', 'a', 'b') }}", "extra positional")]
     [InlineData("{{ sink('lake', 'a', strategy: 'upsert') }}", "replace, append, merge")]
     [InlineData("{{ sink('lake', 'a', keys: 'order_id') }}", "list of strings")]
-    [InlineData("{{ sink('lake', 'a', duplicates: 'ignore') }}", "literal 'accept'")]
+    [InlineData("{{ sink('lake', 'a', duplicates: 'ignore') }}", "must be one of: accept, fail, latest")]
     [InlineData("{{ sink('lake', 'a', on_delete: 'purge') }}", "delete, soft, ignore")]
     [InlineData("{{ sink('lake', 'a', strategy: 'append', on_delete: 'delete') }}", "requires strategy: 'merge'")]
     [InlineData("{{ sink('lake', 'a', mode: 'merge') }}", "'mode' is not a sink() keyword argument")]
@@ -224,5 +224,27 @@ public class SinkFunctionTests
             "-- leading comment\nINSERT INTO {{ sink('lake', 'a', strategy: 'upsert') }}\nselect 1"));
         Assert.Equal("pipelines/p.sql", error.File);
         Assert.Equal(2, error.Line);
+    }
+
+    [Fact]
+    public void Duplicates_latest_and_order_by_bind_as_kwargs()
+    {
+        var binding = Assert.Single(Render(
+            "INSERT INTO {{ sink('lake', 'o', strategy: 'merge', keys: ['id'], duplicates: 'latest', order_by: ['v', 'seq']) }} select 1")
+            .InlineBindings);
+        Assert.Equal("latest", binding.Write.Duplicates);
+        Assert.Equal(["v", "seq"], binding.Write.OrderBy);
+        Assert.DoesNotContain("order_by", binding.Write.Options.Keys);
+    }
+
+    [Theory]
+    [InlineData("strategy: 'append', duplicates: 'fail'", "requires strategy: merge")]
+    [InlineData("strategy: 'merge', keys: ['id'], duplicates: 'latest'", "requires 'order_by'")]
+    [InlineData("strategy: 'merge', keys: ['id'], order_by: 'v'", "applies only with 'duplicates: latest'")]
+    [InlineData("strategy: 'merge', keys: ['id'], duplicates: 'newest'", "must be one of: accept, fail, latest")]
+    public void Duplicates_and_order_by_kwarg_rules_match_the_yaml_surface(string kwargs, string expected)
+    {
+        var errors = Errors($"INSERT INTO {{{{ sink('lake', 'o', {kwargs}) }}}} select 1");
+        Assert.Contains(errors, e => e.Message.Contains(expected, StringComparison.Ordinal));
     }
 }

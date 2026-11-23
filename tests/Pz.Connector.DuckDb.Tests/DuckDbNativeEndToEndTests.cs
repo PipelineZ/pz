@@ -27,8 +27,16 @@ public sealed class DuckDbNativeEndToEndTests : IDisposable
 
     private string DbPath(string name = "app.duckdb") => Path.Combine(dir, name);
 
-    private ConnectorConfig Config(string name = "app.duckdb") =>
-        new(new Dictionary<string, object?> { ["path"] = DbPath(name) });
+    private ConnectorConfig Config(string name = "app.duckdb", string? storageVersion = null)
+    {
+        var values = new Dictionary<string, object?> { ["path"] = DbPath(name) };
+        if (storageVersion is not null)
+        {
+            values["storage_version"] = storageVersion;
+        }
+
+        return new ConnectorConfig(values);
+    }
 
     private TempDuckSession OpenDuck()
     {
@@ -40,9 +48,9 @@ public sealed class DuckDbNativeEndToEndTests : IDisposable
     /// connector's own <see cref="ISink.TryGetNativeCopy"/> -- staging table substituted for
     /// <c>{{source}}</c> exactly as SinkWriteExecutor does.</summary>
     private async Task WriteAsync(DuckSession duck, string dbName, string entity, string selectSql,
-        string mode = "replace", IReadOnlyList<string>? keys = null)
+        string mode = "replace", IReadOnlyList<string>? keys = null, string? storageVersion = null)
     {
-        await using var sink = await ((ISinkConnector)new DuckDbConnector()).OpenAsync(Config(dbName), CancellationToken.None);
+        await using var sink = await ((ISinkConnector)new DuckDbConnector()).OpenAsync(Config(dbName, storageVersion), CancellationToken.None);
         var spec = new OutputSpec("wh", entity, mode, "fail_on_change", new Dictionary<string, object?>())
         {
             Keys = keys ?? [],
@@ -126,6 +134,65 @@ public sealed class DuckDbNativeEndToEndTests : IDisposable
 
         var landed = await ReadAsync(duck, "fresh.duckdb", Spec("log"));
         Assert.Equal(2, await duck.ScalarAsync<long>($"select count(*) from {landed}"));
+    }
+
+    /// <summary>The database file header's storage version number: an 8-byte checksum, the <c>DUCK</c>
+    /// magic, then the version as a little-endian uint64. An older DuckDB refuses a file whose number
+    /// is above the range it knows.</summary>
+    private ulong HeaderVersion(string dbName)
+    {
+        var header = File.ReadAllBytes(DbPath(dbName)).AsSpan(0, 20);
+        Assert.True(header[8..12].SequenceEqual("DUCK"u8));
+        return System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(header[12..]);
+    }
+
+    /// <summary>A file pz creates in the engine's default format is newer than DuckDB 1.5 can open;
+    /// <c>storage_version: v1.5.0</c> creates it in a format 1.5 reads (1.5 opens versions 64-68), and
+    /// later pinned runs keep it there. One session per file: both connections share the alias
+    /// <c>wh</c>, and <c>attach if not exists</c> keeps the first file attached under it.</summary>
+    [Fact]
+    public async Task Storage_version_pins_the_format_a_new_file_is_created_in()
+    {
+        await using (var session = OpenDuck())
+        {
+            await WriteAsync(session.Duck, "pinned.duckdb", "t", "(select 1 as id)", storageVersion: "v1.5.0");
+        }
+
+        await using (var session = OpenDuck())
+        {
+            await WriteAsync(session.Duck, "default.duckdb", "t", "(select 1 as id)");
+        }
+
+        var pinned = HeaderVersion("pinned.duckdb");
+        Assert.InRange(pinned, 64UL, 68UL);
+        Assert.True(HeaderVersion("default.duckdb") > pinned);
+
+        await using (var session = OpenDuck())
+        {
+            await WriteAsync(session.Duck, "pinned.duckdb", "t", "(select 2 as id)", mode: "append", storageVersion: "v1.5.0");
+        }
+
+        Assert.Equal(pinned, HeaderVersion("pinned.duckdb"));
+    }
+
+    /// <summary>A pin below the format an existing file already uses is refused, not ignored: DuckDB
+    /// cannot lower a database's storage version, and a silently unpinned file would be the one older
+    /// readers cannot open.</summary>
+    [Fact]
+    public async Task Storage_version_below_an_existing_files_format_fails_loudly()
+    {
+        await using (var session = OpenDuck())
+        {
+            await WriteAsync(session.Duck, "existing.duckdb", "t", "(select 1 as id)");
+        }
+
+        await using (var session = OpenDuck())
+        {
+            var ex = await Assert.ThrowsAsync<PzConnectorException>(() =>
+                WriteAsync(session.Duck, "existing.duckdb", "t", "(select 2 as id)", mode: "append", storageVersion: "v1.5.0"));
+            Assert.Contains("cannot be lowered", ex.Message, StringComparison.Ordinal);
+            Assert.False(ex.IsTransient);
+        }
     }
 
     /// <summary>The target table need not have been created by pz, nor keep its columns in the order

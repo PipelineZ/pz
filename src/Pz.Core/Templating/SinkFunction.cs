@@ -31,7 +31,7 @@ internal sealed class SinkFunction : KeywordCallFunction
     /// <c>write:</c> block does -- no connector publishes a write-option vocabulary to check against,
     /// and the Abstractions ABI is fixed.</summary>
     private static readonly string[] KnownKwargs =
-        ["strategy", "keys", "duplicates", "on_delete", "schema_policy", "retry"];
+        ["strategy", "keys", "duplicates", "order_by", "on_delete", "schema_policy", "retry"];
 
     private readonly List<InlineSinkBinding> _bindings;
 
@@ -96,7 +96,16 @@ internal sealed class SinkFunction : KeywordCallFunction
         }
 
         var keys = ParseKeys(kwargs, sink, output);
-        var acceptDuplicates = ParseDuplicates(kwargs, sink, output);
+        var duplicatesLine = kwargs.TryGetValue("duplicates", out var d) ? d.Line
+            : kwargs.TryGetValue("order_by", out var o) ? o.Line : 0;
+        var duplicates = ParseDuplicates(kwargs, sink, output);
+        var orderBy = ParseOrderBy(kwargs, sink, output);
+        foreach (var message in DuplicatesPolicy.CrossFieldErrors(duplicates, orderBy, strategy))
+        {
+            Error(PzErrorCode.SyncModeInvalid, duplicatesLine, $"sink('{sink}', '{output}'): {message}",
+                "strategy: 'merge', keys: ['id'], duplicates: 'latest', order_by: ['updated_at']");
+        }
+
         var onDelete = ParseOnDelete(kwargs, sink, output, strategy);
         var retry = ParseRetry(kwargs, sink, output);
 
@@ -127,7 +136,7 @@ internal sealed class SinkFunction : KeywordCallFunction
             .OrderBy(kv => kv.Key, StringComparer.Ordinal)
             .ToDictionary(kv => kv.Key, kv => kv.Value.Value, StringComparer.Ordinal);
 
-        return new SinkWriteOptions(strategy, keys, schemaPolicy, acceptDuplicates, onDelete, retry, options);
+        return new SinkWriteOptions(strategy, keys, schemaPolicy, duplicates, onDelete, retry, options, orderBy);
     }
 
     /// <summary>Names pz owns that must NOT be silently accepted as connector options: the retired
@@ -171,22 +180,48 @@ internal sealed class SinkFunction : KeywordCallFunction
         return [];
     }
 
-    private bool ParseDuplicates(Dictionary<string, (object? Value, int Line)> kwargs, string sink, string output)
+    private string? ParseDuplicates(Dictionary<string, (object? Value, int Line)> kwargs, string sink, string output)
     {
         if (Take(kwargs, "duplicates") is not { } arg)
         {
-            return false;
+            return null;
         }
 
-        if (arg.Value as string == "accept")
+        if (arg.Value is string s && DuplicatesPolicy.All.Contains(s, StringComparer.Ordinal))
         {
-            return true;
+            return s;
         }
 
         Error(PzErrorCode.SyncModeInvalid, arg.Line,
-            $"sink('{sink}', '{output}'): 'duplicates' must be the literal 'accept' (got '{Show(arg.Value)}')",
+            $"sink('{sink}', '{output}'): 'duplicates' must be one of: {string.Join(", ", DuplicatesPolicy.All)} " +
+            $"(got '{Show(arg.Value)}')",
             "strategy: 'append', duplicates: 'accept'");
-        return false;
+        return null;
+    }
+
+    /// <summary><c>order_by:</c> is one column name or a list of them, as in the YAML surface.</summary>
+    private IReadOnlyList<string> ParseOrderBy(Dictionary<string, (object? Value, int Line)> kwargs, string sink, string output)
+    {
+        if (Take(kwargs, "order_by") is not { } arg)
+        {
+            return [];
+        }
+
+        if (arg.Value is string { Length: > 0 } single)
+        {
+            return [single];
+        }
+
+        if (arg.Value is List<object?> { Count: > 0 } list && list.All(i => i is string { Length: > 0 }))
+        {
+            return [.. list.Cast<string>()];
+        }
+
+        Error(PzErrorCode.YamlShape, arg.Line,
+            $"sink('{sink}', '{output}'): 'order_by' must be a column name or a non-empty list of column names " +
+            $"(got '{Show(arg.Value)}')",
+            "order_by: ['updated_at']");
+        return [];
     }
 
     private string? ParseOnDelete(Dictionary<string, (object? Value, int Line)> kwargs, string sink,

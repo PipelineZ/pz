@@ -15,12 +15,14 @@ public sealed class DuckExtensionsDownloadTests
     {
         await using var duck = DuckSession.Open(":memory:");
 
-        var result = await DuckExtensions.LoadAsync(duck, ["jev"], CancellationToken.None);
+        // A community extension published, and loadable, for the DuckDB version pz ships. prql adds
+        // syntax rather than functions, so loading it is the whole proof.
+        var result = await DuckExtensions.LoadAsync(duck, ["prql"], CancellationToken.None);
 
         Assert.Empty(result.Errors);
-        Assert.Equal("jev", Assert.Single(result.Loaded).Name);
-        // Not pinned: the community build changes under us.
-        Assert.False(string.IsNullOrEmpty(await duck.ScalarAsync<string>("select jev_version()")));
+        Assert.Equal("prql", Assert.Single(result.Loaded).Name);
+        Assert.True(await duck.ScalarAsync<bool>(
+            "select loaded from duckdb_extensions() where extension_name = 'prql'"));
     }
 
     [SkippableFact]

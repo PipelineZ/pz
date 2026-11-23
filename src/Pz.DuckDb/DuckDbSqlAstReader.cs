@@ -55,13 +55,22 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
         return _session.Value;
     }
 
-    /// <summary>function_name (lowercased, ordinal) to whether any overload is VOLATILE or
-    /// CONSISTENT_WITHIN_QUERY. Loaded once per instance.</summary>
+    /// <summary>function_name (lowercased, ordinal) to whether any overload is VOLATILE, or
+    /// CONSISTENT_WITHIN_QUERY for a reason other than a timestamptz argument. Loaded once per instance.
+    ///
+    /// A timestamptz overload (<c>timestamptz + interval</c>, <c>date_trunc(…, timestamptz)</c>) is
+    /// CONSISTENT_WITHIN_QUERY only because its result depends on the session's TimeZone. Both sides of a
+    /// watermark comparison are evaluated in the run's one DuckDB session, so the TimeZone is the same
+    /// for both and such an overload cannot split them. Counting it would flag the arithmetic operators
+    /// themselves, which carry such overloads. A parameterless CONSISTENT_WITHIN_QUERY function
+    /// (<c>now()</c>, <c>current_timestamp</c>) reads the clock and is still flagged, and so is
+    /// <c>age</c>, whose one-argument form is the clock minus its argument.</summary>
     private Dictionary<string, bool> LoadFunctionCatalog()
     {
         var packed = _session.Value.Scalar(
             "select coalesce(string_agg(n || chr(2) || case when nc then '1' else '0' end, chr(1)), '') from (" +
-            "select lower(function_name), bool_or(stability in ('VOLATILE','CONSISTENT_WITHIN_QUERY')) " +
+            "select lower(function_name), bool_or(stability = 'VOLATILE' or (stability = 'CONSISTENT_WITHIN_QUERY' " +
+            "and (lower(function_name) = 'age' or not list_has_any(parameter_types, ['TIMESTAMP WITH TIME ZONE', 'TIMESTAMPTZ_NS'])))) " +
             "from duckdb_functions() group by 1) t(n, nc)");
         var catalog = new Dictionary<string, bool>(StringComparer.Ordinal);
         if (packed.Length == 0)
@@ -619,9 +628,23 @@ public sealed class DuckDbSqlAstReader : ISqlAstReader, IDisposable
 
     private static bool IsSentinelConstant(JsonObject node, string sentinel) =>
         ClassOf(node) == "CONSTANT"
-        && node["value"]?["value"] is JsonValue v
-        && v.TryGetValue(out string? s)
-        && s == sentinel;
+        && StringConstant(node) == sentinel;
+
+    /// <summary>A string CONSTANT's text in either serializer shape: 1.x nests a typed
+    /// <c>value.value</c>, 2.0 a <c>literal { kind, text }</c>.</summary>
+    internal static string? StringConstant(JsonObject node)
+    {
+        if (node["value"]?["value"] is JsonValue v && v.TryGetValue(out string? s))
+        {
+            return s;
+        }
+
+        return node["literal"] is JsonObject literal
+            && literal["kind"]?.GetValue<string>() == "STRING"
+            && literal["text"] is JsonValue t && t.TryGetValue(out string? text)
+            ? text
+            : null;
+    }
 
     /// <summary>Every CONSTANT node in <paramref name="node"/>'s subtree whose literal equals
     /// <paramref name="sentinel"/>, by reference — used to detect sentinel occurrences that fall

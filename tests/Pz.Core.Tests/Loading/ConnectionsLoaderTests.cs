@@ -617,4 +617,62 @@ public class ConnectionsLoaderTests
 
         Assert.DoesNotContain("connector", error.Message, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void A_merge_declares_duplicates_latest_with_order_by()
+    {
+        var connection = Assert.Single(Load("""
+            mart:
+              connector: postgres
+              host: h
+              entities:
+                mart.orders:
+                  write:
+                    strategy: merge
+                    keys: [order_id]
+                    duplicates: latest
+                    order_by: [updated_at, seq]
+            """).Connections);
+
+        var write = connection.EntityWrites["mart.orders"];
+        Assert.Equal("latest", write.Duplicates);
+        Assert.Equal(["updated_at", "seq"], write.OrderBy);
+        Assert.False(write.AcceptDuplicates);
+        Assert.DoesNotContain("order_by", write.Options.Keys); // pz-owned, never a connector option
+    }
+
+    [Fact]
+    public void A_single_order_by_column_may_be_a_scalar()
+    {
+        var connection = Assert.Single(Load("""
+            mart:
+              connector: postgres
+              host: h
+              entities:
+                mart.orders:
+                  write: { strategy: merge, keys: [id], duplicates: latest, order_by: updated_at }
+            """).Connections);
+
+        Assert.Equal(["updated_at"], connection.EntityWrites["mart.orders"].OrderBy);
+    }
+
+    [Theory]
+    [InlineData("strategy: append, duplicates: fail", "requires strategy: merge")]
+    [InlineData("strategy: merge, keys: [id], duplicates: latest", "requires 'order_by'")]
+    [InlineData("strategy: merge, keys: [id], duplicates: fail, order_by: [v]", "applies only with 'duplicates: latest'")]
+    [InlineData("strategy: merge, keys: [id], order_by: [v]", "applies only with 'duplicates: latest'")]
+    [InlineData("strategy: merge, keys: [id], duplicates: newest", "must be one of: accept, fail, latest")]
+    public void Duplicates_and_order_by_rules_are_enforced(string write, string expected)
+    {
+        var errors = Errors($$"""
+            mart:
+              connector: postgres
+              host: h
+              entities:
+                mart.orders:
+                  write: { {{write}} }
+            """);
+
+        Assert.Contains(errors, e => e.Message.Contains(expected, StringComparison.Ordinal));
+    }
 }

@@ -35,6 +35,21 @@ public sealed class DuckDbConnectorTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("v1.5.0", true)]
+    [InlineData("v1.4.3", true)]
+    [InlineData("latest", true)]
+    [InlineData("1.5.0", false)]
+    [InlineData("v1.5", false)]
+    [InlineData("v1.5.0'); drop table x; --", false)]
+    public void Storage_version_accepts_only_a_version_tag_or_latest(string value, bool valid)
+    {
+        var schema = Json.Schema.JsonSchema.FromText(new DuckDbConnector().ConnectionConfigSchema);
+        using var config = System.Text.Json.JsonDocument.Parse(
+            $$"""{ "path": "app.duckdb", "storage_version": {{System.Text.Json.JsonSerializer.Serialize(value)}} }""");
+        Assert.Equal(valid, schema.Evaluate(config.RootElement).IsValid);
+    }
+
     [Fact]
     public void Connector_is_native_only_in_both_directions()
     {
