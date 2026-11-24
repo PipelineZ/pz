@@ -93,7 +93,7 @@ public sealed class PlanFatalExitTests : IDisposable
                 ["protocolMajorMax"] = 1,
                 ["capabilities"] = new[]
                 {
-                    "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead",
+                    "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "NestedTypes",
                 },
                 ["runtime"] = "process",
                 ["entrypoints"] = new Dictionary<string, string>

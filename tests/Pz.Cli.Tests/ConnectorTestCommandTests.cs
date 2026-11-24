@@ -252,18 +252,18 @@ public sealed class ConnectorTestCommandTests : IDisposable
     // --- fixture staging (mirrors ProcessHostParityTests.WriteProcessPackage) -------------------
 
     private static readonly string[] LocalFilesCapabilities =
-        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead"];
+        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "NestedTypes"];
 
     /// <summary>What the fixture's --sync-state / --declare-sync-state-only modes report: a feed
     /// connector withdraws PartitionedRead and declares SyncState.</summary>
     private static readonly string[] FeedCapabilities =
-        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState"];
+        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState", "NestedTypes"];
 
     /// <summary>What <c>--native-only</c> reports: the same set the fixture always declares for
     /// writes/native-scan, plus <c>NativeOnlyRead</c> and minus <c>PartitionedRead</c> -- a native-only
     /// source has no universal read path to partition at all.</summary>
     private static readonly string[] NativeOnlyCapabilities =
-        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "NativeOnlyRead"];
+        ["NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "NativeOnlyRead", "NestedTypes"];
 
     /// <summary><paramref name="extraFixtureArgs"/> is baked into the wrapper script itself, appended
     /// AFTER the args <c>ConnectorProcess.Spawn</c> forwards (<c>--pz-socket &lt;path&gt;</c>) -- the

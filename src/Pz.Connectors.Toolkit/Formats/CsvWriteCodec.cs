@@ -4,6 +4,8 @@ using System.Runtime.InteropServices;
 using System.Globalization;
 using System.Text;
 using Apache.Arrow;
+using Apache.Arrow.Types;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions.Batches;
 
 namespace Pz.Connectors.Toolkit.Formats;
@@ -122,6 +124,7 @@ public sealed class CsvWriteCodec : IAsyncDisposable
             return;
         }
 
+        batch = WithNestedAsJson(batch);
         PinColumns(batch);
         try
         {
@@ -151,6 +154,44 @@ public sealed class CsvWriteCodec : IAsyncDisposable
     }
 
     /// <summary>Pushes everything buffered so far to the destination stream and flushes it.</summary>
+    /// <summary><paramref name="batch"/> with each STRUCT, LIST or MAP column replaced by its cells' JSON text
+    /// (CSV has no nested values; DuckDB's native csv copy writes the same JSON), or the batch itself when it
+    /// has none. The returned batch borrows the caller's other columns and must not be disposed: the caller
+    /// still owns them.</summary>
+    private static RecordBatch WithNestedAsJson(RecordBatch batch)
+    {
+        IArrowArray[]? columns = null;
+        Field[]? fields = null;
+        for (var col = 0; col < batch.ColumnCount; col++)
+        {
+            var array = batch.Column(col);
+            if (array is not (StructArray or ListArray or FixedSizeListArray))
+            {
+                continue;
+            }
+
+            columns ??= [.. Enumerable.Range(0, batch.ColumnCount).Select(batch.Column)];
+            fields ??= [.. batch.Schema.FieldsList];
+            var text = new StringArray.Builder();
+            for (var row = 0; row < batch.Length; row++)
+            {
+                if (array.IsNull(row))
+                {
+                    text.AppendNull();
+                }
+                else
+                {
+                    text.Append(ArrowJsonValue.ToJson(array, row));
+                }
+            }
+
+            columns[col] = text.Build();
+            fields[col] = new Field(fields[col].Name, StringType.Default, nullable: true);
+        }
+
+        return columns is null ? batch : new RecordBatch(new Schema(fields!, batch.Schema.Metadata), columns, batch.Length);
+    }
+
     public async ValueTask FlushAsync(CancellationToken ct)
     {
         await FlushBufferAsync(ct).ConfigureAwait(false);

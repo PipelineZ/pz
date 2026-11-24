@@ -58,6 +58,9 @@ public sealed class PostgresSinkAcceptance(PostgresContainerFixture fixture) : S
     protected override OutputSpec SmallOutput => new("pg", SmallTable, "replace", "fail_on_change",
         new Dictionary<string, object?>());
 
+    protected override OutputSpec? NestedOutput => new("pg", "sink_accept_nested", "replace", "fail_on_change",
+        new Dictionary<string, object?>());
+
     protected override OutputSpec? MergeOutput => new("pg", MergeTable, "merge", "fail_on_change",
         new Dictionary<string, object?>()) { Keys = ["id"] };
 

@@ -108,8 +108,9 @@ my-project/
   pipeline, e.g. `payload::JSON::VARCHAR`. STRUCT, LIST and MAP columns reach `http` (as JSON
   objects and arrays), `postgres` (a list of a flat type as a postgres array, anything else as
   `jsonb`) and `sqlserver` (JSON text in `nvarchar(max)`); `mysql`, `sqlite` and csv/tsv/xlsx files
-  get them as JSON text; parquet, json and DuckDB-family sinks keep them nested. Other Arrow-path
-  sinks refuse them with the same PZ0546 and cast hint.
+  get them as JSON text; parquet, json and DuckDB-family sinks keep them nested. `sftp` (and any
+  file sink on the Arrow path) writes them to json and csv but refuses them for parquet. Other
+  Arrow-path sinks refuse them with the same PZ0546 and cast hint.
 
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a

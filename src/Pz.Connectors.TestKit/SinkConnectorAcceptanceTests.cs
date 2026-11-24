@@ -86,6 +86,13 @@ public abstract class SinkConnectorAcceptanceTests
     /// <see cref="ReadCommittedAsync"/> has no column to read decimal/timestamp/date/bool back through.</summary>
     protected virtual OutputSpec? TypeMatrixOutput => null;
 
+    /// <summary>An output spec for <see cref="Nested_columns_are_written_when_NestedTypes_is_declared"/>, which a
+    /// connector declaring <see cref="ConnectorCapabilities.NestedTypes"/> must supply: its own destination
+    /// (the nested schema differs from <see cref="SmallOutput"/>'s), in a format that carries nested values. Null
+    /// (the default) Skips that fact with a message saying so; connectors without the capability Skip it
+    /// regardless.</summary>
+    protected virtual OutputSpec? NestedOutput => null;
+
     /// <summary>Reads back what <see cref="Commit_round_trips_the_full_type_matrix"/> committed, using
     /// <see cref="TypeMatrixSchema"/>'s column set. No-op (empty) by default, matching the
     /// <see cref="TypeMatrixOutput"/> null-hook precedent — a subclass that has not opted in never has
@@ -166,6 +173,31 @@ public abstract class SinkConnectorAcceptanceTests
         Assert.True(s.Requests >= 0 && s.WireBytes >= 0 && s.RemoteMs >= 0 && s.Throttled >= 0 && s.SpansDropped >= 0,
             "a reported count is negative");
         Assert.True(s.Extras.Count <= 8, $"the connector reported {s.Extras.Count} extras; at most 8 are allowed");
+    }
+
+    /// <summary>The executable contract behind <see cref="ConnectorCapabilities.NestedTypes"/>: a session
+    /// accepts a batch of struct, list, fixed-size list, map and list-of-struct columns, nested two levels
+    /// deep with a null at every level (a null struct, list and map, an empty list, a null element, a null
+    /// struct field, a null map value), and commits every row. How the destination stores them is the
+    /// connector's own business, so nothing is read back.</summary>
+    [SkippableFact]
+    public virtual async Task Nested_columns_are_written_when_NestedTypes_is_declared()
+    {
+        Gate();
+        var connector = CreateSink();
+        Skip.IfNot(connector.Capabilities.HasFlag(ConnectorCapabilities.NestedTypes),
+            "connector does not declare NestedTypes");
+        Skip.If(NestedOutput is null,
+            "connector declares NestedTypes but the suite does not override NestedOutput, so the nested vector cannot run");
+        await using var sink = await connector.OpenAsync(ValidConfig, CancellationToken.None);
+
+        var batch = NestedBatches.Build();
+        await using var session = await sink.BeginWriteAsync(NestedOutput!, batch.Schema, CancellationToken.None);
+        await session.WriteBatchAsync(batch, CancellationToken.None);
+        batch.Dispose();
+        var result = await session.CommitAsync(CancellationToken.None);
+
+        Assert.Equal(NestedBatches.Rows, result.RowsWritten);
     }
 
     [SkippableFact]

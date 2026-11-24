@@ -56,6 +56,15 @@ public sealed class AzureSinkAcceptance(AzuriteFixture fixture) : SinkConnectorA
             ["format"] = "parquet",
         });
 
+    // csv: the universal parquet writer refuses nested columns.
+    protected override OutputSpec? NestedOutput => new("sink", "nested", "replace", "fail_on_change",
+        new Dictionary<string, object?>
+        {
+            ["container"] = AzuriteFixture.Container,
+            ["path"] = _prefix,
+            ["format"] = "csv",
+        });
+
     protected override OutputSpec? ReplaceOutput => new("sink", "replace-out", "replace", "fail_on_change",
         new Dictionary<string, object?>
         {

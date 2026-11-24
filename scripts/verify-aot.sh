@@ -94,7 +94,7 @@ chmod +x "${PKG_DIR}/bin/connector"
 HOST_RID="$(dotnet --info | sed -n 's/^ *RID: *//p' | head -1)"
 cat > "${PKG_DIR}/pz.connector.json" <<PCPEOF
 {"name":"localfiles-pcp","protocolMajorMin":1,"protocolMajorMax":1,
- "capabilities":["NativeScan","NativeCopy","ReplaceWrites","BoundedWindow","PartitionedRead"],
+ "capabilities":["NativeScan","NativeCopy","ReplaceWrites","BoundedWindow","PartitionedRead","NestedTypes"],
  "runtime":"process","entrypoints":{"${HOST_RID}":"bin/connector"}}
 PCPEOF
 printf 'name: aot_pcp\nversion: 0.1.0\n\nconnectors:\n  - package: LocalFilesPcp\n    version: 1.0.0\n' \

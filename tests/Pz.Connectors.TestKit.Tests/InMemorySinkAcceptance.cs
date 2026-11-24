@@ -12,6 +12,9 @@ public class InMemorySinkAcceptance : SinkConnectorAcceptanceTests
     protected override OutputSpec SmallOutput => new("memsink", "out", "replace", "fail_on_change",
         new Dictionary<string, object?>());
 
+    protected override OutputSpec? NestedOutput => new("memsink", "nested", "replace", "fail_on_change",
+        new Dictionary<string, object?>());
+
     protected override OutputSpec? MergeOutput => new("memsink", "merge-out", "merge", "fail_on_change",
         new Dictionary<string, object?>()) { Keys = ["id"] };
 

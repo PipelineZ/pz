@@ -30,7 +30,7 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector, IOut
     public ConnectorCapabilities Capabilities =>
         ConnectorCapabilities.NativeScan | ConnectorCapabilities.NativeCopy |
         ConnectorCapabilities.ReplaceWrites | ConnectorCapabilities.BoundedWindow |
-        ConnectorCapabilities.PartitionedRead;
+        ConnectorCapabilities.PartitionedRead | ConnectorCapabilities.NestedTypes;
 
     // base_dir is injected internally by RunCommand and never user-written; `root` is the only
     // user-facing connection option.
