@@ -148,6 +148,18 @@ public static class ConformanceSuite
                 ? SkippedAsync("no write: probe supplied in --config")
                 : CommitStatsValidAsync(client, process, request.ConnectionConfig, request.WriteProbe, ct));
 
+            await AddVectorAsync(vectors, "nested-columns-write", request.WriteProbe is null
+                ? SkippedAsync("no write: probe supplied in --config")
+                : (client.Hello.Capabilities & (long)ConnectorCapabilities.NestedTypes) == 0
+                    ? SkippedAsync("the connector does not declare NestedTypes")
+                    : NestedColumnsWriteAsync(client, process, request.ConnectionConfig, request.WriteProbe, ct));
+
+            await AddVectorAsync(vectors, "spool-commit", request.WriteProbe is null
+                ? SkippedAsync("no write: probe supplied in --config")
+                : (client.Hello.Capabilities & (long)ConnectorCapabilities.SpoolWrites) == 0
+                    ? SkippedAsync("the connector does not declare SpoolWrites")
+                    : SpoolCommitAsync(client, process, request.ConnectionConfig, request.WriteProbe, ct));
+
             await AddVectorAsync(vectors, "cancellation", request.ReadProbe is null
                 ? SkippedAsync("no read: probe supplied in --config")
                 : nativeOnlyRead
@@ -431,6 +443,76 @@ public static class ConformanceSuite
         return accumulator.Drops == StatsDrop.None
             ? VectorVerdict.Pass()
             : VectorVerdict.Fail($"commit reported invalid stats (rules fired: {accumulator.Drops})");
+    }
+
+    // A sink declaring NestedTypes takes list, struct and map columns (nulls at every level) on the Arrow path:
+    // the engine hands it such a batch instead of refusing the write, so failing to commit one is a defect --
+    // unless the probe's output itself cannot hold them (a parquet output on a file sink's own writer), which the
+    // sink says with a permanent config error, before or during the write.
+    private static async Task<VectorVerdict> NestedColumnsWriteAsync(
+        PcpClient client, ConnectorProcess process, ConnectorConfig connectionConfig,
+        ConformanceWriteProbe probe, CancellationToken ct)
+    {
+        var spec = new OutputSpec("conformance", probe.Output, probe.Mode, probe.SchemaPolicy, probe.Options);
+        var schema = new Schema(
+        [
+            new Field("id", Int64Type.Default, nullable: true),
+            new Field("tags", new ListType(new Field("element", StringType.Default, nullable: true)), nullable: true),
+            new Field("rec", new StructType([new Field("name", StringType.Default, nullable: true)]), nullable: true),
+            new Field("m", new MapType(new Field("key", StringType.Default, nullable: false), new Field("value", Int64Type.Default, nullable: true)), nullable: true),
+        ], null);
+        var builder = new Pz.Connectors.Abstractions.Batches.ArrowBatchBuilder(schema, int.MaxValue, maxRowsPerBatch: int.MaxValue);
+        builder.AppendRow([1L, new object?[] { "a", null }, new object?[] { "x" }, new Dictionary<string, object?> { ["k"] = 1L, ["z"] = null }]);
+        builder.AppendRow([2L, System.Array.Empty<object?>(), new object?[] { null }, new Dictionary<string, object?>()]);
+        builder.AppendRow([3L, null, null, null]);
+        using var batch = builder.Flush()!;
+
+        await using var sink = await new ProcessSinkConnector(client, process).OpenAsync(connectionConfig, ct).ConfigureAwait(false);
+        WriteResult result;
+        try
+        {
+            await using var session = await sink.BeginWriteAsync(spec, schema, ct).ConfigureAwait(false);
+            await session.WriteBatchAsync(batch, ct).ConfigureAwait(false);
+            result = await session.CommitAsync(ct).ConfigureAwait(false);
+        }
+        catch (PzConnectorException ex) when (!ex.IsTransient && ex.Code == PzConnectorErrorCodes.Config)
+        {
+            return VectorVerdict.Skip($"the write: probe's output refuses nested columns ({ex.Message})");
+        }
+
+        return result.RowsWritten == 3
+            ? VectorVerdict.Pass()
+            : VectorVerdict.Fail($"committed a 3-row nested batch but reported {result.RowsWritten} rows written");
+    }
+
+    // A sink declaring SpoolWrites plans a spool for the probe output (a COPY clause and an extension, a partition
+    // column only with its template) and commits an empty spool -- an empty partitioned output -- as zero rows.
+    private static async Task<VectorVerdict> SpoolCommitAsync(
+        PcpClient client, ConnectorProcess process, ConnectorConfig connectionConfig,
+        ConformanceWriteProbe probe, CancellationToken ct)
+    {
+        var spec = new OutputSpec("conformance", probe.Output, probe.Mode, probe.SchemaPolicy, probe.Options);
+        await using var sink = await new ProcessSinkConnector(client, process).OpenAsync(connectionConfig, ct).ConfigureAwait(false);
+        var spooling = (ISpoolingSink)sink;
+        if (!spooling.TryGetSpool(spec, out var plan))
+        {
+            return VectorVerdict.Skip("the connector planned no spool for the write: probe's output");
+        }
+
+        if (string.IsNullOrWhiteSpace(plan.CopyOptions) || string.IsNullOrWhiteSpace(plan.Extension))
+        {
+            return VectorVerdict.Fail("the spool plan has no COPY options or no file extension");
+        }
+
+        if ((plan.PartitionColumn is null) != (plan.PathTemplate is null))
+        {
+            return VectorVerdict.Fail("the spool plan names a partition column without a path template, or a template without a column");
+        }
+
+        var result = await spooling.CommitSpoolAsync(spec, [], ct).ConfigureAwait(false);
+        return result.RowsWritten == 0
+            ? VectorVerdict.Pass()
+            : VectorVerdict.Fail($"committed an empty spool but reported {result.RowsWritten} rows written");
     }
 
     private static async Task TryAbortAsync(PcpClient client, string sessionId)

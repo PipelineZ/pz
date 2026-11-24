@@ -88,6 +88,15 @@ fn memory_sink_passes_every_sink_conformance_vector() {
             .any(|line| line.starts_with("PASS numeric-option-fidelity")),
         "expected the numeric-option-fidelity vector to pass; got:\n{stdout}"
     );
+    // The example declares NestedTypes and SpoolWrites, so both vectors run rather than skip.
+    for vector in ["nested-columns-write", "spool-commit"] {
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.starts_with(&format!("PASS {vector}"))),
+            "expected the {vector} vector to pass; got:\n{stdout}"
+        );
+    }
 }
 
 /// The first `dotnet` that resolves the SDK `global.json` asks for: `dotnet --version`, run from the repo root,

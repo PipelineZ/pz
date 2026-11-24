@@ -30,7 +30,10 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   per `partition_by` folder (rendered from the column's UTC value), for the sink to deliver. `plan.json`, `pz plan`
   and the `node_completed` event's `strategy` report it as `spool`. Over PCP it is two new RPCs, `TrySpool` and
   `CommitSpool`, called only on a connector that declares `SpoolWrites`; the C# SDK serves them for any sink
-  implementing `ISpoolingSink`.
+  implementing `ISpoolingSink`, and the Rust SDK through `SinkConnector::try_spool` and `Sink::commit_spool`
+  (defaulted trait methods).
+- **`pz connector test` vectors `nested-columns-write` and `spool-commit`**, run for a connector declaring
+  `NestedTypes` or `SpoolWrites` (a write: probe whose output refuses nested columns with a config error skips).
 
 - **STRUCT, LIST, MAP and fixed-size ARRAY columns cross pz's Arrow path**, nested to any depth over the flat
   types. An Arrow source (every out-of-process connector) can now emit them and they land as DuckDB's nested
@@ -49,8 +52,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `JSON_VALUE`/`OPENJSON`, through append, replace and merge; an existing text column of any width is accepted.
 - **`NativeCopy.NestedAsJson`** (connector ABI and PCP, additive): a native copy into a destination without
   composite types asks the engine to hand it STRUCT, LIST, MAP, UNION and VARIANT columns as DuckDB `JSON`.
-  The mysql and sqlite sinks set it, and so do the file sinks for csv, tsv and xlsx. The Rust SDK carries the
-  protocol field but cannot set it yet.
+  The mysql and sqlite sinks set it, and so do the file sinks for csv, tsv and xlsx. In the Rust SDK it is
+  `NativeCopy::nested_as_json` (a new public field: a struct literal needs `..Default::default()`).
 - **The file sinks' own writers (localfiles, sftp, gcs, azureblob) write nested columns** when a write takes the
   Arrow path (sftp always; the others under `engine.force_universal` or when they decline the native copy): json
   as objects and arrays, csv/tsv as JSON text byte-identical to the native copy. Their parquet writer refuses a
