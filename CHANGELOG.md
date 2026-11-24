@@ -14,6 +14,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   localfiles writes byte for byte (csv timestamp and number formatting change accordingly), parquet carries
   decimals and nested columns, and xlsx and json `layout: array` outputs work on sftp. `engine.force_universal`
   keeps the previous writers.
+- **sftp reads nested parquet**: lists, structs and maps (DuckDB's fixed-size arrays included) read back with
+  every null in place, where the reader used to flatten them to their leaf columns.
 
 - **A STRUCT, LIST, MAP, UNION or VARIANT column written to CSV, TSV, xlsx or SQLite is now JSON text**
   (`{"a":1,"b":"x"}`, `[1,2]`, `{"k":1}`) instead of DuckDB's literal syntax (`{'a': 1, 'b': x}`, `{k=1}`),
