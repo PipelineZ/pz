@@ -130,7 +130,7 @@ public class SqlServerConnectorTests
             ConnectorCapabilities.PartitionedRead | ConnectorCapabilities.Merge | ConnectorCapabilities.Transactional |
             ConnectorCapabilities.ReplaceWrites | ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound |
             ConnectorCapabilities.ApplyDeletes | ConnectorCapabilities.ChangeCapture |
-            ConnectorCapabilities.TextLengthStats;
+            ConnectorCapabilities.TextLengthStats | ConnectorCapabilities.NestedTypes;
         Assert.Equal(expected, c.Capabilities);
     }
 

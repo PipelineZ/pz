@@ -2,6 +2,7 @@ using System.Collections;
 using System.Data.Common;
 using System.Data.SqlTypes;
 using Apache.Arrow;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
 
@@ -35,6 +36,7 @@ internal sealed class ArrowBatchDataReader(RecordBatch batch) : DbDataReader
             BooleanArray a => a.GetValue(_row)!.Value,
             Date32Array => Date32(column, _row),
             TimestampArray a => a.GetTimestamp(_row)!.Value.UtcDateTime, // naive UTC into datetime2(6)
+            StructArray or ListArray or FixedSizeListArray => ArrowJsonValue.ToJson(column, _row),
             _ => throw new NotSupportedException($"unsupported Arrow column type {column.Data.DataType}"),
         };
     }
@@ -50,7 +52,7 @@ internal sealed class ArrowBatchDataReader(RecordBatch batch) : DbDataReader
     [return: System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
         System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicFields |
         System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicProperties)]
-    public override Type GetFieldType(int ordinal) => batch.Schema.FieldsList[ordinal].DataType.TypeId switch
+    public override Type GetFieldType(int ordinal) => MsDdl.IsNested(batch.Schema.FieldsList[ordinal]) ? typeof(string) : batch.Schema.FieldsList[ordinal].DataType.TypeId switch
     {
         Apache.Arrow.Types.ArrowTypeId.Int32 => typeof(int),
         Apache.Arrow.Types.ArrowTypeId.Int64 => typeof(long),

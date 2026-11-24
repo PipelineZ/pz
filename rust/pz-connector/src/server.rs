@@ -597,6 +597,7 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
                         final_path,
                     })
                     .collect(),
+                ..Default::default()
             },
         }))
     }

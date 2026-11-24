@@ -39,7 +39,10 @@ internal static class MsDdl
         };
     }
 
-    internal static string DdlType(Field field) => field.DataType.TypeId switch
+    /// <summary>A nested column (STRUCT, LIST, ARRAY, MAP) is written as its JSON text.</summary>
+    internal static bool IsNested(Field field) => field.DataType is NestedType and not UnionType;
+
+    internal static string DdlType(Field field) => IsNested(field) ? "nvarchar(max)" : field.DataType.TypeId switch
     {
         ArrowTypeId.Int32 => "int",
         ArrowTypeId.Int64 => "bigint",
@@ -154,7 +157,7 @@ internal static class MsDdl
             }
 
             var isUndeclaredString = !resolved.Declared.Contains(field.Name)
-                && field.DataType.TypeId == ArrowTypeId.String;
+                && (field.DataType.TypeId == ArrowTypeId.String || IsNested(field));
             var ok = isUndeclaredString
                 ? actual.StartsWith("nvarchar(", StringComparison.OrdinalIgnoreCase)
                     || actual.StartsWith("varchar(", StringComparison.OrdinalIgnoreCase)

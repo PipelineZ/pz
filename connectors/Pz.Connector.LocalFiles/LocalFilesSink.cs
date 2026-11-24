@@ -31,6 +31,7 @@ internal sealed class LocalFilesSink(string baseDir, bool rootDeclared) : ISink
             FileFormatCatalog.SetupStatements(format))
         {
             Mechanism = $"COPY TO {format.Name}",
+            NestedAsJson = FileFormatCatalog.NestedAsJson(format),
             Finalizations = [new FileMove(tempPath, finalPath)],
         };
         return true;

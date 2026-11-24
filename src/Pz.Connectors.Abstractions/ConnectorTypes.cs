@@ -245,6 +245,12 @@ public sealed record NativeCopy(string CopySql, IReadOnlyList<string> SetupState
     /// <summary>Filesystem finalizations the engine applies after the COPY succeeds. Empty for
     /// object-store copies, whose per-object PUT is already atomic.</summary>
     public IReadOnlyList<FileMove> Finalizations { get; init; } = [];
+
+    /// <summary>The destination has no composite types (a MySQL or SQLite table, a CSV file): the engine
+    /// substitutes for <c>{{source}}</c> a relation whose STRUCT, LIST, ARRAY, MAP, UNION and VARIANT columns
+    /// are DuckDB <c>JSON</c>, so they land as JSON text rather than failing or as DuckDB's literal
+    /// syntax. Every other column is passed through unchanged.</summary>
+    public bool NestedAsJson { get; init; }
 }
 
 /// <summary>A filesystem finalization the engine applies after a successful native COPY: same-directory

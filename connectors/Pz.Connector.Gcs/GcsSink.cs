@@ -62,6 +62,7 @@ internal sealed class GcsSink(ConnectorConfig config, Func<StorageClient>? clien
             [.. GcsSql.SetupStatements(config, GcsSql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO gcs {format.Name}",
+            NestedAsJson = FileFormatCatalog.NestedAsJson(format),
         };
         return true;
     }

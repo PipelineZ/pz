@@ -184,6 +184,11 @@ public static class FileFormatCatalog
 
     /// <summary><c>install X</c>/<c>load X</c> for each DuckDB extension the format needs; the engine's
     /// setup ledger runs each distinct statement once per run.</summary>
+    /// <summary>The format has no nested types of its own (csv, tsv, xlsx): a native copy sets
+    /// <see cref="NativeCopy.NestedAsJson"/> so STRUCT, LIST and MAP cells are written as JSON text, not as
+    /// DuckDB's literal syntax.</summary>
+    public static bool NestedAsJson(FileFormat format) => format.Name is "csv" or "tsv" or "xlsx";
+
     public static IReadOnlyList<string> SetupStatements(FileFormat format)
     {
         ArgumentNullException.ThrowIfNull(format);

@@ -58,15 +58,12 @@ public static class StagedColumns
     public static string CastFor(string name, string type)
     {
         var column = IsPlainIdentifier(name) ? name : ArrowInterop.QuoteIdentifier(name);
-        var upper = type.ToUpperInvariant();
-        if (upper.EndsWith(']') || upper.StartsWith("STRUCT", StringComparison.Ordinal)
-            || upper.StartsWith("MAP", StringComparison.Ordinal) || upper.StartsWith("UNION", StringComparison.Ordinal)
-            || upper == "VARIANT")
+        if (IsComposite(type))
         {
             return $"{column}::JSON::VARCHAR";
         }
 
-        return upper switch
+        return type.ToUpperInvariant() switch
         {
             "TINYINT" or "SMALLINT" or "UTINYINT" or "USMALLINT" => $"{column}::INTEGER",
             "UINTEGER" => $"{column}::BIGINT",
@@ -76,6 +73,29 @@ public static class StagedColumns
             "BLOB" => $"base64({column})",
             _ => $"{column}::VARCHAR",
         };
+    }
+
+    /// <summary>A DuckDB STRUCT, LIST, ARRAY, MAP, UNION or VARIANT type, by its <c>describe</c> text.</summary>
+    public static bool IsComposite(string type)
+    {
+        var upper = type.ToUpperInvariant();
+        return upper.EndsWith(']') || upper.StartsWith("STRUCT", StringComparison.Ordinal)
+            || upper.StartsWith("MAP", StringComparison.Ordinal) || upper.StartsWith("UNION", StringComparison.Ordinal)
+            || upper == "VARIANT";
+    }
+
+    /// <summary><paramref name="from"/> as the relation a <see cref="Pz.Connectors.Abstractions.NativeCopy.NestedAsJson"/>
+    /// copy reads: unchanged when no column is composite, else a subquery casting each composite column to
+    /// DuckDB <c>JSON</c> under its own name.</summary>
+    public static async Task<string> NestedAsJsonAsync(IDuckSession duck, string from, CancellationToken ct)
+    {
+        var composite = (await DescribeAsync(duck, from, ct).ConfigureAwait(false))
+            .Where(c => IsComposite(c.Type))
+            .Select(c => ArrowInterop.QuoteIdentifier(c.Name))
+            .ToList();
+        return composite.Count == 0
+            ? from
+            : $"(select * replace ({string.Join(", ", composite.Select(c => $"{c}::JSON as {c}"))}) from {from})";
     }
 
     private static bool IsPlainIdentifier(string name) =>

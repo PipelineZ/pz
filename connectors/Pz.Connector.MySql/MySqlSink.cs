@@ -38,6 +38,7 @@ internal sealed class MySqlSink(ConnectorConfig config) : ISink
         copy = new NativeCopy(s.Sql, MySqlSql.SetupStatements(config, alias, readOnly: false))
         {
             Mechanism = s.Mechanism,
+            NestedAsJson = true, // no composite column types on the destination
         };
         return true;
     }

@@ -433,7 +433,7 @@ internal sealed class PcpConnectorService(
                 return new NativeCopyResponse { Found = false };
             }
 
-            var response = new NativeCopyResponse { Found = true, CopySql = copy.CopySql };
+            var response = new NativeCopyResponse { Found = true, CopySql = copy.CopySql, NestedAsJson = copy.NestedAsJson };
             response.SetupStatements.AddRange(copy.SetupStatements);
             if (copy.Mechanism is not null)
             {
