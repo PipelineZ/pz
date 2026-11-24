@@ -166,7 +166,7 @@ public sealed class ManifestWriterTests
         // No enum member covers this bit; without masking, Enum.ToString() would fall back to the raw
         // decimal number for the WHOLE value -- silently writing a bogus "capability" name into the
         // manifest instead of the real, known ones alongside it.
-        var withUnknownBit = ConnectorCapabilities.NativeScan | (ConnectorCapabilities)(1 << 24);
+        var withUnknownBit = ConnectorCapabilities.NativeScan | (ConnectorCapabilities)(1 << 30);
 
         Assert.Equal(["NativeScan"], ManifestWriter.CapabilityNames(withUnknownBit));
     }

@@ -15,8 +15,8 @@ use arrow::datatypes::SchemaRef;
 use async_trait::async_trait;
 use opentelemetry::metrics::Counter;
 use pz_connector::{
-    Config, ConnectorDecl, NativeCopy, OutputSpec, PzError, Sink, SinkConnector, WriteResult,
-    WriteSession,
+    Config, ConnectorDecl, NativeCopy, OutputSpec, PzError, Sink, SinkConnector, SpoolPlan,
+    SpooledFile, WriteResult, WriteSession,
 };
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 
@@ -55,6 +55,16 @@ impl SinkConnector for MemorySinkConnector {
         // An in-memory destination has no SQL engine on the other end for DuckDB to hand a COPY to.
         None
     }
+
+    fn try_spool(&self, _spec: &OutputSpec) -> Option<SpoolPlan> {
+        // It can take finished files, though: the host writes parquet, `commit_spool` counts the rows.
+        Some(SpoolPlan {
+            copy_options: "FORMAT parquet".into(),
+            extension: "parquet".into(),
+            mechanism: Some("in-memory count".into()),
+            ..Default::default()
+        })
+    }
 }
 
 /// The exact output name `pz connector test`'s `transient-error-shape` vector probes with, mirrored
@@ -67,6 +77,17 @@ struct MemorySink;
 
 #[async_trait]
 impl Sink for MemorySink {
+    async fn commit_spool(
+        &self,
+        _spec: OutputSpec,
+        files: Vec<SpooledFile>,
+    ) -> Result<WriteResult, PzError> {
+        Ok(WriteResult {
+            rows_written: files.iter().map(|f| f.rows).sum(),
+            batches_written: files.len() as i64,
+        })
+    }
+
     async fn begin_write(
         &self,
         spec: OutputSpec,
@@ -149,7 +170,8 @@ async fn main() {
     let decl = ConnectorDecl {
         name: "memory-sink",
         version: env!("CARGO_PKG_VERSION"),
-        capabilities: 0,
+        // NestedTypes | SpoolWrites: buffered batches may hold any Arrow type, and spooled files are counted.
+        capabilities: 8_388_608 | 16_777_216,
         connection_config_schema: "",
         dataset_config_schema: "",
         output_config_schema: "",

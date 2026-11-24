@@ -29,6 +29,13 @@ internal abstract class SftpWriteSessionBase(
 
     protected string TempPath => tempPath;
 
+    /// <summary>Counts rows a session wrote without <see cref="WriteBatchAsync"/> (an uploaded file).</summary>
+    private protected void AddWritten(long rows, long batches)
+    {
+        _rowsWritten += rows;
+        _batchesWritten += batches;
+    }
+
     /// <summary>Routes one discrete write-session op through the engine-supplied gate when present; with
     /// no gate, calls straight through. Classification into PzConnectorException happens INSIDE
     /// <paramref name="op"/>, so the gate always sees fully-classified transient/permanent exceptions.
@@ -429,4 +436,52 @@ internal sealed class SftpParquetWriteSession : SftpWriteSessionBase
             _stream = null;
         }
     }
+}
+
+/// <summary>Uploads one finished local file (a DuckDB-written spool file) to the temp path, then commits through
+/// the base protocol (delete final, rename temp → final). Takes no batches.</summary>
+internal sealed class SftpFileWriteSession : SftpWriteSessionBase
+{
+    private readonly ISftpFileSystem _fs;
+    private readonly IOperationGate? _gate;
+    private readonly string _context;
+
+    private SftpFileWriteSession(ISftpFileSystem fs, string tempPath, string finalPath, IOperationGate? gate, string context)
+        : base(fs, ownsFileSystem: false, tempPath, finalPath, gate, context)
+    {
+        _fs = fs;
+        _gate = gate;
+        _context = context;
+    }
+
+    /// <summary>A session for <paramref name="finalPath"/> on a file system the caller owns.</summary>
+    internal static SftpFileWriteSession Create(
+        ISftpFileSystem fs, string tempPath, string finalPath, IOperationGate? gate, string context) =>
+        new(fs, tempPath, finalPath, gate, context);
+
+    /// <summary>Streams <paramref name="localPath"/> into the temp file and counts its <paramref name="rows"/>.</summary>
+    internal async Task UploadAsync(string localPath, long rows, CancellationToken ct)
+    {
+        var remote = await OpenWriteAsync(_fs, TempPath, _gate, _context, ct).ConfigureAwait(false);
+        await using (remote.ConfigureAwait(false))
+        {
+            try
+            {
+                await using var local = File.OpenRead(localPath);
+                await local.CopyToAsync(remote, ct).ConfigureAwait(false);
+                await remote.FlushAsync(ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
+            {
+                throw SftpErrors.Map(ex, $"{_context}: upload to '{TempPath}' failed");
+            }
+        }
+
+        AddWritten(rows, 1);
+    }
+
+    protected override ValueTask WriteBatchCoreAsync(RecordBatch batch, CancellationToken ct) =>
+        throw new NotSupportedException("a file upload session takes no batches");
+
+    protected override ValueTask CloseWriterAsync() => ValueTask.CompletedTask;
 }

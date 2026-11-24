@@ -48,6 +48,10 @@ service PzConnector {
   rpc BeginWrite(BeginWriteRequest) returns (WriteSessionTicket);
   rpc CommitWrite(SessionRef) returns (WriteResultMsg);
   rpc AbortWrite(SessionRef) returns (AbortResponse);
+  // Spool tier, for a sink declaring SpoolWrites: the host asks for a plan, writes the files with DuckDB
+  // on its own disk, then hands their local paths over for delivery.
+  rpc TrySpool(SpoolRequest) returns (SpoolPlanResponse);
+  rpc CommitSpool(CommitSpoolRequest) returns (WriteResultMsg);
 
   // cross-cutting
   rpc Cancel(CancelRequest) returns (CancelResponse);
@@ -249,6 +253,25 @@ message NativeCopyResponse {
   bool nested_as_json = 6;
 }
 message FileMoveMsg { string temp_path = 1; string final_path = 2; }
+
+message SpoolRequest { string op_id = 1; OutputSpecMsg spec = 2; optional RunContextMsg run_context = 3; }
+message SpoolPlanResponse {
+  bool found = 1;
+  string copy_options = 2;              // body of COPY ... TO '<file>' (...)
+  string extension = 3;
+  optional string mechanism = 4;
+  repeated string setup_statements = 5;
+  bool nested_as_json = 6;
+  optional string partition_column = 7;
+  optional string path_template = 8;
+}
+message SpooledFileMsg { string folder = 1; string local_path = 2; int64 rows = 3; }
+message CommitSpoolRequest {
+  string op_id = 1;
+  OutputSpecMsg spec = 2;
+  repeated SpooledFileMsg files = 3;
+  optional RunContextMsg run_context = 4;
+}
 
 message WriteAttemptMsg { string node = 1; string run = 2; int32 ordinal = 3; }
 message OutputSpecMsg {

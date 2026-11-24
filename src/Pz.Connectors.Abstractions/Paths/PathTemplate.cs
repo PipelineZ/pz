@@ -98,6 +98,18 @@ public static partial class PathTemplate
         return s;
     }
 
+    /// <summary><paramref name="pattern"/> as a DuckDB/C <c>strftime</c> format that renders the same folder as
+    /// <see cref="Render"/> from a UTC instant: each token becomes its directive and a literal <c>%</c> is
+    /// doubled.</summary>
+    public static string ToStrftime(string pattern) =>
+        pattern.Replace("%", "%%", StringComparison.Ordinal)
+            .Replace("{yyyy}", "%Y", StringComparison.Ordinal)
+            .Replace("{yy}", "%y", StringComparison.Ordinal)
+            .Replace("{MM}", "%m", StringComparison.Ordinal)
+            .Replace("{dd}", "%d", StringComparison.Ordinal)
+            .Replace("{HH}", "%H", StringComparison.Ordinal)
+            .Replace("{mm}", "%M", StringComparison.Ordinal);
+
     /// <summary>Leading run of characters before the first wildcard (<c>*</c>/<c>?</c>) or token (<c>{</c>).
     /// The server-side prefix an object store can narrow on. Lifted from AzureSource.StaticPrefix so every
     /// connector shares it.</summary>

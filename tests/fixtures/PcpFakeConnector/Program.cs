@@ -107,6 +107,10 @@ internal static class Program
 /// <para><c>--report-run-context</c> answers with the run context it was handed (<c>run/node</c>, or
 /// <c>none</c>): a connection check as its message, a schema fetch and a write's start as a permanent error
 /// whose message names it.</para>
+/// <para><c>--spool-writes</c> declares <see cref="Pz.Connectors.Abstractions.ConnectorCapabilities.SpoolWrites"/>:
+/// the sink plans a csv spool (partitioned on <c>at</c> under the output's <c>path:</c> when it names
+/// <c>partition_by</c>) and delivers each spooled file by copying it to <c>&lt;local path&gt;.delivered</c>,
+/// naming the folder on the copy's first line.</para>
 /// <para><c>--skip-reads</c> makes every partition report, once its stream ends, that a rule skipped its read
 /// (<see cref="Pz.Connectors.Abstractions.ISkippedReadPartition"/>).</para></summary>
 internal sealed record FixtureOptions(
@@ -138,7 +142,8 @@ internal sealed record FixtureOptions(
     bool UnimplementedReadStats = false,
     bool ExitOnReadStats = false,
     bool PatientTelemetry = false,
-    bool ThrowUnhandledAtPlan = false)
+    bool ThrowUnhandledAtPlan = false,
+    bool SpoolWrites = false)
 {
     /// <summary>Splits argv into the fixture's own switches and what the SDK owns. The SDK's argv
     /// (<c>--pz-socket &lt;path&gt;</c>, and <c>--pz-manifest --out &lt;file&gt; --entrypoint
@@ -158,6 +163,7 @@ internal sealed record FixtureOptions(
         bool reportUnknownCapabilityBit = false;
         bool throwUnhandled = false;
         bool nativeOnly = false;
+        bool spoolWrites = false;
         bool emitStats = false;
         bool reportRunContext = false;
         bool skipReads = false;
@@ -280,6 +286,9 @@ internal sealed record FixtureOptions(
                 case "--throw-unhandled-at-plan":
                     throwUnhandledAtPlan = true;
                     break;
+                case "--spool-writes":
+                    spoolWrites = true;
+                    break;
                 default:
                     throw new ArgumentException($"unrecognized argument '{args[i]}'");
             }
@@ -295,7 +304,7 @@ internal sealed record FixtureOptions(
             failCheckTransient, reportAbortSemanticsNone, useGate, endlessRead, ignoreCancel, ignoreShutdown,
             declareCheckpointableReads, syncState, declareSyncStateOnly, stableIds, pruneColumns,
             failReadMidstreamTransient, failWriteMidstreamTransient, reportUnknownCapabilityBit, throwUnhandled,
-            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats, unimplementedReadStats, exitOnReadStats, patientTelemetry, throwUnhandledAtPlan),
+            nativeOnly, emitStats, reportRunContext, skipReads, failReadStats, unimplementedReadStats, exitOnReadStats, patientTelemetry, throwUnhandledAtPlan, spoolWrites),
             passthrough.ToArray());
     }
 }

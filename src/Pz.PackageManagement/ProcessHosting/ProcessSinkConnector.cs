@@ -38,11 +38,11 @@ public sealed class ProcessSinkConnector(PcpClient client, ConnectorProcess proc
         CancellationToken ct) => _core.CheckConnectionAsync(config, ct, context);
 
     public ValueTask<ISink> OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        ValueTask.FromResult<ISink>(new ProcessSink(client, process));
+        ValueTask.FromResult<ISink>(new ProcessSink(client, process, _core.Capabilities));
 }
 
-internal sealed class ProcessSink(PcpClient client, ConnectorProcess process)
-    : ISink, IOperationGateAware, IGatedShim, IRunContextAware
+internal sealed class ProcessSink(PcpClient client, ConnectorProcess process, ConnectorCapabilities capabilities)
+    : ISink, ISpoolingSink, IOperationGateAware, IGatedShim, IRunContextAware
 {
     /// <summary>See <see cref="ProcessSource"/>'s run context: sent on every request that may open the connector's
     /// sink.</summary>
@@ -111,6 +111,73 @@ internal sealed class ProcessSink(PcpClient client, ConnectorProcess process)
 
         copy = MessageMapping.ToNativeCopy(response);
         return true;
+    }
+
+    /// <summary>Only for a connector declaring <see cref="ConnectorCapabilities.SpoolWrites"/>; any other answers
+    /// false without a call. Synchronous in the ABI, so an internal deadline bounds it, as for a native copy.</summary>
+    public bool TryGetSpool(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SpoolPlan? plan)
+    {
+        plan = null;
+        if (!capabilities.HasFlag(ConnectorCapabilities.SpoolWrites))
+        {
+            return false;
+        }
+
+        var request = new SpoolRequest
+        {
+            OpId = ProcessSource.NewOpId(), Spec = MessageMapping.ToOutputSpecMsg(spec), RunContext = RunContext,
+        };
+        using var cts = new CancellationTokenSource(ProcessFailureMapping.NativeOperationTimeout);
+        SpoolPlanResponse response;
+        try
+        {
+            using var call = client.Grpc.TrySpoolAsync(request, cancellationToken: cts.Token);
+            response = call.ResponseAsync.GetAwaiter().GetResult();
+        }
+        catch (RpcException ex)
+        {
+            throw cts.IsCancellationRequested
+                ? ProcessFailureMapping.NativeOperationTimedOut("TrySpool")
+                : ProcessFailureMapping.MapControlPlane(client, process, ex, CancellationToken.None);
+        }
+        catch (ObjectDisposedException)
+        {
+            throw ProcessFailureMapping.Condemned(process);
+        }
+
+        if (!response.Found)
+        {
+            return false;
+        }
+
+        plan = MessageMapping.ToSpoolPlan(response);
+        return true;
+    }
+
+    /// <summary>The files are on this machine's disk, which the connector process shares; the engine deletes them
+    /// once this returns.</summary>
+    public async ValueTask<WriteResult> CommitSpoolAsync(OutputSpec spec, IReadOnlyList<SpooledFile> files, CancellationToken ct)
+    {
+        var opId = ProcessSource.NewOpId();
+        var request = new CommitSpoolRequest { OpId = opId, Spec = MessageMapping.ToOutputSpecMsg(spec), RunContext = RunContext };
+        request.Files.AddRange(files.Select(MessageMapping.ToSpooledFileMsg));
+        using (client.AttachCancelLadder(opId, ct))
+        {
+            try
+            {
+                var response = await client.Grpc.CommitSpoolAsync(request, cancellationToken: ct).ConfigureAwait(false);
+                HostStats.Merge(response.Stats);
+                return MessageMapping.ToWriteResult(response);
+            }
+            catch (RpcException ex)
+            {
+                throw ProcessFailureMapping.MapControlPlane(client, process, ex, ct);
+            }
+            catch (ObjectDisposedException)
+            {
+                throw ProcessFailureMapping.Condemned(process);
+            }
+        }
     }
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)

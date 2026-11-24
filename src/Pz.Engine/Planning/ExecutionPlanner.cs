@@ -776,7 +776,9 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
         {
             if (!sink.TryGetNativeCopy(spec, out copy))
             {
-                return Universal(node, $"arrow stream: connector '{def.Sink.Connector}' has no native path");
+                return sink is ISpoolingSink spooling && spooling.TryGetSpool(spec, out var spool)
+                    ? PlanSpool(node, def, spool)
+                    : Universal(node, $"arrow stream: connector '{def.Sink.Connector}' has no native path");
             }
         }
         catch (PzConnectorException ex) when (!ex.IsTransient && ex.Code != PzConnectorErrorCodes.Unhandled)
@@ -810,6 +812,22 @@ public sealed class ExecutionPlanner(ConnectorRegistry connectors)
 
         return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.NativeCopy, 1,
             $"native copy: connector '{def.Sink.Connector}' provides {copy.Mechanism}");
+    }
+
+    /// <summary>The spool tier: DuckDB writes the output to local files the sink then delivers. Its setup
+    /// statements run in the run's DuckDB, so the unsigned-extension gate applies as for a native copy.</summary>
+    private static PlannedNode PlanSpool(DagNode node, SinkOutputDef def, SpoolPlan spool)
+    {
+        if (!def.Sink.AllowUnsignedExtensions && spool.SetupStatements.Any(HasUnsignedPackagedExtension))
+        {
+            return Universal(node,
+                $"arrow stream: sink '{def.Sink.Name}' spool path refused -- {PzErrorCode.UnsignedExtensionRefused} " +
+                "unsigned packaged extension in setup; set allow_unsigned_extensions: true on the connection to allow it");
+        }
+
+        return new PlannedNode(node.Id, node.Kind, node.Name, EdgeStrategy.Spool, 1,
+            $"spool: DuckDB writes {spool.Extension} files that connector '{def.Sink.Connector}' delivers" +
+            (spool.Mechanism is null ? "" : $" ({spool.Mechanism})"));
     }
 
     /// <summary>A connector failing to open a connection: classified (<see cref="ConnectorFailures"/>) with the

@@ -217,12 +217,26 @@ public sealed class SinkWriteExecutor : INodeExecutor
         }
 
         // Stamped only now, past the native-copy branch: a COPY has no session to carry a progress
-        // marker, and TryGetNativeCopy above must see the same spec the planner probed with.
-        spec = spec with
+        // marker, and TryGetNativeCopy above (and TryGetSpool below) must see the same spec the planner probed with.
+        var stamped = spec with
         {
             Attempt = new WriteAttempt(
                 node.Id.Value, ctx.Paths.RunId, ctx.Attempts.TryGetValue(node.Id, out var a) ? a : 1),
         };
+
+        if (ctx.Plan?.StrategyFor(node.Id) == EdgeStrategy.Spool && sink is ISpoolingSink spooling &&
+            spooling.TryGetSpool(spec, out var spool))
+        {
+            facts.Strategy = NodeFacts.Spool;
+            using var writeStage = facts.Stage("write");
+            var spooled = await SpoolWrite.RunAsync(ctx, node.Id.Value, relation, spool,
+                files => spooling.CommitSpoolAsync(stamped, files, ct).AsTask(), ct).ConfigureAwait(false);
+            writeStage.SetRows(spooled.RowsWritten);
+            PzMeters.RowsMoved.Add(spooled.RowsWritten, NodeMetricTags.Kind[NodeKind.SinkWrite]);
+            return new NodeResult(node.Id, node.Kind, node.Name, NodeStatus.Success, spooled.RowsWritten, TimeSpan.Zero, null);
+        }
+
+        spec = stamped;
 
         // The Arrow path carries only the v0 type matrix. A column outside it (STRUCT, LIST, VARIANT,
         // SMALLINT, FLOAT…) fails here, before the connector opens a write session, naming every such column

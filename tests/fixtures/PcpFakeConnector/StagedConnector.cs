@@ -114,9 +114,14 @@ internal sealed class StagedConnector(FixtureOptions options, PzConnectorContext
             // Simulates a newer SDK build whose Abstractions defines a flag this fixture's own
             // ConnectorCapabilities enum does not: an undefined bit, cast rather than named, since
             // there is no later member to reference from this build.
+            if (options.SpoolWrites)
+            {
+                capabilities |= ConnectorCapabilities.SpoolWrites;
+            }
+
             if (options.ReportUnknownCapabilityBit)
             {
-                capabilities |= (ConnectorCapabilities)(1 << 24);
+                capabilities |= (ConnectorCapabilities)(1 << 30);
             }
 
             return capabilities;
@@ -313,8 +318,35 @@ internal sealed class StagedFeedSource(ISource inner, FixtureOptions options)
     public NaturalReadShape GetNaturalReadShape(DatasetSpec spec) => NaturalReadShape.Feed;
 }
 
-internal sealed class StagedSink(ISink inner, FixtureOptions options) : ISink, IRunContextAware
+internal sealed class StagedSink(ISink inner, FixtureOptions options) : ISink, ISpoolingSink, IRunContextAware
 {
+    public bool TryGetSpool(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out SpoolPlan? plan)
+    {
+        var partitioned = spec.Options.ContainsKey("partition_by");
+        plan = options.SpoolWrites
+            ? new SpoolPlan("FORMAT csv, HEADER true", "csv")
+            {
+                Mechanism = "fixture copy",
+                SetupStatements = ["select 1"],
+                NestedAsJson = true,
+                PartitionColumn = partitioned ? "at" : null,
+                PathTemplate = partitioned ? spec.Options["path"]?.ToString() : null,
+            }
+            : null;
+        return plan is not null;
+    }
+
+    public async ValueTask<WriteResult> CommitSpoolAsync(OutputSpec spec, IReadOnlyList<SpooledFile> files, CancellationToken ct)
+    {
+        foreach (var file in files)
+        {
+            var content = await File.ReadAllTextAsync(file.LocalPath, ct).ConfigureAwait(false);
+            await File.WriteAllTextAsync(file.LocalPath + ".delivered", file.Folder + "\n" + content, ct).ConfigureAwait(false);
+        }
+
+        return new WriteResult(files.Sum(f => f.Rows), files.Count);
+    }
+
     private ConnectorRunContext? _runContext;
 
     public void UseRunContext(ConnectorRunContext context) => _runContext = context;

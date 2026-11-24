@@ -1,10 +1,13 @@
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Parquet;
+using Parquet.Data;
 using Parquet.Schema;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
 using Pz.Connectors.Toolkit.Formats;
+
+using ParquetField = Parquet.Schema.Field;
 
 namespace Pz.Connector.Sftp;
 
@@ -33,7 +36,7 @@ internal static class SftpParquetReader
     {
         await using var reader = await ParquetReader.CreateAsync(stream, leaveStreamOpen: true, cancellationToken: ct)
             .ConfigureAwait(false);
-        return BuildArrowSchema(reader.Schema.GetDataFields(), context);
+        return BuildArrowSchema(reader.Schema.Fields, context);
     }
 
     public static async IAsyncEnumerable<RecordBatch> ReadAsync(
@@ -42,18 +45,27 @@ internal static class SftpParquetReader
     {
         await using var reader = await ParquetReader.CreateAsync(stream, leaveStreamOpen: true, cancellationToken: ct)
             .ConfigureAwait(false);
-        var fields = SelectFields(reader.Schema.GetDataFields(), projectedColumns, context);
+        var fields = SelectFields(reader.Schema.Fields, projectedColumns, context);
         var schema = BuildArrowSchema(fields, context);
         var builder = new ArrowBatchBuilder(schema, options.TargetBatchBytes, maxRowsPerBatch: options.MaxRowsPerBatch);
+        var flat = fields.All(f => f is DataField);
 
         for (var g = 0; g < reader.RowGroupCount; g++)
         {
             using var group = reader.OpenRowGroupReader(g);
             var rows = checked((int)group.RowCount);
             var columns = new object?[fields.Length][];
-            for (var i = 0; i < fields.Length; i++)
+            if (flat)
             {
-                columns[i] = await ReadColumnAsync(group, fields[i], rows, context, ct).ConfigureAwait(false);
+                for (var i = 0; i < fields.Length; i++)
+                {
+                    columns[i] = await ReadColumnAsync(group, (DataField)fields[i], rows, context, ct).ConfigureAwait(false);
+                }
+            }
+            else
+            {
+                columns = await ParquetNestedReader.ReadRowGroupAsync(group, fields,
+                    (leaf, raw, present) => LeafValues(leaf, raw, present, context), ct).ConfigureAwait(false);
             }
 
             var row = new object?[fields.Length];
@@ -155,23 +167,23 @@ internal static class SftpParquetReader
     /// passes one is projecting against a declared contract, whose order IS what GetSchemaAsync
     /// reported; reverting to footer order here would silently land a reordered contract's values under
     /// the wrong column names.</summary>
-    private static DataField[] SelectFields(
-        IReadOnlyList<DataField> footerFields, IReadOnlyList<string>? projectedColumns, string context)
+    private static ParquetField[] SelectFields(
+        IReadOnlyList<ParquetField> footerFields, IReadOnlyList<string>? projectedColumns, string context)
     {
-        DataField[] fields;
+        ParquetField[] fields;
         if (projectedColumns is null)
         {
             fields = footerFields.ToArray();
         }
         else
         {
-            var byName = new Dictionary<string, DataField>(StringComparer.OrdinalIgnoreCase);
+            var byName = new Dictionary<string, ParquetField>(StringComparer.OrdinalIgnoreCase);
             foreach (var field in footerFields)
             {
                 byName.TryAdd(field.Name, field);
             }
 
-            var ordered = new List<DataField>(projectedColumns.Count);
+            var ordered = new List<ParquetField>(projectedColumns.Count);
             foreach (var name in projectedColumns)
             {
                 if (byName.TryGetValue(name, out var field))
@@ -192,8 +204,72 @@ internal static class SftpParquetReader
         return fields;
     }
 
-    private static Schema BuildArrowSchema(IReadOnlyList<DataField> fields, string context) =>
-        new(fields.Select(f => ColumnTypeCatalog.ToArrowField(f.Name, ToV0TypeName(f, context))).ToArray(), null);
+    /// <summary>A flat column maps through the v0 type names; a list, struct or map column nests those leaf
+    /// types (<see cref="ParquetNestedReader"/>).</summary>
+    private static Schema BuildArrowSchema(IReadOnlyList<ParquetField> fields, string context) =>
+        new(fields.Select(f => f is DataField leaf
+            ? ColumnTypeCatalog.ToArrowField(leaf.Name, ToV0TypeName(leaf, context))
+            : new Apache.Arrow.Field(f.Name, ParquetNestedReader.ArrowType(f, l => ColumnTypeCatalog.ToArrowField(l.Name, ToV0TypeName(l, context)).DataType), nullable: true)).ToArray(), null);
+
+    /// <summary>A nested column's leaf: its <paramref name="present"/> values (Parquet.Net packs them first),
+    /// boxed as <see cref="ReadColumnAsync"/> boxes a flat column's.</summary>
+    private static object?[] LeafValues(DataField field, RawColumnData raw, int present, string context)
+    {
+        var result = new object?[present];
+        switch (raw)
+        {
+            case RawColumnData<int> r:
+                Box(r.Values, result);
+                break;
+            case RawColumnData<long> r:
+                Box(r.Values, result);
+                break;
+            case RawColumnData<double> r:
+                Box(r.Values, result);
+                break;
+            case RawColumnData<bool> r:
+                Box(r.Values, result);
+                break;
+            case RawColumnData<DateTime> r:
+            {
+                var date = field is DateTimeDataField { DateTimeFormat: DateTimeFormat.Date };
+                var values = r.Values;
+                for (var i = 0; i < present; i++)
+                {
+                    result[i] = date ? DateOnly.FromDateTime(values[i]) : new DateTimeOffset(DateTime.SpecifyKind(values[i], DateTimeKind.Utc));
+                }
+
+                break;
+            }
+
+            case RawColumnData<ReadOnlyMemory<char>> r:
+            {
+                var values = r.Values;
+                for (var i = 0; i < present; i++)
+                {
+                    result[i] = new string(values[i].Span);
+                }
+
+                break;
+            }
+
+            default:
+                throw new PzConnectorException(
+                    $"{context}: parquet column '{field.Path}' has unsupported type '{field.ClrType.Name}' for the sftp read path",
+                    isTransient: false);
+        }
+
+        return result;
+    }
+
+    private static void Box<T>(Span<T> values, object?[] result)
+        where T : struct
+    {
+        for (var i = 0; i < result.Length; i++)
+        {
+            result[i] = values[i];
+        }
+    }
 
     /// <summary>The same footer-to-v0 mapping as the shared <c>ParquetTypeMap</c>, except decimal. That map
     /// only ever builds a schema (localfiles and azureblob read parquet rows on the native tier), so it

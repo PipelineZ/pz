@@ -80,14 +80,16 @@ my-project/
   `parquet`, `json`, `xlsx`, `avro`. Format-scoped options sit beside it, in YAML or as
   `source()`/`sink()` kwargs: `delimiter: "|"` (csv only, one ASCII character; tsv is fixed to tab),
   `layout: ndjson | array` (json only; `ndjson` is the default, `array` is one top-level JSON array
-  and is native-tier only, so sftp refuses it with PZ0361). An option on the wrong format is
+  and is native-tier only, so an sftp read refuses it with PZ0361). An option on the wrong format is
   PZ0362. A read with no `path:` is `<root>/<entity>.<format>`; a sink file is `<entity>.<format>`.
   `xlsx` (read and write, options `sheet:` and `header:`, one workbook per entity) and `avro` (read
   only) use DuckDB's `excel` and `avro` extensions, installed on first use (needs network once per
-  machine and DuckDB version, cached under `~/.duckdb/extensions/`); both are native-tier only, so
-  sftp refuses them with PZ0361. With `header: false` DuckDB names xlsx columns `A1`, `B1`, …, so a
-  `columns:` contract must use those names. xlsx write is localfiles-only (an s3/gcs/azureblob xlsx
-  sink is PZ0361); xlsx read works on all four.
+  machine and DuckDB version, cached under `~/.duckdb/extensions/`); both are native-tier only, so an
+  sftp read refuses them with PZ0361. With `header: false` DuckDB names xlsx columns `A1`, `B1`, …, so a
+  `columns:` contract must use those names. xlsx write works on localfiles and sftp (an s3/gcs/azureblob
+  xlsx sink is PZ0361); xlsx read works on localfiles, s3, gcs and azureblob. An sftp sink writes
+  every format through DuckDB: DuckDB writes the file locally and sftp uploads it (the `spool` tier in
+  `pz plan`), so its output matches localfiles'.
 
   A `columns:` type is one of `int`, `bigint`, `double`, `decimal`, `varchar`, `boolean`, `date`,
   `timestamp`, or nested from them: `varchar[]` (list), `int[3]` (fixed size), `struct(name varchar,
@@ -114,9 +116,10 @@ my-project/
   pipeline, e.g. `payload::JSON::VARCHAR`. STRUCT, LIST and MAP columns reach `http` (as JSON
   objects and arrays), `postgres` (a list of a flat type as a postgres array, anything else as
   `jsonb`) and `sqlserver` (JSON text in `nvarchar(max)`); `mysql`, `sqlite` and csv/tsv/xlsx files
-  get them as JSON text; parquet, json and DuckDB-family sinks keep them nested. `sftp` (and any
-  file sink on the Arrow path) writes them to json and csv but refuses them for parquet. Other
-  Arrow-path sinks refuse them with the same PZ0546 and cast hint.
+  get them as JSON text; parquet, json and DuckDB-family sinks keep them nested, sftp included. A file
+  sink forced onto the Arrow path (`engine.force_universal`) writes them to json and csv but refuses
+  them for parquet. Other Arrow-path sinks refuse them with the same PZ0546 and cast hint. sftp reads
+  nested parquet columns back.
 
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a

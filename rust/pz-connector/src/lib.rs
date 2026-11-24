@@ -61,7 +61,7 @@ pub use error::{PzError, CONFIG_CODE};
 pub use hostlog::log_layer;
 pub use server::{
     serve_sink, AbortSemantics, ConnectorDecl, NativeCopy, OutputSpec, ServeExit, Sink,
-    SinkConnector, WriteAttempt, WriteResult, WriteSession,
+    SinkConnector, SpoolPlan, SpooledFile, WriteAttempt, WriteResult, WriteSession,
 };
 pub use stats::stats;
 pub use telemetry::{layer, meter};

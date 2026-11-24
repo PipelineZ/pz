@@ -123,6 +123,34 @@ pub struct NativeCopy {
     pub setup_statements: Vec<String>,
     pub mechanism: Option<String>,
     pub finalizations: Vec<FileMove>,
+    /// The destination has no composite types: the host hands STRUCT, LIST, MAP, UNION and VARIANT
+    /// columns to the copy as DuckDB `JSON`.
+    pub nested_as_json: bool,
+}
+
+/// How the host writes the spool for a sink DuckDB cannot write to directly ([`SinkConnector::try_spool`]):
+/// `copy_options` is the body of DuckDB's `COPY ... TO '<file>' (...)` clause (`FORMAT parquet`),
+/// `extension` the file extension. With `partition_column`, the host writes one file per folder
+/// `path_template` (`{yyyy}/{MM}`) renders from that column's UTC value.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpoolPlan {
+    pub copy_options: String,
+    pub extension: String,
+    pub mechanism: Option<String>,
+    pub setup_statements: Vec<String>,
+    /// As [`NativeCopy::nested_as_json`], for a format without nested types (csv, xlsx).
+    pub nested_as_json: bool,
+    pub partition_column: Option<String>,
+    pub path_template: Option<String>,
+}
+
+/// One file the host spooled: its partition `folder` (empty when unpartitioned), its path on the local
+/// disk this process shares with the host, and its row count.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpooledFile {
+    pub folder: String,
+    pub local_path: String,
+    pub rows: i64,
 }
 
 #[async_trait]
@@ -148,6 +176,12 @@ pub trait SinkConnector: Send + Sync + 'static {
     fn try_native_copy(&self, _spec: &OutputSpec) -> Option<NativeCopy> {
         None
     }
+    /// The spool tier, asked only when `try_native_copy` declined and the connector declares
+    /// `SpoolWrites`: `Some` has the host write the output to local files with DuckDB and hand them to
+    /// [`Sink::commit_spool`]. Cheap and offline, like `try_native_copy`.
+    fn try_spool(&self, _spec: &OutputSpec) -> Option<SpoolPlan> {
+        None
+    }
 }
 
 #[async_trait]
@@ -163,6 +197,20 @@ pub trait Sink: Send + Sync {
     /// method existed keeps declaring [`AbortSemantics::DiscardsAll`] without any source change.
     fn abort_semantics(&self) -> AbortSemantics {
         AbortSemantics::DiscardsAll
+    }
+
+    /// Delivers the files the host spooled for a [`SinkConnector::try_spool`] plan. The host deletes them
+    /// once this returns, so read them first; deliver each atomically (temporary name, then rename) so a
+    /// failure leaves the destination as it was. The default refuses: only a sink whose connector plans a
+    /// spool is ever asked.
+    async fn commit_spool(
+        &self,
+        _spec: OutputSpec,
+        _files: Vec<SpooledFile>,
+    ) -> Result<WriteResult, PzError> {
+        Err(PzError::new(
+            "this sink plans no spool, so it cannot commit one",
+        ))
     }
 }
 
@@ -597,8 +645,58 @@ impl<C: SinkConnector> PzConnector for PzConnectorService<C> {
                         final_path,
                     })
                     .collect(),
+                nested_as_json: copy.nested_as_json,
+            },
+        }))
+    }
+
+    async fn try_spool(
+        &self,
+        request: Request<pb::SpoolRequest>,
+    ) -> Result<Response<pb::SpoolPlanResponse>, Status> {
+        let spec = to_output_spec(request.into_inner().spec.unwrap_or_default());
+        Ok(Response::new(match self.connector.try_spool(&spec) {
+            None => pb::SpoolPlanResponse {
+                found: false,
                 ..Default::default()
             },
+            Some(plan) => pb::SpoolPlanResponse {
+                found: true,
+                copy_options: plan.copy_options,
+                extension: plan.extension,
+                mechanism: plan.mechanism,
+                setup_statements: plan.setup_statements,
+                nested_as_json: plan.nested_as_json,
+                partition_column: plan.partition_column,
+                path_template: plan.path_template,
+            },
+        }))
+    }
+
+    async fn commit_spool(
+        &self,
+        request: Request<pb::CommitSpoolRequest>,
+    ) -> Result<Response<pb::WriteResultMsg>, Status> {
+        let msg = request.into_inner();
+        let spec = to_output_spec(msg.spec.unwrap_or_default());
+        let files = msg
+            .files
+            .into_iter()
+            .map(|f| SpooledFile {
+                folder: f.folder,
+                local_path: f.local_path,
+                rows: f.rows,
+            })
+            .collect();
+        let sink = self.sink().await.map_err(|e| to_status(&e))?;
+        let stats = Stats::new();
+        let result = stats::scope(stats.clone(), sink.commit_spool(spec, files))
+            .await
+            .map_err(|e| to_status(&e))?;
+        Ok(Response::new(pb::WriteResultMsg {
+            rows_written: result.rows_written,
+            batches_written: result.batches_written,
+            stats: stats.to_proto(),
         }))
     }
 
@@ -894,6 +992,7 @@ const CAPABILITY_NAMES: &[(u64, &str)] = &[
     (2_097_152, "NativeOnlyRead"),
     (4_194_304, "ReportsStats"),
     (8_388_608, "NestedTypes"),
+    (16_777_216, "SpoolWrites"),
 ];
 
 fn capability_names(capabilities: u64) -> Vec<String> {

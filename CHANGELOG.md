@@ -9,6 +9,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- **sftp writes through DuckDB**: every sftp output is now written by DuckDB to a local file and uploaded
+  (temp name, then rename), instead of by pz's own csv/json/parquet writers. Output now matches what
+  localfiles writes byte for byte (csv timestamp and number formatting change accordingly), parquet carries
+  decimals and nested columns, and xlsx and json `layout: array` outputs work on sftp. `engine.force_universal`
+  keeps the previous writers.
+- **sftp reads nested parquet**: lists, structs and maps (DuckDB's fixed-size arrays included) read back with
+  every null in place, where the reader used to flatten them to their leaf columns.
+
 - **A STRUCT, LIST, MAP, UNION or VARIANT column written to CSV, TSV, xlsx or SQLite is now JSON text**
   (`{"a":1,"b":"x"}`, `[1,2]`, `{"k":1}`) instead of DuckDB's literal syntax (`{'a': 1, 'b': x}`, `{k=1}`),
   which nothing but DuckDB could read and which dropped the quotes around strings. Migration: a consumer that
@@ -16,6 +24,16 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   (`rec::VARCHAR`).
 
 ### Added
+
+- **Spool tier** (`ISpoolingSink`, connector SDK, additive; `SpoolWrites` capability): a sink DuckDB cannot write
+  to directly names a format, and the engine COPYs the staged output to local files under the run directory, one
+  per `partition_by` folder (rendered from the column's UTC value), for the sink to deliver. `plan.json`, `pz plan`
+  and the `node_completed` event's `strategy` report it as `spool`. Over PCP it is two new RPCs, `TrySpool` and
+  `CommitSpool`, called only on a connector that declares `SpoolWrites`; the C# SDK serves them for any sink
+  implementing `ISpoolingSink`, and the Rust SDK through `SinkConnector::try_spool` and `Sink::commit_spool`
+  (defaulted trait methods).
+- **`pz connector test` vectors `nested-columns-write` and `spool-commit`**, run for a connector declaring
+  `NestedTypes` or `SpoolWrites` (a write: probe whose output refuses nested columns with a config error skips).
 
 - **STRUCT, LIST, MAP and fixed-size ARRAY columns cross pz's Arrow path**, nested to any depth over the flat
   types. An Arrow source (every out-of-process connector) can now emit them and they land as DuckDB's nested
@@ -34,8 +52,8 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   `JSON_VALUE`/`OPENJSON`, through append, replace and merge; an existing text column of any width is accepted.
 - **`NativeCopy.NestedAsJson`** (connector ABI and PCP, additive): a native copy into a destination without
   composite types asks the engine to hand it STRUCT, LIST, MAP, UNION and VARIANT columns as DuckDB `JSON`.
-  The mysql and sqlite sinks set it, and so do the file sinks for csv, tsv and xlsx. The Rust SDK carries the
-  protocol field but cannot set it yet.
+  The mysql and sqlite sinks set it, and so do the file sinks for csv, tsv and xlsx. In the Rust SDK it is
+  `NativeCopy::nested_as_json` (a new public field: a struct literal needs `..Default::default()`).
 - **The file sinks' own writers (localfiles, sftp, gcs, azureblob) write nested columns** when a write takes the
   Arrow path (sftp always; the others under `engine.force_universal` or when they decline the native copy): json
   as objects and arrays, csv/tsv as JSON text byte-identical to the native copy. Their parquet writer refuses a
@@ -48,6 +66,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   does not parse is the new **PZ0368** at load, for every bad column, instead of the connector schema's PZ0301 or a
   PZ0500 under `pz run`. `ColumnContractType` (connector SDK, additive) is the one parser, with `ValueFromJson` for
   readers.
+- **`ArrowCell`** (connector SDK, additive): a sink reads any cell, nested included, as JSON (`WriteJson`,
+  `ToJson`) or as boxed .NET values (`GetValue`: a struct as a field-ordered dictionary, a list as a list, a map
+  as key/value pairs).
 - **`ArrowBatchBuilder` builds nested columns** (connector SDK, additive): `AppendRow` takes a .NET enumerable for
   a list or fixed-size list, an `IReadOnlyDictionary<string, object?>` (or `object?[]` in field order) for a
   struct, an `IDictionary` for a map, nested to any depth with nulls at every level; `AppendFrom` copies nested

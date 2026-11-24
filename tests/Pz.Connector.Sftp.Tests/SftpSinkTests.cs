@@ -165,30 +165,75 @@ public class SftpSinkTests
         Assert.Null(copy);
     }
 
-    [Fact]
-    public async Task TryGetNativeCopy_refuses_a_native_only_option_at_plan_time()
+    [Theory]
+    [InlineData("xlsx", null, "xlsx")]
+    [InlineData("json", "array", "json")]
+    [InlineData("parquet", null, "parquet")]
+    public void TryGetSpool_plans_every_writable_format_without_connecting(string format, string? layout, string extension)
     {
+        // DuckDB writes the file locally, so xlsx (whose writer cannot be trusted with a remote write) and
+        // json layout: array (which the managed writer does not do) both reach sftp through the spool.
         var fake = new FakeSftpFileSystem();
         var sink = NewSink(fake, root: null);
-        var spec = Output("events", "replace", ("path", "dir"), ("format", "json"), ("layout", "array"));
+        var spec = layout is null
+            ? Output("orders", "replace", ("path", "dir"), ("format", format))
+            : Output("orders", "replace", ("path", "dir"), ("format", format), ("layout", layout));
 
-        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
-        Assert.StartsWith("PZ0361: output '", ex.Message, StringComparison.Ordinal);
-        Assert.Empty(fake.Operations);   // refused before the connection is ever dialed
+        Assert.False(sink.TryGetNativeCopy(spec, out _));
+        Assert.True(sink.TryGetSpool(spec, out var plan));
+        Assert.Equal(extension, plan.Extension);
+        Assert.Null(plan.PartitionColumn);
+        Assert.Empty(fake.Operations);
     }
 
     [Fact]
-    public async Task TryGetNativeCopy_refuses_xlsx_at_plan_time()
+    public void TryGetSpool_refuses_a_read_only_format_at_plan_time()
     {
-        // sftp has no native tier -- xlsx is native-only (DuckDB's excel extension), so it is refused
-        // by ResolveFormat at plan time, before the connection is ever dialed.
         var fake = new FakeSftpFileSystem();
         var sink = NewSink(fake, root: null);
-        var spec = Output("orders", "replace", ("path", "dir"), ("format", "xlsx"));
 
-        var ex = Assert.Throws<PzConnectorException>(() => sink.TryGetNativeCopy(spec, out _));
-        Assert.StartsWith("PZ0361: output 'orders': format 'xlsx' is native-only", ex.Message, StringComparison.Ordinal);
+        var ex = Assert.Throws<PzConnectorException>(() =>
+            sink.TryGetSpool(Output("orders", "replace", ("path", "dir"), ("format", "avro")), out _));
+
+        Assert.StartsWith("PZ0361: output 'orders': format 'avro' is read-only on sftp", ex.Message, StringComparison.Ordinal);
         Assert.Empty(fake.Operations);
+    }
+
+    [Fact]
+    public async Task CommitSpool_uploads_each_file_under_its_folder_with_temp_then_rename()
+    {
+        var fake = new FakeSftpFileSystem();
+        var sink = NewSink(fake, root: "root");
+        var spec = Output("orders", "replace", ("path", "out/{yyyy}/{MM}"), ("format", "parquet"), ("partition_by", "at"));
+        Assert.True(sink.TryGetSpool(spec, out var plan));
+        Assert.Equal(("at", "out/{yyyy}/{MM}"), (plan.PartitionColumn, plan.PathTemplate));
+        var local = Path.Combine(Path.GetTempPath(), "pz-sftp-spool-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(local);
+        try
+        {
+            await File.WriteAllBytesAsync(Path.Combine(local, "0.parquet"), [1, 2, 3]);
+            await File.WriteAllBytesAsync(Path.Combine(local, "1.parquet"), [4]);
+
+            var result = await sink.CommitSpoolAsync(spec,
+                [new SpooledFile("out/2024/01", Path.Combine(local, "0.parquet"), 5), new SpooledFile("out/2024/02", Path.Combine(local, "1.parquet"), 2)],
+                CancellationToken.None);
+
+            Assert.Equal(7, result.RowsWritten);
+            Assert.Equal(2, result.BatchesWritten);
+            using (var first = fake.OpenRead("root/out/2024/01/orders.parquet"))
+            using (var copy = new MemoryStream())
+            {
+                await first.CopyToAsync(copy);
+                Assert.Equal([1, 2, 3], copy.ToArray());
+            }
+
+            Assert.True(fake.FileExists("root/out/2024/02/orders.parquet"));
+            Assert.Contains(fake.Operations, o => o.StartsWith("rename:root/out/2024/01/.pz-tmp-", StringComparison.Ordinal));
+        }
+        finally
+        {
+            Directory.Delete(local, recursive: true);
+        }
     }
 
     // ---------- SftpSink: partition_by fan-out (via the real dispatch path) ----------
