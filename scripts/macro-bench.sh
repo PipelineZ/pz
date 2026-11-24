@@ -164,7 +164,7 @@ EOF
     chmod +x "${bin_dir}/connector"
 
     cat > "${pkg_dir}/pz.connector.json" << EOF
-{"name":"localfiles-pcp","protocolMajorMin":1,"protocolMajorMax":1,"capabilities":["NativeScan","NativeCopy","ReplaceWrites","BoundedWindow","PartitionedRead"],"projectDirectoryAnchor":true,"runtime":"process","entrypoints":{"${RID}":"bin/connector"}}
+{"name":"localfiles-pcp","protocolMajorMin":1,"protocolMajorMax":1,"capabilities":["NativeScan","NativeCopy","ReplaceWrites","BoundedWindow","PartitionedRead","NestedTypes"],"projectDirectoryAnchor":true,"runtime":"process","entrypoints":{"${RID}":"bin/connector"}}
 EOF
 
     cat > "${project_dir}/pz.lock.json" << EOF

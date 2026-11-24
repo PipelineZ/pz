@@ -52,6 +52,9 @@ public sealed class SftpSinkAcceptance : SinkConnectorAcceptanceTests
     protected override OutputSpec SmallOutput => new("sftp", "out", "replace", "fail_on_change",
         new Dictionary<string, object?> { ["path"] = _prefix, ["format"] = "csv" });
 
+    protected override OutputSpec? NestedOutput => new("sftp", "nested", "replace", "fail_on_change",
+        new Dictionary<string, object?> { ["path"] = _prefix, ["format"] = "json" });
+
     protected override OutputSpec? ReplaceOutput => new("sftp", "replace-out", "replace", "fail_on_change",
         new Dictionary<string, object?> { ["path"] = _prefix, ["format"] = "csv" });
 

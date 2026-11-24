@@ -35,6 +35,9 @@ public sealed class HttpSinkAcceptance : SinkConnectorAcceptanceTests, IDisposab
     protected override OutputSpec SmallOutput => new("api", "small", "append", "fail_on_change",
         new Dictionary<string, object?> { ["path"] = "/ingest", ["rows_per_request"] = 25 });
 
+    protected override OutputSpec? NestedOutput => new("api", "nested", "append", "fail_on_change",
+        new Dictionary<string, object?> { ["path"] = "/ingest" });
+
     protected override OutputSpec? MergeOutput => new("api", "merge-out", "merge", "fail_on_change",
         new Dictionary<string, object?> { ["path"] = "/items/{key}" }) { Keys = ["id"] };
 

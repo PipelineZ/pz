@@ -36,6 +36,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   composite types asks the engine to hand it STRUCT, LIST, MAP, UNION and VARIANT columns as DuckDB `JSON`.
   The mysql and sqlite sinks set it, and so do the file sinks for csv, tsv and xlsx. The Rust SDK carries the
   protocol field but cannot set it yet.
+- **The file sinks' own writers (localfiles, sftp, gcs, azureblob) write nested columns** when a write takes the
+  Arrow path (sftp always; the others under `engine.force_universal` or when they decline the native copy): json
+  as objects and arrays, csv/tsv as JSON text byte-identical to the native copy. Their parquet writer refuses a
+  nested column before writing anything, naming it — it cannot tell a null list from an empty one — so write json
+  or csv there, or cast. A native parquet copy still writes real nested parquet.
+- **TestKit: `Nested_columns_are_written_when_NestedTypes_is_declared`** writes struct, list, fixed-size list, map
+  and list-of-struct columns with a null at every level to a sink that declares `NestedTypes`, through a new
+  `NestedOutput` hook. A connector that declares the capability without overriding `NestedOutput` sees it
+  skipped, with a message.
 
 ### Fixed
 

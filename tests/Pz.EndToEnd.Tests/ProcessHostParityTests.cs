@@ -437,8 +437,8 @@ public sealed class ProcessHostParityTests : IDisposable
             // set differs from the manifest's: LocalFilesConnector's own set, plus ColumnPruning when
             // the wrapper passes --prune-columns.
             ["capabilities"] = pruning
-                ? new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "ColumnPruning" }
-                : new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead" },
+                ? new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "NestedTypes", "ColumnPruning" }
+                : new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "NestedTypes" },
             // The same opt-in the builtin gets from ProjectDirectoryAnchor.BuiltinAnchoredConnectors:
             // without it a relative root:/path: would resolve against the CWD on one side and the
             // project directory on the other, and the two runs would not be comparable.

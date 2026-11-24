@@ -163,8 +163,8 @@ public sealed class ProcessSyncStateTests : IDisposable
             ["protocolMajorMin"] = 1,
             ["protocolMajorMax"] = 1,
             ["capabilities"] = feedMode
-                ? new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState" }
-                : new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead" },
+                ? new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState", "NestedTypes" }
+                : new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "NestedTypes" },
             ["projectDirectoryAnchor"] = true,
             ["runtime"] = "process",
             ["entrypoints"] = new Dictionary<string, string>

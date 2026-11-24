@@ -141,7 +141,7 @@ public sealed class ConnectorsCommandTests(CliLocalFeedFixture feed) : IDisposab
                 ["protocolMajorMax"] = 1,
                 ["capabilities"] = new[]
                 {
-                    "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead",
+                    "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "PartitionedRead", "NestedTypes",
                 },
                 ["runtime"] = "process",
                 ["entrypoints"] = new Dictionary<string, string>

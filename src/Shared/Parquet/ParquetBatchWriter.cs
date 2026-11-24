@@ -56,6 +56,13 @@ internal static class ParquetBatchWriter
         TimestampType => new DateTimeDataField(field.Name, DateTimeFormat.DateAndTimeMicros,
             isAdjustedToUTC: true, isNullable: true),
         Decimal128Type => throw new PzConnectorException($"column '{field.Name}': {decimalRefusal}", isTransient: false),
+        // This writer cannot state a nested value's definition levels (a null list and an empty one, a null
+        // struct and a null field, would come out the same), so it refuses rather than write them lossily.
+        NestedType => throw new PzConnectorException(
+            $"column '{field.Name}' ({field.DataType.Name}): {sinkName} cannot write a nested column to parquet " +
+            $"on this path -- write it as format: json (objects and arrays) or csv (JSON text), or cast it in the " +
+            $"pipeline: {field.Name}::JSON::VARCHAR",
+            isTransient: false, code: PzConnectorErrorCodes.Config),
         _ => throw new NotSupportedException(
             $"{sinkName} does not support Arrow type '{field.DataType}' for column '{field.Name}'"),
     };

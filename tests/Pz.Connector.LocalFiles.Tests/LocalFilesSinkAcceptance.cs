@@ -34,6 +34,10 @@ public sealed class LocalFilesSinkAcceptance : SinkConnectorAcceptanceTests, IDi
     protected override OutputSpec SmallOutput => new("lake", "out", "replace", "fail_on_change",
         new Dictionary<string, object?> { ["path"] = "out", ["format"] = "parquet" });
 
+    // json: the universal parquet writer refuses nested columns.
+    protected override OutputSpec? NestedOutput => new("lake", "nested", "replace", "fail_on_change",
+        new Dictionary<string, object?> { ["path"] = "nested", ["format"] = "json" });
+
     protected override OutputSpec? ReplaceOutput => new("lake", "replace-out", "replace", "fail_on_change",
         new Dictionary<string, object?> { ["path"] = "replace-out", ["format"] = "parquet" });
 

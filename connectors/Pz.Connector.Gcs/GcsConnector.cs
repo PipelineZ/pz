@@ -22,7 +22,7 @@ public sealed class GcsConnector : ISourceConnector, ISinkConnector, INativeOnly
         ConnectorCapabilities.NativeScan | ConnectorCapabilities.NativeCopy |
         ConnectorCapabilities.ReplaceWrites |
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.PathTemplating |
-        ConnectorCapabilities.GatedOperations;
+        ConnectorCapabilities.GatedOperations | ConnectorCapabilities.NestedTypes;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["auth"], "properties": { "auth": { "enum": ["hmac","service_account","adc"] }, "key_id": { "type": "string" }, "secret": { "type": "string" }, "key_file": { "type": "string" }, "key_json": { "type": "string" }, "root": { "type": "string" }, "endpoint": { "type": "string" }, "url_style": { "enum": ["vhost","path"] }, "use_ssl": { "type": "boolean" } }, "additionalProperties": false }""";

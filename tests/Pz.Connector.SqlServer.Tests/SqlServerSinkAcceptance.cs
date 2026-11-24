@@ -49,6 +49,9 @@ public sealed class SqlServerSinkAcceptance(MsSqlContainerFixture fixture) : Sin
     protected override OutputSpec SmallOutput => new("ms", SmallTable, "replace", "fail_on_change",
         new Dictionary<string, object?>());
 
+    protected override OutputSpec? NestedOutput => new("ms", "sink_accept_nested", "replace", "fail_on_change",
+        new Dictionary<string, object?>());
+
     protected override OutputSpec? MergeOutput => new("ms", MergeTable, "merge", "fail_on_change",
         new Dictionary<string, object?>()) { Keys = ["id"] };
 

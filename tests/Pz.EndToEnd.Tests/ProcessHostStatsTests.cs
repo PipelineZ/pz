@@ -158,7 +158,7 @@ public sealed class ProcessHostStatsTests : IDisposable
             ["name"] = ProcessConnector,
             ["protocolMajorMin"] = 1,
             ["protocolMajorMax"] = 1,
-            ["capabilities"] = new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState" },
+            ["capabilities"] = new[] { "NativeScan", "NativeCopy", "ReplaceWrites", "BoundedWindow", "SyncState", "NestedTypes" },
             ["projectDirectoryAnchor"] = true,
             ["runtime"] = "process",
             ["entrypoints"] = new Dictionary<string, string>

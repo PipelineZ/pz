@@ -22,7 +22,7 @@ public sealed class AzureConnector : ISourceConnector, ISinkConnector, INativeOn
         ConnectorCapabilities.NativeScan | ConnectorCapabilities.NativeCopy |
         ConnectorCapabilities.ReplaceWrites |
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.PathTemplating |
-        ConnectorCapabilities.GatedOperations;
+        ConnectorCapabilities.GatedOperations | ConnectorCapabilities.NestedTypes;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["auth"], "properties": { "auth": { "enum": ["connection_string","account_key","service_principal","credential_chain","managed_identity"] }, "connection_string": { "type": "string" }, "account_name": { "type": "string" }, "account_key": { "type": "string" }, "tenant_id": { "type": "string" }, "client_id": { "type": "string" }, "client_secret": { "type": "string" }, "chain": { "type": "string" }, "endpoint": { "type": "string" } }, "additionalProperties": false }""";

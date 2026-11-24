@@ -12,6 +12,9 @@
   <ItemGroup>
     <ProjectReference Include="..\Pz.Connectors.Abstractions\Pz.Connectors.Abstractions.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Shared\Json\ArrowJsonValue.cs" Link="Shared\Json\ArrowJsonValue.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Pz.Connectors.Toolkit.Tests" />
