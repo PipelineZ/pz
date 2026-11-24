@@ -37,7 +37,7 @@ public sealed class S3Connector : ISourceConnector, ISinkConnector, INativeOnlyS
     // owning that case with its targeted message.
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
-        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
 
     // Mirrors what S3Sink actually reads: bucket + path both optional (falls back to the connection's
     // `root:`), the format-scoped options. No partition_by -- s3 is native-COPY-only in v0

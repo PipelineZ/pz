@@ -1,13 +1,14 @@
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Formats;
 
 namespace Pz.Connectors.Toolkit.Formats;
 
-/// <summary>The one `columns:` contract type matrix every connector shares: the fixed v0 set (int,
-/// bigint, double, decimal, varchar, boolean, date, timestamp) mapped to an Arrow type (for a
-/// contract-is-the-schema answer) and to a DuckDB type name (for a native scan's strict
-/// <c>columns = {…}</c> map or a cast projection). Connectors never reference each other, so the matrix
+/// <summary>The one `columns:` contract type matrix every connector shares: the flat types (int,
+/// bigint, double, decimal, varchar, boolean, date, timestamp) and the nested ones built from them
+/// (<see cref="ColumnContractType"/>), mapped to an Arrow type (for a contract-is-the-schema answer) and to
+/// a DuckDB type name (for a native scan's strict <c>columns = {…}</c> map or a cast projection). Connectors never reference each other, so the matrix
 /// lives here rather than in any one of them.</summary>
 public static class ColumnTypeCatalog
 {
@@ -31,8 +32,7 @@ public static class ColumnTypeCatalog
         "boolean" => BooleanType.Default,
         "date" => Date32Type.Default,
         "timestamp" => new TimestampType(TimeUnit.Microsecond, "+00:00"),
-        _ => throw new PzConnectorException(
-            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
+        _ => ColumnContractType.ToArrowType(typeName, columnName),
     };
 
     public static Field ToArrowField(string columnName, string typeName) =>
@@ -51,7 +51,6 @@ public static class ColumnTypeCatalog
         "boolean" => "BOOLEAN",
         "date" => "DATE",
         "timestamp" => "TIMESTAMP",
-        _ => throw new PzConnectorException(
-            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
+        _ => ColumnContractType.ToDuckDbName(ColumnContractType.ToArrowType(typeName, columnName)),
     };
 }

@@ -39,7 +39,7 @@ public sealed class LocalFilesConnector : ISourceConnector, ISinkConnector, IOut
 
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
-        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } } }, "additionalProperties": false }""";
 
     // Mirrors what LocalFilesSink actually reads: `path` (ResolveOutputDir) plus the same
     // format-scoped options CopyClause/EnsureUniversalTierSupported read for a write. No `columns` --

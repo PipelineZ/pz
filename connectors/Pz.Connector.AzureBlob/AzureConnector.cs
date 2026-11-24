@@ -36,7 +36,7 @@ public sealed class AzureConnector : ISourceConnector, ISinkConnector, INativeOn
     // targeted message.
     public string DatasetConfigSchema =>
         """{ "type": "object", "required": ["container","path"], "properties": { "scheme": { "enum": ["az","azure","abfss"] }, "container": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
-        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
 
     // Mirrors what AzureUrl.ParseSink/AzureSink actually read: container required, path an optional
     // prefix, the format-scoped options, and partition_by (write-only fan-out into per-folder blobs;

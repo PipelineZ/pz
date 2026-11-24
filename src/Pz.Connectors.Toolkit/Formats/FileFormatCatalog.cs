@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Formats;
 
 namespace Pz.Connectors.Toolkit.Formats;
 
@@ -89,7 +90,9 @@ public static class FileFormatCatalog
         {
             "csv" or "tsv" => declared is null
                 ? $"read_csv({read.UrlArg}, header = true, auto_detect = true{DelimiterSuffix(format, options, context, "delim")})"
-                : $"read_csv({read.UrlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared)}}}{DelimiterSuffix(format, options, context, "delim")})",
+                : NestedFromJsonText(
+                    $"read_csv({read.UrlArg}, header = true, auto_detect = false, columns = {{{ColumnsMap(declared, nestedAsText: true)}}}{DelimiterSuffix(format, options, context, "delim")})",
+                    declared),
             "json" when read.RecordAsVariant => declared is null
                 ? $"(select json::VARIANT as {FormatReadRequest.VariantRecordColumn} from read_json_objects({read.UrlArg}, format = '{JsonReadFormat(format, options)}'))"
                 : throw Permanent($"PZ0362: {context}: variant: [record] lands each object whole, so it takes no columns: contract -- remove one of them"),
@@ -98,7 +101,7 @@ public static class FileFormatCatalog
                 : $"read_json({read.UrlArg}, columns = {{{ColumnsMap(declared)}}}, format = '{JsonReadFormat(format, options)}')",
             "parquet" => $"read_parquet({read.UrlArg})",
             "xlsx" => XlsxRead(options, read, context, declared),
-            "avro" => declared is null ? $"read_avro({read.UrlArg})" : CastProjection($"read_avro({read.UrlArg})", declared),
+            "avro" => declared is null ? $"read_avro({read.UrlArg})" : CastProjection($"read_avro({read.UrlArg})", declared, viaJson: false),
             _ => throw new UnreachableException($"format '{format.Name}' has no native read fragment"),
         };
     }
@@ -121,16 +124,30 @@ public static class FileFormatCatalog
         }
 
         var inner = $"read_xlsx({read.UrlArg}, {XlsxReadArgs(options, context)})";
-        return declared is null ? inner : CastProjection(inner, declared);
+        return declared is null ? inner : CastProjection(inner, declared, viaJson: true);
     }
 
     private static readonly char[] GlobChars = ['*', '?', '['];
 
     /// <summary>read_xlsx/read_avro take no columns= map: a declared contract is applied as a projecting
     /// cast, which also prunes to the declared columns. A cast failure is DuckDB's own loud error at
-    /// scan time, the same posture as read_csv(auto_detect = false).</summary>
-    private static string CastProjection(string inner, IReadOnlyDictionary<string, string> declared) =>
-        "(select " + string.Join(", ", declared.Select(c => $"{Ident(c.Key)}::{ColumnTypeCatalog.ToDuckDbName(c.Value, c.Key)} as {Ident(c.Key)}")) + $" from {inner})";
+    /// scan time, the same posture as read_csv(auto_detect = false). <paramref name="viaJson"/>: the format
+    /// holds a nested value as JSON text (an xlsx cell), so a nested column is cast through JSON.</summary>
+    private static string CastProjection(string inner, IReadOnlyDictionary<string, string> declared, bool viaJson) =>
+        "(select " + string.Join(", ", declared.Select(c => $"{Ident(c.Key)}::{(viaJson && IsNested(c) ? "JSON::" : "")}{ColumnTypeCatalog.ToDuckDbName(c.Value, c.Key)} as {Ident(c.Key)}")) + $" from {inner})";
+
+    /// <summary>A csv cell holding a nested value holds its JSON text (what pz's csv writers and DuckDB's csv
+    /// copy write): <paramref name="read"/> lands it as VARCHAR and this casts it through JSON to the declared
+    /// type. A read with no nested column is returned unchanged.</summary>
+    private static string NestedFromJsonText(string read, IReadOnlyDictionary<string, string> declared)
+    {
+        var nested = declared.Where(IsNested).ToList();
+        return nested.Count == 0
+            ? read
+            : $"(select * replace ({string.Join(", ", nested.Select(c => $"{Ident(c.Key)}::JSON::{ColumnTypeCatalog.ToDuckDbName(c.Value, c.Key)} as {Ident(c.Key)}"))}) from {read})";
+    }
+
+    private static bool IsNested(KeyValuePair<string, string> column) => ColumnContractType.IsNested(column.Value);
 
     private static string Ident(string name) => "\"" + name.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 
@@ -377,8 +394,9 @@ public static class FileFormatCatalog
         return delimiter == ',' ? "" : $", {keyword} = {DelimiterLiteral(delimiter)}";
     }
 
-    private static string ColumnsMap(IReadOnlyDictionary<string, string> declared) =>
-        string.Join(", ", declared.Select(c => $"'{Esc(c.Key)}': '{ColumnTypeCatalog.ToDuckDbName(c.Value, c.Key)}'"));
+    private static string ColumnsMap(IReadOnlyDictionary<string, string> declared, bool nestedAsText = false) =>
+        string.Join(", ", declared.Select(c =>
+            $"'{Esc(c.Key)}': '{Esc(nestedAsText && IsNested(c) ? "VARCHAR" : ColumnTypeCatalog.ToDuckDbName(c.Value, c.Key))}'"));
 
     private static string Esc(string value) => value.Replace("'", "''", StringComparison.Ordinal);
 

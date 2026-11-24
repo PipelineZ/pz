@@ -33,7 +33,7 @@ public sealed class SqliteConnector : ISourceConnector, ISinkConnector, INativeO
         """{ "type": "object", "required": ["path"], "properties": { "path": { "type": "string" } }, "additionalProperties": false }""";
 
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "columns": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } } }, "additionalProperties": false }""";
 
     // SqliteSink reads no connector-owned write option at all -- every write.* key beyond the
     // engine-owned ones is unknown.

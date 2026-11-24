@@ -41,7 +41,7 @@ public sealed class PostgresConnector : ISourceConnector, ISinkConnector, IOutpu
     // ProjectLoader/SpecBuilder merge it into every connector's dataset options uniformly, regardless
     // of whether that connector consumes it -- so it is accepted here too, for forward compatibility.
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "query": { "type": "string" }, "partition_column": { "type": "string" }, "partitions": { "type": "integer", "minimum": 1, "maximum": 16 }, "publication": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "query": { "type": "string" }, "partition_column": { "type": "string" }, "partitions": { "type": "integer", "minimum": 1, "maximum": 16 }, "publication": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } } }, "additionalProperties": false }""";
 
     // PostgresSink reads no connector-owned write option at all (schema/table come from the entity
     // name; every other write.* key is engine-owned) -- so every key here is unknown.

@@ -35,7 +35,7 @@ public sealed class MySqlConnector : ISourceConnector, ISinkConnector, INativeOn
         """{ "type": "object", "required": ["host","database"], "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "database": { "type": "string" }, "user": { "type": "string" }, "password": { "type": "string" }, "ssl_mode": { "type": "string" } }, "additionalProperties": false }""";
 
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "query": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "query": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } } }, "additionalProperties": false }""";
 
     // MySqlSink reads no connector-owned write option at all -- every write.* key beyond the
     // engine-owned ones is unknown.

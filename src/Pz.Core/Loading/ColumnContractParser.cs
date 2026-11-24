@@ -1,3 +1,4 @@
+using Pz.Connectors.Abstractions.Formats;
 using Pz.Core.Validation;
 
 namespace Pz.Core.Loading;
@@ -81,6 +82,19 @@ internal static class ColumnContractParser
                 default:
                     types[name] = value?.ToString() ?? string.Empty;
                     break;
+            }
+        }
+
+        foreach (var (name, type) in types)
+        {
+            if (!ColumnContractType.TryParse(type, out _, out var error))
+            {
+                errors.Add(new PzError(PzErrorCode.ColumnContractTypeInvalid,
+                    $"{file}: {where}: column '{name}': '{type}' is not a columns: contract type ({error}).",
+                    file, null,
+                    $"types are {ColumnContractType.Syntax}; quote a nested type inside a flow mapping " +
+                    "({ tags: \"varchar[]\" })"));
+                refused = true;
             }
         }
 
