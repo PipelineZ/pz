@@ -41,6 +41,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   as objects and arrays, csv/tsv as JSON text byte-identical to the native copy. Their parquet writer refuses a
   nested column before writing anything, naming it — it cannot tell a null list from an empty one — so write json
   or csv there, or cast. A native parquet copy still writes real nested parquet.
+- **`ArrowBatchBuilder` builds nested columns** (connector SDK, additive): `AppendRow` takes a .NET enumerable for
+  a list or fixed-size list, an `IReadOnlyDictionary<string, object?>` (or `object?[]` in field order) for a
+  struct, an `IDictionary` for a map, nested to any depth with nulls at every level; `AppendFrom` copies nested
+  Arrow cells. A value of the wrong shape fails naming the column.
+- **A postgres array column reads as a DuckDB list** (`integer[]` → `INTEGER[]`, `text[]` → `VARCHAR[]`, and so on
+  for every type pz reads), NULL elements kept, instead of failing as "outside the v0 type matrix".
+  `DataReaderSource` gains overloads taking an array-element resolver for providers that report array columns
+  only as `System.Array`.
 - **TestKit: `Nested_columns_are_written_when_NestedTypes_is_declared`** writes struct, list, fixed-size list, map
   and list-of-struct columns with a null at every level to a sink that declares `NestedTypes`, through a new
   `NestedOutput` hook. A connector that declares the capability without overriding `NestedOutput` sees it

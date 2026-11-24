@@ -54,7 +54,7 @@ internal sealed class PostgresSource(string connectionString) : ISource, IChange
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await using var command = new NpgsqlCommand($"select * from ({select}) q limit 0", connection);
             await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-            return new DatasetSchema(DataReaderSource.BuildArrowSchema(reader));
+            return new DatasetSchema(DataReaderSource.BuildArrowSchema(reader, i => PgTypeMap.ArrayElement(reader.GetDataTypeName(i))));
         }
         catch (NpgsqlException ex)
         {
@@ -400,7 +400,8 @@ internal static class PgBatchStream
         NpgsqlDataReader reader, int targetBatchBytes, string midStreamFailure,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var enumerator = DataReaderSource.ReadBatchesAsync(reader, targetBatchBytes, ct).GetAsyncEnumerator(ct);
+        var enumerator = DataReaderSource.ReadBatchesAsync(
+            reader, targetBatchBytes, i => PgTypeMap.ArrayElement(reader.GetDataTypeName(i)), ct).GetAsyncEnumerator(ct);
         try
         {
             while (true)

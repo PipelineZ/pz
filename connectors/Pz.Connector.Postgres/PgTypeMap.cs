@@ -28,6 +28,23 @@ namespace Pz.Connector.Postgres;
 ///   session time zone is UTC), so no additional conversion happens for it.</summary>
 public static class PgTypeMap
 {
+    /// <summary>The CLR element type Npgsql reads a postgres array column's elements as (a one-dimensional
+    /// array of a matrix type: <c>integer[]</c>, <c>text[]</c>, <c>timestamptz[]</c>…), from the column's type
+    /// name; null for anything else, which then fails the read naming the column. Npgsql reports every array
+    /// column's CLR type only as <see cref="Array"/>.</summary>
+    public static Type? ArrayElement(string dataTypeName) => dataTypeName switch
+    {
+        "integer[]" => typeof(int),
+        "bigint[]" => typeof(long),
+        "double precision[]" => typeof(double),
+        "numeric[]" => typeof(decimal),
+        "text[]" or "character varying[]" or "character[]" or "json[]" or "jsonb[]" => typeof(string),
+        "boolean[]" => typeof(bool),
+        "date[]" => typeof(DateOnly),
+        "timestamp without time zone[]" or "timestamp with time zone[]" => typeof(DateTime),
+        _ => null,
+    };
+
     public sealed record Entry(string PgType, Type ClrType, string ArrowDescription);
 
     public static readonly IReadOnlyList<Entry> Matrix =

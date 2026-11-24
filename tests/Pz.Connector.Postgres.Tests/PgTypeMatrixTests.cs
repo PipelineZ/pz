@@ -63,4 +63,50 @@ public sealed class PgTypeMatrixTests(PostgresContainerFixture fixture)
             try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
         }
     }
+
+    /// <summary>A one-dimensional postgres array of any matrix type reads as a DuckDB list of that type, NULL
+    /// elements and NULL arrays kept.</summary>
+    [SkippableFact]
+    public async Task Pg_arrays_read_as_lists()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "pz-pg-matrix-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            await using var connection = new NpgsqlConnection(fixture.ConnectionString);
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+                select * from (values
+                    (1, array[1, null, 3]::integer[], array[9000000000]::bigint[], array[1.5]::float8[],
+                     array[12.5, null]::numeric[], array['a', null]::text[], array[true]::boolean[],
+                     array['2026-03-27']::date[], array['2026-03-27 10:30:00']::timestamp[],
+                     array['2026-03-27 10:30:00+00']::timestamptz[]),
+                    (2, null, '{}', null, null, null, null, null, null, null)
+                ) as t(id, ints, bigs, dbls, nums, texts, flags, dates, stamps, stamptzs)
+                order by id
+                """, connection);
+            await using var reader = await command.ExecuteReaderAsync();
+
+            Type? Element(int i) => PgTypeMap.ArrayElement(reader.GetDataTypeName(i));
+            var schema = DataReaderSource.BuildArrowSchema(reader, Element);
+            await using var duck = DuckSession.Open(Path.Combine(dir, "t.duckdb"));
+            Assert.Equal(2, await duck.IngestArrowAsync("main.arrays", schema,
+                DataReaderSource.ReadBatchesAsync(reader, 32 * 1024 * 1024, Element)));
+
+            Assert.Equal(
+                "INTEGER[],BIGINT[],DOUBLE[],DECIMAL(38,9)[],VARCHAR[],BOOLEAN[],DATE[],TIMESTAMP[],TIMESTAMP[]",
+                await duck.ScalarAsync<string>(
+                    "select string_agg(column_type, ',' order by rowid) from (select *, row_number() over () as rowid from (describe main.arrays)) where column_name <> 'id'"));
+            Assert.Equal(
+                "[1, NULL, 3] | [9000000000] | [1.5] | [12.500000000, NULL] | [a, NULL] | [true] | [2026-03-27] | ['2026-03-27 10:30:00'] | ['2026-03-27 10:30:00']",
+                await duck.ScalarAsync<string>(
+                    "select concat_ws(' | ', ints::VARCHAR, bigs::VARCHAR, dbls::VARCHAR, nums::VARCHAR, texts::VARCHAR, flags::VARCHAR, dates::VARCHAR, stamps::VARCHAR, stamptzs::VARCHAR) from main.arrays where id = 1"));
+            Assert.Equal("NULL | [] | NULL", await duck.ScalarAsync<string>(
+                "select coalesce(ints::varchar, 'NULL') || ' | ' || bigs::varchar || ' | ' || coalesce(texts::varchar, 'NULL') from main.arrays where id = 2"));
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* best-effort cleanup */ }
+        }
+    }
 }
