@@ -445,6 +445,67 @@ internal sealed class PcpConnectorService(
             return response;
         });
 
+    public override Task<SpoolPlanResponse> TrySpool(SpoolRequest request, ServerCallContext context) =>
+        Guarded(async () =>
+        {
+            using var linked = LinkOp(request.OpId, context);
+            var sink = await OpenSinkAsync(linked.Token, request.RunContext).ConfigureAwait(false);
+            if (sink is not ISpoolingSink spooling || !spooling.TryGetSpool(SpecMapping.ToOutputSpec(request.Spec), out var plan))
+            {
+                return new SpoolPlanResponse { Found = false };
+            }
+
+            var response = new SpoolPlanResponse
+            {
+                Found = true, CopyOptions = plan.CopyOptions, Extension = plan.Extension, NestedAsJson = plan.NestedAsJson,
+            };
+            response.SetupStatements.AddRange(plan.SetupStatements);
+            if (plan.Mechanism is not null)
+            {
+                response.Mechanism = plan.Mechanism;
+            }
+
+            if (plan.PartitionColumn is not null)
+            {
+                response.PartitionColumn = plan.PartitionColumn;
+            }
+
+            if (plan.PathTemplate is not null)
+            {
+                response.PathTemplate = plan.PathTemplate;
+            }
+
+            return response;
+        });
+
+    public override Task<WriteResultMsg> CommitSpool(CommitSpoolRequest request, ServerCallContext context) =>
+        Guarded(async () =>
+        {
+            using var linked = LinkOp(request.OpId, context);
+            var ct = linked.Token;
+            var sink = await OpenSinkAsync(ct, request.RunContext).ConfigureAwait(false);
+            if (sink is not ISpoolingSink spooling)
+            {
+                throw new PzConnectorException(
+                    "the host sent CommitSpool, but this sink does not implement ISpoolingSink", isTransient: false);
+            }
+
+            var stats = new ConnectorStatsAccumulator();
+            WriteResult result;
+            using (OperationScope.Enter(stats, new RemoteSpanBudget()))
+            {
+                result = await spooling.CommitSpoolAsync(SpecMapping.ToOutputSpec(request.Spec),
+                    request.Files.Select(f => new SpooledFile(f.Folder, f.LocalPath, f.Rows)).ToList(), ct).ConfigureAwait(false);
+            }
+
+            return new WriteResultMsg
+            {
+                RowsWritten = result.RowsWritten,
+                BatchesWritten = result.BatchesWritten,
+                Stats = ConnectorStatsMapping.ToProto(stats),
+            };
+        });
+
     public override Task<WriteSessionTicket> BeginWrite(BeginWriteRequest request, ServerCallContext context) =>
         Guarded(async () =>
         {

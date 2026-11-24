@@ -320,6 +320,48 @@ public static class MessageMapping
 
     public static FileMove ToFileMove(FileMoveMsg msg) => new(msg.TempPath, msg.FinalPath);
 
+    // ---- Spool ---------------------------------------------------------------------------------
+
+    public static SpoolPlanResponse ToSpoolPlanResponse(SpoolPlan plan)
+    {
+        var msg = new SpoolPlanResponse
+        {
+            Found = true, CopyOptions = plan.CopyOptions, Extension = plan.Extension, NestedAsJson = plan.NestedAsJson,
+        };
+        msg.SetupStatements.AddRange(plan.SetupStatements);
+        if (plan.Mechanism is not null)
+        {
+            msg.Mechanism = plan.Mechanism;
+        }
+
+        if (plan.PartitionColumn is not null)
+        {
+            msg.PartitionColumn = plan.PartitionColumn;
+        }
+
+        if (plan.PathTemplate is not null)
+        {
+            msg.PathTemplate = plan.PathTemplate;
+        }
+
+        return msg;
+    }
+
+    public static SpoolPlan ToSpoolPlan(SpoolPlanResponse msg) =>
+        new(msg.CopyOptions, msg.Extension)
+        {
+            Mechanism = msg.HasMechanism ? msg.Mechanism : null,
+            SetupStatements = msg.SetupStatements.ToArray(),
+            NestedAsJson = msg.NestedAsJson,
+            PartitionColumn = msg.HasPartitionColumn ? msg.PartitionColumn : null,
+            PathTemplate = msg.HasPathTemplate ? msg.PathTemplate : null,
+        };
+
+    public static SpooledFileMsg ToSpooledFileMsg(SpooledFile file) =>
+        new() { Folder = file.Folder, LocalPath = file.LocalPath, Rows = file.Rows };
+
+    public static SpooledFile ToSpooledFile(SpooledFileMsg msg) => new(msg.Folder, msg.LocalPath, msg.Rows);
+
     // ---- WriteResult -----------------------------------------------------------------------------
 
     public static WriteResultMsg ToWriteResultMsg(WriteResult result) =>

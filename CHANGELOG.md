@@ -28,7 +28,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 - **Spool tier** (`ISpoolingSink`, connector SDK, additive; `SpoolWrites` capability): a sink DuckDB cannot write
   to directly names a format, and the engine COPYs the staged output to local files under the run directory, one
   per `partition_by` folder (rendered from the column's UTC value), for the sink to deliver. `plan.json`, `pz plan`
-  and the `node_completed` event's `strategy` report it as `spool`.
+  and the `node_completed` event's `strategy` report it as `spool`. Over PCP it is two new RPCs, `TrySpool` and
+  `CommitSpool`, called only on a connector that declares `SpoolWrites`; the C# SDK serves them for any sink
+  implementing `ISpoolingSink`.
 
 - **STRUCT, LIST, MAP and fixed-size ARRAY columns cross pz's Arrow path**, nested to any depth over the flat
   types. An Arrow source (every out-of-process connector) can now emit them and they land as DuckDB's nested

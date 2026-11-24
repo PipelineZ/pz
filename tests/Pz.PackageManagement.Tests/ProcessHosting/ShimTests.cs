@@ -1063,6 +1063,50 @@ public sealed class ShimTests : IDisposable
         return new RecordBatch(schema, [idBuilder.Build(), nameBuilder.Build()], rows);
     }
 
+    [Fact]
+    public async Task A_spooling_sink_plans_and_delivers_over_PCP()
+    {
+        var declared = new LocalFilesConnector().Capabilities | ConnectorCapabilities.SpoolWrites;
+        var dataDir = NewTempDir();
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", ["--spool-writes"]);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = dataDir });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(declared), "test-instance", config, CancellationToken.None);
+        await using var sink = await new ProcessSinkConnector(client, process).OpenAsync(config, CancellationToken.None);
+        var spooling = Assert.IsAssignableFrom<ISpoolingSink>(sink);
+        var spec = new OutputSpec("lake", "events", "replace", "fail_on_change", new Dictionary<string, object?>
+        {
+            ["path"] = "out/{yyyy}",
+            ["partition_by"] = "at",
+        });
+
+        Assert.True(spooling.TryGetSpool(spec, out var plan));
+        Assert.Equal(("FORMAT csv, HEADER true", "csv", "fixture copy"), (plan.CopyOptions, plan.Extension, plan.Mechanism));
+        Assert.Equal(["select 1"], plan.SetupStatements);
+        Assert.True(plan.NestedAsJson);
+        Assert.Equal(("at", "out/{yyyy}"), (plan.PartitionColumn, plan.PathTemplate));
+
+        var file = Path.Combine(dataDir, "0.csv");
+        await File.WriteAllTextAsync(file, "id\n1\n2\n");
+        var result = await spooling.CommitSpoolAsync(spec, [new SpooledFile("out/2024", file, 2)], CancellationToken.None);
+
+        Assert.Equal((2L, 1L), (result.RowsWritten, result.BatchesWritten));
+        Assert.Equal("out/2024\nid\n1\n2\n", await File.ReadAllTextAsync(file + ".delivered"));
+    }
+
+    [Fact]
+    public async Task A_sink_without_SpoolWrites_answers_no_spool_without_a_call()
+    {
+        await using var process = ConnectorProcess.Spawn(FixtureExecutablePath(), NewSocketDir(), "localfiles-pcp", []);
+        var config = new ConnectorConfig(new Dictionary<string, object?> { ["root"] = NewTempDir() });
+        await using var client = await PcpClient.ConnectAndConfigureAsync(
+            process, LocalFilesManifest(), "test-instance", config, CancellationToken.None);
+        await using var sink = await new ProcessSinkConnector(client, process).OpenAsync(config, CancellationToken.None);
+
+        Assert.False(((ISpoolingSink)sink).TryGetSpool(
+            new OutputSpec("lake", "events", "replace", "fail_on_change", new Dictionary<string, object?>()), out _));
+    }
+
     private static ConnectorManifest LocalFilesManifest(ConnectorCapabilities? capabilities = null) => new(
         Name: "localfiles-pcp",
         ProtocolMajorMin: ProtocolVersion.Major,

@@ -17,7 +17,8 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector, IOutputCon
     public ConnectorCapabilities Capabilities =>
         ConnectorCapabilities.PartitionedRead | ConnectorCapabilities.ReplaceWrites |
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.PathTemplating |
-        ConnectorCapabilities.GatedOperations | ConnectorCapabilities.NestedTypes;
+        ConnectorCapabilities.GatedOperations | ConnectorCapabilities.NestedTypes |
+        ConnectorCapabilities.SpoolWrites;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["host","username"], "properties": { "host": { "type": "string" }, "port": { "type": "integer" }, "username": { "type": "string" }, "password": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "host_key_fingerprint": { "type": "string" }, "root": { "type": "string" }, "connect_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 } }, "additionalProperties": false }""";
