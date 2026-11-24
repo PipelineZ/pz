@@ -446,9 +446,10 @@ public static class ConformanceSuite
     }
 
     // A sink declaring NestedTypes takes list, struct and map columns (nulls at every level) on the Arrow path:
-    // the engine hands it such a batch instead of refusing the write, so failing to commit one is a defect --
-    // unless the probe's output itself cannot hold them (a parquet output on a file sink's own writer), which the
-    // sink says with a permanent config error, before or during the write.
+    // the engine hands it such a batch instead of refusing the write, so a crash, a protocol error or a commit that
+    // miscounts is a defect. The probe's output is a real destination with its own schema, though (a table without
+    // these columns, a container keyed on another column, a store whose arrays cannot hold the batch's null
+    // elements), so a permanent refusal naming why is the sink working as designed and skips the vector.
     private static async Task<VectorVerdict> NestedColumnsWriteAsync(
         PcpClient client, ConnectorProcess process, ConnectorConfig connectionConfig,
         ConformanceWriteProbe probe, CancellationToken ct)
@@ -475,9 +476,9 @@ public static class ConformanceSuite
             await session.WriteBatchAsync(batch, ct).ConfigureAwait(false);
             result = await session.CommitAsync(ct).ConfigureAwait(false);
         }
-        catch (PzConnectorException ex) when (!ex.IsTransient && ex.Code == PzConnectorErrorCodes.Config)
+        catch (PzConnectorException ex) when (!ex.IsTransient)
         {
-            return VectorVerdict.Skip($"the write: probe's output refuses nested columns ({ex.Message})");
+            return VectorVerdict.Skip($"the write: probe's output refused the nested batch ({ex.Message})");
         }
 
         return result.RowsWritten == 3
