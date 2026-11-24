@@ -297,7 +297,7 @@ public static class MessageMapping
 
     public static NativeCopyResponse ToNativeCopyResponse(NativeCopy copy)
     {
-        var msg = new NativeCopyResponse { Found = true, CopySql = copy.CopySql };
+        var msg = new NativeCopyResponse { Found = true, CopySql = copy.CopySql, NestedAsJson = copy.NestedAsJson };
         msg.SetupStatements.AddRange(copy.SetupStatements);
         if (copy.Mechanism is not null)
         {
@@ -313,6 +313,7 @@ public static class MessageMapping
         {
             Mechanism = msg.HasMechanism ? msg.Mechanism : null,
             Finalizations = msg.Finalizations.Select(ToFileMove).ToArray(),
+            NestedAsJson = msg.NestedAsJson,
         };
 
     public static FileMoveMsg ToFileMoveMsg(FileMove move) => new() { TempPath = move.TempPath, FinalPath = move.FinalPath };

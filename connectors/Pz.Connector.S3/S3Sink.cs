@@ -49,6 +49,7 @@ internal sealed class S3Sink(ConnectorConfig config) : ISink
             [.. S3Sql.SetupStatements(config, S3Sql.SinkSecretName(spec.Sink)), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO s3 {format.Name}",
+            NestedAsJson = FileFormatCatalog.NestedAsJson(format),
         };
         return true;
     }

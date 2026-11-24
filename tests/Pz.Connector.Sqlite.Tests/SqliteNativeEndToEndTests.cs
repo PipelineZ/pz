@@ -60,7 +60,10 @@ public sealed class SqliteNativeEndToEndTests : IDisposable
 
         var staging = "stage_" + Guid.NewGuid().ToString("N");
         await duck.ExecuteAsync($"create table {staging} as {selectSql}");
-        await duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", staging, StringComparison.Ordinal));
+        var source = copy.NestedAsJson
+            ? await StagedColumns.NestedAsJsonAsync(duck, staging, CancellationToken.None)
+            : staging;
+        await duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", source, StringComparison.Ordinal));
     }
 
     private async Task<string> MaterializeScanAsync(DuckSession duck, string dbName, DatasetSpec spec)
@@ -98,6 +101,23 @@ public sealed class SqliteNativeEndToEndTests : IDisposable
         Assert.Equal("O'Brien", await duck.ScalarAsync<string>($"select name from {landed} where id = 1"));
         Assert.True(await duck.ScalarAsync<bool>($"select name is null from {landed} where id = 2"));
         Assert.Equal(13.5, await duck.ScalarAsync<double>($"select amount from {landed} where id = 2"));
+    }
+
+    [SkippableFact]
+    public async Task Nested_columns_land_as_JSON_text_that_sqlite_json_functions_read()
+    {
+        DockerFacts.SkipIfOffline();
+        await using var session = OpenDuck();
+        var duck = session.Duck;
+
+        await SeedAsync(duck, "app.db", "nested",
+            "(select 1 as id, {'a': 1, 'b': 'x'} as rec, [1, 2] as xs, map(['k'], [1]) as m, 'plain' as s)");
+
+        await using var sqlite = new SqliteConnection($"Data Source={DbPath()}");
+        await sqlite.OpenAsync();
+        await using var command = sqlite.CreateCommand();
+        command.CommandText = "select rec || ' | ' || xs || ' | ' || m || ' | ' || s || ' | ' || json_extract(rec, '$.b') from nested";
+        Assert.Equal("""{"a":1,"b":"x"} | [1,2] | {"k":1} | plain | x""", (string?)await command.ExecuteScalarAsync());
     }
 
     [SkippableFact]

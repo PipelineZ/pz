@@ -51,6 +51,7 @@ internal sealed class AzureSink(ConnectorConfig config) : ISink, IOperationGateA
             ["install azure", "load azure", secret, .. AzureAuth.TransportStatements(), .. FileFormatCatalog.SetupStatements(format)])
         {
             Mechanism = $"COPY TO azure {format.Name}",
+            NestedAsJson = FileFormatCatalog.NestedAsJson(format),
         };
         return true;
     }

@@ -246,6 +246,7 @@ message NativeCopyResponse {
   repeated string setup_statements = 3;
   optional string mechanism = 4;
   repeated FileMoveMsg finalizations = 5;
+  bool nested_as_json = 6;
 }
 message FileMoveMsg { string temp_path = 1; string final_path = 2; }
 

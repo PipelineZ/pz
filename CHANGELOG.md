@@ -7,6 +7,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+### Changed
+
+- **A STRUCT, LIST, MAP, UNION or VARIANT column written to CSV, TSV, xlsx or SQLite is now JSON text**
+  (`{"a":1,"b":"x"}`, `[1,2]`, `{"k":1}`) instead of DuckDB's literal syntax (`{'a': 1, 'b': x}`, `{k=1}`),
+  which nothing but DuckDB could read and which dropped the quotes around strings. Migration: a consumer that
+  parsed the old literal form reads JSON instead; to keep the old text, cast in the pipeline
+  (`rec::VARCHAR`).
+
 ### Added
 
 - **STRUCT, LIST, MAP and fixed-size ARRAY columns cross pz's Arrow path**, nested to any depth over the flat
@@ -22,6 +30,17 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   (`bigint[]`, `text[]`, `numeric(38,9)[]`, `timestamptz[]`…, null elements kept), and a STRUCT, MAP or list of
   nested values as `jsonb`. A missing target is created with those types; an existing one is checked against
   them (`schema_policy: fail_on_change` compares an array's element type).
+- **The `sqlserver` sink writes nested columns** as their JSON text in `nvarchar(max)`, readable with
+  `JSON_VALUE`/`OPENJSON`, through append, replace and merge; an existing text column of any width is accepted.
+- **`NativeCopy.NestedAsJson`** (connector ABI and PCP, additive): a native copy into a destination without
+  composite types asks the engine to hand it STRUCT, LIST, MAP, UNION and VARIANT columns as DuckDB `JSON`.
+  The mysql and sqlite sinks set it, and so do the file sinks for csv, tsv and xlsx. The Rust SDK carries the
+  protocol field but cannot set it yet.
+
+### Fixed
+
+- **A nested column written to MySQL lands as JSON text** (readable with `JSON_EXTRACT`) instead of failing
+  with DuckDB's "MySQL does not support composite types".
 
 ## [0.21.0] - 2026-11-23
 

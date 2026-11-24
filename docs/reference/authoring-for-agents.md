@@ -106,8 +106,10 @@ my-project/
   was not landed, is not text, or holds text that is not JSON fails the read (PZ0547, counting rows).
   A VARIANT column cannot go to a sink that receives rows over Arrow (PZ0546): cast it in the
   pipeline, e.g. `payload::JSON::VARCHAR`. STRUCT, LIST and MAP columns reach `http` (as JSON
-  objects and arrays) and `postgres` (a list of a flat type as a postgres array, anything else as
-  `jsonb`); other Arrow-path sinks refuse them with the same PZ0546 and cast hint.
+  objects and arrays), `postgres` (a list of a flat type as a postgres array, anything else as
+  `jsonb`) and `sqlserver` (JSON text in `nvarchar(max)`); `mysql`, `sqlite` and csv/tsv/xlsx files
+  get them as JSON text; parquet, json and DuckDB-family sinks keep them nested. Other Arrow-path
+  sinks refuse them with the same PZ0546 and cast hint.
 
   An entity does not have to be declared in YAML at all — see [Two surfaces, one
   declaration](#two-surfaces-one-declaration-pz0341) below. `sources:`/`sinks:` directories and a

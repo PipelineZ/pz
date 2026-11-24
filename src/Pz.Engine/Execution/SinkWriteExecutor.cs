@@ -164,7 +164,10 @@ public sealed class SinkWriteExecutor : INodeExecutor
 
             try
             {
-                await ctx.Duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", relation), ct).ConfigureAwait(false);
+                var source = copy.NestedAsJson
+                    ? await StagedColumns.NestedAsJsonAsync(ctx.Duck, relation, ct).ConfigureAwait(false)
+                    : relation;
+                await ctx.Duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", source), ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

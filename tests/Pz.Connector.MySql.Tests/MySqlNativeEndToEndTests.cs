@@ -44,7 +44,10 @@ public sealed class MySqlNativeEndToEndTests(MySqlContainerFixture fixture)
 
         var staging = "stage_" + Guid.NewGuid().ToString("N");
         await duck.ExecuteAsync($"create table {staging} as {selectSql}");
-        await duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", staging, StringComparison.Ordinal));
+        var source = copy.NestedAsJson
+            ? await StagedColumns.NestedAsJsonAsync(duck, staging, CancellationToken.None)
+            : staging;
+        await duck.ExecuteAsync(copy.CopySql.Replace("{{source}}", source, StringComparison.Ordinal));
     }
 
     /// <summary>Runs the connector's <see cref="ISource.TryGetNativeScan"/> for <paramref name="spec"/>
@@ -145,6 +148,38 @@ public sealed class MySqlNativeEndToEndTests(MySqlContainerFixture fixture)
 
         Assert.Equal(3L, await duck.ScalarAsync<long>($"select cnt from {landed}"));
         Assert.Equal(60L, await duck.ScalarAsync<long>($"select total from {landed}"));
+    }
+
+    [SkippableFact]
+    public async Task Nested_columns_land_as_JSON()
+    {
+        DockerFacts.SkipUnlessDocker();
+        DockerFacts.SkipIfOffline();
+        await fixture.EnsureStartedAsync();
+
+        await using var session = await OpenDuckAsync();
+        var duck = session.Duck;
+        var table = Table();
+
+        // MySQL has no composite types: DuckDB's mysql extension refuses a STRUCT outright, so the copy
+        // asks the engine for JSON instead (NativeCopy.NestedAsJson); the extension stores it as text, which
+        // MySQL's JSON functions read.
+        await SeedAsync(duck, table,
+            "(select 1 as id, {'a': 1, 'b': 'x'} as rec, [1, 2] as xs, map(['k'], [1]) as m, [1, 2]::INTEGER[2] as pair, 'plain' as s)");
+
+        var columns = await MaterializeScanAsync(duck, new DatasetSpec("wh", table, new Dictionary<string, object?>
+        {
+            ["query"] = "SELECT CAST(GROUP_CONCAT(CONCAT(COLUMN_NAME, ':', DATA_TYPE) ORDER BY ORDINAL_POSITION) AS CHAR) AS cols " +
+                $"FROM information_schema.columns WHERE TABLE_NAME = '{table}'",
+        }));
+        var values = await MaterializeScanAsync(duck, new DatasetSpec("wh", table, new Dictionary<string, object?>
+        {
+            ["query"] = $"SELECT CAST(CONCAT_WS(' | ', rec, xs, m, pair, s, JSON_EXTRACT(rec, '$.b')) AS CHAR) AS v FROM {table}",
+        }));
+
+        Assert.Equal("id:int,rec:text,xs:text,m:text,pair:text,s:text", await duck.ScalarAsync<string>($"select cols from {columns}"));
+        Assert.Equal("{\"a\":1,\"b\":\"x\"} | [1,2] | {\"k\":1} | [1,2] | plain | \"x\"",
+            await duck.ScalarAsync<string>($"select v from {values}"));
     }
 
     [SkippableFact]

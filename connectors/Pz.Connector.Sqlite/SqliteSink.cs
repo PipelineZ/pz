@@ -38,6 +38,7 @@ internal sealed class SqliteSink(ConnectorConfig config) : ISink
         copy = new NativeCopy(s.Sql, SqliteSql.SinkSetupStatements(SqliteSql.ResolvePath(config), alias))
         {
             Mechanism = s.Mechanism,
+            NestedAsJson = true, // no composite column types on the destination
         };
         return true;
     }

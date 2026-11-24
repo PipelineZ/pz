@@ -22,6 +22,7 @@
     <!-- src/Shared/MsTransient.cs compiles into this assembly and into Pz.State.SqlServer's; the two
          assemblies may not reference each other (connector-to-state and state-to-connector are both
          forbidden), so the classifier is linked into each. -->
+    <Compile Include="..\..\src\Shared\Json\ArrowJsonValue.cs" Link="Shared\Json\ArrowJsonValue.cs" />
     <Compile Include="..\..\src\Shared\MsTransient.cs" Link="Shared\MsTransient.cs" />
     <Compile Include="..\..\src\Shared\Partitioning\EqualWidth.cs" Link="Shared\Partitioning\EqualWidth.cs" />
     <Compile Include="..\..\src\Shared\Partitioning\PartitionCount.cs" Link="Shared\Partitioning\PartitionCount.cs" />
@@ -38,5 +39,4 @@
          package; output-relative copies would collide, NETSDK1152). -->
     <None Include="pz.connector.json" Pack="true" PackagePath="" />
   </ItemGroup>
-
 </Project>

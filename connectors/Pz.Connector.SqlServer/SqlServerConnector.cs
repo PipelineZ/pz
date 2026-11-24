@@ -23,7 +23,7 @@ public sealed class SqlServerConnector : ISourceConnector, ISinkConnector, IOutp
         ConnectorCapabilities.ReplaceWrites |
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound |
         ConnectorCapabilities.ApplyDeletes | ConnectorCapabilities.ChangeCapture |
-        ConnectorCapabilities.TextLengthStats;
+        ConnectorCapabilities.TextLengthStats | ConnectorCapabilities.NestedTypes;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["host","database"], "properties": { "host": { "type": "string" }, "port": { "type": "integer", "minimum": 1, "maximum": 65535 }, "database": { "type": "string" }, "user": { "type": "string" }, "password": { "type": "string" }, "authentication": { "type": "string" }, "encrypt": { "type": "boolean" }, "trust_server_certificate": { "type": "boolean" }, "connect_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }, "command_timeout_seconds": { "type": "integer", "minimum": 0, "maximum": 86400 } }, "additionalProperties": false }""";
