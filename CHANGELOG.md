@@ -7,6 +7,15 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-24
+
+### Fixed
+
+- **`pz connector test`'s `nested-columns-write` vector skips when the probe's output refuses the nested batch**
+  with a permanent error (a table without those columns, a container keyed on another column, a store whose
+  arrays cannot hold null elements), instead of failing. Only a config-coded refusal skipped before, so a
+  connector writing to a real destination with its own schema failed the vector while working as designed.
+
 ## [0.22.0] - 2026-11-24
 
 ### Changed
