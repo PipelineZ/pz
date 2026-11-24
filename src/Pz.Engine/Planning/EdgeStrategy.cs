@@ -7,6 +7,8 @@ public enum EdgeStrategy
     NativeScan,
     /// <summary>DuckDB writes the destination directly via a connector-provided COPY.</summary>
     NativeCopy,
+    /// <summary>DuckDB writes the output to local files that the connector delivers (<c>ISpoolingSink</c>).</summary>
+    Spool,
     /// <summary>The universal batch path: connector streams Arrow batches through the engine.</summary>
     ArrowStream,
     /// <summary>Executes inside DuckDB (pipelines, checks).</summary>

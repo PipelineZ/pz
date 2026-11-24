@@ -9,6 +9,12 @@ the [versioning policy](https://pipelinez.dev/versioning/).
 
 ### Changed
 
+- **sftp writes through DuckDB**: every sftp output is now written by DuckDB to a local file and uploaded
+  (temp name, then rename), instead of by pz's own csv/json/parquet writers. Output now matches what
+  localfiles writes byte for byte (csv timestamp and number formatting change accordingly), parquet carries
+  decimals and nested columns, and xlsx and json `layout: array` outputs work on sftp. `engine.force_universal`
+  keeps the previous writers.
+
 - **A STRUCT, LIST, MAP, UNION or VARIANT column written to CSV, TSV, xlsx or SQLite is now JSON text**
   (`{"a":1,"b":"x"}`, `[1,2]`, `{"k":1}`) instead of DuckDB's literal syntax (`{'a': 1, 'b': x}`, `{k=1}`),
   which nothing but DuckDB could read and which dropped the quotes around strings. Migration: a consumer that
@@ -16,6 +22,11 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   (`rec::VARCHAR`).
 
 ### Added
+
+- **Spool tier** (`ISpoolingSink`, connector SDK, additive; `SpoolWrites` capability): a sink DuckDB cannot write
+  to directly names a format, and the engine COPYs the staged output to local files under the run directory, one
+  per `partition_by` folder (rendered from the column's UTC value), for the sink to deliver. `plan.json`, `pz plan`
+  and the `node_completed` event's `strategy` report it as `spool`.
 
 - **STRUCT, LIST, MAP and fixed-size ARRAY columns cross pz's Arrow path**, nested to any depth over the flat
   types. An Arrow source (every out-of-process connector) can now emit them and they land as DuckDB's nested

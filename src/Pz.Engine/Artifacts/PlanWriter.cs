@@ -84,6 +84,7 @@ public static class PlanWriter
     {
         EdgeStrategy.NativeScan => "native_scan",
         EdgeStrategy.NativeCopy => "native_copy",
+        EdgeStrategy.Spool => "spool",
         EdgeStrategy.ArrowStream => "arrow_stream",
         EdgeStrategy.DuckSql => "duck_sql",
         _ => throw new ArgumentOutOfRangeException(nameof(strategy), strategy, "unknown strategy"),

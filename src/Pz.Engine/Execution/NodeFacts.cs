@@ -19,6 +19,7 @@ public sealed record NodeFacts(string? Connector, string? Connection, string? St
 {
     public const string NativeScan = "native_scan";
     public const string NativeCopy = "native_copy";
+    public const string Spool = "spool";
     public const string Arrow = "arrow";
 
     public static NodeFacts From(DagNode node, NodeFactsRecorder? recorder, int attempts,

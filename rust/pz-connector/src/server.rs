@@ -894,6 +894,7 @@ const CAPABILITY_NAMES: &[(u64, &str)] = &[
     (2_097_152, "NativeOnlyRead"),
     (4_194_304, "ReportsStats"),
     (8_388_608, "NestedTypes"),
+    (16_777_216, "SpoolWrites"),
 ];
 
 fn capability_names(capabilities: u64) -> Vec<String> {

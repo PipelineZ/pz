@@ -109,4 +109,9 @@ public enum ConnectorCapabilities
     /// sink only ever sees the types it declared. Sources need no flag: nested columns a source emits land
     /// as DuckDB's nested types.</summary>
     NestedTypes = 8388608,
+
+    /// <summary>The sink takes finished files the engine writes with DuckDB (<see cref="ISpoolingSink"/>):
+    /// in process the sink implements the interface; over PCP this flag says the host may call its spool
+    /// methods.</summary>
+    SpoolWrites = 16777216,
 }

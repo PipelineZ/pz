@@ -23,7 +23,7 @@ namespace Pz.Connector.Sftp;
 /// lazily -- so every discrete write-session op (sftp.open_write/sftp.commit_rename/sftp.delete_temp)
 /// routes through it.</summary>
 internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnectionSettings, ISftpFileSystem> connect)
-    : ISink, IOperationGateAware, INoticeAware
+    : ISink, ISpoolingSink, IOperationGateAware, INoticeAware
 {
     private IOperationGate? _gate;
 
@@ -41,12 +41,61 @@ internal sealed class SftpSink(SftpConnectionSettings settings, Func<SftpConnect
 
     public bool TryGetNativeCopy(OutputSpec spec, [NotNullWhen(true)] out NativeCopy? copy)
     {
-        // sftp has no native tier in either direction, but the format must still be resolved here so an
-        // invalid format or a native-only option (e.g. json layout: array) is refused at PLAN time
-        // (PZ0361) rather than surfacing only when BeginWriteAsync runs at execute time.
-        ResolveFormat(spec);
+        // DuckDB cannot write to an SFTP server; TryGetSpool below is how DuckDB's writers reach it.
         copy = null;
         return false;
+    }
+
+    /// <summary>Every output spools: DuckDB writes each file locally in the output's format (parquet with
+    /// nested columns, xlsx, json <c>layout: array</c> included, since the excel writer's crash on a failed
+    /// remote write cannot happen on a local file), and <see cref="CommitSpoolAsync"/> uploads it.
+    /// Resolved here, so a bad format is refused at plan time (PZ0361).</summary>
+    public bool TryGetSpool(OutputSpec spec, [NotNullWhen(true)] out SpoolPlan? plan)
+    {
+        var context = $"output '{spec.Output}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "sftp", context);
+        FileFormatCatalog.EnsureWritable(format, "sftp", context);
+        var partitionBy = PartitionColumns.Read(spec.Options) is [var column] ? column : null;
+        plan = new SpoolPlan(FileFormatCatalog.CopyClause(format, spec.Options, context), format.Extension)
+        {
+            Mechanism = $"{format.Name} upload",
+            SetupStatements = FileFormatCatalog.SetupStatements(format),
+            NestedAsJson = FileFormatCatalog.NestedAsJson(format),
+            PartitionColumn = partitionBy,
+            PathTemplate = partitionBy is null ? null : Str(spec.Options, "path") ?? "",
+        };
+        return true;
+    }
+
+    /// <summary>Uploads each spooled file over one SSH connection, temp name then rename, into the folder the
+    /// Arrow path would have used: the output directory, or <c>&lt;root&gt;/&lt;rendered folder&gt;</c> for a
+    /// partitioned output, under the same replace/append object name.</summary>
+    public async ValueTask<WriteResult> CommitSpoolAsync(OutputSpec spec, IReadOnlyList<SpooledFile> files, CancellationToken ct)
+    {
+        var context = $"output '{spec.Output}'";
+        var format = FileFormatCatalog.Resolve(spec.Options, "parquet", "sftp", context);
+        var objectName = ResolveObjectName(spec, format);
+        var partitioned = PartitionColumns.Read(spec.Options).Count > 0;
+        using var fs = connect(settings);
+        long rows = 0;
+        foreach (var file in files)
+        {
+            var trimmed = file.Folder.Trim('/');
+            var dir = !partitioned ? SftpPaths.ResolveOutputDir(settings.Root, spec)
+                : trimmed.Length > 0 ? SftpPaths.Join(settings.Root, trimmed) : settings.Root;
+            if (!string.IsNullOrEmpty(dir))
+            {
+                CreateDirectories(fs, dir, spec.Output);
+            }
+
+            var finalPath = string.IsNullOrEmpty(dir) ? objectName : $"{dir}/{objectName}";
+            await using var session = SftpFileWriteSession.Create(
+                fs, SftpWriteSessionBase.MakeTempPath(finalPath), finalPath, _gate, context);
+            await session.UploadAsync(file.LocalPath, file.Rows, ct).ConfigureAwait(false);
+            rows += (await session.CommitAsync(ct).ConfigureAwait(false)).RowsWritten;
+        }
+
+        return new WriteResult(rows, files.Count);
     }
 
     public async ValueTask<ISinkWriteSession> BeginWriteAsync(OutputSpec spec, Schema schema, CancellationToken ct)
