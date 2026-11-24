@@ -38,22 +38,39 @@ namespace Pz.Connectors.Abstractions.Batches;
 /// the contract.</summary>
 public static class DataReaderSource
 {
-    public static Schema BuildArrowSchema(DbDataReader reader)
+    public static Schema BuildArrowSchema(DbDataReader reader) => BuildArrowSchema(reader, arrayElement: null);
+
+    /// <summary><see cref="BuildArrowSchema(DbDataReader)"/> for a provider that reports an array column only
+    /// as <see cref="System.Array"/> (Npgsql does): <paramref name="arrayElement"/> names the CLR element type of
+    /// column <c>i</c> (from the provider's own type name), or returns null when it has none. A
+    /// one-dimensional array of a matrix type becomes an Arrow list of that type.</summary>
+    public static Schema BuildArrowSchema(DbDataReader reader, Func<int, Type?>? arrayElement)
     {
         var fields = new List<Field>(reader.FieldCount);
         for (var i = 0; i < reader.FieldCount; i++)
         {
-            fields.Add(new Field(reader.GetName(i), ToArrowType(reader.GetFieldType(i), reader.GetName(i)), nullable: true));
+            var name = reader.GetName(i);
+            var type = ElementType(reader, i, arrayElement) is { } element
+                ? new ListType(new Field("item", ToArrowType(element, name), nullable: true))
+                : ToArrowType(reader.GetFieldType(i), name);
+            fields.Add(new Field(name, type, nullable: true));
         }
 
         return new Schema(fields, null);
     }
 
+    public static IAsyncEnumerable<RecordBatch> ReadBatchesAsync(
+        DbDataReader reader, int targetBatchBytes, CancellationToken ct = default) =>
+        ReadBatchesAsync(reader, targetBatchBytes, arrayElement: null, ct);
+
+    /// <summary><see cref="ReadBatchesAsync(DbDataReader, int, CancellationToken)"/> with the array element
+    /// resolver of <see cref="BuildArrowSchema(DbDataReader, Func{int, Type?})"/>.</summary>
     public static async IAsyncEnumerable<RecordBatch> ReadBatchesAsync(
-        DbDataReader reader, int targetBatchBytes, [EnumeratorCancellation] CancellationToken ct = default)
+        DbDataReader reader, int targetBatchBytes, Func<int, Type?>? arrayElement,
+        [EnumeratorCancellation] CancellationToken ct = default)
     {
-        var schema = BuildArrowSchema(reader);
-        var plans = BuildColumnPlans(reader, schema);
+        var schema = BuildArrowSchema(reader, arrayElement);
+        var plans = BuildColumnPlans(reader, schema, arrayElement);
         var maxRowsPerBatch = BatchOptions.Default.MaxRowsPerBatch;
         var pendingRows = 0;
         var bytesEstimate = 0d;
@@ -98,7 +115,7 @@ public static class DataReaderSource
     /// BuildAndReset() finishes the Arrow array from pooled memory and clears the builder for reuse.</summary>
     private sealed record ColumnPlan(Func<double> Append, Func<IArrowArray> BuildAndReset);
 
-    private static ColumnPlan[] BuildColumnPlans(DbDataReader reader, Schema schema)
+    private static ColumnPlan[] BuildColumnPlans(DbDataReader reader, Schema schema, Func<int, Type?>? arrayElement)
     {
         var allocator = PooledNativeAllocator.Shared;
         var plans = new ColumnPlan[schema.FieldsList.Count];
@@ -107,6 +124,12 @@ public static class DataReaderSource
             var clr = reader.GetFieldType(i); // BuildArrowSchema already validated the matrix
             var ordinal = i;
             var name = schema.FieldsList[i].Name;
+            if (schema.FieldsList[i].DataType is ListType)
+            {
+                plans[i] = PlanArray(reader, ordinal, schema.FieldsList[i], ElementType(reader, i, arrayElement)!, allocator);
+                continue;
+            }
+
             plans[i] = clr switch
             {
                 _ when clr == typeof(int) => Plan<Int32Array, Int32Array.Builder>(new Int32Array.Builder(), allocator,
@@ -177,6 +200,70 @@ public static class DataReaderSource
                 builder.Clear();
                 return array;
             });
+
+    /// <summary>A one-dimensional provider array (a postgres <c>integer[]</c>, <c>text[]</c>…) as an Arrow list.
+    /// Read with nullable elements, so a NULL element is kept rather than failing the read.</summary>
+    private static ColumnPlan PlanArray(
+        DbDataReader reader, int ordinal, Field field, Type element, Apache.Arrow.Memory.MemoryAllocator allocator)
+    {
+        var column = ArrowBatchBuilder.CreateColumn(field, allocator);
+        Func<object> read = element switch
+        {
+            _ when element == typeof(int) => () => reader.GetFieldValue<int?[]>(ordinal),
+            _ when element == typeof(long) => () => reader.GetFieldValue<long?[]>(ordinal),
+            _ when element == typeof(double) => () => reader.GetFieldValue<double?[]>(ordinal),
+            _ when element == typeof(decimal) => () => reader.GetFieldValue<decimal?[]>(ordinal),
+            _ when element == typeof(bool) => () => reader.GetFieldValue<bool?[]>(ordinal),
+            _ when element == typeof(string) => () => reader.GetFieldValue<string?[]>(ordinal),
+            _ when element == typeof(DateOnly) => () => reader.GetFieldValue<DateOnly?[]>(ordinal),
+            // DateTime (pg timestamp) is trusted-UTC, as for a scalar column.
+            _ when element == typeof(DateTime) => () => System.Array.ConvertAll(reader.GetFieldValue<DateTime?[]>(ordinal),
+                d => d is { } v ? new DateTimeOffset(DateTime.SpecifyKind(v, DateTimeKind.Utc)) : (DateTimeOffset?)null),
+            _ when element == typeof(DateTimeOffset) => () => reader.GetFieldValue<DateTimeOffset?[]>(ordinal),
+            _ => throw new InvalidOperationException(
+                $"unreachable: array of '{element.Name}' should already have been rejected by BuildArrowSchema"),
+        };
+
+        return new ColumnPlan(
+            Append: () =>
+            {
+                if (reader.IsDBNull(ordinal))
+                {
+                    column.Append(null);
+                    return 0d;
+                }
+
+                var value = read();
+                try
+                {
+                    column.Append(value);
+                }
+                catch (OverflowException ex)
+                {
+                    throw new PzConnectorException(
+                        $"column '{field.Name}': an element exceeds decimal128(38,9) scale -- cast the column in " +
+                        "query: (e.g. ::numeric(38,9)[] or ::text[])",
+                        isTransient: false, innerException: ex);
+                }
+
+                return column.WidthOf(value);
+            },
+            BuildAndReset: column.Build);
+    }
+
+    /// <summary>Column <paramref name="i"/>'s array element type: from a typed CLR array, or, for a provider that
+    /// reports only <see cref="System.Array"/>, from <paramref name="arrayElement"/>; null for a non-array column.</summary>
+    private static Type? ElementType(DbDataReader reader, int i, Func<int, Type?>? arrayElement)
+    {
+        var clr = reader.GetFieldType(i);
+        return ArrayElement(clr) ?? (clr == typeof(System.Array) ? arrayElement?.Invoke(i) : null);
+    }
+
+    /// <summary>The element type of a one-dimensional provider array (<c>int[]</c>, <c>int?[]</c>), or null.</summary>
+    private static Type? ArrayElement(Type clr) =>
+        clr.IsArray && clr.GetArrayRank() == 1
+            ? Nullable.GetUnderlyingType(clr.GetElementType()!) ?? clr.GetElementType()
+            : null;
 
     private static ColumnPlan PlanUtf8(Apache.Arrow.Memory.MemoryAllocator allocator, DbDataReader reader, int ordinal)
     {

@@ -52,81 +52,92 @@ public sealed class ArrowBatchBuilder
 
         for (var i = 0; i < fields.Count; i++)
         {
-            var field = fields[i];
-            var (append, build, widthOf, copyFrom) = field.DataType.TypeId switch
-            {
-                ArrowTypeId.Int32 => MakeColumn<Int32Array, Int32Array.Builder>(
-                    () => new Int32Array.Builder(),
-                    static (b, v) => b.Append((int)v),
-                    static _ => 4d,
-                    static (b, src, row) => { b.Append(((Int32Array)src).GetValue(row)!.Value); return 4d; },
-                    allocator),
-                ArrowTypeId.Int64 => MakeColumn<Int64Array, Int64Array.Builder>(
-                    () => new Int64Array.Builder(),
-                    static (b, v) => b.Append((long)v),
-                    static _ => 8d,
-                    static (b, src, row) => { b.Append(((Int64Array)src).GetValue(row)!.Value); return 8d; },
-                    allocator),
-                ArrowTypeId.Double => MakeColumn<DoubleArray, DoubleArray.Builder>(
-                    () => new DoubleArray.Builder(),
-                    static (b, v) => b.Append((double)v),
-                    static _ => 8d,
-                    static (b, src, row) => { b.Append(((DoubleArray)src).GetValue(row)!.Value); return 8d; },
-                    allocator),
-                ArrowTypeId.Boolean => MakeColumn<BooleanArray, BooleanArray.Builder>(
-                    () => new BooleanArray.Builder(),
-                    static (b, v) => b.Append((bool)v),
-                    static _ => 0.125d,
-                    static (b, src, row) => { b.Append(((BooleanArray)src).GetValue(row)!.Value); return 0.125d; },
-                    allocator),
-                ArrowTypeId.Date32 => MakeColumn<Date32Array, Date32Array.Builder>(
-                    () => new Date32Array.Builder(),
-                    static (b, v) => b.Append((DateOnly)v),
-                    static _ => 4d,
-                    static (b, src, row) => { b.Append(((Date32Array)src).GetDateOnly(row)!.Value); return 4d; },
-                    allocator),
-                ArrowTypeId.Timestamp => MakeColumn<TimestampArray, TimestampArray.Builder>(
-                    () => new TimestampArray.Builder((TimestampType)field.DataType),
-                    static (b, v) => b.Append((DateTimeOffset)v),
-                    static _ => 8d,
-                    static (b, src, row) => { b.Append(((TimestampArray)src).GetTimestamp(row)!.Value); return 8d; },
-                    allocator),
-                ArrowTypeId.Decimal128 => MakeColumn<Decimal128Array, Decimal128Array.Builder>(
-                    () => new Decimal128Array.Builder((Decimal128Type)field.DataType),
-                    static (b, v) =>
-                    {
-                        if (v is SqlDecimal exact) b.Append(exact);
-                        else b.Append((decimal)v);
-                    },
-                    static _ => 16d,
-                    static (b, src, row) => { AppendDecimal(b, (Decimal128Array)src, row); return 16d; },
-                    allocator),
-                ArrowTypeId.String => MakeColumn<StringArray, StringArray.Builder>(
-                    () => new StringArray.Builder(),
-                    static (b, v) => b.Append((string)v),
-                    static v => 4d + Encoding.UTF8.GetByteCount((string)v!),
-                    static (b, src, row) =>
-                    {
-                        var s = ((StringArray)src).GetString(row)!;
-                        b.Append(s);
-                        return 4d + Encoding.UTF8.GetByteCount(s);
-                    },
-                    allocator),
-                _ => throw new NotSupportedException(
-                    $"ArrowBatchBuilder v0 does not support column '{field.Name}' with Arrow type '{field.DataType}'"),
-            };
-
-            _builders[i] = build;
+            var column = CreateColumn(fields[i], allocator);
+            _builders[i] = column.Build;
             _appenders[i] = value =>
             {
-                append(value);
-                _bytesEstimate += (value is null ? 0d : widthOf(value)) + 0.125d;
+                column.Append(value);
+                _bytesEstimate += (value is null ? 0d : column.WidthOf(value)) + 0.125d;
             };
             _copiers[i] = (source, row) =>
             {
-                _bytesEstimate += copyFrom(source, row) + 0.125d;
+                _bytesEstimate += column.CopyFrom(source, row) + 0.125d;
             };
         }
+    }
+
+    /// <summary>The builder for one column: a nested type (list, fixed-size list, struct, map) recurses into
+    /// its children through this same factory; every other type is a v0-matrix leaf.</summary>
+    internal static ColumnBuilder CreateColumn(Field field, MemoryAllocator allocator)
+    {
+        if (NestedColumns.TryCreate(field, allocator, child => CreateColumn(child, allocator)) is { } nested)
+        {
+            return nested;
+        }
+
+        var (append, build, widthOf, copyFrom) = field.DataType.TypeId switch
+        {
+            ArrowTypeId.Int32 => MakeColumn<Int32Array, Int32Array.Builder>(
+                () => new Int32Array.Builder(),
+                static (b, v) => b.Append((int)v),
+                static _ => 4d,
+                static (b, src, row) => { b.Append(((Int32Array)src).GetValue(row)!.Value); return 4d; },
+                allocator),
+            ArrowTypeId.Int64 => MakeColumn<Int64Array, Int64Array.Builder>(
+                () => new Int64Array.Builder(),
+                static (b, v) => b.Append((long)v),
+                static _ => 8d,
+                static (b, src, row) => { b.Append(((Int64Array)src).GetValue(row)!.Value); return 8d; },
+                allocator),
+            ArrowTypeId.Double => MakeColumn<DoubleArray, DoubleArray.Builder>(
+                () => new DoubleArray.Builder(),
+                static (b, v) => b.Append((double)v),
+                static _ => 8d,
+                static (b, src, row) => { b.Append(((DoubleArray)src).GetValue(row)!.Value); return 8d; },
+                allocator),
+            ArrowTypeId.Boolean => MakeColumn<BooleanArray, BooleanArray.Builder>(
+                () => new BooleanArray.Builder(),
+                static (b, v) => b.Append((bool)v),
+                static _ => 0.125d,
+                static (b, src, row) => { b.Append(((BooleanArray)src).GetValue(row)!.Value); return 0.125d; },
+                allocator),
+            ArrowTypeId.Date32 => MakeColumn<Date32Array, Date32Array.Builder>(
+                () => new Date32Array.Builder(),
+                static (b, v) => b.Append((DateOnly)v),
+                static _ => 4d,
+                static (b, src, row) => { b.Append(((Date32Array)src).GetDateOnly(row)!.Value); return 4d; },
+                allocator),
+            ArrowTypeId.Timestamp => MakeColumn<TimestampArray, TimestampArray.Builder>(
+                () => new TimestampArray.Builder((TimestampType)field.DataType),
+                static (b, v) => b.Append((DateTimeOffset)v),
+                static _ => 8d,
+                static (b, src, row) => { b.Append(((TimestampArray)src).GetTimestamp(row)!.Value); return 8d; },
+                allocator),
+            ArrowTypeId.Decimal128 => MakeColumn<Decimal128Array, Decimal128Array.Builder>(
+                () => new Decimal128Array.Builder((Decimal128Type)field.DataType),
+                static (b, v) =>
+                {
+                    if (v is SqlDecimal exact) b.Append(exact);
+                    else b.Append((decimal)v);
+                },
+                static _ => 16d,
+                static (b, src, row) => { AppendDecimal(b, (Decimal128Array)src, row); return 16d; },
+                allocator),
+            ArrowTypeId.String => MakeColumn<StringArray, StringArray.Builder>(
+                () => new StringArray.Builder(),
+                static (b, v) => b.Append((string)v),
+                static v => 4d + Encoding.UTF8.GetByteCount((string)v!),
+                static (b, src, row) =>
+                {
+                    var s = ((StringArray)src).GetString(row)!;
+                    b.Append(s);
+                    return 4d + Encoding.UTF8.GetByteCount(s);
+                },
+                allocator),
+            _ => throw new NotSupportedException(
+                $"ArrowBatchBuilder v0 does not support column '{field.Name}' with Arrow type '{field.DataType}'"),
+        };
+        return new ColumnBuilder(append, widthOf, copyFrom, build);
     }
 
     public int PendingRows { get; private set; }

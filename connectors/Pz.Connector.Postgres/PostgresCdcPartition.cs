@@ -496,7 +496,7 @@ internal sealed class PostgresCdcPartition(string connectionString, DatasetSpec 
         await using var cmd = new NpgsqlCommand(
             $"select * from ({PostgresCdc.SnapshotSelect(schema, table)}) q limit 0", conn);
         await using var reader = await cmd.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        return DataReaderSource.BuildArrowSchema(reader);
+        return DataReaderSource.BuildArrowSchema(reader, i => PgTypeMap.ArrayElement(reader.GetDataTypeName(i)));
     }
 
     private PzConnectorException StartReplicationFailure(PostgresException ex, string publication)
