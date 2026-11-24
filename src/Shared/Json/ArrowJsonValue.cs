@@ -66,12 +66,22 @@ internal static class ArrowJsonValue
                 break;
             case MapArray a:
             {
-                // A map is a list of key/value structs; a key is never null.
+                // A map is a list of key/value structs; a key is never null. Two keys whose text is the same
+                // would write one property twice, which JSON parsers resolve differently (first or last wins).
                 var entries = a.KeyValues;
+                HashSet<string>? seen = null;
                 json.WriteStartObject();
                 for (var i = a.ValueOffsets[index]; i < a.ValueOffsets[index + 1]; i++)
                 {
-                    json.WritePropertyName(KeyText(entries.Fields[0], i));
+                    var key = KeyText(entries.Fields[0], i);
+                    if (!(seen ??= new HashSet<string>(StringComparer.Ordinal)).Add(key))
+                    {
+                        throw new Pz.Connectors.Abstractions.PzConnectorException(
+                            "a map holds two entries whose keys have the same text, so it cannot be written as a JSON object; " +
+                            "make the keys distinct in the pipeline", isTransient: false);
+                    }
+
+                    json.WritePropertyName(key);
                     Write(json, entries.Fields[1], i);
                 }
 

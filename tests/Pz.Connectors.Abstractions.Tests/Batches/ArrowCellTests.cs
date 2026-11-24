@@ -48,4 +48,20 @@ public sealed class ArrowCellTests
         Assert.Equal("{\"2\":1.5,\"1\":null}", ArrowCell.ToJson(batch.Column(1), 0));
         Assert.Equal("null", ArrowCell.ToJson(batch.Column(1), 1));
     }
+
+    [Fact]
+    public void A_map_whose_keys_share_a_text_is_refused_rather_than_written_with_a_duplicate_property()
+    {
+        // Arrow does not make map keys unique, so a connector-built map can hold one key twice.
+        var type = new MapType(new Field("key", StringType.Default, false), new Field("value", Int64Type.Default, true));
+        var keys = new StringArray.Builder().Append("k").Append("k").Build();
+        var values = new Int64Array.Builder().Append(1).Append(2).Build();
+        var entries = new StructArray((StructType)type.Fields[0].DataType, 2, [keys, values], ArrowBuffer.Empty);
+        var offsets = new ArrowBuffer.Builder<int>().Append(0).Append(2).Build();
+        var map = new MapArray(type, 1, offsets, entries, ArrowBuffer.Empty);
+
+        var ex = Assert.Throws<PzConnectorException>(() => ArrowCell.ToJson(map, 0));
+
+        Assert.Contains("two entries whose keys have the same text", ex.Message, StringComparison.Ordinal);
+    }
 }
