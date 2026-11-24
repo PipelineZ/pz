@@ -159,7 +159,7 @@ public sealed class HttpConnector : ISourceConnector, ISinkConnector, IOutputCon
                 "required": ["strategy"], "additionalProperties": false },
             "items": { "type": "string" },
             "columns": { "type": "object", "minProperties": 1, "additionalProperties": {
-                "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } },
+                "type": "string", "minLength": 1 } },
             "column_pointers": { "type": "object", "additionalProperties": { "type": "string", "pattern": "^(/([^~]|~[01])*)+$" } },
             "epoch_unit": { "enum": ["s", "ms"] },
             "watermark_format": { "type": "string", "minLength": 1 },

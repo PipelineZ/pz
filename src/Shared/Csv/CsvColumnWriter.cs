@@ -5,6 +5,8 @@ using Apache.Arrow;
 using Apache.Arrow.Memory;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Abstractions.Formats;
 
 namespace Pz.Shared.Csv;
 
@@ -71,6 +73,7 @@ internal abstract class CsvColumnWriter
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed)
                 ? parsed
                 : throw Invalid(path, line, field.Name, v, typeName))),
+        _ when field.DataType is NestedType => new JsonCellWriter(field, typeName, path, allocator),
         _ => throw new PzConnectorException(
             $"column '{field.Name}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
     };
@@ -366,6 +369,63 @@ internal abstract class CsvColumnWriter
     /// <summary>The decimal/date/timestamp path: Arrow's own builder. Their parses dominate their
     /// appends, and their memory layouts are conversions worth borrowing rather than re-deriving (see
     /// the class doc comment).</summary>
+    /// <summary>A nested contract column (<c>varchar[]</c>, <c>struct(...)</c>, <c>map(k, v)</c>): each cell is JSON
+    /// text — what pz's own csv writers and DuckDB's csv copy write for a nested value — typed all the way
+    /// down into a one-column <see cref="ArrowBatchBuilder"/>. An empty cell is null.</summary>
+    private sealed class JsonCellWriter(Field field, string typeName, string path, MemoryAllocator allocator) : CsvColumnWriter
+    {
+        private readonly ArrowBatchBuilder _builder =
+            new(new Schema([field], null), int.MaxValue, allocator, maxRowsPerBatch: int.MaxValue);
+
+        private readonly object?[] _row = new object?[1];
+
+        public override int Append(ReadOnlySpan<char> value, long line)
+        {
+            if (value.IsEmpty)
+            {
+                _row[0] = null;
+                _builder.AppendRow(_row);
+                return 0;
+            }
+
+            try
+            {
+                _row[0] = ColumnContractType.ValueFromJson(value.ToString(), field.DataType);
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException)
+            {
+                throw new PzConnectorException(
+                    $"csv file '{path}' line {line}: column '{field.Name}' value is not a valid {typeName}",
+                    isTransient: false, innerException: ex);
+            }
+
+            _builder.AppendRow(_row);
+            return value.Length * 8;
+        }
+
+        /// <summary>The batch's one column. The batch shell is not disposed: disposing it would release the
+        /// column's buffers, which the caller now owns through the returned array.</summary>
+        public override IArrowArray BuildAndReset() =>
+            _builder.Flush()?.Column(0) ?? ArrowArrayFactory.BuildArray(Empty(field.DataType));
+
+        /// <summary>A zero-row array of <paramref name="type"/>: a list or map still carries its one offset and an
+        /// empty child, a struct its empty children.</summary>
+        private static ArrayData Empty(IArrowType type)
+        {
+            var offset = new ArrowBuffer(new byte[sizeof(int)]);
+            return type switch
+            {
+                MapType or ListType => new ArrayData(type, 0, 0, 0, [ArrowBuffer.Empty, offset],
+                    [Empty(((NestedType)type).Fields[0].DataType)]),
+                FixedSizeListType list => new ArrayData(type, 0, 0, 0, [ArrowBuffer.Empty], [Empty(list.ValueDataType)]),
+                StructType @struct => new ArrayData(type, 0, 0, 0, [ArrowBuffer.Empty],
+                    @struct.Fields.Select(f => Empty(f.DataType))),
+                StringType => new ArrayData(type, 0, 0, 0, [ArrowBuffer.Empty, offset, ArrowBuffer.Empty]),
+                _ => new ArrayData(type, 0, 0, 0, [ArrowBuffer.Empty, ArrowBuffer.Empty]),
+            };
+        }
+    }
+
     private sealed class BuilderWriter<TArray, TBuilder>(
         TBuilder builder, MemoryAllocator allocator, int widthEighths, AppendTyped<TBuilder> appendValue)
         : CsvColumnWriter

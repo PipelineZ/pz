@@ -1,5 +1,6 @@
 using System.Globalization;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Formats;
 using Pz.Shared.Csv;
 
 namespace Pz.Connector.Http;
@@ -34,9 +35,23 @@ internal static class TextValueParser
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var v)
                 ? v
                 : throw Invalid(text, typeName, context),
-            _ => throw new PzConnectorException(
-                $"{context}: unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
+            _ => Nested(text, typeName, context),
         };
+    }
+
+    /// <summary>A nested contract type's cell: its text is JSON (a csv or xml cell holding <c>[1,2]</c> or
+    /// <c>{"a":1}</c>), typed all the way down.</summary>
+    private static object? Nested(string text, string typeName, string context)
+    {
+        var type = ColumnContractType.ToArrowType(typeName, context);
+        try
+        {
+            return ColumnContractType.ValueFromJson(text, type);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException)
+        {
+            throw new PzConnectorException($"{context}: value is not a valid {typeName}", isTransient: false, innerException: ex);
+        }
     }
 
     private static PzConnectorException Invalid(string text, string typeName, string context) =>

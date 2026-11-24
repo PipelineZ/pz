@@ -41,6 +41,13 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   as objects and arrays, csv/tsv as JSON text byte-identical to the native copy. Their parquet writer refuses a
   nested column before writing anything, naming it — it cannot tell a null list from an empty one — so write json
   or csv there, or cast. A native parquet copy still writes real nested parquet.
+- **`columns:` contracts take nested types**: `varchar[]`, `int[3]`, `struct(name varchar, tags varchar[])`,
+  `map(varchar, bigint)`, nested freely over the flat types. They type a read end to end: json files and http
+  records by their objects and arrays, csv, tsv and xlsx cells by their JSON text (what pz writes there), on the
+  native scan and the universal readers alike, so pipeline SQL can index `tags[1]` or `person.name`. A type that
+  does not parse is the new **PZ0368** at load, for every bad column, instead of the connector schema's PZ0301 or a
+  PZ0500 under `pz run`. `ColumnContractType` (connector SDK, additive) is the one parser, with `ValueFromJson` for
+  readers.
 - **`ArrowBatchBuilder` builds nested columns** (connector SDK, additive): `AppendRow` takes a .NET enumerable for
   a list or fixed-size list, an `IReadOnlyDictionary<string, object?>` (or `object?[]` in field order) for a
   struct, an `IDictionary` for a map, nested to any depth with nulls at every level; `AppendFrom` copies nested

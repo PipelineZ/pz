@@ -532,6 +532,11 @@ public static class PzErrorCode
     /// read's incremental cursor (a cursor must stay a comparable column).</summary>
     public const string VariantConfigInvalid = "PZ0367";
 
+    /// <summary>A <c>columns:</c> contract names a type that is not one: an unknown flat type, or a nested
+    /// type that does not parse (<c>struct(a int</c>, <c>map(varchar[], int)</c>, <c>int[0]</c>). Reported for
+    /// every such column at load, before any read.</summary>
+    public const string ColumnContractTypeInvalid = "PZ0368";
+
     public const string SqlDryCompile = "PZ0401";
 
     /// <summary>An extension listed under project.yml's <c>extensions:</c> could not be installed or

@@ -89,6 +89,12 @@ my-project/
   `columns:` contract must use those names. xlsx write is localfiles-only (an s3/gcs/azureblob xlsx
   sink is PZ0361); xlsx read works on all four.
 
+  A `columns:` type is one of `int`, `bigint`, `double`, `decimal`, `varchar`, `boolean`, `date`,
+  `timestamp`, or nested from them: `varchar[]` (list), `int[3]` (fixed size), `struct(name varchar,
+  tags varchar[])`, `map(varchar, bigint)` (flat key), nested freely. Quote a nested type inside a
+  flow mapping (`{ tags: "varchar[]" }`). A csv or xlsx cell for a nested column holds its JSON text;
+  json files and http records hold real objects and arrays. A type that does not parse is PZ0368.
+
   A `columns:` entry may use the long form `email: { type: varchar, redact: true }` (in YAML or in
   the `source()` kwarg) to mark a sensitive column: `pz preview` shows its values as `•••`. Marks
   do not follow a column into a pipeline's output; mark it again in that pipeline's sidecar.

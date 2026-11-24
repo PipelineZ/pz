@@ -29,7 +29,7 @@ public sealed class SftpConnector : ISourceConnector, ISinkConnector, IOutputCon
     // connector's schema.
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
-        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
 
     // Mirrors what SftpSink actually reads: path (optional prefix under the connection root), the
     // format-scoped options, and partition_by (write-only fan-out into per-folder remote files).

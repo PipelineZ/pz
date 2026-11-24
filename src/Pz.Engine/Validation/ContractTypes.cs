@@ -1,5 +1,6 @@
 using Apache.Arrow.Types;
 using Pz.Arrow;
+using Pz.Connectors.Abstractions.Formats;
 
 namespace Pz.Engine.Validation;
 
@@ -19,7 +20,7 @@ public static class ContractTypes
         "boolean" => "boolean",
         "date" => "date",
         "timestamp" => "timestamp",
-        _ => throw new ArgumentException($"unknown columns: contract type '{contractType}'", nameof(contractType)),
+        _ => ColumnContractType.ToDuckDbName(Nested(contractType)),
     };
 
     /// <summary>Contract type name -> the Arrow type tier 5 (<see cref="ConnectivityValidator"/>) expects
@@ -38,8 +39,15 @@ public static class ContractTypes
         "boolean" => BooleanType.Default,
         "date" => Date32Type.Default,
         "timestamp" => new TimestampType(TimeUnit.Microsecond, "+00:00"),
-        _ => throw new ArgumentException($"unknown columns: contract type '{contractType}'", nameof(contractType)),
+        _ => Nested(contractType),
     };
+
+    /// <summary>A nested contract type (<c>varchar[]</c>, <c>struct(...)</c>, <c>map(k, v)</c>) as its Arrow type;
+    /// <see cref="ArgumentException"/> for text that is not a contract type at all.</summary>
+    private static IArrowType Nested(string contractType) =>
+        ColumnContractType.TryParse(contractType, out var type, out var error)
+            ? type!
+            : throw new ArgumentException($"unknown columns: contract type '{contractType}' ({error})", nameof(contractType));
 
     /// <summary>Human-readable rendering of an Arrow type for PZ0331 messages and the schemas.json cache
     /// -- Int32, Int64, Double, Decimal128(38,9), Utf8, Boolean, Date32, Timestamp(Microsecond, +00:00)
@@ -55,6 +63,10 @@ public static class ContractTypes
         BooleanType => "Boolean",
         Date32Type => "Date32",
         TimestampType t => $"Timestamp({t.Unit}, {t.Timezone})",
+        MapType m => $"Map({Describe(m.KeyField.DataType)}, {Describe(m.ValueField.DataType)})",
+        ListType l => $"List({Describe(l.ValueDataType)})",
+        FixedSizeListType f => $"FixedSizeList({Describe(f.ValueDataType)}, {f.ListSize})",
+        StructType s => $"Struct({string.Join(", ", s.Fields.Select(f => $"{f.Name}: {Describe(f.DataType)}"))})",
         _ => type.Name,
     };
 

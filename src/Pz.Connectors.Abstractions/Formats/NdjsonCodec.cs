@@ -265,25 +265,8 @@ public static partial class NdjsonCodec
         }
     }
 
-    /// <summary>Resolves one <c>columns:</c> contract type name to its Arrow type -- the same eight-name
-    /// canonical vocabulary <see cref="Pz.Engine.Validation.ContractTypes"/> and
-    /// <c>AzureTypeNameMap.ToArrowType</c> use (int/bigint/double/decimal/varchar/boolean/date/
-    /// timestamp), including the "+00:00" timestamp timezone (not the literal string "UTC") so this
-    /// matches every other Arrow-expectation map in the codebase. Throws a permanent
-    /// <see cref="PzConnectorException"/> naming <paramref name="columnName"/> for an unknown type name.</summary>
-    private static IArrowType ToArrowType(string typeName, string columnName) => typeName switch
-    {
-        "int" => Int32Type.Default,
-        "bigint" => Int64Type.Default,
-        "double" => DoubleType.Default,
-        "decimal" => new Decimal128Type(38, 9),
-        "varchar" => StringType.Default,
-        "boolean" => BooleanType.Default,
-        "date" => Date32Type.Default,
-        "timestamp" => new TimestampType(TimeUnit.Microsecond, "+00:00"),
-        _ => throw new PzConnectorException(
-            $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
-    };
+    private static IArrowType ToArrowType(string typeName, string columnName) =>
+        ColumnContractType.ToArrowType(typeName, columnName);
 
     /// <summary>Extracts and types one declared column's value from a parsed JSON line: a JSON key absent
     /// from <paramref name="line"/>, or present with JSON <c>null</c>, yields a null cell (both are
@@ -303,19 +286,7 @@ public static partial class NdjsonCodec
 
         try
         {
-            return typeName switch
-            {
-                "int" => element.GetInt32(),
-                "bigint" => element.GetInt64(),
-                "double" => element.GetDouble(),
-                "decimal" => ReadDecimal(element),
-                "varchar" => element.GetString(),
-                "boolean" => element.GetBoolean(),
-                "date" => DateOnly.ParseExact(element.GetString()!, "yyyy-MM-dd", CultureInfo.InvariantCulture),
-                "timestamp" => ParseTimestamp(element.GetString()!, columnName, lineNumber),
-                _ => throw new PzConnectorException(
-                    $"column '{columnName}': unknown columns: contract type '{typeName}'", isTransient: false, code: PzConnectorErrorCodes.Config),
-            };
+            return ColumnContractType.ValueFromJson(element, ToArrowType(typeName, columnName));
         }
         catch (Exception ex) when (ex is InvalidOperationException or FormatException or OverflowException or SqlTypeException)
         {
@@ -323,42 +294,5 @@ public static partial class NdjsonCodec
                 $"NDJSON line {lineNumber}, column '{columnName}': value is not a valid {typeName}",
                 isTransient: false, innerException: ex);
         }
-    }
-
-    /// <summary>A JSON number as a decimal(38,9) cell. <see cref="JsonElement.GetDecimal"/> rounds a literal
-    /// with more than 28 significant digits instead of failing, so a plain (exponent-free) literal that long
-    /// is parsed as a <see cref="SqlDecimal"/>, which carries all 38 digits or throws.</summary>
-    private static object ReadDecimal(JsonElement element)
-    {
-        if (element.ValueKind == JsonValueKind.Number)
-        {
-            var raw = element.GetRawText();
-            if (raw.AsSpan().IndexOfAny('e', 'E') < 0 && raw.Count(char.IsAsciiDigit) > 28)
-            {
-                return SqlDecimal.Parse(raw);
-            }
-        }
-
-        return element.GetDecimal();
-    }
-
-    /// <summary>Parses an ISO-8601 timestamp back to a UTC <see cref="DateTimeOffset"/>, accepting any
-    /// fractional-second precision and either a 'Z' or numeric-offset designator -- covering both
-    /// <see cref="WriteAsync"/>'s own "yyyy-MM-ddTHH:mm:ss.ffffffZ" wire format (so the write/read round-trip
-    /// holds) and the looser forms real-world NDJSON and DuckDB's native <c>read_json</c>/<c>COPY ... (FORMAT
-    /// json)</c> produce. Malformed input surfaces as a permanent <see cref="PzConnectorException"/> naming
-    /// <paramref name="columnName"/> and <paramref name="lineNumber"/> only -- never <paramref name="text"/>,
-    /// which may be untrusted external data (mirrors <see cref="ExtractValue"/>'s message shape).</summary>
-    private static DateTimeOffset ParseTimestamp(string text, string columnName, int lineNumber)
-    {
-        if (!DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture,
-                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var value))
-        {
-            throw new PzConnectorException(
-                $"NDJSON line {lineNumber}, column '{columnName}': value is not a valid timestamp",
-                isTransient: false);
-        }
-
-        return value;
     }
 }

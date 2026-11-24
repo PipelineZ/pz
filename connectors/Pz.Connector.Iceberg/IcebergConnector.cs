@@ -51,7 +51,7 @@ public sealed class IcebergConnector : ISourceConnector, ISinkConnector, INative
     public string DatasetConfigSchema =>
         """
         { "type": "object", "properties": {
-          "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } },
+          "columns": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } },
           "version": { "type": "integer", "minimum": 0 },
           "timestamp": { "type": "string" },
           "metadata_version": { "type": "string" }

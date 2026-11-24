@@ -36,7 +36,7 @@ public sealed class GcsConnector : ISourceConnector, ISinkConnector, INativeOnly
     // targeted message.
     public string DatasetConfigSchema =>
         """{ "type": "object", "properties": { "bucket": { "type": "string" }, "path": { "type": "string" }, """ + FileFormatCatalog.SchemaProperties +
-        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
+        """, "columns": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string", "minLength": 1 } }, "files_per_partition": { "type": ["integer","string"] } }, "additionalProperties": false }""";
 
     // Mirrors what GcsSink actually reads: bucket + path both optional (same fallback as the read
     // side), the format-scoped options, and partition_by (write-only fan-out; a read never partitions).
