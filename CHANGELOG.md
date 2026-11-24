@@ -66,6 +66,9 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   does not parse is the new **PZ0368** at load, for every bad column, instead of the connector schema's PZ0301 or a
   PZ0500 under `pz run`. `ColumnContractType` (connector SDK, additive) is the one parser, with `ValueFromJson` for
   readers.
+- **`ArrowCell`** (connector SDK, additive): a sink reads any cell, nested included, as JSON (`WriteJson`,
+  `ToJson`) or as boxed .NET values (`GetValue`: a struct as a field-ordered dictionary, a list as a list, a map
+  as key/value pairs).
 - **`ArrowBatchBuilder` builds nested columns** (connector SDK, additive): `AppendRow` takes a .NET enumerable for
   a list or fixed-size list, an `IReadOnlyDictionary<string, object?>` (or `object?[]` in field order) for a
   struct, an `IDictionary` for a map, nested to any depth with nulls at every level; `AppendFrom` copies nested
