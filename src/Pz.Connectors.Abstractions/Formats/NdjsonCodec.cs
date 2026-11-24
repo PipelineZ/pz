@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Apache.Arrow;
 using Apache.Arrow.Types;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions.Batches;
 
 namespace Pz.Connectors.Abstractions.Formats;
@@ -87,10 +88,12 @@ public static partial class NdjsonCodec
         return buffer;
     }
 
-    /// <summary>Writes one row's scalar for one column: a null cell emits JSON <c>null</c>, else dispatches
+    /// <summary>Writes one row's value for one column: a null cell emits JSON <c>null</c>, else dispatches
     /// on the Arrow array's runtime type. Covers the full "columns:" contract type matrix -- int32/int64/
     /// double/decimal128/utf8/bool/date32/timestamp-µs-UTC -- the same set <c>AzureTypeNameMap</c> maps and
-    /// <c>AzureBlobFormat.ScalarToString</c>/<see cref="Batches.ArrowBatchBuilder"/> already handle.</summary>
+    /// <c>AzureBlobFormat.ScalarToString</c>/<see cref="Batches.ArrowBatchBuilder"/> already handle, plus
+    /// struct/list/fixed-size list/map of those as JSON objects and arrays (<see cref="ArrowJsonValue"/>),
+    /// which a sink receives only when it declares <see cref="ConnectorCapabilities.NestedTypes"/>.</summary>
     private static void WriteScalar(Utf8JsonWriter jw, JsonEncodedText name, IArrowArray array, int index)
     {
         if (array.IsNull(index))
@@ -144,17 +147,17 @@ public static partial class NdjsonCodec
                 jw.WriteString(name, a.GetDateTime(index)!.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
                 break;
             case TimestampArray a:
-                jw.WriteString(name, FormatTimestamp(a.GetTimestamp(index)!.Value));
+                jw.WriteString(name, ArrowJsonValue.FormatTimestamp(a.GetTimestamp(index)!.Value));
+                break;
+            case StructArray or ListArray or FixedSizeListArray:
+                jw.WritePropertyName(name);
+                ArrowJsonValue.Write(jw, array, index);
                 break;
             default:
                 throw new NotSupportedException(
                     $"NdjsonCodec.WriteAsync does not support Arrow array type '{array.GetType()}' for column '{name}'");
         }
     }
-
-    /// <summary>ISO-8601 UTC, microsecond precision, 'Z' designator -- e.g. "2026-07-13T10:30:15.000000Z".</summary>
-    private static string FormatTimestamp(DateTimeOffset value) =>
-        value.UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ss.ffffff", CultureInfo.InvariantCulture) + "Z";
 
     /// <summary>Streams <paramref name="ndjson"/> (one JSON object per line) into Arrow <see cref="RecordBatch"/>es,
     /// projecting <paramref name="projection"/> (or every declared column when null) and typing each value per

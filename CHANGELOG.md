@@ -14,8 +14,14 @@ the [versioning policy](https://pipelinez.dev/versioning/).
   types, instead of being flattened to JSON text. On the way out, a sink receives them only when it declares the
   new `NestedTypes` capability (connector ABI, additive); for any other sink the output still fails `PZ0546`
   before anything is written, now saying the sink does not accept nested columns, with the same
-  `col::JSON::VARCHAR` hint. No built-in sink declares it yet. VARIANT, UNION and FLOAT or narrow-integer leaves
-  stay refused (`PZ0546`).
+  `col::JSON::VARCHAR` hint. VARIANT, UNION and FLOAT or narrow-integer leaves stay refused (`PZ0546`).
+- **The `http` sink writes nested columns as JSON**: a STRUCT or MAP as an object (map keys as their text), a
+  LIST or ARRAY as an array, at any depth, in `json_array` and `ndjson` bodies alike. A nested merge key is
+  refused before any request.
+- **The `postgres` sink writes nested columns**: a LIST or ARRAY of a flat type as a postgres array of that type
+  (`bigint[]`, `text[]`, `numeric(38,9)[]`, `timestamptz[]`…, null elements kept), and a STRUCT, MAP or list of
+  nested values as `jsonb`. A missing target is created with those types; an existing one is checked against
+  them (`schema_policy: fail_on_change` compares an array's element type).
 
 ## [0.21.0] - 2026-11-23
 

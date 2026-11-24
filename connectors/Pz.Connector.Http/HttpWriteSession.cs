@@ -39,6 +39,14 @@ internal sealed class HttpWriteSession(HttpClient client, HttpConnectionConfig c
             foreach (var line in lines)
             {
                 var row = System.Text.Json.Nodes.JsonNode.Parse(line)!;
+                if (row[spec.Keys[0]] is System.Text.Json.Nodes.JsonObject or System.Text.Json.Nodes.JsonArray)
+                {
+                    throw new PzConnectorException(
+                        $"{Label}: merge key '{spec.Keys[0]}' is a nested value (STRUCT, LIST or MAP) -- keyed " +
+                        "delivery substitutes the key into 'path', so it must be a scalar column",
+                        isTransient: false, code: PzConnectorErrorCodes.Config);
+                }
+
                 var keyValue = row[spec.Keys[0]]?.ToString();
                 if (string.IsNullOrEmpty(keyValue))
                 {

@@ -53,12 +53,14 @@ public sealed class HttpEngineEndToEndTests : IAsyncLifetime
         return reg;
     }
 
-    private DagNode SinkNode()
+    private DagNode SinkNode() => SinkNode(new OutputDef("out", "stg_orders", "append", "fail_on_change",
+        new Dictionary<string, object?> { ["path"] = "/ingest", ["rows_per_request"] = 5 }));
+
+    private DagNode SinkNode(OutputDef output)
     {
         var sink = new ConnectionDef("api", "http",
             new Dictionary<string, object?> { ["base_url"] = _server.BaseUrl.ToString() }, [],
-            "sinks/api.yml") { Outputs = [new OutputDef("out", "stg_orders", "append", "fail_on_change",
-                new Dictionary<string, object?> { ["path"] = "/ingest", ["rows_per_request"] = 5 })] };
+            "sinks/api.yml") { Outputs = [output] };
         return new DagNode(new NodeId("ffffffffffffffff"), NodeKind.SinkWrite, "api.out",
             [], null, new SinkOutputDef(sink, sink.Outputs[0]));
     }
@@ -87,6 +89,50 @@ public sealed class HttpEngineEndToEndTests : IAsyncLifetime
         Assert.Equal(NodeStatus.Success, result.Status);
         Assert.Equal(200, result.RowsMoved);
         Assert.Equal(Enumerable.Range(0, 200).Select(i => (long)i), ConfirmedIds());
+    }
+
+    [Fact]
+    public async Task Nested_columns_are_delivered_as_JSON_objects_and_arrays()
+    {
+        await _duck.ExecuteAsync("""
+            create table staging.stg_nested as select
+                range as id,
+                {'name': 'n' || range, 'tags': ['a', null], 'at': TIMESTAMP '2026-01-02 03:04:05.123456'} as rec,
+                [range, null]::BIGINT[] as ints,
+                map(['k1', 'k2'], [1.5::DECIMAL(4,1), null]) as m,
+                [[1, 2]::INTEGER[2], null] as pairs,
+                case when range = 1 then null else {'deep': [{'x': DATE '2026-03-04'}]} end as deep
+            from range(3)
+            """);
+        _server.Map("/ingest", _ => new StubResponse(200, "{}"));
+
+        var result = await TwoAttempts().ExecuteAsync(SinkNode(new OutputDef("out", "stg_nested", "append",
+            "fail_on_change", new Dictionary<string, object?> { ["path"] = "/ingest" })), Context(), default);
+
+        Assert.True(result.Status == NodeStatus.Success, result.Error?.ToString());
+        var rows = _server.Requests.Where(r => r.Method == "POST")
+            .SelectMany(r => (JsonArray)JsonNode.Parse(r.Body)!).OrderBy(r => r!["id"]!.GetValue<long>()).ToList();
+        Assert.Equal(3, rows.Count);
+        Assert.Equal(
+            """{"id":0,"rec":{"name":"n0","tags":["a",null],"at":"2026-01-02T03:04:05.123456Z"},"ints":[0,null],"m":{"k1":1.5,"k2":null},"pairs":[[1,2],null],"deep":{"deep":[{"x":"2026-03-04"}]}}""",
+            rows[0]!.ToJsonString());
+        Assert.Null(rows[1]!["deep"]);
+    }
+
+    [Fact]
+    public async Task A_nested_merge_key_is_refused_before_any_request()
+    {
+        await _duck.ExecuteAsync("create table staging.stg_nested_key as select {'a': 1} as k, 'v' as name");
+        _server.Map("/items/{key}", _ => new StubResponse(200, "{}"));
+
+        var ex = await Assert.ThrowsAsync<PzConnectorException>(() => new SinkWriteExecutor().ExecuteAsync(
+            SinkNode(new OutputDef("out", "stg_nested_key", "merge", "fail_on_change",
+                new Dictionary<string, object?> { ["path"] = "/items/{key}", ["method"] = "put" }, ["k"])),
+            Context(), default));
+
+        Assert.False(ex.IsTransient);
+        Assert.Contains("merge key 'k' is a nested value", ex.Message, StringComparison.Ordinal);
+        Assert.Empty(_server.Requests);
     }
 
     [Fact]

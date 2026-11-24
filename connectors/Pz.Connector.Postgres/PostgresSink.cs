@@ -1,6 +1,8 @@
 using Apache.Arrow;
+using Apache.Arrow.Types;
 using Npgsql;
 using NpgsqlTypes;
+using Pz.Arrow;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Abstractions.Batches;
 
@@ -316,9 +318,95 @@ internal sealed class PostgresSinkWriteSession : IDeleteApplyingWriteSession
             case StringArray a:
                 importer.Write(a.GetString(row), type);
                 break;
+            case MapArray or StructArray:
+                importer.Write(ArrowJsonValue.ToJson(array, row), NpgsqlDbType.Jsonb);
+                break;
+            case ListArray or FixedSizeListArray when type.HasFlag(NpgsqlDbType.Array):
+                WriteArray(importer, batch.Schema.FieldsList[col].Name, array, row, type);
+                break;
+            case ListArray or FixedSizeListArray:
+                importer.Write(ArrowJsonValue.ToJson(array, row), NpgsqlDbType.Jsonb);
+                break;
             default:
                 throw new NotSupportedException($"postgres sink v0 does not support array type '{array.GetType()}'");
         }
+    }
+
+    /// <summary>One list cell of flat elements as a postgres array, null elements kept.</summary>
+    private static void WriteArray(NpgsqlBinaryImporter importer, string column, IArrowArray array, int row, NpgsqlDbType type)
+    {
+        var (values, start, count) = array switch
+        {
+            ListArray a => (a.Values, a.ValueOffsets[row], a.ValueOffsets[row + 1] - a.ValueOffsets[row]),
+            FixedSizeListArray a => (a.Values, (a.Offset + row) * ((FixedSizeListType)a.Data.DataType).ListSize,
+                ((FixedSizeListType)a.Data.DataType).ListSize),
+            _ => throw new NotSupportedException($"postgres sink: '{array.GetType()}' is not a list"),
+        };
+
+        switch (values)
+        {
+            case Int32Array v:
+                importer.Write(Elements(count, i => v.GetValue(start + i)), type);
+                break;
+            case Int64Array v:
+                importer.Write(Elements(count, i => v.GetValue(start + i)), type);
+                break;
+            case DoubleArray v:
+                importer.Write(Elements(count, i => v.GetValue(start + i)), type);
+                break;
+            case BooleanArray v:
+                importer.Write(Elements(count, i => v.GetValue(start + i)), type);
+                break;
+            case Decimal128Array v:
+                importer.Write(Elements(count, i =>
+                {
+                    if (v.IsNull(start + i))
+                    {
+                        return (decimal?)null;
+                    }
+
+                    if (!Decimal128Cells.FitsSystemDecimal(v, start + i))
+                    {
+                        throw new PzConnectorException(
+                            $"column '{column}': decimal value exceeds .NET decimal range (more than 28 significant " +
+                            "digits) during bulk write -- reduce the column's precision in the pipeline (e.g. " +
+                            "round/cast) before sinking",
+                            isTransient: false);
+                    }
+
+                    return v.GetValue(start + i);
+                }), type);
+                break;
+            case Date32Array v:
+                importer.Write(Elements(count, i =>
+                    v.GetDateTime(start + i) is { } d ? DateOnly.FromDateTime(d) : (DateOnly?)null), type);
+                break;
+            case TimestampArray v:
+                importer.Write(Elements(count, i => v.GetTimestamp(start + i)), type);
+                break;
+            case StringArray v:
+                var strings = new string?[count];
+                for (var i = 0; i < count; i++)
+                {
+                    strings[i] = v.GetString(start + i);
+                }
+
+                importer.Write(strings, type);
+                break;
+            default:
+                throw new NotSupportedException($"postgres sink: no array mapping for elements of '{values.GetType()}'");
+        }
+    }
+
+    private static T?[] Elements<T>(int count, Func<int, T?> get) where T : struct
+    {
+        var elements = new T?[count];
+        for (var i = 0; i < count; i++)
+        {
+            elements[i] = get(i);
+        }
+
+        return elements;
     }
 
     public async ValueTask<WriteResult> CommitAsync(CancellationToken ct)
